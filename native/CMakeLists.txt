@@ -31,6 +31,7 @@ endif()
 target_include_directories(bolt-sandbox-detours PUBLIC ${DETOURS_SOURCE_DIR})
 
 add_library(bolt-sandbox-protocol STATIC
+    protocol/event_frame.cpp
     protocol/policy_payload.cpp
 )
 bolt_native_warnings(bolt-sandbox-protocol)
