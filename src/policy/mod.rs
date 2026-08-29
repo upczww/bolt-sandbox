@@ -1,3 +1,4 @@
+mod compiler;
 mod filesystem;
 mod network;
 mod registry;
