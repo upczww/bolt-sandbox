@@ -65,20 +65,8 @@ impl SandboxRequest {
 fn validate_environment(environment: &BTreeMap<OsString, OsString>) -> Result<(), SandboxError> {
     let mut normalized_names = BTreeSet::new();
     for (name, value) in environment {
-        if name.is_empty() {
-            return Err(invalid_environment(InvalidRequestReason::Empty));
-        }
-        if contains_nul(name) || contains_nul(value) {
-            return Err(invalid_environment(InvalidRequestReason::InvalidCharacter));
-        }
-        if name.as_os_str().encode_wide().next() == Some(u16::from(b'=')) {
-            return Err(invalid_environment(InvalidRequestReason::ReservedName));
-        }
-        if name
-            .as_os_str()
-            .encode_wide()
-            .any(|code_unit| code_unit == u16::from(b'='))
-        {
+        validate_environment_name(name)?;
+        if contains_nul(value) {
             return Err(invalid_environment(InvalidRequestReason::InvalidCharacter));
         }
 
