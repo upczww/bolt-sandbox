@@ -379,6 +379,11 @@ Registry support follows filesystem parity and uses explicit rules:
 - `inherit_user`: preserve normal user permissions for named compatibility keys.
 - `read_write`: permit normal user-authorized access to named keys.
 
+Protocol version 1 accepts at most 1,024 rules in each registry category and
+2,048 registry rules in total. A normalized absolute key name is limited to 255
+UTF-16 code units, matching the Windows registry key-name limit. Counts and
+lengths are checked before duplicate removal or rule allocation.
+
 At minimum, intercept create/open/query/set/delete/rename operations at the NT
 Native API layer. Mandatory denies protect credential and application security
 configuration. Registry virtualization is not required; policy enforcement and

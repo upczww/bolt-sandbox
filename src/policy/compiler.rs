@@ -1510,4 +1510,92 @@ mod tests {
             ));
         }
     }
+
+    #[test]
+    fn pol_022_registry_category_limits_accept_maximum_and_reject_maximum_plus_one() {
+        for kind in [
+            RegistryRuleKind::NoAccess,
+            RegistryRuleKind::ReadOnly,
+            RegistryRuleKind::InheritUser,
+            RegistryRuleKind::ReadWrite,
+        ] {
+            let at_maximum = policy_with_repeated_registry_rule(
+                kind,
+                MAX_REGISTRY_RULES_PER_CATEGORY,
+            );
+            let over_maximum = policy_with_repeated_registry_rule(
+                kind,
+                MAX_REGISTRY_RULES_PER_CATEGORY + 1,
+            );
+
+            assert!(compile(&at_maximum, Path::new(r"C:\work\project")).is_ok());
+            assert_eq!(
+                compile(&over_maximum, Path::new(r"C:\work\project")).err(),
+                Some(SandboxError::InvalidRequest {
+                    field: RequestField::RegistryPolicy,
+                    reason: InvalidRequestReason::TooManyItems,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn pol_022_total_registry_limit_is_checked_before_deduplication() {
+        let mut at_maximum = SandboxPolicy::default();
+        at_maximum.registry.read_only =
+            vec![r"HKCU\Software\Read".into(); MAX_REGISTRY_RULES_PER_CATEGORY];
+        at_maximum.registry.read_write =
+            vec![r"HKCU\Software\Write".into(); MAX_REGISTRY_RULES_PER_CATEGORY];
+        let mut over_maximum = at_maximum.clone();
+        over_maximum
+            .registry
+            .no_access
+            .push(r"HKCU\Software\Denied".into());
+
+        assert!(compile(&at_maximum, Path::new(r"C:\work\project")).is_ok());
+        assert_eq!(
+            compile(&over_maximum, Path::new(r"C:\work\project")).err(),
+            Some(SandboxError::InvalidRequest {
+                field: RequestField::RegistryPolicy,
+                reason: InvalidRequestReason::TooManyItems,
+            })
+        );
+    }
+
+    #[test]
+    fn pol_022_registry_key_length_maximum_and_maximum_plus_one() {
+        let prefix = r"HKEY_CURRENT_USER\";
+        let component_length = MAX_REGISTRY_KEY_CODE_UNITS - prefix.encode_utf16().count();
+        let at_maximum = format!("{prefix}{}", "K".repeat(component_length));
+        let over_maximum = format!("{at_maximum}K");
+
+        let mut policy = SandboxPolicy::default();
+        policy.registry.read_only.push(at_maximum);
+        assert!(compile(&policy, Path::new(r"C:\work\project")).is_ok());
+
+        policy.registry.read_only.clear();
+        policy.registry.read_only.push(over_maximum);
+        assert_eq!(
+            compile(&policy, Path::new(r"C:\work\project")).err(),
+            Some(SandboxError::InvalidRequest {
+                field: RequestField::RegistryPolicy,
+                reason: InvalidRequestReason::TooLarge,
+            })
+        );
+    }
+
+    fn policy_with_repeated_registry_rule(
+        kind: RegistryRuleKind,
+        count: usize,
+    ) -> SandboxPolicy {
+        let mut policy = SandboxPolicy::default();
+        let rules = match kind {
+            RegistryRuleKind::NoAccess => &mut policy.registry.no_access,
+            RegistryRuleKind::ReadOnly => &mut policy.registry.read_only,
+            RegistryRuleKind::InheritUser => &mut policy.registry.inherit_user,
+            RegistryRuleKind::ReadWrite => &mut policy.registry.read_write,
+        };
+        *rules = vec![r"HKCU\Software\Repeated".into(); count];
+        policy
+    }
 }
