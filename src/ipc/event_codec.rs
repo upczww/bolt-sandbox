@@ -12,6 +12,10 @@ pub(super) struct SequencedEvent {
     pub(super) event: SandboxEvent,
 }
 
+#[allow(
+    dead_code,
+    reason = "Ready frames are emitted by the launcher transport in the next phase"
+)]
 pub(super) fn encode_ready(nonce: [u8; 16], sequence: u64) -> Result<Vec<u8>, ProtocolError> {
     framing::encode(&Frame {
         version: framing::PROTOCOL_VERSION,
@@ -21,6 +25,10 @@ pub(super) fn encode_ready(nonce: [u8; 16], sequence: u64) -> Result<Vec<u8>, Pr
     })
 }
 
+#[allow(
+    dead_code,
+    reason = "event frames are emitted by the launcher transport in the next phase"
+)]
 pub(super) fn encode_event(event: &SandboxEvent, sequence: u64) -> Result<Vec<u8>, ProtocolError> {
     let (kind, payload) = match event {
         SandboxEvent::Ready => (FrameKind::Ready, Vec::new()),
@@ -69,7 +77,6 @@ fn decode_process_exit(payload: &[u8]) -> Result<SandboxEvent, ProtocolError> {
     let raw_exit_code = read_u32(payload, PROCESS_EXIT_CODE_OFFSET);
     let exit_code = match payload[PROCESS_EXIT_CODE_PRESENT_OFFSET] {
         0 if raw_exit_code == 0 => None,
-        0 => return Err(ProtocolError::InvalidPayload),
         1 => Some(raw_exit_code),
         _ => return Err(ProtocolError::InvalidPayload),
     };
@@ -91,6 +98,10 @@ fn read_u32(bytes: &[u8], offset: usize) -> u32 {
 }
 
 impl ProcessExitReason {
+    #[allow(
+        dead_code,
+        reason = "event frames are emitted by the launcher transport in the next phase"
+    )]
     fn wire_value(self) -> u8 {
         match self {
             Self::Exited => 0,

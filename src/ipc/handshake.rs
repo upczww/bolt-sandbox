@@ -30,6 +30,7 @@ impl Handshake {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn state(&self) -> HandshakeState {
         self.state
     }

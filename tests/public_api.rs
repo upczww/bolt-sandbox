@@ -6,8 +6,8 @@ use std::{
 };
 
 use bolt_sandbox::{
-    ChildProcessPolicy, FilesystemPolicy, NetworkPolicy, RecoveryPolicy, RegistryPolicy,
-    ProcessExit, ProcessExitReason, RequestField, SandboxError, SandboxEvent, SandboxPolicy,
+    ChildProcessPolicy, FilesystemPolicy, NetworkPolicy, ProcessExit, ProcessExitReason,
+    RecoveryPolicy, RegistryPolicy, RequestField, SandboxError, SandboxEvent, SandboxPolicy,
     SandboxRequest,
 };
 
