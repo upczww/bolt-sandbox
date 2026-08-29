@@ -9,6 +9,7 @@ pub enum RequestField {
     Timeout,
     FilesystemPolicy,
     NetworkPolicy,
+    RegistryPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

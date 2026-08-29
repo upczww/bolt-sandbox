@@ -4,7 +4,7 @@ use std::{
     path::{Component, Path},
 };
 
-use super::{IpCidr, NetworkAllowList, NetworkPolicy, PortRange, SandboxPolicy};
+use super::{IpCidr, NetworkAllowList, NetworkPolicy, PortRange, RegistryPolicy, SandboxPolicy};
 use crate::{InvalidRequestReason, RequestField, SandboxError};
 
 const MAX_NETWORK_RULES_PER_CATEGORY: usize = 1_024;
@@ -19,12 +19,21 @@ pub(crate) fn compile_with_mandatory_denies(
     cwd: &Path,
     mandatory_denies: &[std::path::PathBuf],
 ) -> Result<CompiledPolicy, SandboxError> {
+    compile_with_security_denies(policy, cwd, mandatory_denies, &[])
+}
+
+pub(crate) fn compile_with_security_denies(
+    policy: &SandboxPolicy,
+    cwd: &Path,
+    mandatory_filesystem_denies: &[std::path::PathBuf],
+    mandatory_registry_denies: &[String],
+) -> Result<CompiledPolicy, SandboxError> {
     let mut filesystem = CompiledFilesystemPolicy::default();
     filesystem.add_rule(cwd, FilesystemRuleKind::ReadWrite)?;
     filesystem.add_rules(&policy.filesystem.read_write, FilesystemRuleKind::ReadWrite)?;
     filesystem.add_rules(&policy.filesystem.read_only, FilesystemRuleKind::ReadOnly)?;
     filesystem.add_rules(&policy.filesystem.deny, FilesystemRuleKind::Deny)?;
-    filesystem.add_rules(mandatory_denies, FilesystemRuleKind::Deny)?;
+    filesystem.add_rules(mandatory_filesystem_denies, FilesystemRuleKind::Deny)?;
     filesystem.add_rules(
         &policy.filesystem.metadata_read,
         FilesystemRuleKind::MetadataRead,
@@ -35,9 +44,11 @@ pub(crate) fn compile_with_mandatory_denies(
     )?;
 
     let network = compile_network_policy(&policy.network)?;
+    let registry = compile_registry_policy(&policy.registry, mandatory_registry_denies)?;
     let compiled = CompiledPolicy {
         filesystem,
         network,
+        registry,
     };
     debug_assert!(compiled.filesystem.allows_read_write(cwd));
     debug_assert_eq!(
@@ -58,6 +69,11 @@ pub(crate) struct CompiledPolicy {
         reason = "compiled network policy is consumed by the network runtime in a later phase"
     )]
     pub(crate) network: CompiledNetworkPolicy,
+    #[allow(
+        dead_code,
+        reason = "compiled registry policy is consumed by the registry runtime in a later phase"
+    )]
+    pub(crate) registry: CompiledRegistryPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -329,6 +345,224 @@ fn compile_port_ranges(ranges: &[PortRange]) -> Result<Vec<PortRange>, SandboxEr
     Ok(compiled)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "registry access classes are consumed by the registry runtime in a later phase"
+)]
+pub(crate) enum RegistryAccess {
+    Read,
+    Write,
+    Enumerate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RegistryDecision {
+    Allow,
+    Deny,
+    InheritUser,
+}
+
+#[allow(
+    dead_code,
+    reason = "compiled registry decisions are consumed by the registry runtime in a later phase"
+)]
+pub(crate) struct CompiledRegistryPolicy {
+    rules: Vec<RegistryRule>,
+}
+
+#[allow(
+    dead_code,
+    reason = "compiled registry decisions are consumed by the registry runtime in a later phase"
+)]
+impl CompiledRegistryPolicy {
+    pub(crate) fn decide(&self, key: &str, access: RegistryAccess) -> RegistryDecision {
+        let Ok(key) = NormalizedRegistryKey::parse(key) else {
+            return RegistryDecision::Deny;
+        };
+        let matching_rules = self
+            .rules
+            .iter()
+            .filter(|rule| rule.root.contains(&key))
+            .collect::<Vec<_>>();
+        if matching_rules
+            .iter()
+            .any(|rule| rule.kind == RegistryRuleKind::NoAccess)
+        {
+            return RegistryDecision::Deny;
+        }
+
+        let Some(maximum_depth) = matching_rules.iter().map(|rule| rule.root.depth()).max() else {
+            return RegistryDecision::Deny;
+        };
+        matching_rules
+            .into_iter()
+            .find(|rule| rule.root.depth() == maximum_depth)
+            .map_or(RegistryDecision::Deny, |rule| rule.kind.decision(access))
+    }
+
+    #[cfg(test)]
+    fn read_only_rule_count(&self) -> usize {
+        self.rules
+            .iter()
+            .filter(|rule| rule.kind == RegistryRuleKind::ReadOnly)
+            .count()
+    }
+}
+
+fn compile_registry_policy(
+    policy: &RegistryPolicy,
+    mandatory_denies: &[String],
+) -> Result<CompiledRegistryPolicy, SandboxError> {
+    let mut compiled = RegistryPolicyBuilder::default();
+    compiled.add_rules(&policy.read_write, RegistryRuleKind::ReadWrite)?;
+    compiled.add_rules(&policy.read_only, RegistryRuleKind::ReadOnly)?;
+    compiled.add_rules(&policy.no_access, RegistryRuleKind::NoAccess)?;
+    compiled.add_rules(mandatory_denies, RegistryRuleKind::NoAccess)?;
+    compiled.add_rules(&policy.inherit_user, RegistryRuleKind::InheritUser)?;
+    compiled
+        .rules
+        .sort_by(|left, right| left.root.cmp(&right.root).then(left.kind.cmp(&right.kind)));
+    Ok(CompiledRegistryPolicy {
+        rules: compiled.rules,
+    })
+}
+
+#[derive(Default)]
+struct RegistryPolicyBuilder {
+    rules: Vec<RegistryRule>,
+}
+
+impl RegistryPolicyBuilder {
+    fn add_rules(&mut self, keys: &[String], kind: RegistryRuleKind) -> Result<(), SandboxError> {
+        for key in keys {
+            self.add_rule(key, kind)?;
+        }
+        Ok(())
+    }
+
+    fn add_rule(&mut self, key: &str, kind: RegistryRuleKind) -> Result<(), SandboxError> {
+        let root = NormalizedRegistryKey::parse(key)?;
+        for existing in self.rules.iter().filter(|rule| rule.root == root) {
+            if existing.kind == kind {
+                return Ok(());
+            }
+            if existing.kind != RegistryRuleKind::NoAccess && kind != RegistryRuleKind::NoAccess {
+                return Err(invalid_registry_policy(
+                    InvalidRequestReason::ConflictingRules,
+                ));
+            }
+        }
+        self.rules.push(RegistryRule { root, kind });
+        Ok(())
+    }
+}
+
+struct RegistryRule {
+    root: NormalizedRegistryKey,
+    kind: RegistryRuleKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum RegistryRuleKind {
+    NoAccess,
+    ReadOnly,
+    InheritUser,
+    ReadWrite,
+}
+
+impl RegistryRuleKind {
+    const fn decision(self, access: RegistryAccess) -> RegistryDecision {
+        match self {
+            Self::NoAccess => RegistryDecision::Deny,
+            Self::ReadOnly => match access {
+                RegistryAccess::Read | RegistryAccess::Enumerate => RegistryDecision::Allow,
+                RegistryAccess::Write => RegistryDecision::Deny,
+            },
+            Self::InheritUser => RegistryDecision::InheritUser,
+            Self::ReadWrite => RegistryDecision::Allow,
+        }
+    }
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct NormalizedRegistryKey {
+    hive: RegistryHive,
+    components: Vec<String>,
+}
+
+impl NormalizedRegistryKey {
+    fn parse(input: &str) -> Result<Self, SandboxError> {
+        if input.is_empty()
+            || input
+                .chars()
+                .any(|character| character.is_control() || matches!(character, '/' | ':' | '\0'))
+        {
+            return Err(invalid_registry_policy(
+                InvalidRequestReason::InvalidCharacter,
+            ));
+        }
+
+        let parts = input
+            .split('\\')
+            .filter(|part| !part.is_empty())
+            .map(str::to_uppercase)
+            .collect::<Vec<_>>();
+        let Some(root) = parts.first().map(String::as_str) else {
+            return Err(invalid_registry_policy(
+                InvalidRequestReason::InvalidCharacter,
+            ));
+        };
+
+        let (hive, component_offset) = match root {
+            "HKCR" | "HKEY_CLASSES_ROOT" => (RegistryHive::ClassesRoot, 1),
+            "HKCU" | "HKEY_CURRENT_USER" => (RegistryHive::CurrentUser, 1),
+            "HKLM" | "HKEY_LOCAL_MACHINE" => (RegistryHive::LocalMachine, 1),
+            "HKU" | "HKEY_USERS" => (RegistryHive::Users, 1),
+            "HKCC" | "HKEY_CURRENT_CONFIG" => (RegistryHive::CurrentConfig, 1),
+            "REGISTRY" if parts.get(1).is_some_and(|part| part == "MACHINE") => {
+                (RegistryHive::LocalMachine, 2)
+            }
+            "REGISTRY" if parts.get(1).is_some_and(|part| part == "USER") && parts.len() > 2 => {
+                (RegistryHive::Users, 2)
+            }
+            _ => {
+                return Err(invalid_registry_policy(
+                    InvalidRequestReason::InvalidCharacter,
+                ));
+            }
+        };
+
+        Ok(Self {
+            hive,
+            components: parts[component_offset..].to_vec(),
+        })
+    }
+
+    fn contains(&self, candidate: &Self) -> bool {
+        self.hive == candidate.hive
+            && self.components.len() <= candidate.components.len()
+            && self
+                .components
+                .iter()
+                .zip(&candidate.components)
+                .all(|(left, right)| left == right)
+    }
+
+    fn depth(&self) -> usize {
+        self.components.len()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum RegistryHive {
+    ClassesRoot,
+    CurrentUser,
+    LocalMachine,
+    Users,
+    CurrentConfig,
+}
+
 #[derive(Default)]
 pub(crate) struct CompiledFilesystemPolicy {
     rules: Vec<FilesystemRule>,
@@ -567,6 +801,13 @@ fn invalid_filesystem_policy(reason: InvalidRequestReason) -> SandboxError {
 const fn invalid_network_policy(reason: InvalidRequestReason) -> SandboxError {
     SandboxError::InvalidRequest {
         field: RequestField::NetworkPolicy,
+        reason,
+    }
+}
+
+const fn invalid_registry_policy(reason: InvalidRequestReason) -> SandboxError {
+    SandboxError::InvalidRequest {
+        field: RequestField::RegistryPolicy,
         reason,
     }
 }
@@ -1163,24 +1404,21 @@ mod tests {
             RegistryDecision::Allow
         );
         assert_eq!(
-            compiled.registry.decide(
-                r"HKCU\Software\ReadOnly\Value",
-                RegistryAccess::Write,
-            ),
+            compiled
+                .registry
+                .decide(r"HKCU\Software\ReadOnly\Value", RegistryAccess::Write,),
             RegistryDecision::Deny
         );
         assert_eq!(
-            compiled.registry.decide(
-                r"HKCU\Software\ReadWrite\Value",
-                RegistryAccess::Write,
-            ),
+            compiled
+                .registry
+                .decide(r"HKCU\Software\ReadWrite\Value", RegistryAccess::Write,),
             RegistryDecision::Allow
         );
         assert_eq!(
-            compiled.registry.decide(
-                r"HKCU\Software\Compatibility\Value",
-                RegistryAccess::Read,
-            ),
+            compiled
+                .registry
+                .decide(r"HKCU\Software\Compatibility\Value", RegistryAccess::Read,),
             RegistryDecision::InheritUser
         );
         assert_eq!(
@@ -1219,10 +1457,9 @@ mod tests {
             RegistryDecision::Deny
         );
         assert_eq!(
-            compiled.registry.decide(
-                r"HKCU\Software\OrdinaryApp\Setting",
-                RegistryAccess::Write,
-            ),
+            compiled
+                .registry
+                .decide(r"HKCU\Software\OrdinaryApp\Setting", RegistryAccess::Write,),
             RegistryDecision::Allow
         );
     }
