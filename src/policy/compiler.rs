@@ -4,31 +4,42 @@ use std::{
 };
 
 use super::SandboxPolicy;
+use crate::{InvalidRequestReason, RequestField, SandboxError};
 
-pub(crate) fn compile(policy: &SandboxPolicy, cwd: &Path) -> CompiledPolicy {
+pub(crate) fn compile(policy: &SandboxPolicy, cwd: &Path) -> Result<CompiledPolicy, SandboxError> {
     let mut filesystem = CompiledFilesystemPolicy::default();
-    filesystem.add_rule(cwd, FilesystemRuleKind::ReadWrite);
+    filesystem.add_rule(cwd, FilesystemRuleKind::ReadWrite)?;
     filesystem.add_rules(
         &policy.filesystem.read_write,
         FilesystemRuleKind::ReadWrite,
-    );
+    )?;
     filesystem.add_rules(
         &policy.filesystem.read_only,
         FilesystemRuleKind::ReadOnly,
-    );
-    filesystem.add_rules(&policy.filesystem.deny, FilesystemRuleKind::Deny);
+    )?;
+    filesystem.add_rules(&policy.filesystem.deny, FilesystemRuleKind::Deny)?;
     filesystem.add_rules(
         &policy.filesystem.metadata_read,
         FilesystemRuleKind::MetadataRead,
-    );
+    )?;
     filesystem.add_rules(
         &policy.filesystem.inherit_user,
         FilesystemRuleKind::InheritUser,
-    );
+    )?;
 
     let compiled = CompiledPolicy { filesystem };
     debug_assert!(compiled.filesystem.allows_read_write(cwd));
-    compiled
+    debug_assert_eq!(
+        compiled.filesystem.decide(cwd, FilesystemAccess::Read),
+        FilesystemDecision::Allow
+    );
+    debug_assert_eq!(
+        compiled
+            .filesystem
+            .decide(cwd, FilesystemAccess::Metadata),
+        FilesystemDecision::Allow
+    );
+    Ok(compiled)
 }
 
 pub(crate) struct CompiledPolicy {
@@ -41,22 +52,31 @@ pub(crate) struct CompiledFilesystemPolicy {
 }
 
 impl CompiledFilesystemPolicy {
-    fn add_rules(&mut self, paths: &[std::path::PathBuf], kind: FilesystemRuleKind) {
+    fn add_rules(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        kind: FilesystemRuleKind,
+    ) -> Result<(), SandboxError> {
         for path in paths {
-            self.add_rule(path, kind);
+            self.add_rule(path, kind)?;
         }
+        Ok(())
     }
 
-    fn add_rule(&mut self, path: &Path, kind: FilesystemRuleKind) {
-        let root = NormalizedPath::from_path(path);
-        if self
-            .rules
-            .iter()
-            .any(|rule| rule.kind == kind && rule.root == root)
-        {
-            return;
+    fn add_rule(&mut self, path: &Path, kind: FilesystemRuleKind) -> Result<(), SandboxError> {
+        let root = NormalizedPath::from_path(path)?;
+        for existing in self.rules.iter().filter(|rule| rule.root == root) {
+            if existing.kind == kind {
+                return Ok(());
+            }
+            if existing.kind != FilesystemRuleKind::Deny && kind != FilesystemRuleKind::Deny {
+                return Err(invalid_filesystem_policy(
+                    InvalidRequestReason::ConflictingRules,
+                ));
+            }
         }
         self.rules.push(FilesystemRule { root, kind });
+        Ok(())
     }
 
     pub(crate) fn allows_read_write(&self, path: &Path) -> bool {
@@ -68,7 +88,9 @@ impl CompiledFilesystemPolicy {
         path: &Path,
         access: FilesystemAccess,
     ) -> FilesystemDecision {
-        let path = NormalizedPath::from_path(path);
+        let Ok(path) = NormalizedPath::from_path(path) else {
+            return FilesystemDecision::Deny;
+        };
         let matching_rules: Vec<_> = self
             .rules
             .iter()
@@ -160,7 +182,13 @@ struct NormalizedPath {
 }
 
 impl NormalizedPath {
-    fn from_path(path: &Path) -> Self {
+    fn from_path(path: &Path) -> Result<Self, SandboxError> {
+        if !path.is_absolute() {
+            return Err(invalid_filesystem_policy(
+                InvalidRequestReason::MustBeAbsolute,
+            ));
+        }
+
         let mut components = Vec::new();
         for component in path.components() {
             match component {
@@ -172,6 +200,10 @@ impl NormalizedPath {
                 Component::ParentDir => {
                     if matches!(components.last(), Some(NormalizedComponent::Normal(_))) {
                         components.pop();
+                    } else {
+                        return Err(invalid_filesystem_policy(
+                            InvalidRequestReason::EscapesRoot,
+                        ));
                     }
                 }
                 Component::Normal(value) => {
@@ -179,7 +211,7 @@ impl NormalizedPath {
                 }
             }
         }
-        Self { components }
+        Ok(Self { components })
     }
 
     fn contains(&self, candidate: &Self) -> bool {
@@ -237,6 +269,13 @@ fn os_str_eq_ignore_ascii_case(left: &OsStr, right: &OsStr) -> bool {
             .to_str()
             .zip(right.to_str())
             .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
+}
+
+fn invalid_filesystem_policy(reason: InvalidRequestReason) -> SandboxError {
+    SandboxError::InvalidRequest {
+        field: RequestField::FilesystemPolicy,
+        reason,
+    }
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ use std::{error::Error, fmt};
 pub enum RequestField {
     Program,
     CurrentDirectory,
+    FilesystemPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -11,6 +12,8 @@ pub enum InvalidRequestReason {
     MustBeAbsolute,
     NotAFile,
     NotADirectory,
+    EscapesRoot,
+    ConflictingRules,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

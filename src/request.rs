@@ -48,7 +48,7 @@ impl SandboxRequest {
             });
         }
 
-        let _compiled_policy = policy::compiler::compile(&self.policy, &self.cwd);
+        let _compiled_policy = policy::compiler::compile(&self.policy, &self.cwd)?;
 
         Ok(())
     }
