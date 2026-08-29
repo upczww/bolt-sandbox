@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::ProcessExit;
+use crate::{ProcessExit, ProcessExitReason};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TerminationCause {
@@ -44,6 +44,10 @@ pub(super) enum LifecycleError {
         operation: LifecycleOperation,
     },
     MissingTerminalEvent,
+    TerminalReasonMismatch {
+        cause: TerminationCause,
+        actual: ProcessExitReason,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -155,8 +159,17 @@ impl LifecycleController {
         &mut self,
         event: ProcessExit,
     ) -> Result<LifecycleAction, LifecycleError> {
-        if !matches!(self.phase, LifecyclePhase::Draining(_)) || self.terminal_event.is_some() {
+        let LifecyclePhase::Draining(cause) = self.phase else {
             return Err(self.invalid_transition(LifecycleOperation::MarkTerminalEvent));
+        };
+        if self.terminal_event.is_some() {
+            return Err(self.invalid_transition(LifecycleOperation::MarkTerminalEvent));
+        }
+        if !terminal_reason_matches(cause, event.reason) {
+            return Err(LifecycleError::TerminalReasonMismatch {
+                cause,
+                actual: event.reason,
+            });
         }
         self.terminal_event = Some(event);
         Ok(self.complete_if_drained())
@@ -193,6 +206,17 @@ impl LifecycleController {
             phase: self.phase,
             operation,
         }
+    }
+}
+
+const fn terminal_reason_matches(cause: TerminationCause, reason: ProcessExitReason) -> bool {
+    match cause {
+        TerminationCause::Exited => matches!(
+            reason,
+            ProcessExitReason::Exited | ProcessExitReason::Terminated | ProcessExitReason::Crashed
+        ),
+        TerminationCause::Cancelled => matches!(reason, ProcessExitReason::Terminated),
+        TerminationCause::TimedOut => matches!(reason, ProcessExitReason::TimedOut),
     }
 }
 

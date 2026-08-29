@@ -822,7 +822,10 @@ Accepted:
   controller emits at most one whole-Job termination action and does not enter
   `Completed` until stdout EOF, stderr EOF, the typed terminal `ProcessExited`
   event, and event-channel EOF have all been observed. Event EOF without the
-  terminal event is an infrastructure failure, not a successful exit.
+  terminal event is an infrastructure failure, not a successful exit. A
+  committed timeout accepts only a `TimedOut` terminal reason and cancellation
+  only `Terminated`; a mismatched event is rejected without consuming the
+  terminal slot.
 - Component verification binds execution/loading to the verified file identity
   and trusted directory, preventing replacement and DLL search-order races
   between verification and load.
