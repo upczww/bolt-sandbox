@@ -1,3 +1,84 @@
+use std::num::NonZeroUsize;
+
+use crate::SandboxEvent;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AggregationDisposition {
+    Added,
+    Duplicate { duplicate_count: u64 },
+    DroppedDistinct { dropped_count: u64 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AggregationError {
+    NotViolation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AggregatedViolation {
+    pub(super) event: SandboxEvent,
+    pub(super) duplicate_count: u64,
+}
+
+pub(super) struct ViolationAggregator {
+    maximum_entries: NonZeroUsize,
+    entries: Vec<AggregatedViolation>,
+    dropped_distinct_count: u64,
+}
+
+impl ViolationAggregator {
+    pub(super) const fn new(maximum_entries: NonZeroUsize) -> Self {
+        Self {
+            maximum_entries,
+            entries: Vec::new(),
+            dropped_distinct_count: 0,
+        }
+    }
+
+    pub(super) fn observe(
+        &mut self,
+        event: SandboxEvent,
+    ) -> Result<AggregationDisposition, AggregationError> {
+        if !is_violation(&event) {
+            return Err(AggregationError::NotViolation);
+        }
+        if let Some(existing) = self.entries.iter_mut().find(|entry| entry.event == event) {
+            existing.duplicate_count = existing.duplicate_count.saturating_add(1);
+            return Ok(AggregationDisposition::Duplicate {
+                duplicate_count: existing.duplicate_count,
+            });
+        }
+        if self.entries.len() == self.maximum_entries.get() {
+            self.dropped_distinct_count = self.dropped_distinct_count.saturating_add(1);
+            return Ok(AggregationDisposition::DroppedDistinct {
+                dropped_count: self.dropped_distinct_count,
+            });
+        }
+        self.entries.push(AggregatedViolation {
+            event,
+            duplicate_count: 0,
+        });
+        Ok(AggregationDisposition::Added)
+    }
+
+    pub(super) fn entries(&self) -> &[AggregatedViolation] {
+        &self.entries
+    }
+
+    pub(super) const fn dropped_distinct_count(&self) -> u64 {
+        self.dropped_distinct_count
+    }
+}
+
+const fn is_violation(event: &SandboxEvent) -> bool {
+    matches!(
+        event,
+        SandboxEvent::FilesystemViolation(_)
+            | SandboxEvent::RegistryViolation(_)
+            | SandboxEvent::NetworkViolation(_)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::{num::NonZeroUsize, path::PathBuf};

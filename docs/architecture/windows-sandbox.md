@@ -421,6 +421,14 @@ audit events are sufficient for the initial release.
 - Preserve the first occurrence and count dropped duplicate events.
 - Treat handshake loss as an initialization failure.
 
+The Rust violation aggregator has a nonzero configured unique-entry capacity.
+Its identity key includes the complete typed event, so process, operation, and
+resource differences never collapse. At capacity, a new distinct violation
+increments a saturating dropped-distinct counter without replacing an existing
+first occurrence; duplicates of retained entries continue incrementing their
+saturating duplicate counters. Non-violation lifecycle events bypass this
+aggregator.
+
 Event protocol version 1 reserves frame kinds 1 through 7 for `Ready`,
 filesystem violation, registry violation, network violation, recovery artifact,
 child-injection failure, and process exit, respectively. Filesystem and recovery
