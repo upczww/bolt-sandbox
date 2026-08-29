@@ -7,7 +7,7 @@ mod policy;
 mod request;
 
 pub use error::{InvalidRequestReason, RequestField, SandboxError};
-pub use event::SandboxEvent;
+pub use event::{ProcessExit, ProcessExitReason, SandboxEvent};
 pub use policy::{
     ChildProcessPolicy, FilesystemPolicy, NetworkAllowList, NetworkPolicy, RecoveryLimits,
     RecoveryPolicy, RegistryPolicy, SandboxPolicy,

@@ -1,3 +1,107 @@
+use super::framing::{self, Frame, FrameKind, ProtocolError};
+use crate::{ProcessExit, ProcessExitReason, SandboxEvent};
+
+const PROCESS_EXIT_PAYLOAD_LENGTH: usize = 10;
+const PROCESS_EXIT_REASON_OFFSET: usize = 4;
+const PROCESS_EXIT_CODE_PRESENT_OFFSET: usize = 5;
+const PROCESS_EXIT_CODE_OFFSET: usize = 6;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SequencedEvent {
+    sequence: u64,
+    event: SandboxEvent,
+}
+
+fn encode_event(event: &SandboxEvent, sequence: u64) -> Result<Vec<u8>, ProtocolError> {
+    let (kind, payload) = match event {
+        SandboxEvent::Ready => (FrameKind::Ready, Vec::new()),
+        SandboxEvent::ProcessExited(process_exit) => {
+            let mut payload = vec![0; PROCESS_EXIT_PAYLOAD_LENGTH];
+            payload[..4].copy_from_slice(&process_exit.process_id.to_le_bytes());
+            payload[PROCESS_EXIT_REASON_OFFSET] = process_exit.reason.wire_value();
+            if let Some(exit_code) = process_exit.exit_code {
+                payload[PROCESS_EXIT_CODE_PRESENT_OFFSET] = 1;
+                payload[PROCESS_EXIT_CODE_OFFSET..PROCESS_EXIT_CODE_OFFSET + 4]
+                    .copy_from_slice(&exit_code.to_le_bytes());
+            }
+            (FrameKind::ProcessExited, payload)
+        }
+    };
+
+    framing::encode(&Frame {
+        version: framing::PROTOCOL_VERSION,
+        kind,
+        sequence,
+        payload,
+    })
+}
+
+fn decode_event(encoded: &[u8]) -> Result<SequencedEvent, ProtocolError> {
+    let frame = framing::decode(encoded)?;
+    let event = match frame.kind {
+        FrameKind::Ready if frame.payload.is_empty() => SandboxEvent::Ready,
+        FrameKind::Ready => return Err(ProtocolError::InvalidPayload),
+        FrameKind::ProcessExited => decode_process_exit(&frame.payload)?,
+    };
+
+    Ok(SequencedEvent {
+        sequence: frame.sequence,
+        event,
+    })
+}
+
+fn decode_process_exit(payload: &[u8]) -> Result<SandboxEvent, ProtocolError> {
+    if payload.len() != PROCESS_EXIT_PAYLOAD_LENGTH {
+        return Err(ProtocolError::InvalidPayload);
+    }
+
+    let reason = ProcessExitReason::from_wire(payload[PROCESS_EXIT_REASON_OFFSET])
+        .ok_or(ProtocolError::InvalidPayload)?;
+    let raw_exit_code = read_u32(payload, PROCESS_EXIT_CODE_OFFSET);
+    let exit_code = match payload[PROCESS_EXIT_CODE_PRESENT_OFFSET] {
+        0 if raw_exit_code == 0 => None,
+        0 => return Err(ProtocolError::InvalidPayload),
+        1 => Some(raw_exit_code),
+        _ => return Err(ProtocolError::InvalidPayload),
+    };
+
+    Ok(SandboxEvent::ProcessExited(ProcessExit {
+        process_id: read_u32(payload, 0),
+        exit_code,
+        reason,
+    }))
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
+}
+
+impl ProcessExitReason {
+    fn wire_value(self) -> u8 {
+        match self {
+            Self::Exited => 0,
+            Self::Terminated => 1,
+            Self::TimedOut => 2,
+            Self::Crashed => 3,
+        }
+    }
+
+    fn from_wire(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Exited),
+            1 => Some(Self::Terminated),
+            2 => Some(Self::TimedOut),
+            3 => Some(Self::Crashed),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

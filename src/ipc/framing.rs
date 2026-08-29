@@ -1,6 +1,6 @@
 const MAGIC: [u8; 4] = *b"BLT1";
 pub(super) const PROTOCOL_VERSION: u16 = 1;
-const HEADER_LENGTH: usize = 24;
+pub(super) const HEADER_LENGTH: usize = 24;
 const VERSION_OFFSET: usize = 4;
 const KIND_OFFSET: usize = 6;
 const LENGTH_OFFSET: usize = 8;
@@ -20,6 +20,7 @@ pub(super) struct Frame {
 #[repr(u16)]
 pub(super) enum FrameKind {
     Ready = 1,
+    ProcessExited = 7,
 }
 
 impl TryFrom<u16> for FrameKind {
@@ -28,6 +29,7 @@ impl TryFrom<u16> for FrameKind {
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::Ready),
+            7 => Ok(Self::ProcessExited),
             _ => Err(ProtocolError::UnknownFrameKind),
         }
     }
@@ -43,6 +45,7 @@ pub(super) enum ProtocolError {
     UnknownFrameKind,
     ChecksumMismatch,
     TrailingBytes,
+    InvalidPayload,
 }
 
 pub(super) fn encode(frame: &Frame) -> Result<Vec<u8>, ProtocolError> {
@@ -146,6 +149,11 @@ fn frame_checksum(encoded: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+pub(super) fn rewrite_checksum(encoded: &mut [u8]) {
+    let checksum = frame_checksum(encoded);
+    encoded[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 4].copy_from_slice(&checksum.to_le_bytes());
 }
 
 #[cfg(test)]
