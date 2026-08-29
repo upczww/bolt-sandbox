@@ -30,6 +30,19 @@ else()
 endif()
 target_include_directories(bolt-sandbox-detours PUBLIC ${DETOURS_SOURCE_DIR})
 
+set(BUILDXL_DETOURS_SERVICES_DIR
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/buildxl/Public/Src/Sandbox/Windows/DetoursServices
+)
+add_library(bolt-sandbox-buildxl STATIC
+    ${BUILDXL_DETOURS_SERVICES_DIR}/TreeNode.cpp
+)
+bolt_native_warnings(bolt-sandbox-buildxl)
+target_compile_definitions(bolt-sandbox-buildxl PRIVATE _DO_NOT_EXPORT)
+target_include_directories(bolt-sandbox-buildxl PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/buildxl
+    ${BUILDXL_DETOURS_SERVICES_DIR}
+)
+
 add_library(bolt-sandbox-protocol STATIC
     protocol/event_frame.cpp
     protocol/policy_payload.cpp
@@ -90,5 +103,6 @@ target_include_directories(bolt-sandbox-native-tests PRIVATE
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-protocol)
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-common)
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-detours)
+target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-buildxl)
 
 add_test(NAME native.protocol COMMAND bolt-sandbox-native-tests)
