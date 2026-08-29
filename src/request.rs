@@ -350,4 +350,29 @@ mod tests {
             })
         ));
     }
+
+    #[test]
+    fn req_005_prepared_environment_encodes_as_sorted_unicode_block() {
+        let environment = BTreeMap::from([
+            (OsString::from("z_key"), OsString::from("last")),
+            (OsString::from("Alpha"), OsString::from("一")),
+            (OsString::from("b_key"), OsString::new()),
+        ]);
+        let prepared =
+            prepare_environment(&environment, &[]).expect("valid environment must prepare");
+
+        let encoded = encode_environment_block(&prepared.variables)
+            .expect("prepared environment must encode");
+        let expected: Vec<u16> = "Alpha=一\0b_key=\0z_key=last\0\0".encode_utf16().collect();
+
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn req_005_empty_environment_encodes_with_double_terminator() {
+        assert_eq!(
+            encode_environment_block(&BTreeMap::new()),
+            Ok(vec![0, 0])
+        );
+    }
 }
