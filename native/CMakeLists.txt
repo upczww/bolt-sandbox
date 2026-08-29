@@ -46,6 +46,7 @@ add_executable(bolt-sandbox-native-tests
     tests/job_tests.cpp
     tests/named_pipe_tests.cpp
     tests/policy_payload_tests.cpp
+    tests/process_tests.cpp
     tests/protocol_tests.cpp
 )
 bolt_native_warnings(bolt-sandbox-native-tests)

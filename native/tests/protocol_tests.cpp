@@ -19,6 +19,8 @@ static_assert(bolt::protocol::kPolicyMaximumBodyLength == 1'048'576);
 bool RunPolicyPayloadTests();
 bool RunJobTests();
 bool RunNamedPipeTests();
+bool RunProcessTests();
+int RunProcessChild(int argument_count, wchar_t** arguments);
 
 namespace {
 
@@ -81,6 +83,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
         Sleep(INFINITE);
         return 0;
     }
+    if (argument_count >= 2 && std::wstring(arguments[1]) == L"--process-child") {
+        return RunProcessChild(argument_count, arguments);
+    }
     constexpr std::uint8_t expected_magic[] = {'B', 'L', 'P', '1'};
     for (std::size_t index = 0; index < sizeof(expected_magic); ++index) {
         if (bolt::protocol::kPolicyMagic[index] != expected_magic[index]) {
@@ -102,6 +107,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunNamedPipeTests()) {
         return 6;
+    }
+    if (!RunProcessTests()) {
+        return 7;
     }
     return 0;
 }
