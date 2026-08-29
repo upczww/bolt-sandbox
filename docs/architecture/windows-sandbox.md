@@ -791,7 +791,11 @@ Accepted:
   cannot deadlock; the loss is reported as typed stream state.
 - Lifecycle terminal state uses the earliest atomically committed monotonic
   trigger. An exact-tick tie resolves cancellation before timeout before natural
-  exit, and terminal cleanup/event emission occurs exactly once.
+  exit, and terminal cleanup/event emission occurs exactly once. The host-side
+  controller emits at most one whole-Job termination action and does not enter
+  `Completed` until stdout EOF, stderr EOF, the typed terminal `ProcessExited`
+  event, and event-channel EOF have all been observed. Event EOF without the
+  terminal event is an infrastructure failure, not a successful exit.
 - Component verification binds execution/loading to the verified file identity
   and trusted directory, preventing replacement and DLL search-order races
   between verification and load.
