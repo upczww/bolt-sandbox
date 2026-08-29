@@ -1,10 +1,23 @@
+use std::{
+    ffi::OsString,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    os::windows::ffi::{OsStrExt, OsStringExt},
+    path::PathBuf,
+};
+
 use super::framing::{self, Frame, FrameKind, ProtocolError};
-use crate::{ProcessExit, ProcessExitReason, SandboxEvent};
+use crate::{
+    ChildInjectionFailure, ChildInjectionFailureReason, FilesystemOperation, FilesystemViolation,
+    NetworkOperation, NetworkTarget, NetworkViolation, ProcessExit, ProcessExitReason,
+    RecoveryArtifact, RegistryOperation, RegistryViolation, SandboxEvent,
+};
 
 const PROCESS_EXIT_PAYLOAD_LENGTH: usize = 10;
 const PROCESS_EXIT_REASON_OFFSET: usize = 4;
 const PROCESS_EXIT_CODE_PRESENT_OFFSET: usize = 5;
 const PROCESS_EXIT_CODE_OFFSET: usize = 6;
+const MAX_EVENT_PATH_CODE_UNITS: usize = 32_767;
+const MAX_EVENT_TEXT_BYTES: usize = 4_096;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SequencedEvent {
@@ -32,6 +45,26 @@ pub(super) fn encode_ready(nonce: [u8; 16], sequence: u64) -> Result<Vec<u8>, Pr
 pub(super) fn encode_event(event: &SandboxEvent, sequence: u64) -> Result<Vec<u8>, ProtocolError> {
     let (kind, payload) = match event {
         SandboxEvent::Ready => (FrameKind::Ready, Vec::new()),
+        SandboxEvent::FilesystemViolation(violation) => (
+            FrameKind::FilesystemViolation,
+            encode_filesystem_violation(violation)?,
+        ),
+        SandboxEvent::RegistryViolation(violation) => (
+            FrameKind::RegistryViolation,
+            encode_registry_violation(violation)?,
+        ),
+        SandboxEvent::NetworkViolation(violation) => (
+            FrameKind::NetworkViolation,
+            encode_network_violation(violation)?,
+        ),
+        SandboxEvent::RecoveryArtifactCreated(artifact) => (
+            FrameKind::RecoveryArtifactCreated,
+            encode_recovery_artifact(artifact)?,
+        ),
+        SandboxEvent::ChildInjectionFailed(failure) => (
+            FrameKind::ChildInjectionFailed,
+            encode_child_injection_failure(failure),
+        ),
         SandboxEvent::ProcessExited(process_exit) => {
             let mut payload = vec![0; PROCESS_EXIT_PAYLOAD_LENGTH];
             payload[..4].copy_from_slice(&process_exit.process_id.to_le_bytes());
@@ -58,6 +91,11 @@ pub(super) fn decode_event(encoded: &[u8]) -> Result<SequencedEvent, ProtocolErr
     let event = match frame.kind {
         FrameKind::Ready if frame.payload.is_empty() => SandboxEvent::Ready,
         FrameKind::Ready => return Err(ProtocolError::InvalidPayload),
+        FrameKind::FilesystemViolation => decode_filesystem_violation(&frame.payload)?,
+        FrameKind::RegistryViolation => decode_registry_violation(&frame.payload)?,
+        FrameKind::NetworkViolation => decode_network_violation(&frame.payload)?,
+        FrameKind::RecoveryArtifactCreated => decode_recovery_artifact(&frame.payload)?,
+        FrameKind::ChildInjectionFailed => decode_child_injection_failure(&frame.payload)?,
         FrameKind::ProcessExited => decode_process_exit(&frame.payload)?,
     };
 
@@ -65,6 +103,150 @@ pub(super) fn decode_event(encoded: &[u8]) -> Result<SequencedEvent, ProtocolErr
         sequence: frame.sequence,
         event,
     })
+}
+
+fn encode_filesystem_violation(violation: &FilesystemViolation) -> Result<Vec<u8>, ProtocolError> {
+    let mut payload = Vec::new();
+    push_u32(&mut payload, violation.process_id);
+    payload.push(violation.operation.wire_value());
+    push_path(&mut payload, &violation.path)?;
+    Ok(payload)
+}
+
+fn decode_filesystem_violation(payload: &[u8]) -> Result<SandboxEvent, ProtocolError> {
+    let mut reader = PayloadReader::new(payload);
+    let process_id = reader.read_u32()?;
+    let operation =
+        FilesystemOperation::from_wire(reader.read_u8()?).ok_or(ProtocolError::InvalidPayload)?;
+    let path = reader.read_path()?;
+    reader.finish()?;
+    Ok(SandboxEvent::FilesystemViolation(FilesystemViolation {
+        process_id,
+        operation,
+        path,
+    }))
+}
+
+fn encode_registry_violation(violation: &RegistryViolation) -> Result<Vec<u8>, ProtocolError> {
+    let mut payload = Vec::new();
+    push_u32(&mut payload, violation.process_id);
+    payload.push(violation.operation.wire_value());
+    push_text(&mut payload, &violation.key)?;
+    Ok(payload)
+}
+
+fn decode_registry_violation(payload: &[u8]) -> Result<SandboxEvent, ProtocolError> {
+    let mut reader = PayloadReader::new(payload);
+    let process_id = reader.read_u32()?;
+    let operation =
+        RegistryOperation::from_wire(reader.read_u8()?).ok_or(ProtocolError::InvalidPayload)?;
+    let key = reader.read_text()?.to_owned();
+    reader.finish()?;
+    Ok(SandboxEvent::RegistryViolation(RegistryViolation {
+        process_id,
+        operation,
+        key,
+    }))
+}
+
+fn encode_network_violation(violation: &NetworkViolation) -> Result<Vec<u8>, ProtocolError> {
+    let mut payload = Vec::new();
+    push_u32(&mut payload, violation.process_id);
+    payload.push(violation.operation.wire_value());
+    match &violation.target {
+        NetworkTarget::Domain(domain) => {
+            payload.push(0);
+            push_text(&mut payload, domain)?;
+        }
+        NetworkTarget::Socket(SocketAddr::V4(address)) => {
+            payload.push(4);
+            payload.extend_from_slice(&address.ip().octets());
+            payload.extend_from_slice(&address.port().to_le_bytes());
+        }
+        NetworkTarget::Socket(SocketAddr::V6(address)) => {
+            payload.push(6);
+            payload.extend_from_slice(&address.ip().octets());
+            payload.extend_from_slice(&address.port().to_le_bytes());
+        }
+    }
+    Ok(payload)
+}
+
+fn decode_network_violation(payload: &[u8]) -> Result<SandboxEvent, ProtocolError> {
+    let mut reader = PayloadReader::new(payload);
+    let process_id = reader.read_u32()?;
+    let operation =
+        NetworkOperation::from_wire(reader.read_u8()?).ok_or(ProtocolError::InvalidPayload)?;
+    let target = match reader.read_u8()? {
+        0 => NetworkTarget::Domain(reader.read_text()?.to_owned()),
+        4 => {
+            let octets: [u8; 4] = reader.read_exact(4)?.try_into().map_err(invalid_payload)?;
+            NetworkTarget::Socket(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::from(octets)),
+                reader.read_u16()?,
+            ))
+        }
+        6 => {
+            let octets: [u8; 16] = reader.read_exact(16)?.try_into().map_err(invalid_payload)?;
+            NetworkTarget::Socket(SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::from(octets)),
+                reader.read_u16()?,
+            ))
+        }
+        _ => return Err(ProtocolError::InvalidPayload),
+    };
+    reader.finish()?;
+    Ok(SandboxEvent::NetworkViolation(NetworkViolation {
+        process_id,
+        operation,
+        target,
+    }))
+}
+
+fn encode_recovery_artifact(artifact: &RecoveryArtifact) -> Result<Vec<u8>, ProtocolError> {
+    let mut payload = Vec::new();
+    push_u32(&mut payload, artifact.process_id);
+    payload.extend_from_slice(&artifact.artifact_id.to_le_bytes());
+    payload.extend_from_slice(&artifact.byte_count.to_le_bytes());
+    push_path(&mut payload, &artifact.original_path)?;
+    Ok(payload)
+}
+
+fn decode_recovery_artifact(payload: &[u8]) -> Result<SandboxEvent, ProtocolError> {
+    let mut reader = PayloadReader::new(payload);
+    let process_id = reader.read_u32()?;
+    let artifact_id = reader.read_u64()?;
+    let byte_count = reader.read_u64()?;
+    let original_path = reader.read_path()?;
+    reader.finish()?;
+    Ok(SandboxEvent::RecoveryArtifactCreated(RecoveryArtifact {
+        process_id,
+        artifact_id,
+        original_path,
+        byte_count,
+    }))
+}
+
+fn encode_child_injection_failure(failure: &ChildInjectionFailure) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(9);
+    push_u32(&mut payload, failure.parent_process_id);
+    push_u32(&mut payload, failure.child_process_id);
+    payload.push(failure.reason.wire_value());
+    payload
+}
+
+fn decode_child_injection_failure(payload: &[u8]) -> Result<SandboxEvent, ProtocolError> {
+    let mut reader = PayloadReader::new(payload);
+    let parent_process_id = reader.read_u32()?;
+    let child_process_id = reader.read_u32()?;
+    let reason = ChildInjectionFailureReason::from_wire(reader.read_u8()?)
+        .ok_or(ProtocolError::InvalidPayload)?;
+    reader.finish()?;
+    Ok(SandboxEvent::ChildInjectionFailed(ChildInjectionFailure {
+        parent_process_id,
+        child_process_id,
+        reason,
+    }))
 }
 
 fn decode_process_exit(payload: &[u8]) -> Result<SandboxEvent, ProtocolError> {
@@ -118,6 +300,165 @@ impl ProcessExitReason {
             2 => Some(Self::TimedOut),
             3 => Some(Self::Crashed),
             _ => None,
+        }
+    }
+}
+
+macro_rules! wire_enum {
+    ($type:ty, $($variant:path => $value:literal),+ $(,)?) => {
+        impl $type {
+            const fn wire_value(self) -> u8 {
+                match self {
+                    $($variant => $value),+
+                }
+            }
+
+            const fn from_wire(value: u8) -> Option<Self> {
+                match value {
+                    $($value => Some($variant)),+,
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+wire_enum!(
+    FilesystemOperation,
+    FilesystemOperation::Read => 0,
+    FilesystemOperation::Write => 1,
+    FilesystemOperation::Metadata => 2,
+    FilesystemOperation::Create => 3,
+    FilesystemOperation::Delete => 4,
+    FilesystemOperation::Rename => 5,
+    FilesystemOperation::Enumerate => 6,
+);
+wire_enum!(
+    RegistryOperation,
+    RegistryOperation::Open => 0,
+    RegistryOperation::Query => 1,
+    RegistryOperation::Enumerate => 2,
+    RegistryOperation::Create => 3,
+    RegistryOperation::SetValue => 4,
+    RegistryOperation::Delete => 5,
+    RegistryOperation::Rename => 6,
+);
+wire_enum!(
+    NetworkOperation,
+    NetworkOperation::Resolve => 0,
+    NetworkOperation::Connect => 1,
+    NetworkOperation::Send => 2,
+);
+wire_enum!(
+    ChildInjectionFailureReason,
+    ChildInjectionFailureReason::UnsupportedArchitecture => 0,
+    ChildInjectionFailureReason::PolicyUnavailable => 1,
+    ChildInjectionFailureReason::InjectionFailed => 2,
+    ChildInjectionFailureReason::HandshakeFailed => 3,
+);
+
+fn push_u32(payload: &mut Vec<u8>, value: u32) {
+    payload.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_text(payload: &mut Vec<u8>, value: &str) -> Result<(), ProtocolError> {
+    if value.is_empty() || value.len() > MAX_EVENT_TEXT_BYTES {
+        return Err(ProtocolError::InvalidPayload);
+    }
+    let length = u32::try_from(value.len()).map_err(|_| ProtocolError::InvalidPayload)?;
+    push_u32(payload, length);
+    payload.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn push_path(payload: &mut Vec<u8>, path: &std::path::Path) -> Result<(), ProtocolError> {
+    let length = path.as_os_str().encode_wide().count();
+    if length == 0 || length > MAX_EVENT_PATH_CODE_UNITS {
+        return Err(ProtocolError::InvalidPayload);
+    }
+    push_u32(
+        payload,
+        u32::try_from(length).map_err(|_| ProtocolError::InvalidPayload)?,
+    );
+    for code_unit in path.as_os_str().encode_wide() {
+        payload.extend_from_slice(&code_unit.to_le_bytes());
+    }
+    Ok(())
+}
+
+fn invalid_payload<T>(_: T) -> ProtocolError {
+    ProtocolError::InvalidPayload
+}
+
+struct PayloadReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> PayloadReader<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn read_exact(&mut self, length: usize) -> Result<&'a [u8], ProtocolError> {
+        let end = self
+            .offset
+            .checked_add(length)
+            .ok_or(ProtocolError::InvalidPayload)?;
+        let value = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(ProtocolError::InvalidPayload)?;
+        self.offset = end;
+        Ok(value)
+    }
+
+    fn read_u8(&mut self) -> Result<u8, ProtocolError> {
+        Ok(self.read_exact(1)?[0])
+    }
+
+    fn read_u16(&mut self) -> Result<u16, ProtocolError> {
+        let value: [u8; 2] = self.read_exact(2)?.try_into().map_err(invalid_payload)?;
+        Ok(u16::from_le_bytes(value))
+    }
+
+    fn read_u32(&mut self) -> Result<u32, ProtocolError> {
+        let value: [u8; 4] = self.read_exact(4)?.try_into().map_err(invalid_payload)?;
+        Ok(u32::from_le_bytes(value))
+    }
+
+    fn read_u64(&mut self) -> Result<u64, ProtocolError> {
+        let value: [u8; 8] = self.read_exact(8)?.try_into().map_err(invalid_payload)?;
+        Ok(u64::from_le_bytes(value))
+    }
+
+    fn read_text(&mut self) -> Result<&'a str, ProtocolError> {
+        let length = usize::try_from(self.read_u32()?).map_err(invalid_payload)?;
+        if length == 0 || length > MAX_EVENT_TEXT_BYTES {
+            return Err(ProtocolError::InvalidPayload);
+        }
+        std::str::from_utf8(self.read_exact(length)?).map_err(invalid_payload)
+    }
+
+    fn read_path(&mut self) -> Result<PathBuf, ProtocolError> {
+        let length = usize::try_from(self.read_u32()?).map_err(invalid_payload)?;
+        if length == 0 || length > MAX_EVENT_PATH_CODE_UNITS {
+            return Err(ProtocolError::InvalidPayload);
+        }
+        let byte_length = length.checked_mul(2).ok_or(ProtocolError::InvalidPayload)?;
+        let bytes = self.read_exact(byte_length)?;
+        let wide = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        Ok(PathBuf::from(OsString::from_wide(&wide)))
+    }
+
+    fn finish(self) -> Result<(), ProtocolError> {
+        if self.offset == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(ProtocolError::InvalidPayload)
         }
     }
 }

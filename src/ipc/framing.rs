@@ -20,6 +20,11 @@ pub(super) struct Frame {
 #[repr(u16)]
 pub(super) enum FrameKind {
     Ready = 1,
+    FilesystemViolation = 2,
+    RegistryViolation = 3,
+    NetworkViolation = 4,
+    RecoveryArtifactCreated = 5,
+    ChildInjectionFailed = 6,
     ProcessExited = 7,
 }
 
@@ -29,6 +34,11 @@ impl TryFrom<u16> for FrameKind {
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::Ready),
+            2 => Ok(Self::FilesystemViolation),
+            3 => Ok(Self::RegistryViolation),
+            4 => Ok(Self::NetworkViolation),
+            5 => Ok(Self::RecoveryArtifactCreated),
+            6 => Ok(Self::ChildInjectionFailed),
             7 => Ok(Self::ProcessExited),
             _ => Err(ProtocolError::UnknownFrameKind),
         }

@@ -421,6 +421,15 @@ audit events are sufficient for the initial release.
 - Preserve the first occurrence and count dropped duplicate events.
 - Treat handshake loss as an initialization failure.
 
+Event protocol version 1 reserves frame kinds 1 through 7 for `Ready`,
+filesystem violation, registry violation, network violation, recovery artifact,
+child-injection failure, and process exit, respectively. Filesystem and recovery
+paths use length-prefixed UTF-16 so Windows paths are not lossily converted;
+network sockets use binary IPv4/IPv6 addresses and ports rather than formatted
+strings. Event paths are limited to 32,767 UTF-16 code units and UTF-8 text
+fields to 4,096 bytes. Decoders reject unknown discriminants, over-limit fields,
+invalid UTF-8, truncation, and trailing payload bytes.
+
 Example event:
 
 ```json
