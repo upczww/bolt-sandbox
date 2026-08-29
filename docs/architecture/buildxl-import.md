@@ -19,14 +19,15 @@ DetoursServices adaptation. Imported files and SHA-256 digests are recorded in
 
 ## Staged import
 
-The first slice contains `TreeNode.h` and `TreeNode.cpp`, the case-insensitive
-child collection used by BuildXL's path tree. This establishes a compiled
-upstream component before importing path decomposition and policy search.
+The first slice contains `TreeNode.h`, `TreeNode.cpp`, `PathTree.h`, and
+`PathTree.cpp`, providing BuildXL's case-insensitive path tree. A narrow adapter
+implements the Windows-only `TryDecomposePath` function from BuildXL
+`StringOperations.cpp` without importing that file's unrelated cross-platform
+and manifest dependencies.
 
 The next slices are:
 
-1. `PathTree` and the minimum Windows path decomposition functions.
-2. `CanonicalizedPath`, `PolicySearch`, and `PolicyResult`, behind Bolt-owned
+1. `CanonicalizedPath`, `PolicySearch`, and `PolicyResult`, behind Bolt-owned
    policy adapters.
-3. The filesystem detours, handle overlay, process injector, and reporting
+2. The filesystem detours, handle overlay, process injector, and reporting
    components needed by the architecture's enforcement matrix.

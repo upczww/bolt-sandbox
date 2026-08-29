@@ -18,6 +18,14 @@
       "sha256": "192bf4668675ab5b9372521c8b03aa2752e236bf8b07770b4c0065ddfd02fb90"
     },
     {
+      "path": "Public/Src/Sandbox/Windows/DetoursServices/PathTree.cpp",
+      "sha256": "9bfb27086d6c3cc2cd8b48c95aac02e1e73e8d1206c3605065d6b4c55ce3b32f"
+    },
+    {
+      "path": "Public/Src/Sandbox/Windows/DetoursServices/PathTree.h",
+      "sha256": "653a79287194ed6f7132b30f18eb54fecece35a222b4093369dda25205b0cb4e"
+    },
+    {
       "path": "Public/Src/Sandbox/Windows/DetoursServices/TreeNode.cpp",
       "sha256": "a3bff4aadeeb03320bf623a034ed710c4e00ac580ff5cbf4090343516cfc6775"
     },

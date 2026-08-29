@@ -34,10 +34,12 @@ set(BUILDXL_DETOURS_SERVICES_DIR
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/buildxl/Public/Src/Sandbox/Windows/DetoursServices
 )
 add_library(bolt-sandbox-buildxl STATIC
+    adapters/buildxl/string_operations_adapter.cpp
+    ${BUILDXL_DETOURS_SERVICES_DIR}/PathTree.cpp
     ${BUILDXL_DETOURS_SERVICES_DIR}/TreeNode.cpp
 )
 bolt_native_warnings(bolt-sandbox-buildxl)
-target_compile_definitions(bolt-sandbox-buildxl PRIVATE _DO_NOT_EXPORT)
+target_compile_definitions(bolt-sandbox-buildxl PRIVATE _DO_NOT_EXPORT TEST)
 target_include_directories(bolt-sandbox-buildxl PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/adapters/buildxl
     ${BUILDXL_DETOURS_SERVICES_DIR}

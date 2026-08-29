@@ -7,6 +7,9 @@
 #include <functional>
 #include <string>
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 struct CaseInsensitiveStringComparer {
     bool operator()(const std::wstring& left, const std::wstring& right) const {
         if (left.length() != right.length()) {
