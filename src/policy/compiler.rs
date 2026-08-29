@@ -1184,6 +1184,105 @@ mod tests {
     }
 
     #[test]
+    fn pol_022_filesystem_category_limits_are_checked_before_deduplication() {
+        let repeated = vec![
+            PathBuf::from(r"C:\same");
+            MAX_FILESYSTEM_RULES_PER_CATEGORY + 1
+        ];
+
+        for configure in [
+            |policy: &mut super::super::FilesystemPolicy, paths| {
+                policy.read_write = paths;
+            },
+            |policy: &mut super::super::FilesystemPolicy, paths| {
+                policy.read_only = paths;
+            },
+            |policy: &mut super::super::FilesystemPolicy, paths| {
+                policy.deny = paths;
+            },
+            |policy: &mut super::super::FilesystemPolicy, paths| {
+                policy.metadata_read = paths;
+            },
+            |policy: &mut super::super::FilesystemPolicy, paths| {
+                policy.inherit_user = paths;
+            },
+        ] {
+            let at_maximum = policy_with_filesystem(|policy| {
+                configure(
+                    policy,
+                    repeated[..MAX_FILESYSTEM_RULES_PER_CATEGORY].to_vec(),
+                );
+            });
+            assert!(compile(&at_maximum, Path::new(r"C:\work")).is_ok());
+
+            let over_maximum = policy_with_filesystem(|policy| {
+                configure(policy, repeated.clone());
+            });
+            assert_eq!(
+                compile(&over_maximum, Path::new(r"C:\work")).err(),
+                Some(SandboxError::InvalidRequest {
+                    field: RequestField::FilesystemPolicy,
+                    reason: InvalidRequestReason::TooManyItems,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn pol_022_total_filesystem_rule_limit_has_exact_boundary() {
+        let make_policy = |read_write_count, read_only_count, deny_count| {
+            policy_with_filesystem(|policy| {
+                policy.read_write = vec![PathBuf::from(r"C:\rw"); read_write_count];
+                policy.read_only = vec![PathBuf::from(r"C:\ro"); read_only_count];
+                policy.deny = vec![PathBuf::from(r"C:\deny"); deny_count];
+            })
+        };
+
+        assert!(
+            compile(
+                &make_policy(683, 683, 682),
+                Path::new(r"C:\work"),
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            compile(
+                &make_policy(683, 683, 683),
+                Path::new(r"C:\work"),
+            )
+            .err(),
+            Some(SandboxError::InvalidRequest {
+                field: RequestField::FilesystemPolicy,
+                reason: InvalidRequestReason::TooManyItems,
+            })
+        );
+    }
+
+    #[test]
+    fn pol_022_normalized_filesystem_path_length_has_exact_utf16_boundary() {
+        let maximum = PathBuf::from(format!(
+            r"C:\{}",
+            "a".repeat(MAX_FILESYSTEM_PATH_CODE_UNITS - 3)
+        ));
+        let over_maximum = PathBuf::from(format!(
+            r"C:\{}",
+            "a".repeat(MAX_FILESYSTEM_PATH_CODE_UNITS - 2)
+        ));
+
+        let accepted = policy_with_filesystem(|policy| policy.read_only.push(maximum));
+        assert!(compile(&accepted, Path::new(r"C:\work")).is_ok());
+
+        let rejected = policy_with_filesystem(|policy| policy.read_only.push(over_maximum));
+        assert_eq!(
+            compile(&rejected, Path::new(r"C:\work")).err(),
+            Some(SandboxError::InvalidRequest {
+                field: RequestField::FilesystemPolicy,
+                reason: InvalidRequestReason::TooLarge,
+            })
+        );
+    }
+
+    #[test]
     fn pol_012_conflicting_grants_for_same_normalized_root_are_rejected() {
         let policy = policy_with_filesystem(|filesystem| {
             filesystem.read_only.push(PathBuf::from(r"C:\SDK\.\cache"));
