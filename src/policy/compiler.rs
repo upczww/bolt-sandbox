@@ -9,14 +9,8 @@ use crate::{InvalidRequestReason, RequestField, SandboxError};
 pub(crate) fn compile(policy: &SandboxPolicy, cwd: &Path) -> Result<CompiledPolicy, SandboxError> {
     let mut filesystem = CompiledFilesystemPolicy::default();
     filesystem.add_rule(cwd, FilesystemRuleKind::ReadWrite)?;
-    filesystem.add_rules(
-        &policy.filesystem.read_write,
-        FilesystemRuleKind::ReadWrite,
-    )?;
-    filesystem.add_rules(
-        &policy.filesystem.read_only,
-        FilesystemRuleKind::ReadOnly,
-    )?;
+    filesystem.add_rules(&policy.filesystem.read_write, FilesystemRuleKind::ReadWrite)?;
+    filesystem.add_rules(&policy.filesystem.read_only, FilesystemRuleKind::ReadOnly)?;
     filesystem.add_rules(&policy.filesystem.deny, FilesystemRuleKind::Deny)?;
     filesystem.add_rules(
         &policy.filesystem.metadata_read,
@@ -34,9 +28,7 @@ pub(crate) fn compile(policy: &SandboxPolicy, cwd: &Path) -> Result<CompiledPoli
         FilesystemDecision::Allow
     );
     debug_assert_eq!(
-        compiled
-            .filesystem
-            .decide(cwd, FilesystemAccess::Metadata),
+        compiled.filesystem.decide(cwd, FilesystemAccess::Metadata),
         FilesystemDecision::Allow
     );
     Ok(compiled)
@@ -83,11 +75,7 @@ impl CompiledFilesystemPolicy {
         self.decide(path, FilesystemAccess::Write) == FilesystemDecision::Allow
     }
 
-    pub(crate) fn decide(
-        &self,
-        path: &Path,
-        access: FilesystemAccess,
-    ) -> FilesystemDecision {
+    pub(crate) fn decide(&self, path: &Path, access: FilesystemAccess) -> FilesystemDecision {
         let Ok(path) = NormalizedPath::from_path(path) else {
             return FilesystemDecision::Deny;
         };
@@ -158,15 +146,18 @@ enum FilesystemRuleKind {
 
 impl FilesystemRuleKind {
     fn decision(self, access: FilesystemAccess) -> FilesystemDecision {
-        match (self, access) {
-            (Self::Deny, _) => FilesystemDecision::Deny,
-            (Self::ReadWrite, _) => FilesystemDecision::Allow,
-            (Self::ReadOnly, FilesystemAccess::Read | FilesystemAccess::Metadata)
-            | (Self::MetadataRead, FilesystemAccess::Metadata) => FilesystemDecision::Allow,
-            (Self::ReadOnly | Self::MetadataRead, FilesystemAccess::Write | FilesystemAccess::Read) => {
-                FilesystemDecision::Deny
-            }
-            (Self::InheritUser, _) => FilesystemDecision::InheritUser,
+        match self {
+            Self::Deny => FilesystemDecision::Deny,
+            Self::ReadWrite => FilesystemDecision::Allow,
+            Self::ReadOnly => match access {
+                FilesystemAccess::Read | FilesystemAccess::Metadata => FilesystemDecision::Allow,
+                FilesystemAccess::Write => FilesystemDecision::Deny,
+            },
+            Self::MetadataRead => match access {
+                FilesystemAccess::Metadata => FilesystemDecision::Allow,
+                FilesystemAccess::Read | FilesystemAccess::Write => FilesystemDecision::Deny,
+            },
+            Self::InheritUser => FilesystemDecision::InheritUser,
         }
     }
 }
@@ -201,9 +192,7 @@ impl NormalizedPath {
                     if matches!(components.last(), Some(NormalizedComponent::Normal(_))) {
                         components.pop();
                     } else {
-                        return Err(invalid_filesystem_policy(
-                            InvalidRequestReason::EscapesRoot,
-                        ));
+                        return Err(invalid_filesystem_policy(InvalidRequestReason::EscapesRoot));
                     }
                 }
                 Component::Normal(value) => {
@@ -252,9 +241,7 @@ impl PartialEq for NormalizedComponent {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Prefix(left), Self::Prefix(right))
-            | (Self::Normal(left), Self::Normal(right)) => {
-                os_str_eq_ignore_ascii_case(left, right)
-            }
+            | (Self::Normal(left), Self::Normal(right)) => os_str_eq_ignore_ascii_case(left, right),
             (Self::Root, Self::Root) => true,
             _ => false,
         }
@@ -285,7 +272,9 @@ mod tests {
     use super::*;
     use crate::{InvalidRequestReason, RequestField, SandboxError};
 
-    fn policy_with_filesystem(configure: impl FnOnce(&mut super::super::FilesystemPolicy)) -> SandboxPolicy {
+    fn policy_with_filesystem(
+        configure: impl FnOnce(&mut super::super::FilesystemPolicy),
+    ) -> SandboxPolicy {
         let mut policy = SandboxPolicy::default();
         configure(&mut policy.filesystem);
         policy
@@ -295,7 +284,8 @@ mod tests {
     fn pol_001_default_policy_grants_cwd_read_write_recursively() {
         let cwd = Path::new(r"C:\work\project");
 
-        let compiled = compile(&SandboxPolicy::default(), cwd).expect("default policy must compile");
+        let compiled =
+            compile(&SandboxPolicy::default(), cwd).expect("default policy must compile");
 
         assert!(compiled.filesystem.allows_read_write(cwd));
         assert!(
@@ -309,7 +299,8 @@ mod tests {
     fn pol_002_default_cwd_grant_does_not_grant_parent() {
         let cwd = Path::new(r"C:\work\project");
 
-        let compiled = compile(&SandboxPolicy::default(), cwd).expect("default policy must compile");
+        let compiled =
+            compile(&SandboxPolicy::default(), cwd).expect("default policy must compile");
 
         assert!(!compiled.filesystem.allows_read_write(Path::new(r"C:\work")));
         assert!(
@@ -349,9 +340,7 @@ mod tests {
         let cwd = Path::new(r"C:\work\project");
         let policy = policy_with_filesystem(|filesystem| {
             filesystem.read_only.push(PathBuf::from(r"C:\sdk"));
-            filesystem
-                .read_write
-                .push(PathBuf::from(r"C:\sdk\cache"));
+            filesystem.read_write.push(PathBuf::from(r"C:\sdk\cache"));
         });
 
         let compiled = compile(&policy, cwd).expect("different-depth grants must compile");
@@ -370,10 +359,9 @@ mod tests {
             FilesystemDecision::Allow
         );
         assert_eq!(
-            compiled.filesystem.decide(
-                Path::new(r"C:\sdk\bin\tool.exe"),
-                FilesystemAccess::Write,
-            ),
+            compiled
+                .filesystem
+                .decide(Path::new(r"C:\sdk\bin\tool.exe"), FilesystemAccess::Write,),
             FilesystemDecision::Deny
         );
     }
@@ -404,11 +392,8 @@ mod tests {
 
     #[test]
     fn fs_007_path_outside_every_grant_is_denied() {
-        let compiled = compile(
-            &SandboxPolicy::default(),
-            Path::new(r"C:\work\project"),
-        )
-        .expect("default policy must compile");
+        let compiled = compile(&SandboxPolicy::default(), Path::new(r"C:\work\project"))
+            .expect("default policy must compile");
 
         assert_eq!(
             compiled
@@ -438,9 +423,7 @@ mod tests {
     #[test]
     fn pol_013_parent_component_cannot_escape_volume_root() {
         let policy = policy_with_filesystem(|filesystem| {
-            filesystem
-                .read_only
-                .push(PathBuf::from(r"C:\..\outside"));
+            filesystem.read_only.push(PathBuf::from(r"C:\..\outside"));
         });
 
         let result = compile(&policy, Path::new(r"C:\work\project"));
@@ -457,12 +440,8 @@ mod tests {
     #[test]
     fn pol_012_conflicting_grants_for_same_normalized_root_are_rejected() {
         let policy = policy_with_filesystem(|filesystem| {
-            filesystem
-                .read_only
-                .push(PathBuf::from(r"C:\SDK\.\cache"));
-            filesystem
-                .read_write
-                .push(PathBuf::from(r"c:\sdk\cache"));
+            filesystem.read_only.push(PathBuf::from(r"C:\SDK\.\cache"));
+            filesystem.read_write.push(PathBuf::from(r"c:\sdk\cache"));
         });
 
         let result = compile(&policy, Path::new(r"C:\work\project"));
