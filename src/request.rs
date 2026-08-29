@@ -401,4 +401,34 @@ mod tests {
     fn req_005_empty_environment_encodes_with_double_terminator() {
         assert_eq!(encode_environment_block(&BTreeMap::new()), Ok(vec![0, 0]));
     }
+
+    #[test]
+    fn req_004_representable_arguments_validate_without_mutation() {
+        let mut request = valid_request();
+        request.arguments = vec![
+            OsString::new(),
+            OsString::from("space separated"),
+            OsString::from("\"quoted\""),
+            OsString::from("Unicode-参数"),
+            OsString::from("trailing\\"),
+        ];
+        let expected = request.arguments.clone();
+
+        assert_eq!(request.validate(), Ok(()));
+        assert_eq!(request.arguments, expected);
+    }
+
+    #[test]
+    fn req_004_argument_with_nul_is_rejected_without_echoing_data() {
+        let mut request = valid_request();
+        request.arguments = vec![OsString::from("before\0secret-canary")];
+
+        assert_eq!(
+            request.validate(),
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::Arguments,
+                reason: InvalidRequestReason::InvalidCharacter,
+            })
+        );
+    }
 }
