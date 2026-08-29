@@ -7,6 +7,8 @@ use std::{
 use super::{IpCidr, NetworkAllowList, NetworkPolicy, PortRange, RegistryPolicy, SandboxPolicy};
 use crate::{InvalidRequestReason, RequestField, SandboxError};
 
+mod payload;
+
 const MAX_NETWORK_RULES_PER_CATEGORY: usize = 1_024;
 const MAX_TOTAL_NETWORK_RULES: usize = 2_048;
 const MAX_REGISTRY_RULES_PER_CATEGORY: usize = 1_024;
