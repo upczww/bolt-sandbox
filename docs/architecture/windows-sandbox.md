@@ -288,7 +288,9 @@ ASCII casing do not change the resulting bytes.
 The body is limited to 1,048,576 bytes. Both sealing and verification enforce
 the limit with checked arithmetic. Verification rejects an unknown version,
 invalid header size, oversized or non-exact body length, and digest mismatch
-before native policy installation. The digest detects corruption or mutation;
+before native policy installation. After digest verification, a bounded,
+allocation-free reader validates every section length and wire discriminant and
+requires exact body consumption. The digest detects corruption or mutation;
 the private mapping ACL and read-only child view prevent an untrusted process
 from replacing the body and recomputing the unkeyed digest. The launcher resumes
 no process until the mapping and digest have both been verified.

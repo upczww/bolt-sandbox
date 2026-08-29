@@ -29,6 +29,7 @@ pub(super) enum PolicyPayloadError {
     TruncatedPayload,
     TrailingBytes,
     IntegrityMismatch,
+    InvalidBody,
 }
 
 #[derive(Debug)]
@@ -141,7 +142,185 @@ pub(super) fn verify(encoded: &[u8]) -> Result<VerifiedPolicy<'_>, PolicyPayload
     if encoded[DIGEST_OFFSET..HEADER_LENGTH] != actual_digest {
         return Err(PolicyPayloadError::IntegrityMismatch);
     }
+    validate_body(body)?;
     Ok(VerifiedPolicy { version, body })
+}
+
+fn validate_body(body: &[u8]) -> Result<(), PolicyPayloadError> {
+    let mut reader = BodyReader::new(body);
+    match reader.read_u8()? {
+        0 | 1 => {}
+        _ => return Err(PolicyPayloadError::InvalidBody),
+    }
+    validate_filesystem_body(&mut reader)?;
+    validate_network_body(&mut reader)?;
+    validate_registry_body(&mut reader)?;
+    reader.finish()
+}
+
+fn validate_filesystem_body(reader: &mut BodyReader<'_>) -> Result<(), PolicyPayloadError> {
+    let rule_count = reader.read_count()?;
+    for _ in 0..rule_count {
+        let record_length = reader.read_count()?;
+        let mut record = BodyReader::new(reader.read_exact(record_length)?);
+        match record.read_u8()? {
+            0..=4 => {}
+            _ => return Err(PolicyPayloadError::InvalidBody),
+        }
+        let component_count = record.read_count()?;
+        for _ in 0..component_count {
+            let kind = record.read_u8()?;
+            let code_unit_count = record.read_count()?;
+            if kind > 2 || (kind == 1 && code_unit_count != 0) {
+                return Err(PolicyPayloadError::InvalidBody);
+            }
+            let byte_count = code_unit_count
+                .checked_mul(2)
+                .ok_or(PolicyPayloadError::InvalidBody)?;
+            record.read_exact(byte_count)?;
+        }
+        record.finish()?;
+    }
+    Ok(())
+}
+
+fn validate_network_body(reader: &mut BodyReader<'_>) -> Result<(), PolicyPayloadError> {
+    match reader.read_u8()? {
+        0 | 1 => Ok(()),
+        2 => validate_network_allow_list(reader),
+        _ => Err(PolicyPayloadError::InvalidBody),
+    }
+}
+
+fn validate_network_allow_list(reader: &mut BodyReader<'_>) -> Result<(), PolicyPayloadError> {
+    let domain_count = reader.read_count()?;
+    if domain_count > super::MAX_NETWORK_RULES_PER_CATEGORY {
+        return Err(PolicyPayloadError::InvalidBody);
+    }
+    for _ in 0..domain_count {
+        if reader.read_u8()? > 1 {
+            return Err(PolicyPayloadError::InvalidBody);
+        }
+        let domain = reader.read_sized_bytes()?;
+        if domain.is_empty() || !domain.is_ascii() {
+            return Err(PolicyPayloadError::InvalidBody);
+        }
+    }
+
+    let address_count = reader.read_count()?;
+    if address_count > super::MAX_NETWORK_RULES_PER_CATEGORY {
+        return Err(PolicyPayloadError::InvalidBody);
+    }
+    for _ in 0..address_count {
+        let family = reader.read_u8()?;
+        let prefix_length = reader.read_u8()?;
+        match family {
+            4 if prefix_length <= 32 => {
+                reader.read_exact(4)?;
+            }
+            6 if prefix_length <= 128 => {
+                reader.read_exact(16)?;
+            }
+            _ => return Err(PolicyPayloadError::InvalidBody),
+        }
+    }
+
+    let port_count = reader.read_count()?;
+    if port_count > super::MAX_NETWORK_RULES_PER_CATEGORY
+        || domain_count
+            .checked_add(address_count)
+            .and_then(|count| count.checked_add(port_count))
+            .is_none_or(|count| count > super::MAX_TOTAL_NETWORK_RULES)
+    {
+        return Err(PolicyPayloadError::InvalidBody);
+    }
+    for _ in 0..port_count {
+        let start = reader.read_u16()?;
+        let end = reader.read_u16()?;
+        if start == 0 || start > end {
+            return Err(PolicyPayloadError::InvalidBody);
+        }
+    }
+    Ok(())
+}
+
+fn validate_registry_body(reader: &mut BodyReader<'_>) -> Result<(), PolicyPayloadError> {
+    let rule_count = reader.read_count()?;
+    if rule_count > super::MAX_TOTAL_REGISTRY_RULES {
+        return Err(PolicyPayloadError::InvalidBody);
+    }
+    for _ in 0..rule_count {
+        if reader.read_u8()? > 3 || reader.read_u8()? > 4 {
+            return Err(PolicyPayloadError::InvalidBody);
+        }
+        let component_count = reader.read_count()?;
+        for _ in 0..component_count {
+            let component = reader.read_sized_bytes()?;
+            let component =
+                std::str::from_utf8(component).map_err(|_| PolicyPayloadError::InvalidBody)?;
+            if component.is_empty() {
+                return Err(PolicyPayloadError::InvalidBody);
+            }
+        }
+    }
+    Ok(())
+}
+
+struct BodyReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> BodyReader<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn read_exact(&mut self, length: usize) -> Result<&'a [u8], PolicyPayloadError> {
+        let end = self
+            .offset
+            .checked_add(length)
+            .ok_or(PolicyPayloadError::InvalidBody)?;
+        let value = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(PolicyPayloadError::InvalidBody)?;
+        self.offset = end;
+        Ok(value)
+    }
+
+    fn read_u8(&mut self) -> Result<u8, PolicyPayloadError> {
+        Ok(self.read_exact(1)?[0])
+    }
+
+    fn read_u16(&mut self) -> Result<u16, PolicyPayloadError> {
+        let value: [u8; 2] = self
+            .read_exact(2)?
+            .try_into()
+            .map_err(|_| PolicyPayloadError::InvalidBody)?;
+        Ok(u16::from_le_bytes(value))
+    }
+
+    fn read_count(&mut self) -> Result<usize, PolicyPayloadError> {
+        let value: [u8; 4] = self
+            .read_exact(4)?
+            .try_into()
+            .map_err(|_| PolicyPayloadError::InvalidBody)?;
+        Ok(u32::from_le_bytes(value) as usize)
+    }
+
+    fn read_sized_bytes(&mut self) -> Result<&'a [u8], PolicyPayloadError> {
+        let length = self.read_count()?;
+        self.read_exact(length)
+    }
+
+    fn finish(self) -> Result<(), PolicyPayloadError> {
+        if self.offset == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(PolicyPayloadError::InvalidBody)
+        }
+    }
 }
 
 fn policy_digest(header_prefix: &[u8], body: &[u8]) -> [u8; DIGEST_LENGTH] {
