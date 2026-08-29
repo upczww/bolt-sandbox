@@ -90,6 +90,74 @@ fn validate_environment(environment: &BTreeMap<OsString, OsString>) -> Result<()
     Ok(())
 }
 
+#[allow(
+    dead_code,
+    reason = "prepared environment is consumed by the process runtime in the next phase"
+)]
+struct PreparedEnvironment {
+    variables: BTreeMap<OsString, OsString>,
+    diagnostic: EnvironmentSanitization,
+}
+
+#[allow(
+    dead_code,
+    reason = "sanitization diagnostics are emitted by the process runtime in the next phase"
+)]
+struct EnvironmentSanitization {
+    stripped_credentials: usize,
+}
+
+#[allow(
+    dead_code,
+    reason = "environment preparation is wired into child creation in the next phase"
+)]
+fn prepare_environment(
+    environment: &BTreeMap<OsString, OsString>,
+    credential_names: &[OsString],
+) -> Result<PreparedEnvironment, SandboxError> {
+    validate_environment(environment)?;
+
+    let mut protected_names = BTreeSet::new();
+    for name in credential_names {
+        validate_environment_name(name)?;
+        protected_names.insert(normalize_environment_name(name)?);
+    }
+
+    let mut variables = BTreeMap::new();
+    for (name, value) in environment {
+        if !protected_names.contains(&normalize_environment_name(name)?) {
+            variables.insert(name.clone(), value.clone());
+        }
+    }
+
+    let stripped_credentials = environment.len() - variables.len();
+    Ok(PreparedEnvironment {
+        variables,
+        diagnostic: EnvironmentSanitization {
+            stripped_credentials,
+        },
+    })
+}
+
+fn validate_environment_name(name: &OsStr) -> Result<(), SandboxError> {
+    if name.is_empty() {
+        return Err(invalid_environment(InvalidRequestReason::Empty));
+    }
+    if contains_nul(name) {
+        return Err(invalid_environment(InvalidRequestReason::InvalidCharacter));
+    }
+    if name.encode_wide().next() == Some(u16::from(b'=')) {
+        return Err(invalid_environment(InvalidRequestReason::ReservedName));
+    }
+    if name
+        .encode_wide()
+        .any(|code_unit| code_unit == u16::from(b'='))
+    {
+        return Err(invalid_environment(InvalidRequestReason::InvalidCharacter));
+    }
+    Ok(())
+}
+
 fn normalize_environment_name(name: &OsStr) -> Result<String, SandboxError> {
     let mut normalized = String::new();
     for decoded in char::decode_utf16(name.encode_wide()) {
@@ -246,11 +314,9 @@ mod tests {
             OsString::from("preserved exactly"),
         );
 
-        let prepared = prepare_environment(
-            &request.environment,
-            &[OsString::from("OPENAI_API_KEY")],
-        )
-        .expect("valid environment must prepare");
+        let prepared =
+            prepare_environment(&request.environment, &[OsString::from("OPENAI_API_KEY")])
+                .expect("valid environment must prepare");
 
         assert_eq!(prepared.variables.len(), 1);
         assert_eq!(
@@ -258,9 +324,11 @@ mod tests {
             Some(&OsString::from("preserved exactly"))
         );
         assert_eq!(prepared.diagnostic.stripped_credentials, 1);
-        assert!(request
-            .environment
-            .contains_key(&OsString::from("OpenAI_Api_Key")));
+        assert!(
+            request
+                .environment
+                .contains_key(&OsString::from("OpenAI_Api_Key"))
+        );
     }
 
     #[test]
@@ -271,11 +339,9 @@ mod tests {
             OsString::from("secret-canary"),
         );
 
-        let prepared = prepare_environment(
-            &request.environment,
-            &[OsString::from("bölt_model_token")],
-        )
-        .expect("valid environment must prepare");
+        let prepared =
+            prepare_environment(&request.environment, &[OsString::from("bölt_model_token")])
+                .expect("valid environment must prepare");
 
         assert!(prepared.variables.is_empty());
         assert_eq!(prepared.diagnostic.stripped_credentials, 1);
@@ -285,7 +351,7 @@ mod tests {
     fn req_006_invalid_configured_credential_name_fails_closed() {
         let request = valid_request();
 
-        assert_eq!(
+        assert!(matches!(
             prepare_environment(
                 &request.environment,
                 &[OsString::from("INVALID\0CREDENTIAL")],
@@ -294,6 +360,6 @@ mod tests {
                 field: RequestField::Environment,
                 reason: InvalidRequestReason::InvalidCharacter,
             })
-        );
+        ));
     }
 }
