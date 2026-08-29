@@ -24,7 +24,7 @@ Windows sandbox policy lookup and filesystem interception. BuildXL is licensed
 under the MIT License.
 
 - Source: https://github.com/microsoft/BuildXL
-- Revision: `c73b56a4c3e6b3956ffa73d7f88866c9f772bf23`
+- Revision: `24a3f64655741d9ab8619d35d12513e6a7baabc1`
 - License: MIT
 - Upstream component: `Public/Src/Sandbox/Windows/DetoursServices`
 - Import manifest: `native/third_party/buildxl/provenance.json`
@@ -37,6 +37,12 @@ structure. Additional DetoursServices files will be admitted only with their
 transitive dependencies, hashes, notices, and behavior tests recorded. The
 BuildXL scheduler, C# engine, build graph, and manifest wire protocol are
 explicitly excluded.
+
+The pinned revision is the last commit that modified DetoursServices before
+the 2026-08-30 audit. The later audited main snapshot did not change any of the
+imported source files. BuildXL's repository-wide third-party notices are not
+redistributed because this slice does not import the unrelated components they
+describe.
 
 ## getrandom 0.4.3
 

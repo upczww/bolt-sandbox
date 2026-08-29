@@ -1,21 +1,15 @@
 {
   "name": "Microsoft BuildXL",
   "upstream": "https://github.com/microsoft/BuildXL",
-  "revision": "c73b56a4c3e6b3956ffa73d7f88866c9f772bf23",
+  "revision": "24a3f64655741d9ab8619d35d12513e6a7baabc1",
+  "revision_basis": "last commit modifying DetoursServices before the 2026-08-30 audit",
+  "audited_main_snapshot": "c73b56a4c3e6b3956ffa73d7f88866c9f772bf23",
   "license": "MIT",
   "upstream_path": "Public/Src/Sandbox/Windows/DetoursServices",
   "imported_files": [
     {
       "path": "LICENSE",
       "sha256": "88dc396a6da58d834a863fe88a832c268e29d41c3c0419354d4eb7923973c77f"
-    },
-    {
-      "path": "NOTICE.txt",
-      "sha256": "2996d9da1c8f89c8faec7532ed295aeb4539c4709fade1d745e8b0c55ad8056b"
-    },
-    {
-      "path": "Public-ThirdPartyNotices.txt",
-      "sha256": "192bf4668675ab5b9372521c8b03aa2752e236bf8b07770b4c0065ddfd02fb90"
     },
     {
       "path": "Public/Src/Sandbox/Windows/DetoursServices/PathTree.cpp",
