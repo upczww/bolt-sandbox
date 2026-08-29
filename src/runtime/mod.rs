@@ -18,5 +18,8 @@ mod preparation;
     reason = "startup orchestration is connected to the native launcher adapter later"
 )]
 mod startup;
-#[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "bounded stream buffers are connected to Windows pipe readers later"
+)]
 mod streams;

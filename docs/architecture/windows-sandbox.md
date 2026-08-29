@@ -822,7 +822,11 @@ Accepted:
   ACLs and encryption at rest.
 - Library stdout and stderr are byte streams. If a receiver disappears, trusted
   code drains and discards within configured memory bounds so lifecycle cleanup
-  cannot deadlock; the loss is reported as typed stream state.
+  cannot deadlock; the loss is reported as typed stream state. Each stream uses
+  an independent fixed-capacity byte buffer, preserves bytes without decoding,
+  distinguishes capacity overflow from receiver disconnection, counts discarded
+  bytes with saturation, and commits EOF exactly once. Disconnecting a receiver
+  discards already buffered and future bytes without affecting the other stream.
 - Lifecycle terminal state uses the earliest atomically committed monotonic
   trigger. An exact-tick tie resolves cancellation before timeout before natural
   exit, and terminal cleanup/event emission occurs exactly once. The host-side

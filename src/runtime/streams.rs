@@ -1,3 +1,113 @@
+use std::collections::VecDeque;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StreamBufferError {
+    ZeroCapacity,
+    AlreadyClosed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct IngestOutcome {
+    pub(super) buffered: usize,
+    pub(super) dropped: usize,
+}
+
+impl IngestOutcome {
+    pub(super) const fn buffered(buffered: usize) -> Self {
+        Self {
+            buffered,
+            dropped: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct StreamLossState {
+    pub(super) capacity_exceeded: bool,
+    pub(super) receiver_disconnected: bool,
+    pub(super) dropped_bytes: u64,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct BoundedByteStream {
+    capacity: usize,
+    buffered: VecDeque<u8>,
+    loss: StreamLossState,
+    eof: bool,
+}
+
+impl BoundedByteStream {
+    pub(super) fn new(capacity: usize) -> Result<Self, StreamBufferError> {
+        if capacity == 0 {
+            return Err(StreamBufferError::ZeroCapacity);
+        }
+        Ok(Self {
+            capacity,
+            buffered: VecDeque::with_capacity(capacity),
+            loss: StreamLossState::default(),
+            eof: false,
+        })
+    }
+
+    pub(super) fn ingest(&mut self, bytes: &[u8]) -> Result<IngestOutcome, StreamBufferError> {
+        if self.eof {
+            return Err(StreamBufferError::AlreadyClosed);
+        }
+        if self.loss.receiver_disconnected {
+            self.record_dropped(bytes.len());
+            return Ok(IngestOutcome {
+                buffered: 0,
+                dropped: bytes.len(),
+            });
+        }
+
+        let buffered = bytes.len().min(self.capacity - self.buffered.len());
+        self.buffered.extend(&bytes[..buffered]);
+        let dropped = bytes.len() - buffered;
+        if dropped != 0 {
+            self.loss.capacity_exceeded = true;
+            self.record_dropped(dropped);
+        }
+        Ok(IngestOutcome { buffered, dropped })
+    }
+
+    pub(super) fn take(&mut self, maximum: usize) -> Vec<u8> {
+        let count = maximum.min(self.buffered.len());
+        self.buffered.drain(..count).collect()
+    }
+
+    pub(super) fn disconnect_receiver(&mut self) {
+        if self.loss.receiver_disconnected {
+            return;
+        }
+        self.loss.receiver_disconnected = true;
+        let abandoned = self.buffered.len();
+        self.buffered.clear();
+        self.record_dropped(abandoned);
+    }
+
+    pub(super) fn mark_eof(&mut self) -> Result<(), StreamBufferError> {
+        if self.eof {
+            return Err(StreamBufferError::AlreadyClosed);
+        }
+        self.eof = true;
+        Ok(())
+    }
+
+    pub(super) fn buffered_len(&self) -> usize {
+        self.buffered.len()
+    }
+
+    pub(super) const fn loss_state(&self) -> StreamLossState {
+        self.loss
+    }
+
+    fn record_dropped(&mut self, dropped: usize) {
+        let dropped = u64::try_from(dropped).unwrap_or(u64::MAX);
+        self.loss.dropped_bytes = self.loss.dropped_bytes.saturating_add(dropped);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
