@@ -2,6 +2,7 @@
 #include "common/suspended_process.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 
 #define WIN32_LEAN_AND_MEAN
@@ -26,7 +27,7 @@ std::wstring HandleText(const HANDLE handle) {
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 4) {
+    if (argument_count != 5) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -36,6 +37,9 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     }
     if (SetEvent(denied)) {
         return 82;
+    }
+    if (GetModuleHandleW(arguments[4]) == nullptr) {
+        return 83;
     }
     return 0;
 }
@@ -51,8 +55,16 @@ bool RunProcessTests() {
     }
 
     const std::wstring executable = CurrentExecutable();
+#if defined(_WIN64)
+    constexpr auto hook_name = L"bolt-sandbox-x64.dll";
+#else
+    constexpr auto hook_name = L"bolt-sandbox-x86.dll";
+#endif
+    const std::filesystem::path hook_path =
+        std::filesystem::path(executable).parent_path() / hook_name;
     const std::wstring command_line = L"\"" + executable + L"\" --process-child " +
-                                      HandleText(allowed) + L" " + HandleText(denied);
+                                      HandleText(allowed) + L" " + HandleText(denied) + L" " +
+                                      hook_name;
     const HANDLE inherited[] = {allowed};
     bolt::common::ProcessLaunchOptions options{
         executable,
@@ -72,6 +84,8 @@ bool RunProcessTests() {
     if (!created || process.Wait(100) != bolt::common::ProcessStatus::kWaitTimeout ||
         process.Resume() != bolt::common::ProcessStatus::kInvalidState ||
         process.AssignTo(job) != bolt::common::ProcessStatus::kSuccess ||
+        process.Resume() != bolt::common::ProcessStatus::kInvalidState ||
+        process.Inject(hook_path.string()) != bolt::common::ProcessStatus::kSuccess ||
         process.Resume() != bolt::common::ProcessStatus::kSuccess ||
         process.Wait(5'000) != bolt::common::ProcessStatus::kSuccess) {
         CloseHandle(allowed);
