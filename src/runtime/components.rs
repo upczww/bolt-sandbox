@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::architecture::ImageArchitecture;
+use super::architecture::{ImageArchitecture, detect_image_architecture_from_reader};
 
 const LAUNCHER_NAME: &str = "bolt-sandbox-launcher.exe";
 const X86_HOOK_NAME: &str = "bolt-sandbox-x86.dll";
@@ -46,10 +46,39 @@ pub(super) enum ComponentOpenError {
 }
 
 pub(super) fn open_components(
-    _root: &Path,
-    _target_architecture: ImageArchitecture,
+    root: &Path,
+    target_architecture: ImageArchitecture,
 ) -> Result<OpenedComponents, ComponentOpenError> {
-    todo!("implemented after component-selection tests fail")
+    if !root.is_absolute() {
+        return Err(ComponentOpenError::RootNotAbsolute);
+    }
+
+    let launcher_path = root.join(LAUNCHER_NAME);
+    let hook_path = root.join(match target_architecture {
+        ImageArchitecture::X86 => X86_HOOK_NAME,
+        ImageArchitecture::X64 => X64_HOOK_NAME,
+    });
+    let mut launcher_handle =
+        File::open(&launcher_path).map_err(|_| ComponentOpenError::LauncherOpen)?;
+    let mut hook_handle = File::open(&hook_path).map_err(|_| ComponentOpenError::HookOpen)?;
+
+    let launcher_architecture = detect_image_architecture_from_reader(&mut launcher_handle)
+        .map_err(|_| ComponentOpenError::InvalidLauncherImage)?;
+    if launcher_architecture != ImageArchitecture::X64 {
+        return Err(ComponentOpenError::LauncherArchitectureMismatch);
+    }
+    let hook_architecture = detect_image_architecture_from_reader(&mut hook_handle)
+        .map_err(|_| ComponentOpenError::InvalidHookImage)?;
+    if hook_architecture != target_architecture {
+        return Err(ComponentOpenError::HookArchitectureMismatch);
+    }
+
+    Ok(OpenedComponents {
+        launcher_path,
+        hook_path,
+        launcher_handle,
+        hook_handle,
+    })
 }
 
 #[cfg(test)]
