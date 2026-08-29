@@ -58,11 +58,9 @@ fn encode(frame: &Frame) -> Result<Vec<u8>, ProtocolError> {
     let mut encoded = vec![0; HEADER_LENGTH + frame.payload.len()];
     encoded[..MAGIC.len()].copy_from_slice(&MAGIC);
     encoded[VERSION_OFFSET..VERSION_OFFSET + 2].copy_from_slice(&frame.version.to_le_bytes());
-    encoded[KIND_OFFSET..KIND_OFFSET + 2]
-        .copy_from_slice(&(frame.kind as u16).to_le_bytes());
+    encoded[KIND_OFFSET..KIND_OFFSET + 2].copy_from_slice(&(frame.kind as u16).to_le_bytes());
     encoded[LENGTH_OFFSET..LENGTH_OFFSET + 4].copy_from_slice(&payload_length.to_le_bytes());
-    encoded[SEQUENCE_OFFSET..SEQUENCE_OFFSET + 8]
-        .copy_from_slice(&frame.sequence.to_le_bytes());
+    encoded[SEQUENCE_OFFSET..SEQUENCE_OFFSET + 8].copy_from_slice(&frame.sequence.to_le_bytes());
     encoded[HEADER_LENGTH..].copy_from_slice(&frame.payload);
 
     let checksum = frame_checksum(&encoded);
@@ -187,7 +185,10 @@ mod tests {
 
     #[test]
     fn ipc_005_truncated_header_and_payload_are_rejected() {
-        assert_eq!(decode(&[0; HEADER_LENGTH - 1]), Err(ProtocolError::TruncatedHeader));
+        assert_eq!(
+            decode(&[0; HEADER_LENGTH - 1]),
+            Err(ProtocolError::TruncatedHeader)
+        );
 
         let encoded = encode(&ready_frame(b"ready".to_vec())).expect("frame must encode");
         assert_eq!(
@@ -218,5 +219,57 @@ mod tests {
             .copy_from_slice(&(PROTOCOL_VERSION + 1).to_le_bytes());
 
         assert_eq!(decode(&encoded), Err(ProtocolError::UnsupportedVersion));
+    }
+
+    #[test]
+    fn ipc_005_invalid_magic_and_trailing_bytes_are_rejected() {
+        let mut invalid_magic = encode(&ready_frame(Vec::new())).expect("frame must encode");
+        invalid_magic[0] ^= 0xFF;
+        assert_eq!(decode(&invalid_magic), Err(ProtocolError::InvalidMagic));
+
+        let mut trailing = encode(&ready_frame(Vec::new())).expect("frame must encode");
+        trailing.push(0);
+        assert_eq!(decode(&trailing), Err(ProtocolError::TrailingBytes));
+    }
+
+    #[test]
+    fn ipc_006_oversized_declared_length_is_rejected_before_payload_read() {
+        let mut encoded = encode(&ready_frame(Vec::new())).expect("frame must encode");
+        let oversized = u32::try_from(MAX_PAYLOAD_LENGTH + 1).expect("limit must fit u32");
+        encoded[LENGTH_OFFSET..LENGTH_OFFSET + 4].copy_from_slice(&oversized.to_le_bytes());
+
+        assert_eq!(decode(&encoded), Err(ProtocolError::PayloadTooLarge));
+    }
+
+    #[test]
+    fn ipc_007_header_tampering_fails_checksum() {
+        let mut encoded = encode(&ready_frame(Vec::new())).expect("frame must encode");
+        encoded[SEQUENCE_OFFSET] ^= 0x01;
+
+        assert_eq!(decode(&encoded), Err(ProtocolError::ChecksumMismatch));
+    }
+
+    #[test]
+    fn ipc_009_unknown_frame_kind_is_rejected() {
+        let mut encoded = encode(&ready_frame(Vec::new())).expect("frame must encode");
+        encoded[KIND_OFFSET..KIND_OFFSET + 2].copy_from_slice(&u16::MAX.to_le_bytes());
+
+        assert_eq!(decode(&encoded), Err(ProtocolError::UnknownFrameKind));
+    }
+
+    #[test]
+    fn ipc_015_ready_frame_matches_protocol_v1_golden_vector() {
+        let encoded = encode(&ready_frame(b"ready".to_vec())).expect("frame must encode");
+        let expected = [
+            0x42, 0x4C, 0x54, 0x31, // magic
+            0x01, 0x00, // version
+            0x01, 0x00, // ready kind
+            0x05, 0x00, 0x00, 0x00, // payload length
+            0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // sequence
+            0xF9, 0xD9, 0xF7, 0xB6, // CRC-32
+            0x72, 0x65, 0x61, 0x64, 0x79, // "ready"
+        ];
+
+        assert_eq!(encoded, expected);
     }
 }
