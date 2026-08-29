@@ -233,4 +233,67 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn req_006_configured_credentials_are_stripped_case_insensitively() {
+        let mut request = valid_request();
+        request.environment.insert(
+            OsString::from("OpenAI_Api_Key"),
+            OsString::from("secret-canary"),
+        );
+        request.environment.insert(
+            OsString::from("BOLT_SAFE_VALUE"),
+            OsString::from("preserved exactly"),
+        );
+
+        let prepared = prepare_environment(
+            &request.environment,
+            &[OsString::from("OPENAI_API_KEY")],
+        )
+        .expect("valid environment must prepare");
+
+        assert_eq!(prepared.variables.len(), 1);
+        assert_eq!(
+            prepared.variables.get(&OsString::from("BOLT_SAFE_VALUE")),
+            Some(&OsString::from("preserved exactly"))
+        );
+        assert_eq!(prepared.diagnostic.stripped_credentials, 1);
+        assert!(request
+            .environment
+            .contains_key(&OsString::from("OpenAI_Api_Key")));
+    }
+
+    #[test]
+    fn req_006_unicode_credential_name_matching_uses_environment_semantics() {
+        let mut request = valid_request();
+        request.environment.insert(
+            OsString::from("BÖLT_MODEL_TOKEN"),
+            OsString::from("secret-canary"),
+        );
+
+        let prepared = prepare_environment(
+            &request.environment,
+            &[OsString::from("bölt_model_token")],
+        )
+        .expect("valid environment must prepare");
+
+        assert!(prepared.variables.is_empty());
+        assert_eq!(prepared.diagnostic.stripped_credentials, 1);
+    }
+
+    #[test]
+    fn req_006_invalid_configured_credential_name_fails_closed() {
+        let request = valid_request();
+
+        assert_eq!(
+            prepare_environment(
+                &request.environment,
+                &[OsString::from("INVALID\0CREDENTIAL")],
+            ),
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::Environment,
+                reason: InvalidRequestReason::InvalidCharacter,
+            })
+        );
+    }
 }
