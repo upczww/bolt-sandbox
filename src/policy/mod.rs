@@ -1,4 +1,4 @@
-mod compiler;
+pub(crate) mod compiler;
 mod filesystem;
 mod network;
 mod registry;

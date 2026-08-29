@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, ffi::OsString, path::PathBuf, time::Duration};
 
-use crate::{InvalidRequestReason, RequestField, SandboxError, SandboxPolicy};
+use crate::{InvalidRequestReason, RequestField, SandboxError, SandboxPolicy, policy};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxRequest {
@@ -47,6 +47,8 @@ impl SandboxRequest {
                 reason: InvalidRequestReason::NotADirectory,
             });
         }
+
+        let _compiled_policy = policy::compiler::compile(&self.policy, &self.cwd);
 
         Ok(())
     }

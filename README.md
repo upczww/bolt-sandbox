@@ -21,7 +21,25 @@ each architecture obligation to its catalog evidence, while the
 
 ## Status
 
-Architecture and implementation planning.
+Implementation has started with the trusted Rust boundary. The crate currently
+provides public request, policy, event, and structured error contracts; validates
+program and working-directory inputs; and privately compiles the working
+directory into a recursive read-write root. Native launcher and hook components
+have not been introduced yet.
+
+## Development
+
+Prerequisites: Rust 1.85 or newer and PowerShell 7 on Windows.
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets
+pwsh -NoProfile -File scripts/verify-test-traceability.ps1
+```
+
+The Windows-native build and integration scripts will become available with the
+launcher/injection phase.
 
 ## Intended Deliverables
 

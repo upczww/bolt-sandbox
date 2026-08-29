@@ -8,9 +8,11 @@ pub(crate) fn compile(policy: &SandboxPolicy, cwd: &Path) -> CompiledPolicy {
         read_write.push(cwd.to_path_buf());
     }
 
-    CompiledPolicy {
+    let compiled = CompiledPolicy {
         filesystem: CompiledFilesystemPolicy { read_write },
-    }
+    };
+    debug_assert!(compiled.filesystem.allows_read_write(cwd));
+    compiled
 }
 
 pub(crate) struct CompiledPolicy {
@@ -40,9 +42,11 @@ mod tests {
         let compiled = compile(&SandboxPolicy::default(), cwd);
 
         assert!(compiled.filesystem.allows_read_write(cwd));
-        assert!(compiled
-            .filesystem
-            .allows_read_write(Path::new(r"C:\work\project\src\lib.rs")));
+        assert!(
+            compiled
+                .filesystem
+                .allows_read_write(Path::new(r"C:\work\project\src\lib.rs"))
+        );
     }
 
     #[test]
@@ -51,11 +55,11 @@ mod tests {
 
         let compiled = compile(&SandboxPolicy::default(), cwd);
 
-        assert!(!compiled
-            .filesystem
-            .allows_read_write(Path::new(r"C:\work")));
-        assert!(!compiled
-            .filesystem
-            .allows_read_write(Path::new(r"C:\work\sibling")));
+        assert!(!compiled.filesystem.allows_read_write(Path::new(r"C:\work")));
+        assert!(
+            !compiled
+                .filesystem
+                .allows_read_write(Path::new(r"C:\work\sibling"))
+        );
     }
 }

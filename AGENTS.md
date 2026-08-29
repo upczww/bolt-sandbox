@@ -2,18 +2,19 @@
 
 ## Project Structure & Module Organization
 
-This repository is in the planning phase. `README.md` gives the overview; `docs/architecture/windows-sandbox.md` is the authoritative design, security model, delivery plan, and test strategy.
+This repository is under test-driven implementation. `README.md` gives the overview; `docs/architecture/windows-sandbox.md` is the authoritative design, security model, delivery plan, and test strategy.
 
-The planned implementation separates Rust (`src/`) from Windows-native components (`native/launcher/` and `native/hook/`). Integration tests belong in `tests/`, fixtures in `tests/fixtures/`, and Windows build helpers in `scripts/`. Keep architectural decisions under `docs/architecture/`. Do not commit generated binaries or build directories.
+The Rust crate lives under `src/`. The planned Windows-native components belong in `native/launcher/` and `native/hook/`. Integration tests belong in `tests/`, fixtures in `tests/fixtures/`, and Windows build helpers in `scripts/`. Keep architectural decisions under `docs/architecture/`. Do not commit generated binaries or build directories.
 
 ## Build, Test, and Development Commands
 
-No build manifest or executable code exists yet, so there are currently no project build or test commands. When the planned structure is introduced, keep these expected workflows working and document any prerequisites in `README.md`:
+The Rust build manifest and initial tests are available. Keep these workflows working and document prerequisites in `README.md`:
 
 - `cargo fmt --all -- --check` checks Rust formatting.
 - `cargo clippy --all-targets --all-features -- -D warnings` rejects Rust lint warnings.
 - `cargo test --all-targets` runs Rust unit and integration tests.
-- `pwsh scripts/build-windows.ps1` should build the launcher and x86/x64 hook DLLs on Windows.
+- `pwsh scripts/verify-test-traceability.ps1` validates requirement and case mappings.
+- `pwsh scripts/build-windows.ps1` is planned to build the launcher and x86/x64 hook DLLs once native components are introduced.
 
 ## Coding Style & Naming Conventions
 
@@ -25,7 +26,7 @@ Add unit tests beside Rust modules and integration suites under `tests/`, named 
 
 ## Commit & Pull Request Guidelines
 
-Git history is unavailable in this checkout. Use short, imperative commit subjects (for example, `Add policy payload validation`) and keep commits focused. Pull requests should explain the security impact, tests run, supported Windows/architecture combinations, and any performance change. Link relevant issues or architecture sections; include logs for behavioral changes and update `THIRD_PARTY_NOTICES.md` when importing upstream code.
+Use short, imperative commit subjects (for example, `Add policy payload validation`) and keep commits focused. Pull requests should explain the security impact, tests run, supported Windows/architecture combinations, and any performance change. Link relevant issues or architecture sections; include logs for behavioral changes and update `THIRD_PARTY_NOTICES.md` when importing upstream code.
 
 ## Security & Third-Party Code
 
