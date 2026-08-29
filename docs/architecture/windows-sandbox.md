@@ -875,7 +875,10 @@ Accepted:
   successful exit. A
   committed timeout accepts only a `TimedOut` terminal reason and cancellation
   only `Terminated`; a mismatched event is rejected without consuming the
-  terminal slot.
+  terminal slot. An authenticated natural `ProcessExited` frame may arrive
+  before the Windows process wait handle is observed; while `Running`, that
+  frame atomically commits the natural-exit drain transition, and the later
+  wait signal is idempotent.
 - Component verification binds execution/loading to the verified file identity
   and trusted directory, preventing replacement and DLL search-order races
   between verification and load.

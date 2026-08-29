@@ -200,8 +200,14 @@ impl LifecycleController {
         &mut self,
         event: ProcessExit,
     ) -> Result<LifecycleAction, LifecycleError> {
-        let LifecyclePhase::Draining(cause) = self.phase else {
-            return Err(self.invalid_transition(LifecycleOperation::MarkTerminalEvent));
+        let (cause, arrived_while_running) = match self.phase {
+            LifecyclePhase::Running => (TerminationCause::Exited, true),
+            LifecyclePhase::Draining(cause) => (cause, false),
+            LifecyclePhase::Starting
+            | LifecyclePhase::Terminating(_)
+            | LifecyclePhase::Completed => {
+                return Err(self.invalid_transition(LifecycleOperation::MarkTerminalEvent));
+            }
         };
         if self.terminal_event.is_some() {
             return Err(self.invalid_transition(LifecycleOperation::MarkTerminalEvent));
@@ -213,6 +219,10 @@ impl LifecycleController {
             });
         }
         self.terminal_event = Some(event);
+        if arrived_while_running {
+            self.phase = LifecyclePhase::Draining(TerminationCause::Exited);
+            return Ok(LifecycleAction::BeginDrain);
+        }
         Ok(self.complete_if_drained())
     }
 
