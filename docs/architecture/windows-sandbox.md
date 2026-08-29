@@ -498,7 +498,12 @@ state by lifecycle phase. Protocol failure or disconnect before the execution
 enters `Running` remains a typed initialization failure and issues no runtime
 Job action. After `Running`, either condition is converted to the matching
 infrastructure terminal and its one-shot Job action. EOF after an authenticated
-`ProcessExited` frame is classified as clean rather than as channel loss.
+`ProcessExited` frame is classified as clean rather than as channel loss. Each
+successfully decoded frame is returned together with its lifecycle action;
+`ProcessExited` is atomically routed through the lifecycle controller and
+returns `BeginDrain`, while `Ready` and nonterminal security events return no
+lifecycle action. This prevents the transport caller from forgetting terminal
+state bookkeeping.
 
 Example event:
 

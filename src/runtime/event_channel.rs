@@ -23,6 +23,12 @@ pub(super) enum EventChannelEof {
     Clean,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct RoutedEvent {
+    pub(super) event: SandboxEvent,
+    pub(super) lifecycle_action: LifecycleAction,
+}
+
 pub(super) struct EventChannelDriver {
     session: SessionProtocol,
 }
@@ -38,13 +44,33 @@ impl EventChannelDriver {
         &mut self,
         encoded: &[u8],
         lifecycle: &mut LifecycleController,
-    ) -> Result<SandboxEvent, EventChannelError> {
-        self.session.accept(encoded).map_err(|_| {
+    ) -> Result<RoutedEvent, EventChannelError> {
+        let event = self.session.accept(encoded).map_err(|_| {
             if lifecycle.phase() == LifecyclePhase::Starting {
                 EventChannelError::InitializationProtocol
             } else {
                 post_ready_failure(lifecycle, InfrastructureFailure::ProtocolIntegrity)
             }
+        })?;
+        let lifecycle_action = match &event {
+            SandboxEvent::ProcessExited(exit) => {
+                if lifecycle.phase() == LifecyclePhase::Starting {
+                    return Err(EventChannelError::InitializationProtocol);
+                }
+                lifecycle
+                    .mark_terminal_event(exit.clone())
+                    .map_err(EventChannelError::Lifecycle)?
+            }
+            SandboxEvent::Ready
+            | SandboxEvent::FilesystemViolation(_)
+            | SandboxEvent::RegistryViolation(_)
+            | SandboxEvent::NetworkViolation(_)
+            | SandboxEvent::RecoveryArtifactCreated(_)
+            | SandboxEvent::ChildInjectionFailed(_) => LifecycleAction::None,
+        };
+        Ok(RoutedEvent {
+            event,
+            lifecycle_action,
         })
     }
 
@@ -123,7 +149,10 @@ mod tests {
         let mut lifecycle = LifecycleController::new();
         assert_eq!(
             channel.accept(&ready(), &mut lifecycle),
-            Ok(SandboxEvent::Ready)
+            Ok(RoutedEvent {
+                event: SandboxEvent::Ready,
+                lifecycle_action: LifecycleAction::None,
+            })
         );
         lifecycle.start().expect("execution must enter running");
         let mut corrupted = process_exit();
@@ -182,14 +211,20 @@ mod tests {
         lifecycle.start().expect("execution must enter running");
         assert!(matches!(
             channel.accept(&process_exit(), &mut lifecycle),
-            Ok(SandboxEvent::ProcessExited(_))
+            Ok(RoutedEvent {
+                event: SandboxEvent::ProcessExited(_),
+                lifecycle_action: LifecycleAction::BeginDrain,
+            })
         ));
 
         assert_eq!(
             channel.disconnect(&mut lifecycle),
             Ok(EventChannelEof::Clean)
         );
-        assert_eq!(lifecycle.phase(), LifecyclePhase::Running);
+        assert_eq!(
+            lifecycle.phase(),
+            LifecyclePhase::Draining(TerminationCause::Exited)
+        );
     }
 
     #[test]
