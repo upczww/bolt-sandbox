@@ -201,6 +201,16 @@ mod tests {
                 timeout: Some(Duration::from_secs(5)),
             }
         }
+
+        fn install_components(&self) {
+            fs::write(
+                self.root.join("bolt-sandbox-launcher.exe"),
+                pe_image(0x8664),
+            )
+            .expect("launcher fixture must be written");
+            fs::write(self.root.join("bolt-sandbox-x64.dll"), pe_image(0x8664))
+                .expect("x64 hook fixture must be written");
+        }
     }
 
     impl Drop for Fixture {
@@ -322,6 +332,41 @@ mod tests {
         });
 
         assert!(matches!(result, Err(LaunchPreparationError::Request(_))));
+        assert!(!entropy_consumed.get());
+    }
+
+    #[test]
+    fn req_001_preparation_atomically_owns_architecture_matched_components() {
+        let fixture = Fixture::x64();
+        fixture.install_components();
+
+        let prepared = prepare_launch(&fixture.request(), &[], &fixture.root)
+            .expect("valid request and components must prepare atomically");
+
+        assert_eq!(
+            prepared.launcher_component_path(),
+            fixture.root.join("bolt-sandbox-launcher.exe")
+        );
+        assert_eq!(
+            prepared.hook_component_path(),
+            fixture.root.join("bolt-sandbox-x64.dll")
+        );
+        assert!(prepared.launcher_component_handle().metadata().is_ok());
+        assert!(prepared.hook_component_handle().metadata().is_ok());
+    }
+
+    #[test]
+    fn pkg_001_missing_component_does_not_consume_execution_entropy() {
+        let fixture = Fixture::x64();
+        let entropy_consumed = std::cell::Cell::new(false);
+
+        let result =
+            prepare_launch_with_identity_factory(&fixture.request(), &[], &fixture.root, || {
+                entropy_consumed.set(true);
+                Err(LaunchPreparationError::ExecutionIdentity)
+            });
+
+        assert!(matches!(result, Err(LaunchPreparationError::Component(_))));
         assert!(!entropy_consumed.get());
     }
 }
