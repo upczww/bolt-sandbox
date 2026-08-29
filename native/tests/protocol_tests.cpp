@@ -22,6 +22,7 @@ bool RunNamedPipeTests();
 bool RunProcessTests();
 bool RunDetoursTests();
 bool RunEventFrameTests();
+bool RunPolicyMappingTests();
 int RunProcessChild(int argument_count, wchar_t** arguments);
 
 namespace {
@@ -118,6 +119,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunEventFrameTests()) {
         return 9;
+    }
+    if (!RunPolicyMappingTests()) {
+        return 10;
     }
     return 0;
 }
