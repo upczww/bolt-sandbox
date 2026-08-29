@@ -1,3 +1,71 @@
+const DOS_HEADER_LENGTH: usize = 0x40;
+const PE_OFFSET_FIELD: usize = 0x3C;
+const PE_PREFIX_LENGTH: usize = 6;
+const IMAGE_FILE_MACHINE_I386: u16 = 0x014C;
+const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ImageArchitecture {
+    X86,
+    X64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ImageArchitectureError {
+    TruncatedDosHeader,
+    InvalidDosSignature,
+    PeHeaderOutOfRange,
+    TruncatedCoffHeader,
+    InvalidPeSignature,
+    UnsupportedMachine { machine: u16 },
+}
+
+pub(super) fn detect_image_architecture(
+    image: &[u8],
+) -> Result<ImageArchitecture, ImageArchitectureError> {
+    if image.len() < DOS_HEADER_LENGTH {
+        return Err(ImageArchitectureError::TruncatedDosHeader);
+    }
+    if image[..2] != *b"MZ" {
+        return Err(ImageArchitectureError::InvalidDosSignature);
+    }
+
+    let pe_offset = usize::try_from(read_u32(image, PE_OFFSET_FIELD))
+        .map_err(|_| ImageArchitectureError::PeHeaderOutOfRange)?;
+    if pe_offset < DOS_HEADER_LENGTH || pe_offset >= image.len() {
+        return Err(ImageArchitectureError::PeHeaderOutOfRange);
+    }
+    let pe_end = pe_offset
+        .checked_add(PE_PREFIX_LENGTH)
+        .ok_or(ImageArchitectureError::PeHeaderOutOfRange)?;
+    if pe_end > image.len() {
+        return Err(ImageArchitectureError::TruncatedCoffHeader);
+    }
+    if image[pe_offset..pe_offset + 4] != *b"PE\0\0" {
+        return Err(ImageArchitectureError::InvalidPeSignature);
+    }
+
+    let machine = read_u16(image, pe_offset + 4);
+    match machine {
+        IMAGE_FILE_MACHINE_I386 => Ok(ImageArchitecture::X86),
+        IMAGE_FILE_MACHINE_AMD64 => Ok(ImageArchitecture::X64),
+        _ => Err(ImageArchitectureError::UnsupportedMachine { machine }),
+    }
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -362,6 +362,13 @@ Recovery is not a substitute for policy enforcement.
 The initial release supports x64 and x86 on x64 Windows. ARM64 and ARM64EC are a
 separate compatibility milestone.
 
+Launcher selection parses the target file identity's PE headers rather than
+assuming the host architecture or trusting its filename. The parser requires a
+complete 64-byte DOS header, `MZ` and `PE\0\0` signatures, a checked in-range
+`e_lfanew`, and a complete COFF machine field. Protocol version 1 accepts only
+`IMAGE_FILE_MACHINE_I386` and `IMAGE_FILE_MACHINE_AMD64`; ARM64 and every unknown
+machine value produce an explicit unsupported-architecture result.
+
 ## 8. Network Enforcement
 
 Supported modes:
