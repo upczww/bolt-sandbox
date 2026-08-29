@@ -1,5 +1,6 @@
 #include "common/suspended_process.h"
 
+#include "protocol/policy_payload.h"
 #include "protocol/runtime_payload.h"
 
 #include <limits>
@@ -166,6 +167,22 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
         }
     }
     if (policy_length > std::numeric_limits<std::uint32_t>::max()) {
+        return ProcessStatus::kInvalidRuntimePayload;
+    }
+    const auto* policy = static_cast<const std::uint8_t*>(
+        MapViewOfFile(policy_handle, FILE_MAP_READ, 0, 0, policy_length));
+    if (policy == nullptr) {
+        return ProcessStatus::kInvalidRuntimePayload;
+    }
+    const auto policy_status = protocol::ValidatePolicyPayload(policy, policy_length);
+    UnmapViewOfFile(policy);
+    if (policy_status != protocol::PolicyPayloadStatus::kValid) {
+        return ProcessStatus::kInvalidRuntimePayload;
+    }
+    void* writable_policy =
+        MapViewOfFile(policy_handle, FILE_MAP_WRITE, 0, 0, policy_length);
+    if (writable_policy != nullptr) {
+        UnmapViewOfFile(writable_policy);
         return ProcessStatus::kInvalidRuntimePayload;
     }
     const DWORD process_id = GetProcessId(process_);
