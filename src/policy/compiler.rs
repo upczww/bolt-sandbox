@@ -918,6 +918,15 @@ impl NormalizedPath {
                 InvalidRequestReason::MustBeAbsolute,
             ));
         }
+        if path
+            .as_os_str()
+            .encode_wide()
+            .any(|code_unit| code_unit == 0)
+        {
+            return Err(invalid_filesystem_policy(
+                InvalidRequestReason::InvalidCharacter,
+            ));
+        }
 
         let mut components = Vec::new();
         for component in path.components() {
