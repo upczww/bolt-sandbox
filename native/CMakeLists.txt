@@ -71,6 +71,7 @@ else()
 endif()
 
 add_executable(bolt-sandbox-native-tests
+    tests/buildxl_tree_tests.cpp
     tests/detours_tests.cpp
     tests/event_frame_tests.cpp
     tests/job_tests.cpp
@@ -82,7 +83,10 @@ add_executable(bolt-sandbox-native-tests
     tests/runtime_payload_tests.cpp
 )
 bolt_native_warnings(bolt-sandbox-native-tests)
-target_include_directories(bolt-sandbox-native-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(bolt-sandbox-native-tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/buildxl/Public/Src/Sandbox/Windows/DetoursServices
+)
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-protocol)
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-common)
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-detours)

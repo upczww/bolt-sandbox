@@ -24,6 +24,7 @@ bool RunDetoursTests();
 bool RunEventFrameTests();
 bool RunPolicyMappingTests();
 bool RunRuntimePayloadTests();
+bool RunBuildXlTreeTests();
 int RunProcessChild(int argument_count, wchar_t** arguments);
 
 namespace {
@@ -127,6 +128,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunRuntimePayloadTests()) {
         return 11;
+    }
+    if (!RunBuildXlTreeTests()) {
+        return 12;
     }
     return 0;
 }
