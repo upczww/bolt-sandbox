@@ -235,6 +235,18 @@ Request protocol version 1 uses these timeout bounds:
 - The library exposes the minimum and maximum as typed constants, and runtime
   deadline measurement uses a monotonic clock.
 
+Request protocol version 1 also applies these pre-launch resource budgets:
+
+- at most 4,096 arguments and 4,096 environment variables;
+- at most 32,767 UTF-16 code units in the final Windows command line,
+  including its terminating NUL;
+- at most 32,767 UTF-16 code units in any one environment name or value; and
+- at most 524,288 UTF-16 code units (1 MiB) in the complete sorted Unicode
+  environment block, including its double-NUL terminator.
+
+Every maximum is inclusive. A maximum-plus-one input is rejected before native
+allocation or process launch, and errors identify only the field and reason.
+
 ### 5.2 Launcher
 
 Responsibilities:

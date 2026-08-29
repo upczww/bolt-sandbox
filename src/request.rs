@@ -487,4 +487,131 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn req_012_argument_count_maximum_and_maximum_plus_one() {
+        let mut request = valid_request();
+        request.arguments = vec![OsString::new(); MAX_ARGUMENTS];
+        assert_eq!(request.validate(), Ok(()));
+
+        request.arguments.push(OsString::new());
+        assert_eq!(
+            request.validate(),
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::Arguments,
+                reason: InvalidRequestReason::TooManyItems,
+            })
+        );
+    }
+
+    #[test]
+    fn req_012_environment_count_maximum_and_maximum_plus_one() {
+        let mut request = valid_request();
+        for index in 0..MAX_ENVIRONMENT_VARIABLES {
+            request.environment.insert(
+                OsString::from(format!("BOLT_{index:04}")),
+                OsString::new(),
+            );
+        }
+        assert_eq!(request.validate(), Ok(()));
+
+        request.environment.insert(
+            OsString::from("BOLT_OVER_LIMIT"),
+            OsString::new(),
+        );
+        assert_eq!(
+            request.validate(),
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::Environment,
+                reason: InvalidRequestReason::TooManyItems,
+            })
+        );
+    }
+
+    #[test]
+    fn req_012_windows_command_line_maximum_and_maximum_plus_one() {
+        let program = PathBuf::from(r"C:\p.exe");
+        let fixed_code_units = program.as_os_str().encode_wide().count() + 2;
+        let at_maximum = OsString::from("a".repeat(
+            MAX_COMMAND_LINE_CODE_UNITS - fixed_code_units,
+        ));
+
+        assert_eq!(
+            encode_command_line(&program, &[at_maximum.clone()])
+                .expect("maximum command line must encode")
+                .len(),
+            MAX_COMMAND_LINE_CODE_UNITS
+        );
+        assert_eq!(
+            encode_command_line(
+                &program,
+                &[OsString::from(format!("{}a", at_maximum.to_string_lossy()))],
+            ),
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::Arguments,
+                reason: InvalidRequestReason::TooLarge,
+            })
+        );
+    }
+
+    #[test]
+    fn req_012_environment_item_maximum_and_maximum_plus_one() {
+        let mut request = valid_request();
+        request.environment.insert(
+            OsString::from("BOLT_VALUE"),
+            OsString::from("v".repeat(MAX_ENVIRONMENT_ITEM_CODE_UNITS)),
+        );
+        assert_eq!(request.validate(), Ok(()));
+
+        request.environment.insert(
+            OsString::from("BOLT_VALUE"),
+            OsString::from("v".repeat(MAX_ENVIRONMENT_ITEM_CODE_UNITS + 1)),
+        );
+        assert_eq!(
+            request.validate(),
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::Environment,
+                reason: InvalidRequestReason::TooLarge,
+            })
+        );
+    }
+
+    #[test]
+    fn req_012_environment_block_maximum_and_maximum_plus_one() {
+        let mut environment = BTreeMap::new();
+        let entry_overhead = 7;
+        let full_value = MAX_ENVIRONMENT_ITEM_CODE_UNITS;
+        let final_value = MAX_ENVIRONMENT_BLOCK_CODE_UNITS
+            - 1
+            - (16 * entry_overhead)
+            - (15 * full_value);
+        for index in 0..15 {
+            environment.insert(
+                OsString::from(format!("K{index:04}")),
+                OsString::from("v".repeat(full_value)),
+            );
+        }
+        environment.insert(
+            OsString::from("K0015"),
+            OsString::from("v".repeat(final_value)),
+        );
+
+        assert_eq!(
+            encode_environment_block(&environment)
+                .expect("maximum environment block must encode")
+                .len(),
+            MAX_ENVIRONMENT_BLOCK_CODE_UNITS
+        );
+        environment.insert(
+            OsString::from("K0015"),
+            OsString::from("v".repeat(final_value + 1)),
+        );
+        assert_eq!(
+            encode_environment_block(&environment),
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::Environment,
+                reason: InvalidRequestReason::TooLarge,
+            })
+        );
+    }
 }
