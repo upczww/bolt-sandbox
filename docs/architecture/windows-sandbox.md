@@ -831,7 +831,12 @@ Accepted:
   risking an uninstrumented token boundary.
 - Loss or integrity failure of the authenticated event/IPC channel after
   readiness terminates the execution Job Object. Audit loss never leaves a
-  silently running process tree.
+  silently running process tree. The lifecycle records event-channel loss and
+  protocol-integrity failure as distinct infrastructure terminal states,
+  requests whole-Job termination at most once, and completes after stdout,
+  stderr, and the failed event channel reach EOF. It does not fabricate a
+  `ProcessExited` event when the authenticated channel can no longer provide
+  one.
 - A network rule `*.example.com` matches one or more subdomain labels, not the
   apex or suffix lookalikes. Unsupported network stacks are denied in `Denied`
   and `AllowList`; `Unrestricted` preserves normal user-authorized behavior.
@@ -856,8 +861,11 @@ Accepted:
   exit, and terminal cleanup/event emission occurs exactly once. The host-side
   controller emits at most one whole-Job termination action and does not enter
   `Completed` until stdout EOF, stderr EOF, the typed terminal `ProcessExited`
-  event, and event-channel EOF have all been observed. Event EOF without the
-  terminal event is an infrastructure failure, not a successful exit. A
+  event, and event-channel EOF have all been observed for process terminal
+  states. A post-readiness event-channel failure instead completes with its
+  typed infrastructure terminal after stream/channel EOF. Event EOF without a
+  process terminal event or a committed infrastructure failure is not a
+  successful exit. A
   committed timeout accepts only a `TimedOut` terminal reason and cancellation
   only `Terminated`; a mismatched event is rejected without consuming the
   terminal slot.

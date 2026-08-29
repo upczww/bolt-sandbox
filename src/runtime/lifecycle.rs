@@ -7,6 +7,13 @@ pub(super) enum TerminationCause {
     Exited,
     Cancelled,
     TimedOut,
+    Infrastructure(InfrastructureFailure),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum InfrastructureFailure {
+    EventChannelLost,
+    ProtocolIntegrity,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,8 +43,14 @@ pub(super) struct ReceiverLoss {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ExecutionOutcome {
-    pub(super) exit: ProcessExit,
+    pub(super) terminal: ExecutionTerminal,
     pub(super) receiver_loss: ReceiverLoss,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum ExecutionTerminal {
+    Process(ProcessExit),
+    Infrastructure(InfrastructureFailure),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,6 +62,7 @@ pub(super) enum LifecycleOperation {
     MarkTerminalEvent,
     MarkEventEof,
     MarkReceiverLost,
+    MarkInfrastructureFailure,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -203,14 +217,41 @@ impl LifecycleController {
     }
 
     pub(super) fn mark_event_eof(&mut self) -> Result<LifecycleAction, LifecycleError> {
-        if !matches!(self.phase, LifecyclePhase::Draining(_)) {
+        let LifecyclePhase::Draining(cause) = self.phase else {
             return Err(self.invalid_transition(LifecycleOperation::MarkEventEof));
-        }
-        if self.terminal_event.is_none() {
+        };
+        if !matches!(cause, TerminationCause::Infrastructure(_)) && self.terminal_event.is_none() {
             return Err(LifecycleError::MissingTerminalEvent);
         }
         self.event_eof = true;
         Ok(self.complete_if_drained())
+    }
+
+    pub(super) fn mark_infrastructure_failure(
+        &mut self,
+        failure: InfrastructureFailure,
+    ) -> Result<LifecycleAction, LifecycleError> {
+        match self.phase {
+            LifecyclePhase::Starting => {
+                Err(self.invalid_transition(LifecycleOperation::MarkInfrastructureFailure))
+            }
+            LifecyclePhase::Running => {
+                let cause = TerminationCause::Infrastructure(failure);
+                self.phase = LifecyclePhase::Terminating(cause);
+                Ok(LifecycleAction::TerminateJob(cause))
+            }
+            LifecyclePhase::Terminating(TerminationCause::Infrastructure(_))
+            | LifecyclePhase::Draining(TerminationCause::Infrastructure(_))
+            | LifecyclePhase::Completed => Ok(LifecycleAction::None),
+            LifecyclePhase::Terminating(_) => {
+                self.phase = LifecyclePhase::Terminating(TerminationCause::Infrastructure(failure));
+                Ok(LifecycleAction::None)
+            }
+            LifecyclePhase::Draining(_) => {
+                self.phase = LifecyclePhase::Draining(TerminationCause::Infrastructure(failure));
+                Ok(self.complete_if_drained())
+            }
+        }
     }
 
     pub(super) fn mark_receiver_lost(
@@ -229,19 +270,24 @@ impl LifecycleController {
     }
 
     fn complete_if_drained(&mut self) -> LifecycleAction {
-        if !matches!(self.phase, LifecyclePhase::Draining(_))
-            || !self.stdout_eof
-            || !self.stderr_eof
-            || !self.event_eof
-        {
+        let LifecyclePhase::Draining(cause) = self.phase else {
+            return LifecycleAction::None;
+        };
+        if !self.stdout_eof || !self.stderr_eof || !self.event_eof {
             return LifecycleAction::None;
         }
-        let Some(exit) = self.terminal_event.clone() else {
-            return LifecycleAction::None;
+        let terminal = match cause {
+            TerminationCause::Infrastructure(failure) => ExecutionTerminal::Infrastructure(failure),
+            TerminationCause::Exited | TerminationCause::Cancelled | TerminationCause::TimedOut => {
+                let Some(exit) = self.terminal_event.clone() else {
+                    return LifecycleAction::None;
+                };
+                ExecutionTerminal::Process(exit)
+            }
         };
         self.phase = LifecyclePhase::Completed;
         LifecycleAction::Completed(ExecutionOutcome {
-            exit,
+            terminal,
             receiver_loss: self.receiver_loss,
         })
     }
@@ -262,6 +308,7 @@ const fn terminal_reason_matches(cause: TerminationCause, reason: ProcessExitRea
         ),
         TerminationCause::Cancelled => matches!(reason, ProcessExitReason::Terminated),
         TerminationCause::TimedOut => matches!(reason, ProcessExitReason::TimedOut),
+        TerminationCause::Infrastructure(_) => false,
     }
 }
 
@@ -386,7 +433,7 @@ mod tests {
         assert_eq!(
             lifecycle.mark_stream_eof(StreamKind::Stderr),
             Ok(LifecycleAction::Completed(ExecutionOutcome {
-                exit: exit_event(ProcessExitReason::Exited),
+                terminal: ExecutionTerminal::Process(exit_event(ProcessExitReason::Exited)),
                 receiver_loss: ReceiverLoss::default(),
             }))
         );
@@ -515,7 +562,7 @@ mod tests {
         assert_eq!(
             lifecycle.mark_event_eof(),
             Ok(LifecycleAction::Completed(ExecutionOutcome {
-                exit: exit_event(ProcessExitReason::Exited),
+                terminal: ExecutionTerminal::Process(exit_event(ProcessExitReason::Exited)),
                 receiver_loss: ReceiverLoss {
                     stdout: true,
                     stderr: false,
