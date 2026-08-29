@@ -493,6 +493,13 @@ strings. Event paths are limited to 32,767 UTF-16 code units and UTF-8 text
 fields to 4,096 bytes. Decoders reject unknown discriminants, over-limit fields,
 invalid UTF-8, truncation, and trailing payload bytes.
 
+The Rust event-channel driver owns the session decoder and routes transport
+state by lifecycle phase. Protocol failure or disconnect before the execution
+enters `Running` remains a typed initialization failure and issues no runtime
+Job action. After `Running`, either condition is converted to the matching
+infrastructure terminal and its one-shot Job action. EOF after an authenticated
+`ProcessExited` frame is classified as clean rather than as channel loss.
+
 Example event:
 
 ```json

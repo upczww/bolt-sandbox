@@ -3,7 +3,10 @@
     reason = "image architecture selection is connected to launcher component selection later"
 )]
 mod architecture;
-#[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "event channel driver is connected to the Windows named-pipe reader later"
+)]
 mod event_channel;
 #[allow(
     dead_code,

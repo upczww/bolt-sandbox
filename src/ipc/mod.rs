@@ -3,7 +3,7 @@
     reason = "violation aggregation is wired into the public event stream in a later phase"
 )]
 mod aggregation;
-mod event_codec;
+pub(crate) mod event_codec;
 #[allow(
     dead_code,
     reason = "private protocol encoder is wired into the launcher IPC transport in the next phase"
@@ -19,4 +19,4 @@ pub(crate) mod identity;
     dead_code,
     reason = "session protocol is wired into the launcher IPC transport in the next phase"
 )]
-mod session;
+pub(crate) mod session;

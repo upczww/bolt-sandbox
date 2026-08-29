@@ -6,14 +6,14 @@ use super::{
 use crate::SandboxEvent;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum SessionState {
+pub(crate) enum SessionState {
     AwaitingReady,
     Running,
     Exited,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum SessionError {
+pub(crate) enum SessionError {
     Protocol,
     ExpectedReady,
     DuplicateReady,
@@ -22,14 +22,14 @@ pub(super) enum SessionError {
     EventAfterExit,
 }
 
-pub(super) struct SessionProtocol {
+pub(crate) struct SessionProtocol {
     handshake: Handshake,
     state: SessionState,
     next_sequence: u64,
 }
 
 impl SessionProtocol {
-    pub(super) fn new(expected_nonce: [u8; 16]) -> Self {
+    pub(crate) fn new(expected_nonce: [u8; 16]) -> Self {
         Self {
             handshake: Handshake::new(expected_nonce),
             state: SessionState::AwaitingReady,
@@ -37,11 +37,11 @@ impl SessionProtocol {
         }
     }
 
-    pub(super) fn state(&self) -> SessionState {
+    pub(crate) fn state(&self) -> SessionState {
         self.state
     }
 
-    pub(super) fn accept(&mut self, encoded: &[u8]) -> Result<SandboxEvent, SessionError> {
+    pub(crate) fn accept(&mut self, encoded: &[u8]) -> Result<SandboxEvent, SessionError> {
         match self.state {
             SessionState::AwaitingReady => self.accept_ready(encoded),
             SessionState::Running => self.accept_running_event(encoded),

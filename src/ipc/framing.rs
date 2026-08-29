@@ -46,7 +46,7 @@ impl TryFrom<u16> for FrameKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ProtocolError {
+pub(crate) enum ProtocolError {
     TruncatedHeader,
     TruncatedPayload,
     PayloadTooLarge,

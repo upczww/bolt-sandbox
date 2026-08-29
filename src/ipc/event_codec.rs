@@ -29,7 +29,7 @@ pub(super) struct SequencedEvent {
     dead_code,
     reason = "Ready frames are emitted by the launcher transport in the next phase"
 )]
-pub(super) fn encode_ready(nonce: [u8; 16], sequence: u64) -> Result<Vec<u8>, ProtocolError> {
+pub(crate) fn encode_ready(nonce: [u8; 16], sequence: u64) -> Result<Vec<u8>, ProtocolError> {
     framing::encode(&Frame {
         version: framing::PROTOCOL_VERSION,
         kind: FrameKind::Ready,
@@ -42,7 +42,7 @@ pub(super) fn encode_ready(nonce: [u8; 16], sequence: u64) -> Result<Vec<u8>, Pr
     dead_code,
     reason = "event frames are emitted by the launcher transport in the next phase"
 )]
-pub(super) fn encode_event(event: &SandboxEvent, sequence: u64) -> Result<Vec<u8>, ProtocolError> {
+pub(crate) fn encode_event(event: &SandboxEvent, sequence: u64) -> Result<Vec<u8>, ProtocolError> {
     let (kind, payload) = match event {
         SandboxEvent::Ready => (FrameKind::Ready, Vec::new()),
         SandboxEvent::FilesystemViolation(violation) => (

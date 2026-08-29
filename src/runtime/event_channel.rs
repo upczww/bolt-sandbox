@@ -1,3 +1,80 @@
+use crate::{
+    SandboxEvent,
+    ipc::session::{SessionProtocol, SessionState},
+};
+
+use super::lifecycle::{
+    InfrastructureFailure, LifecycleAction, LifecycleController, LifecycleError, LifecyclePhase,
+};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum EventChannelError {
+    InitializationProtocol,
+    InitializationChannelLost,
+    PostReadyFailure {
+        failure: InfrastructureFailure,
+        action: LifecycleAction,
+    },
+    Lifecycle(LifecycleError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum EventChannelEof {
+    Clean,
+}
+
+pub(super) struct EventChannelDriver {
+    session: SessionProtocol,
+}
+
+impl EventChannelDriver {
+    pub(super) fn new(expected_nonce: [u8; 16]) -> Self {
+        Self {
+            session: SessionProtocol::new(expected_nonce),
+        }
+    }
+
+    pub(super) fn accept(
+        &mut self,
+        encoded: &[u8],
+        lifecycle: &mut LifecycleController,
+    ) -> Result<SandboxEvent, EventChannelError> {
+        self.session.accept(encoded).map_err(|_| {
+            if lifecycle.phase() == LifecyclePhase::Starting {
+                EventChannelError::InitializationProtocol
+            } else {
+                post_ready_failure(lifecycle, InfrastructureFailure::ProtocolIntegrity)
+            }
+        })
+    }
+
+    pub(super) fn disconnect(
+        &mut self,
+        lifecycle: &mut LifecycleController,
+    ) -> Result<EventChannelEof, EventChannelError> {
+        if self.session.state() == SessionState::Exited {
+            return Ok(EventChannelEof::Clean);
+        }
+        if lifecycle.phase() == LifecyclePhase::Starting {
+            return Err(EventChannelError::InitializationChannelLost);
+        }
+        Err(post_ready_failure(
+            lifecycle,
+            InfrastructureFailure::EventChannelLost,
+        ))
+    }
+}
+
+fn post_ready_failure(
+    lifecycle: &mut LifecycleController,
+    failure: InfrastructureFailure,
+) -> EventChannelError {
+    match lifecycle.mark_infrastructure_failure(failure) {
+        Ok(action) => EventChannelError::PostReadyFailure { failure, action },
+        Err(error) => EventChannelError::Lifecycle(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
