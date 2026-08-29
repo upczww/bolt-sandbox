@@ -21,15 +21,17 @@ each architecture obligation to its catalog evidence, while the
 
 ## Status
 
-Implementation has started with the trusted Rust boundary. The crate currently
-provides public request, policy, event, and structured error contracts; validates
-program and working-directory inputs; and privately compiles the working
-directory into a recursive read-write root. Native launcher and hook components
-have not been introduced yet.
+Implementation includes the trusted Rust request, policy, IPC, launch-preparation,
+and lifecycle boundaries. The native build now produces an x64 fail-closed
+launcher plus x86 and x64 hook DLL shells sharing a versioned policy protocol.
+Native policy envelopes are length-, version-, SHA-256-, and structure-validated.
+Process creation, injection, Job Object control, and enforcement hooks remain to
+be implemented.
 
 ## Development
 
-Prerequisites: Rust 1.85 or newer and PowerShell 7 on Windows. Coverage also
+Prerequisites: Rust 1.85 or newer, PowerShell 7, Visual Studio Build Tools with
+the C++ workload, CMake, and a Windows SDK. Coverage also
 requires `cargo-llvm-cov 0.9.0`, a separate nightly toolchain, and its matching
 LLVM tools:
 
@@ -43,11 +45,11 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets
 pwsh -NoProfile -File scripts/test-rust-coverage.ps1
+pwsh -NoProfile -File scripts/build-windows.ps1
+pwsh -NoProfile -File scripts/test-windows.ps1 -Suite Unit -Architecture x64
+pwsh -NoProfile -File scripts/test-windows.ps1 -Suite Unit -Architecture x86
 pwsh -NoProfile -File scripts/verify-test-traceability.ps1
 ```
-
-The Windows-native build and integration scripts will become available with the
-launcher/injection phase.
 
 ## Intended Deliverables
 

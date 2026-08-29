@@ -8,6 +8,13 @@ function(bolt_native_warnings target)
     target_compile_options(${target} PRIVATE /W4 /WX /permissive-)
 endfunction()
 
+add_library(bolt-sandbox-protocol STATIC
+    protocol/policy_payload.cpp
+)
+bolt_native_warnings(bolt-sandbox-protocol)
+target_include_directories(bolt-sandbox-protocol PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(bolt-sandbox-protocol PRIVATE bcrypt)
+
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     add_executable(bolt-sandbox-launcher
         launcher/main.cpp
@@ -20,6 +27,7 @@ add_library(bolt-sandbox-hook SHARED
 )
 bolt_native_warnings(bolt-sandbox-hook)
 target_include_directories(bolt-sandbox-hook PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(bolt-sandbox-hook PRIVATE bolt-sandbox-protocol)
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     set_target_properties(bolt-sandbox-hook PROPERTIES OUTPUT_NAME bolt-sandbox-x64)
 else()
@@ -32,5 +40,6 @@ add_executable(bolt-sandbox-native-tests
 )
 bolt_native_warnings(bolt-sandbox-native-tests)
 target_include_directories(bolt-sandbox-native-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-protocol)
 
 add_test(NAME native.protocol COMMAND bolt-sandbox-native-tests)
