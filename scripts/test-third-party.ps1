@@ -72,7 +72,7 @@ Write-Host "Detours provenance verified at $expectedRevision."
 
 $buildXlRoot = Join-Path $repositoryRoot 'native\third_party\buildxl'
 $buildXlProvenancePath = Join-Path $buildXlRoot 'provenance.json'
-$expectedBuildXlRevision = 'c73b56a4c3e6b3956ffa73d7f88866c9f772bf23'
+$expectedBuildXlRevision = '24a3f64655741d9ab8619d35d12513e6a7baabc1'
 $expectedBuildXlUpstream = 'https://github.com/microsoft/BuildXL'
 
 if (-not (Test-Path -LiteralPath $buildXlProvenancePath -PathType Leaf)) {
