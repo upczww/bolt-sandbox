@@ -1,3 +1,8 @@
+#[allow(
+    dead_code,
+    reason = "violation aggregation is wired into the public event stream in a later phase"
+)]
+mod aggregation;
 mod event_codec;
 #[allow(
     dead_code,
