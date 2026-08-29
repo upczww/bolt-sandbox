@@ -378,6 +378,11 @@ mod tests {
         super::super::compile(policy, Path::new(CWD)).expect("test policy must compile")
     }
 
+    fn resign(encoded: &mut [u8]) {
+        let digest = policy_digest(&encoded[..DIGEST_OFFSET], &encoded[HEADER_LENGTH..]);
+        encoded[DIGEST_OFFSET..HEADER_LENGTH].copy_from_slice(&digest);
+    }
+
     fn equivalent_policy(reverse: bool) -> SandboxPolicy {
         let (read_only, domains, registry) = if reverse {
             (
@@ -486,5 +491,42 @@ mod tests {
 
         assert_eq!(verified.version(), POLICY_PAYLOAD_VERSION);
         assert_eq!(verified.body(), &sealed.as_bytes()[HEADER_LENGTH..]);
+    }
+
+    #[test]
+    fn pol_010_well_hashed_unknown_body_discriminants_fail_closed() {
+        let sealed = seal(&compile_policy(&SandboxPolicy::default()))
+            .expect("default policy must serialize");
+
+        let mut invalid_child_mode = sealed.as_bytes().to_vec();
+        invalid_child_mode[HEADER_LENGTH] = 0xFF;
+        resign(&mut invalid_child_mode);
+        assert_eq!(
+            verify(&invalid_child_mode),
+            Err(PolicyPayloadError::InvalidBody)
+        );
+
+        let mut invalid_network_mode = sealed.into_bytes();
+        let network_mode_offset = invalid_network_mode.len() - 5;
+        invalid_network_mode[network_mode_offset] = 0xFF;
+        resign(&mut invalid_network_mode);
+        assert_eq!(
+            verify(&invalid_network_mode),
+            Err(PolicyPayloadError::InvalidBody)
+        );
+    }
+
+    #[test]
+    fn pol_010_well_hashed_truncated_body_section_fails_closed() {
+        let mut encoded = seal(&compile_policy(&SandboxPolicy::default()))
+            .expect("default policy must serialize")
+            .into_bytes();
+        encoded.pop();
+        let body_length =
+            u32::try_from(encoded.len() - HEADER_LENGTH).expect("test payload length must fit u32");
+        encoded[LENGTH_OFFSET..LENGTH_OFFSET + 4].copy_from_slice(&body_length.to_le_bytes());
+        resign(&mut encoded);
+
+        assert_eq!(verify(&encoded), Err(PolicyPayloadError::InvalidBody));
     }
 }
