@@ -5,6 +5,7 @@ mod event;
 mod ipc;
 mod policy;
 mod request;
+mod runtime;
 
 pub use error::{InvalidRequestReason, RequestField, SandboxError};
 pub use event::{
