@@ -524,4 +524,60 @@ mod tests {
             }))
         );
     }
+
+    #[test]
+    fn ipc_014_post_ready_event_channel_loss_terminates_once_and_completes_typed() {
+        let mut lifecycle = LifecycleController::new();
+        lifecycle.start().expect("start must succeed");
+
+        assert_eq!(
+            lifecycle.mark_infrastructure_failure(InfrastructureFailure::EventChannelLost),
+            Ok(LifecycleAction::TerminateJob(
+                TerminationCause::Infrastructure(InfrastructureFailure::EventChannelLost)
+            ))
+        );
+        assert_eq!(
+            lifecycle.mark_infrastructure_failure(InfrastructureFailure::EventChannelLost),
+            Ok(LifecycleAction::None)
+        );
+        assert_eq!(
+            lifecycle.mark_job_terminated(),
+            Ok(LifecycleAction::BeginDrain)
+        );
+        lifecycle
+            .mark_stream_eof(StreamKind::Stdout)
+            .expect("stdout EOF must drain");
+        lifecycle
+            .mark_stream_eof(StreamKind::Stderr)
+            .expect("stderr EOF must drain");
+
+        assert_eq!(
+            lifecycle.mark_event_eof(),
+            Ok(LifecycleAction::Completed(ExecutionOutcome {
+                terminal: ExecutionTerminal::Infrastructure(
+                    InfrastructureFailure::EventChannelLost,
+                ),
+                receiver_loss: ReceiverLoss::default(),
+            }))
+        );
+    }
+
+    #[test]
+    fn ipc_025_post_ready_protocol_integrity_failure_is_not_reported_as_exit() {
+        let mut lifecycle = LifecycleController::new();
+        lifecycle.start().expect("start must succeed");
+
+        assert_eq!(
+            lifecycle.mark_infrastructure_failure(InfrastructureFailure::ProtocolIntegrity),
+            Ok(LifecycleAction::TerminateJob(
+                TerminationCause::Infrastructure(InfrastructureFailure::ProtocolIntegrity)
+            ))
+        );
+        assert_eq!(
+            lifecycle.phase(),
+            LifecyclePhase::Terminating(TerminationCause::Infrastructure(
+                InfrastructureFailure::ProtocolIntegrity,
+            ))
+        );
+    }
 }
