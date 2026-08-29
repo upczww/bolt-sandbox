@@ -35,6 +35,7 @@ else()
 endif()
 
 add_executable(bolt-sandbox-native-tests
+    tests/job_tests.cpp
     tests/policy_payload_tests.cpp
     tests/protocol_tests.cpp
 )

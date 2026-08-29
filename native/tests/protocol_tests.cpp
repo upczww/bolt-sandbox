@@ -17,6 +17,7 @@ static_assert(bolt::protocol::kPolicyDigestOffset == 12);
 static_assert(bolt::protocol::kPolicyMaximumBodyLength == 1'048'576);
 
 bool RunPolicyPayloadTests();
+bool RunJobTests();
 
 namespace {
 
@@ -74,7 +75,11 @@ bool hook_exports_matching_protocol(const std::filesystem::path& directory) {
 
 }  // namespace
 
-int main() {
+int wmain(const int argument_count, wchar_t** arguments) {
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--job-child") {
+        Sleep(INFINITE);
+        return 0;
+    }
     constexpr std::uint8_t expected_magic[] = {'B', 'L', 'P', '1'};
     for (std::size_t index = 0; index < sizeof(expected_magic); ++index) {
         if (bolt::protocol::kPolicyMagic[index] != expected_magic[index]) {
@@ -90,6 +95,9 @@ int main() {
     }
     if (!RunPolicyPayloadTests()) {
         return 4;
+    }
+    if (!RunJobTests()) {
+        return 5;
     }
     return 0;
 }
