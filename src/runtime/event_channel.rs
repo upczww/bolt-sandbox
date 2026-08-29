@@ -191,4 +191,31 @@ mod tests {
         );
         assert_eq!(lifecycle.phase(), LifecyclePhase::Running);
     }
+
+    #[test]
+    fn life_010_process_exit_frame_atomically_routes_begin_drain() {
+        let mut channel = EventChannelDriver::new(NONCE);
+        let mut lifecycle = LifecycleController::new();
+        channel
+            .accept(&ready(), &mut lifecycle)
+            .expect("Ready must authenticate");
+        lifecycle.start().expect("execution must enter running");
+        let exit = ProcessExit {
+            process_id: 42,
+            exit_code: Some(0),
+            reason: ProcessExitReason::Exited,
+        };
+
+        assert_eq!(
+            channel.accept(&process_exit(), &mut lifecycle),
+            Ok(RoutedEvent {
+                event: SandboxEvent::ProcessExited(exit),
+                lifecycle_action: LifecycleAction::BeginDrain,
+            })
+        );
+        assert_eq!(
+            lifecycle.phase(),
+            LifecyclePhase::Draining(TerminationCause::Exited)
+        );
+    }
 }
