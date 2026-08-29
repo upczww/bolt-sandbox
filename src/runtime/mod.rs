@@ -5,6 +5,11 @@
 mod architecture;
 #[allow(
     dead_code,
+    reason = "opened native components are connected to the launcher adapter later"
+)]
+mod components;
+#[allow(
+    dead_code,
     reason = "event channel driver is connected to the Windows named-pipe reader later"
 )]
 mod event_channel;
