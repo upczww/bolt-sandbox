@@ -105,6 +105,7 @@ const fn invalid_environment(reason: InvalidRequestReason) -> SandboxError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::windows::ffi::OsStringExt;
 
     fn valid_request() -> SandboxRequest {
         SandboxRequest {
@@ -184,6 +185,42 @@ mod tests {
             Err(SandboxError::InvalidRequest {
                 field: RequestField::Environment,
                 reason: InvalidRequestReason::ConflictingNames,
+            })
+        );
+    }
+
+    #[test]
+    fn req_005_unicode_case_colliding_environment_names_are_rejected() {
+        let mut request = valid_request();
+        request
+            .environment
+            .insert(OsString::from("BÖLT_KEY"), OsString::from("first"));
+        request
+            .environment
+            .insert(OsString::from("bölt_key"), OsString::from("second"));
+
+        assert_eq!(
+            request.validate(),
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::Environment,
+                reason: InvalidRequestReason::ConflictingNames,
+            })
+        );
+    }
+
+    #[test]
+    fn req_005_unpaired_utf16_in_environment_name_is_rejected() {
+        let mut request = valid_request();
+        request.environment.insert(
+            OsString::from_wide(&[0xD800]),
+            OsString::from("secret-canary"),
+        );
+
+        assert_eq!(
+            request.validate(),
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::Environment,
+                reason: InvalidRequestReason::InvalidCharacter,
             })
         );
     }
