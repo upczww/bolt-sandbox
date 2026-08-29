@@ -120,6 +120,8 @@ bool RunProcessTests() {
     const auto early_resume = process.Resume();
     const auto assigned = process.AssignTo(job);
     const auto assigned_resume = process.Resume();
+    const auto wrong_mapping_status = process.InstallRuntimePayload(
+        release, policy.length(), event_client, release, nonce);
     const auto payload_status = process.InstallRuntimePayload(
         policy.handle(), policy.length(), event_client, release, nonce);
     const auto inject_status = process.Inject(hook_path.string());
@@ -128,6 +130,7 @@ bool RunProcessTests() {
         early_resume != bolt::common::ProcessStatus::kInvalidState ||
         assigned != bolt::common::ProcessStatus::kSuccess ||
         assigned_resume != bolt::common::ProcessStatus::kInvalidState ||
+        wrong_mapping_status != bolt::common::ProcessStatus::kInvalidRuntimePayload ||
         payload_status != bolt::common::ProcessStatus::kSuccess ||
         inject_status != bolt::common::ProcessStatus::kSuccess ||
         initialization_status != bolt::common::ProcessStatus::kSuccess) {
