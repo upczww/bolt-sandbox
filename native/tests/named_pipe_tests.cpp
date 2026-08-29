@@ -16,9 +16,13 @@ bool HasProtectedNonEmptyDacl(const HANDLE handle) {
     PACL dacl = nullptr;
     PSECURITY_DESCRIPTOR descriptor = nullptr;
     const DWORD status = GetSecurityInfo(
-        handle, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-        nullptr, nullptr, &dacl, nullptr, &descriptor);
-    const bool valid = status == ERROR_SUCCESS && dacl != nullptr && dacl->AceCount >= 1;
+        handle, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl, nullptr,
+        &descriptor);
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    const bool valid = status == ERROR_SUCCESS && dacl != nullptr && dacl->AceCount >= 1 &&
+                       GetSecurityDescriptorControl(descriptor, &control, &revision) != FALSE &&
+                       (control & SE_DACL_PROTECTED) != 0;
     if (descriptor != nullptr) {
         LocalFree(descriptor);
     }
@@ -53,7 +57,7 @@ bool RunNamedPipeTests() {
     }
 
     const HANDLE client = CreateFileW(
-        first_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        first_name.c_str(), GENERIC_READ | FILE_WRITE_DATA, 0, nullptr, OPEN_EXISTING, 0, nullptr);
     if (client == INVALID_HANDLE_VALUE ||
         first.Accept() != bolt::common::PipeStatus::kSuccess) {
         if (client != INVALID_HANDLE_VALUE) {
@@ -66,7 +70,8 @@ bool RunNamedPipeTests() {
     const std::wstring remote_name =
         std::wstring(L"\\\\localhost\\pipe\\bolt-sandbox-") + std::wstring(31, L'0') + L'b';
     const HANDLE remote = CreateFileW(
-        remote_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        remote_name.c_str(), GENERIC_READ | FILE_WRITE_DATA, 0, nullptr, OPEN_EXISTING, 0,
+        nullptr);
     if (remote != INVALID_HANDLE_VALUE) {
         CloseHandle(remote);
         return false;
