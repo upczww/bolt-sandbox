@@ -16,6 +16,8 @@ static_assert(bolt::protocol::kPolicyBodyLengthOffset == 8);
 static_assert(bolt::protocol::kPolicyDigestOffset == 12);
 static_assert(bolt::protocol::kPolicyMaximumBodyLength == 1'048'576);
 
+bool RunPolicyPayloadTests();
+
 namespace {
 
 std::filesystem::path executable_directory() {
@@ -85,6 +87,9 @@ int main() {
     }
     if (!hook_exports_matching_protocol(directory)) {
         return 3;
+    }
+    if (!RunPolicyPayloadTests()) {
+        return 4;
     }
     return 0;
 }
