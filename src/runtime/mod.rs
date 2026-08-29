@@ -8,3 +8,8 @@ mod architecture;
     reason = "runtime lifecycle is connected to Windows process and Job Object adapters later"
 )]
 mod lifecycle;
+#[allow(
+    dead_code,
+    reason = "launch preparation is connected to the native launcher adapter later"
+)]
+mod preparation;
