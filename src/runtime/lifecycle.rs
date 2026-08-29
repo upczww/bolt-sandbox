@@ -24,7 +24,20 @@ pub(super) enum LifecycleAction {
     Launch,
     TerminateJob(TerminationCause),
     BeginDrain,
-    Completed(ProcessExit),
+    Completed(ExecutionOutcome),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct ReceiverLoss {
+    pub(super) stdout: bool,
+    pub(super) stderr: bool,
+    pub(super) events: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ExecutionOutcome {
+    pub(super) exit: ProcessExit,
+    pub(super) receiver_loss: ReceiverLoss,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -35,6 +48,7 @@ pub(super) enum LifecycleOperation {
     MarkStreamEof,
     MarkTerminalEvent,
     MarkEventEof,
+    MarkReceiverLost,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,12 +77,20 @@ pub(super) enum StreamKind {
     Stderr,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ReceiverKind {
+    Stdout,
+    Stderr,
+    Events,
+}
+
 pub(super) struct LifecycleController {
     phase: LifecyclePhase,
     stdout_eof: bool,
     stderr_eof: bool,
     event_eof: bool,
     terminal_event: Option<ProcessExit>,
+    receiver_loss: ReceiverLoss,
 }
 
 impl LifecycleController {
@@ -79,6 +101,11 @@ impl LifecycleController {
             stderr_eof: false,
             event_eof: false,
             terminal_event: None,
+            receiver_loss: ReceiverLoss {
+                stdout: false,
+                stderr: false,
+                events: false,
+            },
         }
     }
 
@@ -186,6 +213,21 @@ impl LifecycleController {
         Ok(self.complete_if_drained())
     }
 
+    pub(super) fn mark_receiver_lost(
+        &mut self,
+        receiver: ReceiverKind,
+    ) -> Result<(), LifecycleError> {
+        if self.phase == LifecyclePhase::Completed {
+            return Err(self.invalid_transition(LifecycleOperation::MarkReceiverLost));
+        }
+        match receiver {
+            ReceiverKind::Stdout => self.receiver_loss.stdout = true,
+            ReceiverKind::Stderr => self.receiver_loss.stderr = true,
+            ReceiverKind::Events => self.receiver_loss.events = true,
+        }
+        Ok(())
+    }
+
     fn complete_if_drained(&mut self) -> LifecycleAction {
         if !matches!(self.phase, LifecyclePhase::Draining(_))
             || !self.stdout_eof
@@ -198,7 +240,10 @@ impl LifecycleController {
             return LifecycleAction::None;
         };
         self.phase = LifecyclePhase::Completed;
-        LifecycleAction::Completed(exit)
+        LifecycleAction::Completed(ExecutionOutcome {
+            exit,
+            receiver_loss: self.receiver_loss,
+        })
     }
 
     const fn invalid_transition(&self, operation: LifecycleOperation) -> LifecycleError {
@@ -340,9 +385,10 @@ mod tests {
         );
         assert_eq!(
             lifecycle.mark_stream_eof(StreamKind::Stderr),
-            Ok(LifecycleAction::Completed(exit_event(
-                ProcessExitReason::Exited
-            )))
+            Ok(LifecycleAction::Completed(ExecutionOutcome {
+                exit: exit_event(ProcessExitReason::Exited),
+                receiver_loss: ReceiverLoss::default(),
+            }))
         );
         assert_eq!(lifecycle.phase(), LifecyclePhase::Completed);
     }

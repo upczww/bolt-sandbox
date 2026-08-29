@@ -827,6 +827,9 @@ Accepted:
   distinguishes capacity overflow from receiver disconnection, counts discarded
   bytes with saturation, and commits EOF exactly once. Disconnecting a receiver
   discards already buffered and future bytes without affecting the other stream.
+  The lifecycle completion result independently flags lost stdout, stderr, and
+  public event receivers; recording receiver loss is idempotent and does not
+  itself cancel the execution.
 - Lifecycle terminal state uses the earliest atomically committed monotonic
   trigger. An exact-tick tie resolves cancellation before timeout before natural
   exit, and terminal cleanup/event emission occurs exactly once. The host-side
