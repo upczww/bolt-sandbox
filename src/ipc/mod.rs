@@ -5,3 +5,4 @@ mod event_codec;
 )]
 mod framing;
 mod handshake;
+mod session;
