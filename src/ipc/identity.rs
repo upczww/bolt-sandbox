@@ -1,3 +1,71 @@
+const RANDOM_BYTE_LENGTH: usize = 32;
+const IDENTIFIER_BYTE_LENGTH: usize = 16;
+const HANDSHAKE_NONCE_LENGTH: usize = 16;
+const PIPE_PREFIX: &str = r"\\.\pipe\bolt-sandbox-";
+const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ExecutionIdentityError {
+    EntropyUnavailable,
+}
+
+trait EntropySource {
+    fn fill(&mut self, destination: &mut [u8]) -> Result<(), ()>;
+}
+
+struct SystemEntropy;
+
+impl EntropySource for SystemEntropy {
+    fn fill(&mut self, destination: &mut [u8]) -> Result<(), ()> {
+        getrandom::fill(destination).map_err(|_| ())
+    }
+}
+
+pub(super) struct ExecutionIdentity {
+    endpoint_name: String,
+    handshake_nonce: [u8; HANDSHAKE_NONCE_LENGTH],
+}
+
+impl ExecutionIdentity {
+    pub(super) fn generate() -> Result<Self, ExecutionIdentityError> {
+        Self::generate_with(&mut SystemEntropy)
+    }
+
+    fn generate_with(source: &mut impl EntropySource) -> Result<Self, ExecutionIdentityError> {
+        let mut random = [0_u8; RANDOM_BYTE_LENGTH];
+        source
+            .fill(&mut random)
+            .map_err(|()| ExecutionIdentityError::EntropyUnavailable)?;
+
+        let identifier = &random[..IDENTIFIER_BYTE_LENGTH];
+        let handshake_nonce = random[IDENTIFIER_BYTE_LENGTH..]
+            .try_into()
+            .map_err(|_| ExecutionIdentityError::EntropyUnavailable)?;
+        Ok(Self {
+            endpoint_name: endpoint_name(identifier),
+            handshake_nonce,
+        })
+    }
+
+    pub(super) fn endpoint_name(&self) -> &str {
+        &self.endpoint_name
+    }
+
+    pub(super) const fn handshake_nonce(&self) -> &[u8; HANDSHAKE_NONCE_LENGTH] {
+        &self.handshake_nonce
+    }
+}
+
+fn endpoint_name(identifier: &[u8]) -> String {
+    let mut endpoint = String::with_capacity(PIPE_PREFIX.len() + identifier.len() * 2);
+    endpoint.push_str(PIPE_PREFIX);
+    for byte in identifier {
+        endpoint.push(char::from(LOWER_HEX[usize::from(byte >> 4)]));
+        endpoint.push(char::from(LOWER_HEX[usize::from(byte & 0x0f)]));
+    }
+    endpoint
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -34,8 +102,8 @@ mod tests {
         assert_eq!(
             identity.handshake_nonce(),
             &[
-                0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
-                0x1d, 0x1e, 0x1f,
+                0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+                0x1e, 0x1f,
             ]
         );
         assert!(!identity.endpoint_name().contains("1011121314151617"));
@@ -49,10 +117,10 @@ mod tests {
             ..FixedEntropy::default()
         };
 
-        assert_eq!(
+        assert!(matches!(
             ExecutionIdentity::generate_with(&mut source),
             Err(ExecutionIdentityError::EntropyUnavailable)
-        );
+        ));
         assert_eq!(source.calls, [32]);
     }
 

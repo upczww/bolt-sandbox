@@ -466,6 +466,13 @@ audit events are sufficient for the initial release.
 - Preserve the first occurrence and count dropped duplicate events.
 - Treat handshake loss as an initialization failure.
 
+Execution setup obtains 32 bytes in one operating-system CSPRNG request. The
+first 16 bytes form a lowercase-hex opaque suffix for
+`\\.\pipe\bolt-sandbox-<id>`; the remaining 16 bytes are an independent
+handshake nonce and never appear in the endpoint name. Random-source failure
+aborts setup without a timestamp, process-ID, counter, or other predictable
+fallback. The identity type does not expose nonce-bearing debug output.
+
 The Rust violation aggregator has a nonzero configured unique-entry capacity.
 Its identity key includes the complete typed event, so process, operation, and
 resource differences never collapse. At capacity, a new distinct violation

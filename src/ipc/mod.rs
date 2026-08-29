@@ -10,7 +10,10 @@ mod event_codec;
 )]
 mod framing;
 mod handshake;
-#[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "execution identity is connected to secure named-pipe creation later"
+)]
 mod identity;
 #[allow(
     dead_code,

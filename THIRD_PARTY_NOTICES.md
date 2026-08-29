@@ -1,5 +1,19 @@
 # Third-Party Notices
 
+## getrandom 0.4.3
+
+Bolt Sandbox depends on the `getrandom` Rust crate to obtain execution pipe
+identifiers and handshake nonces from the operating system's cryptographically
+secure random source. The crate is licensed under either the MIT License or the
+Apache License, Version 2.0.
+
+- Source: https://github.com/rust-random/getrandom/tree/v0.4.3
+- Package: https://crates.io/crates/getrandom/0.4.3
+- License: MIT OR Apache-2.0
+
+The dependency revision is pinned in `Cargo.toml` and resolved checksums are
+recorded in `Cargo.lock`.
+
 ## idna 1.1.0
 
 Bolt Sandbox depends on the `idna` Rust crate for UTS #46 and Punycode domain

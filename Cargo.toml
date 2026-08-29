@@ -11,6 +11,7 @@ name = "bolt_sandbox"
 path = "src/lib.rs"
 
 [dependencies]
+getrandom = "=0.4.3"
 idna = "=1.1.0"
 sha2 = "=0.11.0"
 
