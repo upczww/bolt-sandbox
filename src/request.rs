@@ -443,4 +443,34 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn req_007_none_and_inclusive_timeout_boundaries_are_accepted() {
+        for timeout in [None, Some(MIN_TIMEOUT), Some(MAX_TIMEOUT)] {
+            let mut request = valid_request();
+            request.timeout = timeout;
+
+            assert_eq!(request.validate(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn req_007_zero_and_over_maximum_timeout_are_rejected() {
+        for timeout in [
+            Duration::ZERO,
+            MAX_TIMEOUT + Duration::from_nanos(1),
+            Duration::MAX,
+        ] {
+            let mut request = valid_request();
+            request.timeout = Some(timeout);
+
+            assert_eq!(
+                request.validate(),
+                Err(SandboxError::InvalidRequest {
+                    field: RequestField::Timeout,
+                    reason: InvalidRequestReason::OutOfRange,
+                })
+            );
+        }
+    }
 }

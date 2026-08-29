@@ -8,7 +8,7 @@ use std::{
 use bolt_sandbox::{
     ChildProcessPolicy, FilesystemPolicy, NetworkPolicy, ProcessExit, ProcessExitReason,
     RecoveryPolicy, RegistryPolicy, RequestField, SandboxError, SandboxEvent, SandboxPolicy,
-    SandboxRequest,
+    SandboxRequest, MAX_TIMEOUT, MIN_TIMEOUT,
 };
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {
@@ -123,4 +123,10 @@ fn policy_types_are_constructible_without_native_dependencies() {
     };
 
     let _: Option<PathBuf> = None;
+}
+
+#[test]
+fn req_007_public_timeout_bounds_match_the_documented_contract() {
+    assert_eq!(MIN_TIMEOUT, Duration::from_millis(1));
+    assert_eq!(MAX_TIMEOUT, Duration::from_secs(24 * 60 * 60));
 }

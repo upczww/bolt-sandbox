@@ -227,6 +227,14 @@ pub enum SandboxEvent {
 
 The API must not expose Detours or BuildXL-specific types.
 
+Request protocol version 1 uses these timeout bounds:
+
+- `None` means no host deadline.
+- An explicit timeout is accepted from 1 millisecond through 24 hours,
+  inclusive. Zero and values above 24 hours are rejected before launch.
+- The library exposes the minimum and maximum as typed constants, and runtime
+  deadline measurement uses a monotonic clock.
+
 ### 5.2 Launcher
 
 Responsibilities:
