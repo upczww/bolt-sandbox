@@ -227,6 +227,12 @@ mod tests {
         assert_eq!(prepared.command_line().last(), Some(&0));
         assert!(payload::verify(prepared.policy_payload()).is_ok());
         assert!(prepared.program_handle().metadata().is_ok());
+        assert!(
+            prepared
+                .ipc_endpoint_name()
+                .starts_with(r"\\.\pipe\bolt-sandbox-")
+        );
+        assert_eq!(prepared.handshake_nonce().len(), 16);
     }
 
     #[test]
@@ -265,5 +271,38 @@ mod tests {
 
         assert_eq!(prepared.program(), Path::new(&request.program));
         assert_eq!(prepared.cwd(), Path::new(&request.cwd));
+    }
+
+    #[test]
+    fn ipc_017_entropy_failure_returns_no_partial_launch_preparation() {
+        let fixture = Fixture::x64();
+
+        let result = prepare_launch_with_identity_factory(&fixture.request(), &[], || {
+            Err(LaunchPreparationError::ExecutionIdentity)
+        });
+
+        assert!(matches!(
+            result,
+            Err(LaunchPreparationError::ExecutionIdentity)
+        ));
+    }
+
+    #[test]
+    fn req_007_invalid_request_does_not_consume_execution_entropy() {
+        let fixture = Fixture::x64();
+        let mut request = fixture.request();
+        request.timeout = Some(Duration::ZERO);
+        let entropy_consumed = std::cell::Cell::new(false);
+
+        let result = prepare_launch_with_identity_factory(&request, &[], || {
+            entropy_consumed.set(true);
+            Err(LaunchPreparationError::ExecutionIdentity)
+        });
+
+        assert!(matches!(
+            result,
+            Err(LaunchPreparationError::Request(_))
+        ));
+        assert!(!entropy_consumed.get());
     }
 }
