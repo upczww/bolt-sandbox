@@ -40,14 +40,14 @@ impl Handshake {
         }
 
         let frame = framing::decode(encoded).map_err(|_| HandshakeError::Protocol)?;
+        if frame.kind != FrameKind::Ready {
+            return Err(HandshakeError::UnexpectedMessage);
+        }
         if frame.sequence != 0 {
             return Err(HandshakeError::UnexpectedSequence {
                 expected: 0,
                 actual: frame.sequence,
             });
-        }
-        if frame.kind != FrameKind::Ready {
-            return Err(HandshakeError::UnexpectedMessage);
         }
         let nonce: [u8; 16] = frame
             .payload

@@ -1,3 +1,100 @@
+use super::{
+    event_codec,
+    framing::{self, FrameKind},
+    handshake::{Handshake, HandshakeError},
+};
+use crate::SandboxEvent;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SessionState {
+    AwaitingReady,
+    Running,
+    Exited,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SessionError {
+    Protocol,
+    ExpectedReady,
+    DuplicateReady,
+    UnexpectedSequence { expected: u64, actual: u64 },
+    SequenceExhausted,
+    EventAfterExit,
+}
+
+pub(super) struct SessionProtocol {
+    handshake: Handshake,
+    state: SessionState,
+    next_sequence: u64,
+}
+
+impl SessionProtocol {
+    pub(super) fn new(expected_nonce: [u8; 16]) -> Self {
+        Self {
+            handshake: Handshake::new(expected_nonce),
+            state: SessionState::AwaitingReady,
+            next_sequence: 0,
+        }
+    }
+
+    pub(super) fn state(&self) -> SessionState {
+        self.state
+    }
+
+    pub(super) fn accept(&mut self, encoded: &[u8]) -> Result<SandboxEvent, SessionError> {
+        match self.state {
+            SessionState::AwaitingReady => self.accept_ready(encoded),
+            SessionState::Running => self.accept_running_event(encoded),
+            SessionState::Exited => Err(SessionError::EventAfterExit),
+        }
+    }
+
+    fn accept_ready(&mut self, encoded: &[u8]) -> Result<SandboxEvent, SessionError> {
+        let event = self
+            .handshake
+            .accept(encoded)
+            .map_err(|error| match error {
+                HandshakeError::UnexpectedMessage => SessionError::ExpectedReady,
+                HandshakeError::DuplicateReady => SessionError::DuplicateReady,
+                HandshakeError::UnexpectedSequence { expected, actual } => {
+                    SessionError::UnexpectedSequence { expected, actual }
+                }
+                HandshakeError::Protocol
+                | HandshakeError::InvalidReadyPayload
+                | HandshakeError::NonceMismatch => SessionError::Protocol,
+            })?;
+
+        self.state = SessionState::Running;
+        self.next_sequence = 1;
+        Ok(event)
+    }
+
+    fn accept_running_event(&mut self, encoded: &[u8]) -> Result<SandboxEvent, SessionError> {
+        let frame = framing::decode(encoded).map_err(|_| SessionError::Protocol)?;
+        if frame.kind == FrameKind::Ready {
+            return Err(SessionError::DuplicateReady);
+        }
+
+        let sequenced = event_codec::decode_event(encoded).map_err(|_| SessionError::Protocol)?;
+        if sequenced.sequence != self.next_sequence {
+            return Err(SessionError::UnexpectedSequence {
+                expected: self.next_sequence,
+                actual: sequenced.sequence,
+            });
+        }
+
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or(SessionError::SequenceExhausted)?;
+        if matches!(sequenced.event, SandboxEvent::ProcessExited(_)) {
+            self.state = SessionState::Exited;
+        }
+
+        Ok(sequenced.event)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,7 +176,10 @@ mod tests {
             .accept(&process_exit(1))
             .expect("process exit must succeed");
 
-        assert_eq!(session.accept(&process_exit(2)), Err(SessionError::EventAfterExit));
+        assert_eq!(
+            session.accept(&process_exit(2)),
+            Err(SessionError::EventAfterExit)
+        );
         assert_eq!(session.state(), SessionState::Exited);
     }
 }

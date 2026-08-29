@@ -7,12 +7,21 @@ const PROCESS_EXIT_CODE_PRESENT_OFFSET: usize = 5;
 const PROCESS_EXIT_CODE_OFFSET: usize = 6;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct SequencedEvent {
-    sequence: u64,
-    event: SandboxEvent,
+pub(super) struct SequencedEvent {
+    pub(super) sequence: u64,
+    pub(super) event: SandboxEvent,
 }
 
-fn encode_event(event: &SandboxEvent, sequence: u64) -> Result<Vec<u8>, ProtocolError> {
+pub(super) fn encode_ready(nonce: [u8; 16], sequence: u64) -> Result<Vec<u8>, ProtocolError> {
+    framing::encode(&Frame {
+        version: framing::PROTOCOL_VERSION,
+        kind: FrameKind::Ready,
+        sequence,
+        payload: nonce.to_vec(),
+    })
+}
+
+pub(super) fn encode_event(event: &SandboxEvent, sequence: u64) -> Result<Vec<u8>, ProtocolError> {
     let (kind, payload) = match event {
         SandboxEvent::Ready => (FrameKind::Ready, Vec::new()),
         SandboxEvent::ProcessExited(process_exit) => {
@@ -36,7 +45,7 @@ fn encode_event(event: &SandboxEvent, sequence: u64) -> Result<Vec<u8>, Protocol
     })
 }
 
-fn decode_event(encoded: &[u8]) -> Result<SequencedEvent, ProtocolError> {
+pub(super) fn decode_event(encoded: &[u8]) -> Result<SequencedEvent, ProtocolError> {
     let frame = framing::decode(encoded)?;
     let event = match frame.kind {
         FrameKind::Ready if frame.payload.is_empty() => SandboxEvent::Ready,
