@@ -8,6 +8,7 @@ pub enum RequestField {
     Environment,
     Timeout,
     FilesystemPolicy,
+    NetworkPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

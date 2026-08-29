@@ -9,7 +9,7 @@ mod request;
 pub use error::{InvalidRequestReason, RequestField, SandboxError};
 pub use event::{ProcessExit, ProcessExitReason, SandboxEvent};
 pub use policy::{
-    ChildProcessPolicy, FilesystemPolicy, NetworkAllowList, NetworkPolicy, RecoveryLimits,
-    RecoveryPolicy, RegistryPolicy, SandboxPolicy,
+    ChildProcessPolicy, FilesystemPolicy, IpCidr, NetworkAllowList, NetworkPolicy, PortRange,
+    RecoveryLimits, RecoveryPolicy, RegistryPolicy, SandboxPolicy,
 };
 pub use request::{MAX_TIMEOUT, MIN_TIMEOUT, SandboxRequest};

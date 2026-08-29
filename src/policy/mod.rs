@@ -6,7 +6,7 @@ mod registry;
 use std::path::PathBuf;
 
 pub use filesystem::FilesystemPolicy;
-pub use network::{NetworkAllowList, NetworkPolicy};
+pub use network::{IpCidr, NetworkAllowList, NetworkPolicy, PortRange};
 pub use registry::RegistryPolicy;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

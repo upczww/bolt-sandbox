@@ -1,9 +1,10 @@
 use std::{
     ffi::{OsStr, OsString},
+    net::IpAddr,
     path::{Component, Path},
 };
 
-use super::SandboxPolicy;
+use super::{IpCidr, NetworkPolicy, PortRange, SandboxPolicy};
 use crate::{InvalidRequestReason, RequestField, SandboxError};
 
 pub(crate) fn compile(policy: &SandboxPolicy, cwd: &Path) -> Result<CompiledPolicy, SandboxError> {
@@ -30,7 +31,11 @@ pub(crate) fn compile_with_mandatory_denies(
         FilesystemRuleKind::InheritUser,
     )?;
 
-    let compiled = CompiledPolicy { filesystem };
+    let network = compile_network_policy(&policy.network)?;
+    let compiled = CompiledPolicy {
+        filesystem,
+        network,
+    };
     debug_assert!(compiled.filesystem.allows_read_write(cwd));
     debug_assert_eq!(
         compiled.filesystem.decide(cwd, FilesystemAccess::Read),
@@ -45,6 +50,228 @@ pub(crate) fn compile_with_mandatory_denies(
 
 pub(crate) struct CompiledPolicy {
     pub(crate) filesystem: CompiledFilesystemPolicy,
+    pub(crate) network: CompiledNetworkPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CompiledNetworkMode {
+    Unrestricted,
+    Denied,
+    AllowList,
+}
+
+pub(crate) enum CompiledNetworkPolicy {
+    Unrestricted,
+    Denied,
+    AllowList(CompiledNetworkAllowList),
+}
+
+impl CompiledNetworkPolicy {
+    pub(crate) const fn mode(&self) -> CompiledNetworkMode {
+        match self {
+            Self::Unrestricted => CompiledNetworkMode::Unrestricted,
+            Self::Denied => CompiledNetworkMode::Denied,
+            Self::AllowList(_) => CompiledNetworkMode::AllowList,
+        }
+    }
+
+    pub(crate) fn allows_domain(&self, domain: &str) -> bool {
+        match self {
+            Self::Unrestricted => true,
+            Self::Denied => false,
+            Self::AllowList(allow_list) => allow_list.allows_domain(domain),
+        }
+    }
+
+    pub(crate) fn allows_address(&self, address: IpAddr) -> bool {
+        match self {
+            Self::Unrestricted => true,
+            Self::Denied => false,
+            Self::AllowList(allow_list) => allow_list
+                .addresses
+                .iter()
+                .any(|cidr| cidr_contains(*cidr, address)),
+        }
+    }
+
+    pub(crate) fn allows_port(&self, port: u16) -> bool {
+        match self {
+            Self::Unrestricted => true,
+            Self::Denied => false,
+            Self::AllowList(allow_list) => allow_list
+                .ports
+                .iter()
+                .any(|range| (range.start..=range.end).contains(&port)),
+        }
+    }
+}
+
+pub(crate) struct CompiledNetworkAllowList {
+    domains: Vec<CompiledDomainRule>,
+    addresses: Vec<IpCidr>,
+    ports: Vec<PortRange>,
+}
+
+struct CompiledDomainRule {
+    ascii_domain: String,
+    wildcard: bool,
+}
+
+impl CompiledNetworkAllowList {
+    fn allows_domain(&self, domain: &str) -> bool {
+        let Ok(candidate) = canonical_domain(domain, false) else {
+            return false;
+        };
+
+        self.domains.iter().any(|rule| {
+            if rule.wildcard {
+                candidate
+                    .strip_suffix(&rule.ascii_domain)
+                    .is_some_and(|prefix| prefix.len() > 1 && prefix.ends_with('.'))
+            } else {
+                candidate == rule.ascii_domain
+            }
+        })
+    }
+}
+
+fn compile_network_policy(policy: &NetworkPolicy) -> Result<CompiledNetworkPolicy, SandboxError> {
+    match policy {
+        NetworkPolicy::Unrestricted => Ok(CompiledNetworkPolicy::Unrestricted),
+        NetworkPolicy::Denied => Ok(CompiledNetworkPolicy::Denied),
+        NetworkPolicy::AllowList(allow_list) => {
+            let mut domains = Vec::with_capacity(allow_list.domains.len());
+            for input in &allow_list.domains {
+                let wildcard = input.starts_with("*.");
+                let base = input.strip_prefix("*.").unwrap_or(input);
+                domains.push(CompiledDomainRule {
+                    ascii_domain: canonical_domain(base, true)?,
+                    wildcard,
+                });
+            }
+            domains.sort_by(|left, right| {
+                left.ascii_domain
+                    .cmp(&right.ascii_domain)
+                    .then(left.wildcard.cmp(&right.wildcard))
+            });
+            domains.dedup_by(|left, right| {
+                left.ascii_domain == right.ascii_domain && left.wildcard == right.wildcard
+            });
+
+            let addresses = compile_cidrs(&allow_list.addresses)?;
+            let ports = compile_port_ranges(&allow_list.ports)?;
+            Ok(CompiledNetworkPolicy::AllowList(CompiledNetworkAllowList {
+                domains,
+                addresses,
+                ports,
+            }))
+        }
+    }
+}
+
+fn canonical_domain(domain: &str, allow_wildcard_input: bool) -> Result<String, SandboxError> {
+    if domain.is_empty()
+        || domain.ends_with('.')
+        || domain.contains("//")
+        || domain.contains('/')
+        || domain.contains('\\')
+        || domain.contains(':')
+        || domain.contains('*')
+        || (!allow_wildcard_input && domain.starts_with("*."))
+    {
+        return Err(invalid_network_policy(
+            InvalidRequestReason::InvalidCharacter,
+        ));
+    }
+
+    let mut ascii = idna::domain_to_ascii_strict(domain)
+        .map_err(|_| invalid_network_policy(InvalidRequestReason::InvalidCharacter))?;
+    ascii.make_ascii_lowercase();
+    if ascii.len() > 253
+        || ascii
+            .split('.')
+            .any(|label| label.is_empty() || label.len() > 63)
+        || ascii.parse::<IpAddr>().is_ok()
+    {
+        return Err(invalid_network_policy(
+            InvalidRequestReason::InvalidCharacter,
+        ));
+    }
+    Ok(ascii)
+}
+
+fn compile_cidrs(cidrs: &[IpCidr]) -> Result<Vec<IpCidr>, SandboxError> {
+    let mut compiled = Vec::with_capacity(cidrs.len());
+    for cidr in cidrs {
+        if !cidr_is_canonical(*cidr) {
+            return Err(invalid_network_policy(
+                InvalidRequestReason::InvalidCharacter,
+            ));
+        }
+        compiled.push(*cidr);
+    }
+    compiled.sort_unstable();
+    compiled.dedup();
+    Ok(compiled)
+}
+
+fn cidr_is_canonical(cidr: IpCidr) -> bool {
+    match cidr.address {
+        IpAddr::V4(address) if cidr.prefix_length <= 32 => {
+            let mask = prefix_mask_v4(cidr.prefix_length);
+            u32::from(address) & mask == u32::from(address)
+        }
+        IpAddr::V6(address) if cidr.prefix_length <= 128 => {
+            let mask = prefix_mask_v6(cidr.prefix_length);
+            u128::from(address) & mask == u128::from(address)
+        }
+        IpAddr::V4(_) | IpAddr::V6(_) => false,
+    }
+}
+
+fn cidr_contains(cidr: IpCidr, candidate: IpAddr) -> bool {
+    match (cidr.address, candidate) {
+        (IpAddr::V4(network), IpAddr::V4(candidate)) => {
+            let mask = prefix_mask_v4(cidr.prefix_length);
+            u32::from(network) == u32::from(candidate) & mask
+        }
+        (IpAddr::V6(network), IpAddr::V6(candidate)) => {
+            let mask = prefix_mask_v6(cidr.prefix_length);
+            u128::from(network) == u128::from(candidate) & mask
+        }
+        (IpAddr::V4(_), IpAddr::V6(_)) | (IpAddr::V6(_), IpAddr::V4(_)) => false,
+    }
+}
+
+fn prefix_mask_v4(prefix_length: u8) -> u32 {
+    u32::MAX
+        .checked_shl(u32::from(32 - prefix_length))
+        .unwrap_or(0)
+}
+
+fn prefix_mask_v6(prefix_length: u8) -> u128 {
+    u128::MAX
+        .checked_shl(u32::from(128 - prefix_length))
+        .unwrap_or(0)
+}
+
+fn compile_port_ranges(ranges: &[PortRange]) -> Result<Vec<PortRange>, SandboxError> {
+    let mut compiled = ranges.to_vec();
+    for range in &compiled {
+        if range.start == 0 || range.start > range.end {
+            return Err(invalid_network_policy(
+                InvalidRequestReason::InvalidCharacter,
+            ));
+        }
+    }
+    compiled.sort_unstable();
+    compiled.dedup();
+    if compiled.windows(2).any(|pair| pair[1].start <= pair[0].end) {
+        return Err(invalid_network_policy(
+            InvalidRequestReason::ConflictingRules,
+        ));
+    }
+    Ok(compiled)
 }
 
 #[derive(Default)]
@@ -278,6 +505,13 @@ fn os_str_eq_ignore_ascii_case(left: &OsStr, right: &OsStr) -> bool {
 fn invalid_filesystem_policy(reason: InvalidRequestReason) -> SandboxError {
     SandboxError::InvalidRequest {
         field: RequestField::FilesystemPolicy,
+        reason,
+    }
+}
+
+const fn invalid_network_policy(reason: InvalidRequestReason) -> SandboxError {
+    SandboxError::InvalidRequest {
+        field: RequestField::NetworkPolicy,
         reason,
     }
 }
@@ -555,19 +789,23 @@ mod tests {
             ],
         });
 
-        let compiled = compile(&policy, Path::new(r"C:\work\project"))
-            .expect("valid allow list must compile");
+        let compiled =
+            compile(&policy, Path::new(r"C:\work\project")).expect("valid allow list must compile");
 
         assert!(compiled.network.allows_domain("example.com"));
         assert!(compiled.network.allows_domain("shop.münich.example"));
         assert!(!compiled.network.allows_domain("münich.example"));
         assert!(!compiled.network.allows_domain("evil-example.com"));
-        assert!(compiled
-            .network
-            .allows_address(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 255))));
-        assert!(!compiled
-            .network
-            .allows_address(IpAddr::V4(Ipv4Addr::new(192, 168, 2, 0))));
+        assert!(
+            compiled
+                .network
+                .allows_address(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 255)))
+        );
+        assert!(
+            !compiled
+                .network
+                .allows_address(IpAddr::V4(Ipv4Addr::new(192, 168, 2, 0)))
+        );
         assert!(compiled.network.allows_port(443));
         assert!(compiled.network.allows_port(8_080));
         assert!(!compiled.network.allows_port(8_081));

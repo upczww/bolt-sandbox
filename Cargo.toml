@@ -11,6 +11,7 @@ name = "bolt_sandbox"
 path = "src/lib.rs"
 
 [dependencies]
+idna = "=1.1.0"
 
 [lints.rust]
 unsafe_code = "forbid"
