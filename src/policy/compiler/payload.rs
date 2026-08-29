@@ -562,6 +562,72 @@ mod tests {
         encoded[DIGEST_OFFSET..HEADER_LENGTH].copy_from_slice(&digest);
     }
 
+    fn push_u16(bytes: &mut Vec<u8>, value: u16) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_sized_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
+        push_u32(
+            bytes,
+            u32::try_from(value.len()).expect("test value length must fit u32"),
+        );
+        bytes.extend_from_slice(value);
+    }
+
+    fn signed_body(body: &[u8]) -> Vec<u8> {
+        let body_length = u32::try_from(body.len()).expect("test body length must fit u32");
+        let mut encoded = vec![0; HEADER_LENGTH];
+        encoded[..MAGIC.len()].copy_from_slice(&MAGIC);
+        encoded[VERSION_OFFSET..VERSION_OFFSET + 2]
+            .copy_from_slice(&POLICY_PAYLOAD_VERSION.to_le_bytes());
+        encoded[HEADER_LENGTH_OFFSET..HEADER_LENGTH_OFFSET + 2]
+            .copy_from_slice(&HEADER_LENGTH_WIRE.to_le_bytes());
+        encoded[LENGTH_OFFSET..LENGTH_OFFSET + 4].copy_from_slice(&body_length.to_le_bytes());
+        encoded.extend_from_slice(body);
+        resign(&mut encoded);
+        encoded
+    }
+
+    fn body_with_filesystem_record(record: &[u8]) -> Vec<u8> {
+        let mut body = vec![1];
+        push_u32(&mut body, 1);
+        push_u32(
+            &mut body,
+            u32::try_from(record.len()).expect("record length must fit u32"),
+        );
+        body.extend_from_slice(record);
+        body.push(1);
+        push_u32(&mut body, 0);
+        body
+    }
+
+    fn body_with_network(network: &[u8]) -> Vec<u8> {
+        let mut body = vec![1];
+        push_u32(&mut body, 0);
+        body.extend_from_slice(network);
+        push_u32(&mut body, 0);
+        body
+    }
+
+    fn body_with_registry(registry: &[u8]) -> Vec<u8> {
+        let mut body = vec![1];
+        push_u32(&mut body, 0);
+        body.push(1);
+        body.extend_from_slice(registry);
+        body
+    }
+
+    fn assert_invalid_body(body: &[u8]) {
+        assert_eq!(
+            verify(&signed_body(body)),
+            Err(PolicyPayloadError::InvalidBody)
+        );
+    }
+
     fn equivalent_policy(reverse: bool) -> SandboxPolicy {
         let (read_only, domains, registry) = if reverse {
             (
@@ -707,5 +773,191 @@ mod tests {
         resign(&mut encoded);
 
         assert_eq!(verify(&encoded), Err(PolicyPayloadError::InvalidBody));
+    }
+
+    #[test]
+    fn pol_010_validator_accepts_all_canonical_network_and_registry_wire_families() {
+        let mut network = vec![2];
+        push_u32(&mut network, 1);
+        network.push(0);
+        push_sized_bytes(&mut network, b"example.test");
+        push_u32(&mut network, 2);
+        network.extend_from_slice(&[4, 32, 127, 0, 0, 1]);
+        network.extend_from_slice(&[6, 128]);
+        network.extend_from_slice(&[0; 16]);
+        push_u32(&mut network, 1);
+        push_u16(&mut network, 1);
+        push_u16(&mut network, u16::MAX);
+
+        let mut body = body_with_network(&network);
+        body.truncate(body.len() - 4);
+        push_u32(&mut body, 1);
+        body.extend_from_slice(&[3, 4]);
+        push_u32(&mut body, 1);
+        push_sized_bytes(&mut body, b"COMPONENT");
+
+        assert!(verify(&signed_body(&body)).is_ok());
+    }
+
+    #[test]
+    fn pol_010_invalid_filesystem_record_shapes_fail_closed() {
+        let malformed_records = [
+            vec![5, 0, 0, 0, 0],
+            vec![0, 1, 0, 0, 0, 3, 0, 0, 0, 0],
+            vec![0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0],
+            vec![0, 0, 0, 0, 0, 0xFF],
+        ];
+
+        for record in malformed_records {
+            assert_invalid_body(&body_with_filesystem_record(&record));
+        }
+    }
+
+    #[test]
+    fn pol_010_invalid_network_counts_and_domain_records_fail_closed() {
+        let mut too_many_domains = vec![2];
+        push_u32(
+            &mut too_many_domains,
+            u32::try_from(super::super::MAX_NETWORK_RULES_PER_CATEGORY + 1)
+                .expect("limit must fit u32"),
+        );
+
+        let malformed_networks = [
+            too_many_domains,
+            vec![2, 1, 0, 0, 0, 2, 1, 0, 0, 0, b'a'],
+            vec![2, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+            vec![2, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0xFF],
+        ];
+        for network in malformed_networks {
+            assert_invalid_body(&body_with_network(&network));
+        }
+    }
+
+    #[test]
+    fn pol_010_invalid_network_address_and_port_records_fail_closed() {
+        let mut too_many_addresses = vec![2];
+        push_u32(&mut too_many_addresses, 0);
+        push_u32(
+            &mut too_many_addresses,
+            u32::try_from(super::super::MAX_NETWORK_RULES_PER_CATEGORY + 1)
+                .expect("limit must fit u32"),
+        );
+
+        let mut ipv4_prefix = vec![2];
+        push_u32(&mut ipv4_prefix, 0);
+        push_u32(&mut ipv4_prefix, 1);
+        ipv4_prefix.extend_from_slice(&[4, 33, 127, 0, 0, 1]);
+
+        let mut ipv6_prefix = vec![2];
+        push_u32(&mut ipv6_prefix, 0);
+        push_u32(&mut ipv6_prefix, 1);
+        ipv6_prefix.extend_from_slice(&[6, 129]);
+        ipv6_prefix.extend_from_slice(&[0; 16]);
+
+        let mut unknown_family = vec![2];
+        push_u32(&mut unknown_family, 0);
+        push_u32(&mut unknown_family, 1);
+        unknown_family.extend_from_slice(&[5, 0]);
+
+        let mut too_many_ports = vec![2];
+        push_u32(&mut too_many_ports, 0);
+        push_u32(&mut too_many_ports, 0);
+        push_u32(
+            &mut too_many_ports,
+            u32::try_from(super::super::MAX_NETWORK_RULES_PER_CATEGORY + 1)
+                .expect("limit must fit u32"),
+        );
+
+        let mut zero_port = vec![2];
+        push_u32(&mut zero_port, 0);
+        push_u32(&mut zero_port, 0);
+        push_u32(&mut zero_port, 1);
+        push_u16(&mut zero_port, 0);
+        push_u16(&mut zero_port, 1);
+
+        let mut reversed_port = vec![2];
+        push_u32(&mut reversed_port, 0);
+        push_u32(&mut reversed_port, 0);
+        push_u32(&mut reversed_port, 1);
+        push_u16(&mut reversed_port, 2);
+        push_u16(&mut reversed_port, 1);
+
+        for network in [
+            too_many_addresses,
+            ipv4_prefix,
+            ipv6_prefix,
+            unknown_family,
+            too_many_ports,
+            zero_port,
+            reversed_port,
+        ] {
+            assert_invalid_body(&body_with_network(&network));
+        }
+    }
+
+    #[test]
+    fn pol_010_network_total_rule_limit_is_validated_independently() {
+        let mut network = vec![2];
+        push_u32(&mut network, 1_024);
+        for _ in 0..1_024 {
+            network.push(0);
+            push_sized_bytes(&mut network, b"a");
+        }
+        push_u32(&mut network, 1_024);
+        for _ in 0..1_024 {
+            network.extend_from_slice(&[4, 32, 127, 0, 0, 1]);
+        }
+        push_u32(&mut network, 1);
+
+        assert_invalid_body(&body_with_network(&network));
+    }
+
+    #[test]
+    fn pol_010_invalid_registry_records_fail_closed() {
+        let mut too_many = Vec::new();
+        push_u32(
+            &mut too_many,
+            u32::try_from(super::super::MAX_TOTAL_REGISTRY_RULES + 1).expect("limit must fit u32"),
+        );
+
+        let mut invalid_kind = Vec::new();
+        push_u32(&mut invalid_kind, 1);
+        invalid_kind.extend_from_slice(&[4, 0]);
+        push_u32(&mut invalid_kind, 0);
+
+        let mut invalid_hive = Vec::new();
+        push_u32(&mut invalid_hive, 1);
+        invalid_hive.extend_from_slice(&[0, 5]);
+        push_u32(&mut invalid_hive, 0);
+
+        let mut empty_component = Vec::new();
+        push_u32(&mut empty_component, 1);
+        empty_component.extend_from_slice(&[0, 0]);
+        push_u32(&mut empty_component, 1);
+        push_u32(&mut empty_component, 0);
+
+        let mut invalid_utf8 = Vec::new();
+        push_u32(&mut invalid_utf8, 1);
+        invalid_utf8.extend_from_slice(&[0, 0]);
+        push_u32(&mut invalid_utf8, 1);
+        push_sized_bytes(&mut invalid_utf8, &[0xFF]);
+
+        for registry in [
+            too_many,
+            invalid_kind,
+            invalid_hive,
+            empty_component,
+            invalid_utf8,
+        ] {
+            assert_invalid_body(&body_with_registry(&registry));
+        }
+    }
+
+    #[test]
+    fn pol_010_well_formed_body_with_trailing_byte_fails_closed() {
+        let mut body = body_with_network(&[1]);
+        body.push(0xFF);
+
+        assert_invalid_body(&body);
     }
 }
