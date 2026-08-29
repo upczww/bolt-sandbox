@@ -600,6 +600,18 @@ shippable after the core Trae-equivalent boundary is stable.
 
 ## 14. Test Strategy
 
+The executable test program is specified by
+[`docs/testing/test-plan.md`](../testing/test-plan.md), the behavioral inventory
+by [`docs/testing/test-catalog.md`](../testing/test-catalog.md), and reusable
+fixture contracts by [`docs/testing/fixtures.md`](../testing/fixtures.md). These
+documents derive from this architecture. Stable requirement-to-case mappings
+are maintained in
+[`docs/testing/requirements-matrix.md`](../testing/requirements-matrix.md).
+Required native operation families and representative entry points are tracked
+in [`docs/testing/api-coverage.md`](../testing/api-coverage.md).
+Conflicts are resolved by changing the architecture decision first and updating
+the mapped cases in the same change.
+
 ### 14.1 Filesystem Acceptance
 
 - Read and write inside the work directory.
@@ -688,6 +700,37 @@ Accepted:
 - Compatibility grants are trusted static policy, never request-driven automatic
   authorization.
 - Hook-based isolation is clearly documented as user-mode containment.
+- An elevated host token is unsupported in the initial release and is rejected
+  before target creation. Shell elevation and job-breakaway child creation are
+  denied before child user code.
+- `CreateProcessAsUser` is supported only for an explicitly supported
+  non-elevated token class. `CreateProcessWithToken` and
+  `CreateProcessWithLogon` are denied in the initial release rather than
+  risking an uninstrumented token boundary.
+- Loss or integrity failure of the authenticated event/IPC channel after
+  readiness terminates the execution Job Object. Audit loss never leaves a
+  silently running process tree.
+- A network rule `*.example.com` matches one or more subdomain labels, not the
+  apex or suffix lookalikes. Unsupported network stacks are denied in `Denied`
+  and `AllowList`; `Unrestricted` preserves normal user-authorized behavior.
+- Transactional and remote registry operations are denied as unsupported in the
+  initial release.
+- Recovery failure does not alter the original filesystem decision: an allowed
+  destructive operation proceeds with a typed recovery-failure event, while a
+  denied operation remains denied. Secret-tagged recovery requires equivalent
+  ACLs and encryption at rest.
+- Library stdout and stderr are byte streams. If a receiver disappears, trusted
+  code drains and discards within configured memory bounds so lifecycle cleanup
+  cannot deadlock; the loss is reported as typed stream state.
+- Lifecycle terminal state uses the earliest atomically committed monotonic
+  trigger. An exact-tick tie resolves cancellation before timeout before natural
+  exit, and terminal cleanup/event emission occurs exactly once.
+- Component verification binds execution/loading to the verified file identity
+  and trusted directory, preventing replacement and DLL search-order races
+  between verification and load.
+- Release configuration names required process mitigations and absolute/growth
+  budgets for memory, handles, and threads. A missing mitigation or performance
+  budget blocks release rather than becoming an implicit pass.
 
 Deferred:
 

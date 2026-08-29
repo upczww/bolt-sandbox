@@ -10,6 +10,15 @@ It combines BuildXL's filesystem coverage, Trae's component boundaries, and
 WorkBuddy's registry, network-stack, audit, and recovery behavior without
 copying closed-source product code.
 
+The test-driven delivery baseline is documented in
+[docs/testing/test-plan.md](docs/testing/test-plan.md), with the complete case
+inventory in [docs/testing/test-catalog.md](docs/testing/test-catalog.md) and
+fixture contracts in [docs/testing/fixtures.md](docs/testing/fixtures.md). The
+[requirements traceability matrix](docs/testing/requirements-matrix.md) maps
+each architecture obligation to its catalog evidence, while the
+[native API coverage inventory](docs/testing/api-coverage.md) prevents broad
+“all relevant APIs” requirements from hiding an untested entry point.
+
 ## Status
 
 Architecture and implementation planning.

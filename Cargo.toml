@@ -1,0 +1,20 @@
+[package]
+name = "bolt-sandbox"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Windows process sandbox for Bolt Agent"
+
+[lib]
+name = "bolt_sandbox"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "deny"
+pedantic = "deny"
