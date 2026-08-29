@@ -1054,7 +1054,6 @@ mod tests {
                 start: 443,
                 end: 443,
             }],
-            ..NetworkAllowList::default()
         };
 
         assert!(
