@@ -1,3 +1,155 @@
+const MAGIC: [u8; 4] = *b"BLT1";
+const PROTOCOL_VERSION: u16 = 1;
+const HEADER_LENGTH: usize = 24;
+const VERSION_OFFSET: usize = 4;
+const KIND_OFFSET: usize = 6;
+const LENGTH_OFFSET: usize = 8;
+const SEQUENCE_OFFSET: usize = 12;
+const CHECKSUM_OFFSET: usize = 20;
+const MAX_PAYLOAD_LENGTH: usize = 1024 * 1024;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Frame {
+    version: u16,
+    kind: FrameKind,
+    sequence: u64,
+    payload: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u16)]
+enum FrameKind {
+    Ready = 1,
+}
+
+impl TryFrom<u16> for FrameKind {
+    type Error = ProtocolError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Ready),
+            _ => Err(ProtocolError::UnknownFrameKind),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProtocolError {
+    TruncatedHeader,
+    TruncatedPayload,
+    PayloadTooLarge,
+    InvalidMagic,
+    UnsupportedVersion,
+    UnknownFrameKind,
+    ChecksumMismatch,
+    TrailingBytes,
+}
+
+fn encode(frame: &Frame) -> Result<Vec<u8>, ProtocolError> {
+    if frame.version != PROTOCOL_VERSION {
+        return Err(ProtocolError::UnsupportedVersion);
+    }
+    if frame.payload.len() > MAX_PAYLOAD_LENGTH {
+        return Err(ProtocolError::PayloadTooLarge);
+    }
+
+    let payload_length =
+        u32::try_from(frame.payload.len()).map_err(|_| ProtocolError::PayloadTooLarge)?;
+    let mut encoded = vec![0; HEADER_LENGTH + frame.payload.len()];
+    encoded[..MAGIC.len()].copy_from_slice(&MAGIC);
+    encoded[VERSION_OFFSET..VERSION_OFFSET + 2].copy_from_slice(&frame.version.to_le_bytes());
+    encoded[KIND_OFFSET..KIND_OFFSET + 2]
+        .copy_from_slice(&(frame.kind as u16).to_le_bytes());
+    encoded[LENGTH_OFFSET..LENGTH_OFFSET + 4].copy_from_slice(&payload_length.to_le_bytes());
+    encoded[SEQUENCE_OFFSET..SEQUENCE_OFFSET + 8]
+        .copy_from_slice(&frame.sequence.to_le_bytes());
+    encoded[HEADER_LENGTH..].copy_from_slice(&frame.payload);
+
+    let checksum = frame_checksum(&encoded);
+    encoded[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 4].copy_from_slice(&checksum.to_le_bytes());
+    Ok(encoded)
+}
+
+fn decode(encoded: &[u8]) -> Result<Frame, ProtocolError> {
+    if encoded.len() < HEADER_LENGTH {
+        return Err(ProtocolError::TruncatedHeader);
+    }
+    if encoded[..MAGIC.len()] != MAGIC {
+        return Err(ProtocolError::InvalidMagic);
+    }
+
+    let version = read_u16(encoded, VERSION_OFFSET);
+    if version != PROTOCOL_VERSION {
+        return Err(ProtocolError::UnsupportedVersion);
+    }
+    let kind = FrameKind::try_from(read_u16(encoded, KIND_OFFSET))?;
+    let payload_length = read_u32(encoded, LENGTH_OFFSET) as usize;
+    if payload_length > MAX_PAYLOAD_LENGTH {
+        return Err(ProtocolError::PayloadTooLarge);
+    }
+
+    let expected_length = HEADER_LENGTH + payload_length;
+    if encoded.len() < expected_length {
+        return Err(ProtocolError::TruncatedPayload);
+    }
+    if encoded.len() > expected_length {
+        return Err(ProtocolError::TrailingBytes);
+    }
+
+    let expected_checksum = read_u32(encoded, CHECKSUM_OFFSET);
+    if frame_checksum(encoded) != expected_checksum {
+        return Err(ProtocolError::ChecksumMismatch);
+    }
+
+    Ok(Frame {
+        version,
+        kind,
+        sequence: read_u64(encoded, SEQUENCE_OFFSET),
+        payload: encoded[HEADER_LENGTH..].to_vec(),
+    })
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+        bytes[offset + 4],
+        bytes[offset + 5],
+        bytes[offset + 6],
+        bytes[offset + 7],
+    ])
+}
+
+fn frame_checksum(encoded: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFF;
+    for byte in encoded[..CHECKSUM_OFFSET]
+        .iter()
+        .chain(&encoded[HEADER_LENGTH..])
+    {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = 0_u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
