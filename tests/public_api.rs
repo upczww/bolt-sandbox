@@ -6,9 +6,9 @@ use std::{
 };
 
 use bolt_sandbox::{
-    ChildProcessPolicy, FilesystemPolicy, NetworkPolicy, ProcessExit, ProcessExitReason,
-    RecoveryPolicy, RegistryPolicy, RequestField, SandboxError, SandboxEvent, SandboxPolicy,
-    SandboxRequest, MAX_TIMEOUT, MIN_TIMEOUT,
+    ChildProcessPolicy, FilesystemPolicy, MAX_TIMEOUT, MIN_TIMEOUT, NetworkPolicy, ProcessExit,
+    ProcessExitReason, RecoveryPolicy, RegistryPolicy, RequestField, SandboxError, SandboxEvent,
+    SandboxPolicy, SandboxRequest,
 };
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {

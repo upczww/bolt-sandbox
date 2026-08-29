@@ -12,4 +12,4 @@ pub use policy::{
     ChildProcessPolicy, FilesystemPolicy, NetworkAllowList, NetworkPolicy, RecoveryLimits,
     RecoveryPolicy, RegistryPolicy, SandboxPolicy,
 };
-pub use request::SandboxRequest;
+pub use request::{MAX_TIMEOUT, MIN_TIMEOUT, SandboxRequest};

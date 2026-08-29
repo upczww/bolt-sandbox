@@ -6,6 +6,7 @@ pub enum RequestField {
     Arguments,
     CurrentDirectory,
     Environment,
+    Timeout,
     FilesystemPolicy,
 }
 
@@ -18,6 +19,7 @@ pub enum InvalidRequestReason {
     InvalidCharacter,
     ReservedName,
     ConflictingNames,
+    OutOfRange,
     EscapesRoot,
     ConflictingRules,
 }

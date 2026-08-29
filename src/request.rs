@@ -8,6 +8,9 @@ use std::{
 
 use crate::{InvalidRequestReason, RequestField, SandboxError, SandboxPolicy, policy};
 
+pub const MIN_TIMEOUT: Duration = Duration::from_millis(1);
+pub const MAX_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxRequest {
     pub program: PathBuf,
@@ -57,11 +60,22 @@ impl SandboxRequest {
         }
 
         validate_environment(&self.environment)?;
+        validate_timeout(self.timeout)?;
 
         let _compiled_policy = policy::compiler::compile(&self.policy, &self.cwd)?;
 
         Ok(())
     }
+}
+
+fn validate_timeout(timeout: Option<Duration>) -> Result<(), SandboxError> {
+    if timeout.is_some_and(|timeout| !(MIN_TIMEOUT..=MAX_TIMEOUT).contains(&timeout)) {
+        return Err(SandboxError::InvalidRequest {
+            field: RequestField::Timeout,
+            reason: InvalidRequestReason::OutOfRange,
+        });
+    }
+    Ok(())
 }
 
 fn validate_arguments(arguments: &[OsString]) -> Result<(), SandboxError> {
