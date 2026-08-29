@@ -10,6 +10,8 @@ mod event_codec;
 )]
 mod framing;
 mod handshake;
+#[cfg(test)]
+mod identity;
 #[allow(
     dead_code,
     reason = "session protocol is wired into the launcher IPC transport in the next phase"
