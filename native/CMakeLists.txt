@@ -78,6 +78,7 @@ add_executable(bolt-sandbox-native-tests
     tests/policy_mapping_tests.cpp
     tests/process_tests.cpp
     tests/protocol_tests.cpp
+    tests/runtime_payload_tests.cpp
 )
 bolt_native_warnings(bolt-sandbox-native-tests)
 target_include_directories(bolt-sandbox-native-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

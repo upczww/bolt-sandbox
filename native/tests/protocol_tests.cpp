@@ -23,6 +23,7 @@ bool RunProcessTests();
 bool RunDetoursTests();
 bool RunEventFrameTests();
 bool RunPolicyMappingTests();
+bool RunRuntimePayloadTests();
 int RunProcessChild(int argument_count, wchar_t** arguments);
 
 namespace {
@@ -68,7 +69,8 @@ bool hook_exports_matching_protocol(const std::filesystem::path& directory) {
     constexpr auto hook_name = L"bolt-sandbox-x86.dll";
 #endif
     const auto hook_path = directory / hook_name;
-    const HMODULE module = LoadLibraryW(hook_path.c_str());
+    const HMODULE module = LoadLibraryExW(
+        hook_path.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES);
     if (module == nullptr) {
         return false;
     }
@@ -122,6 +124,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunPolicyMappingTests()) {
         return 10;
+    }
+    if (!RunRuntimePayloadTests()) {
+        return 11;
     }
     return 0;
 }
