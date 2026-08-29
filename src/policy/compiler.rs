@@ -50,22 +50,38 @@ pub(crate) fn compile_with_mandatory_denies(
 
 pub(crate) struct CompiledPolicy {
     pub(crate) filesystem: CompiledFilesystemPolicy,
+    #[allow(
+        dead_code,
+        reason = "compiled network policy is consumed by the network runtime in a later phase"
+    )]
     pub(crate) network: CompiledNetworkPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "compiled network mode is consumed by the network runtime in a later phase"
+)]
 pub(crate) enum CompiledNetworkMode {
     Unrestricted,
     Denied,
     AllowList,
 }
 
+#[allow(
+    dead_code,
+    reason = "compiled network decisions are consumed by the network runtime in a later phase"
+)]
 pub(crate) enum CompiledNetworkPolicy {
     Unrestricted,
     Denied,
     AllowList(CompiledNetworkAllowList),
 }
 
+#[allow(
+    dead_code,
+    reason = "compiled network decisions are consumed by the network runtime in a later phase"
+)]
 impl CompiledNetworkPolicy {
     pub(crate) const fn mode(&self) -> CompiledNetworkMode {
         match self {
@@ -106,6 +122,10 @@ impl CompiledNetworkPolicy {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "compiled allow-list fields are consumed by the network runtime in a later phase"
+)]
 pub(crate) struct CompiledNetworkAllowList {
     domains: Vec<CompiledDomainRule>,
     addresses: Vec<IpCidr>,
@@ -117,6 +137,10 @@ struct CompiledDomainRule {
     wildcard: bool,
 }
 
+#[allow(
+    dead_code,
+    reason = "compiled domain matching is consumed by the network runtime in a later phase"
+)]
 impl CompiledNetworkAllowList {
     fn allows_domain(&self, domain: &str) -> bool {
         let Ok(candidate) = canonical_domain(domain, false) else {
@@ -229,6 +253,10 @@ fn cidr_is_canonical(cidr: IpCidr) -> bool {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "CIDR decisions are consumed by the network runtime in a later phase"
+)]
 fn cidr_contains(cidr: IpCidr, candidate: IpAddr) -> bool {
     match (cidr.address, candidate) {
         (IpAddr::V4(network), IpAddr::V4(candidate)) => {
@@ -537,6 +565,13 @@ mod tests {
         policy
     }
 
+    fn policy_with_network(network: NetworkPolicy) -> SandboxPolicy {
+        SandboxPolicy {
+            network,
+            ..SandboxPolicy::default()
+        }
+    }
+
     #[test]
     fn pol_001_default_policy_grants_cwd_read_write_recursively() {
         let cwd = Path::new(r"C:\work\project");
@@ -764,8 +799,7 @@ mod tests {
 
     #[test]
     fn pol_017_018_019_allow_list_compiles_canonical_decisions() {
-        let mut policy = SandboxPolicy::default();
-        policy.network = NetworkPolicy::AllowList(NetworkAllowList {
+        let policy = policy_with_network(NetworkPolicy::AllowList(NetworkAllowList {
             domains: vec!["Example.COM".into(), "*.münich.example".into()],
             addresses: vec![
                 IpCidr {
@@ -787,7 +821,7 @@ mod tests {
                     end: 8_080,
                 },
             ],
-        });
+        }));
 
         let compiled =
             compile(&policy, Path::new(r"C:\work\project")).expect("valid allow list must compile");
@@ -822,11 +856,10 @@ mod tests {
             "*example.com",
             "*.example..com",
         ] {
-            let mut policy = SandboxPolicy::default();
-            policy.network = NetworkPolicy::AllowList(NetworkAllowList {
+            let policy = policy_with_network(NetworkPolicy::AllowList(NetworkAllowList {
                 domains: vec![domain.into()],
                 ..NetworkAllowList::default()
-            });
+            }));
 
             assert!(matches!(
                 compile(&policy, Path::new(r"C:\work\project")),
@@ -854,11 +887,10 @@ mod tests {
                 prefix_length: 129,
             },
         ] {
-            let mut policy = SandboxPolicy::default();
-            policy.network = NetworkPolicy::AllowList(NetworkAllowList {
+            let policy = policy_with_network(NetworkPolicy::AllowList(NetworkAllowList {
                 addresses: vec![cidr],
                 ..NetworkAllowList::default()
-            });
+            }));
 
             assert!(matches!(
                 compile(&policy, Path::new(r"C:\work\project")),
@@ -889,11 +921,10 @@ mod tests {
                 },
             ],
         ] {
-            let mut policy = SandboxPolicy::default();
-            policy.network = NetworkPolicy::AllowList(NetworkAllowList {
+            let policy = policy_with_network(NetworkPolicy::AllowList(NetworkAllowList {
                 ports,
                 ..NetworkAllowList::default()
-            });
+            }));
 
             assert!(compile(&policy, Path::new(r"C:\work\project")).is_err());
         }
