@@ -18,6 +18,7 @@ target_link_libraries(bolt-sandbox-protocol PRIVATE bcrypt)
 add_library(bolt-sandbox-common STATIC
     common/execution_job.cpp
     common/private_pipe.cpp
+    common/suspended_process.cpp
 )
 bolt_native_warnings(bolt-sandbox-common)
 target_include_directories(bolt-sandbox-common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

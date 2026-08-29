@@ -31,11 +31,10 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
     const auto denied = reinterpret_cast<HANDLE>(_wcstoui64(arguments[3], nullptr, 10));
-    DWORD flags = 0;
-    if (!GetHandleInformation(allowed, &flags)) {
+    if (!SetEvent(allowed)) {
         return 81;
     }
-    if (GetHandleInformation(denied, &flags)) {
+    if (SetEvent(denied)) {
         return 82;
     }
     return 0;
@@ -71,7 +70,8 @@ bool RunProcessTests() {
                          bolt::common::SuspendedProcess::Create(options, process) ==
                              bolt::common::ProcessStatus::kSuccess;
     if (!created || process.Wait(100) != bolt::common::ProcessStatus::kWaitTimeout ||
-        job.Assign(process.process_handle()) != bolt::common::JobStatus::kSuccess ||
+        process.Resume() != bolt::common::ProcessStatus::kInvalidState ||
+        process.AssignTo(job) != bolt::common::ProcessStatus::kSuccess ||
         process.Resume() != bolt::common::ProcessStatus::kSuccess ||
         process.Wait(5'000) != bolt::common::ProcessStatus::kSuccess) {
         CloseHandle(allowed);
@@ -80,7 +80,9 @@ bool RunProcessTests() {
     }
     DWORD exit_code = 0;
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
-                            exit_code == 0;
+                            exit_code == 0 &&
+                            WaitForSingleObject(allowed, 0) == WAIT_OBJECT_0 &&
+                            WaitForSingleObject(denied, 0) == WAIT_TIMEOUT;
     CloseHandle(allowed);
     CloseHandle(denied);
     if (!exact_exit) {
