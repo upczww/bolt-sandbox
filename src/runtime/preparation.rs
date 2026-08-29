@@ -8,6 +8,7 @@ use std::{
 use super::architecture::{
     ImageArchitecture, ImageArchitectureError, detect_image_architecture_from_reader,
 };
+use super::components::{ComponentOpenError, OpenedComponents, open_components};
 use crate::{
     SandboxError, SandboxRequest,
     ipc::identity::ExecutionIdentity,
@@ -26,6 +27,7 @@ pub(super) struct PreparedLaunch {
     stripped_credentials: usize,
     timeout: Option<Duration>,
     execution_identity: ExecutionIdentity,
+    components: OpenedComponents,
 }
 
 impl PreparedLaunch {
@@ -72,6 +74,22 @@ impl PreparedLaunch {
     pub(super) const fn handshake_nonce(&self) -> &[u8; 16] {
         self.execution_identity.handshake_nonce()
     }
+
+    pub(super) fn launcher_component_path(&self) -> &Path {
+        self.components.launcher_path()
+    }
+
+    pub(super) fn hook_component_path(&self) -> &Path {
+        self.components.hook_path()
+    }
+
+    pub(super) const fn launcher_component_handle(&self) -> &File {
+        self.components.launcher_handle()
+    }
+
+    pub(super) const fn hook_component_handle(&self) -> &File {
+        self.components.hook_handle()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,6 +98,7 @@ pub(super) enum LaunchPreparationError {
     ProgramOpen,
     InvalidProgramImage,
     UnsupportedArchitecture { machine: u16 },
+    Component(ComponentOpenError),
     PolicyPayload,
     ExecutionIdentity,
 }
@@ -87,8 +106,9 @@ pub(super) enum LaunchPreparationError {
 pub(super) fn prepare_launch(
     request_value: &SandboxRequest,
     credential_names: &[OsString],
+    component_root: &Path,
 ) -> Result<PreparedLaunch, LaunchPreparationError> {
-    prepare_launch_with_identity_factory(request_value, credential_names, || {
+    prepare_launch_with_identity_factory(request_value, credential_names, component_root, || {
         ExecutionIdentity::generate().map_err(|_| LaunchPreparationError::ExecutionIdentity)
     })
 }
@@ -96,6 +116,7 @@ pub(super) fn prepare_launch(
 fn prepare_launch_with_identity_factory(
     request_value: &SandboxRequest,
     credential_names: &[OsString],
+    component_root: &Path,
     create_identity: impl FnOnce() -> Result<ExecutionIdentity, LaunchPreparationError>,
 ) -> Result<PreparedLaunch, LaunchPreparationError> {
     request_value
@@ -120,6 +141,8 @@ fn prepare_launch_with_identity_factory(
         File::open(&request_value.program).map_err(|_| LaunchPreparationError::ProgramOpen)?;
     let architecture = detect_image_architecture_from_reader(&mut program_handle)
         .map_err(map_architecture_error)?;
+    let components =
+        open_components(component_root, architecture).map_err(LaunchPreparationError::Component)?;
     let execution_identity = create_identity()?;
 
     Ok(PreparedLaunch {
@@ -133,6 +156,7 @@ fn prepare_launch_with_identity_factory(
         stripped_credentials: prepared_environment.diagnostic.stripped_credentials,
         timeout: request_value.timeout,
         execution_identity,
+        components,
     })
 }
 
@@ -185,7 +209,9 @@ mod tests {
             fs::create_dir(&root).expect("fixture directory must be created");
             let program = root.join("fixture.exe");
             fs::write(&program, pe_image(0x8664)).expect("fixture image must be written");
-            Self { root, program }
+            let fixture = Self { root, program };
+            fixture.install_components();
+            fixture
         }
 
         fn request(&self) -> SandboxRequest {
@@ -215,8 +241,7 @@ mod tests {
 
     impl Drop for Fixture {
         fn drop(&mut self) {
-            let _ = fs::remove_file(&self.program);
-            let _ = fs::remove_dir(&self.root);
+            let _ = fs::remove_dir_all(&self.root);
         }
     }
 
@@ -244,7 +269,7 @@ mod tests {
         let fixture = Fixture::x64();
         let request = fixture.request();
 
-        let prepared = prepare_launch(&request, &[OsString::from("secret_token")])
+        let prepared = prepare_launch(&request, &[OsString::from("secret_token")], &fixture.root)
             .expect("valid request must prepare");
 
         assert_eq!(prepared.architecture(), ImageArchitecture::X64);
@@ -274,7 +299,7 @@ mod tests {
         request.timeout = Some(Duration::ZERO);
 
         assert!(matches!(
-            prepare_launch(&request, &[]),
+            prepare_launch(&request, &[], &fixture.root),
             Err(LaunchPreparationError::Request(
                 SandboxError::InvalidRequest {
                     field: RequestField::Timeout,
@@ -290,7 +315,7 @@ mod tests {
         fs::write(&fixture.program, pe_image(0xAA64)).expect("fixture image must be replaced");
 
         assert!(matches!(
-            prepare_launch(&fixture.request(), &[]),
+            prepare_launch(&fixture.request(), &[], &fixture.root),
             Err(LaunchPreparationError::UnsupportedArchitecture { machine: 0xAA64 })
         ));
     }
@@ -299,7 +324,8 @@ mod tests {
     fn req_001_prepared_paths_are_the_validated_request_paths() {
         let fixture = Fixture::x64();
         let request = fixture.request();
-        let prepared = prepare_launch(&request, &[]).expect("valid request must prepare");
+        let prepared =
+            prepare_launch(&request, &[], &fixture.root).expect("valid request must prepare");
 
         assert_eq!(prepared.program(), Path::new(&request.program));
         assert_eq!(prepared.cwd(), Path::new(&request.cwd));
@@ -309,9 +335,10 @@ mod tests {
     fn ipc_017_entropy_failure_returns_no_partial_launch_preparation() {
         let fixture = Fixture::x64();
 
-        let result = prepare_launch_with_identity_factory(&fixture.request(), &[], || {
-            Err(LaunchPreparationError::ExecutionIdentity)
-        });
+        let result =
+            prepare_launch_with_identity_factory(&fixture.request(), &[], &fixture.root, || {
+                Err(LaunchPreparationError::ExecutionIdentity)
+            });
 
         assert!(matches!(
             result,
@@ -326,7 +353,7 @@ mod tests {
         request.timeout = Some(Duration::ZERO);
         let entropy_consumed = std::cell::Cell::new(false);
 
-        let result = prepare_launch_with_identity_factory(&request, &[], || {
+        let result = prepare_launch_with_identity_factory(&request, &[], &fixture.root, || {
             entropy_consumed.set(true);
             Err(LaunchPreparationError::ExecutionIdentity)
         });
@@ -358,6 +385,8 @@ mod tests {
     #[test]
     fn pkg_001_missing_component_does_not_consume_execution_entropy() {
         let fixture = Fixture::x64();
+        fs::remove_file(fixture.root.join("bolt-sandbox-launcher.exe"))
+            .expect("launcher fixture must be removed");
         let entropy_consumed = std::cell::Cell::new(false);
 
         let result =
