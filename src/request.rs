@@ -53,3 +53,90 @@ impl SandboxRequest {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_request() -> SandboxRequest {
+        SandboxRequest {
+            program: std::env::current_exe().expect("test executable path must be available"),
+            arguments: Vec::new(),
+            cwd: std::env::current_dir().expect("test working directory must be available"),
+            environment: BTreeMap::new(),
+            policy: SandboxPolicy::default(),
+            timeout: None,
+        }
+    }
+
+    #[test]
+    fn req_005_empty_environment_name_is_rejected_without_echoing_data() {
+        let mut request = valid_request();
+        request
+            .environment
+            .insert(OsString::new(), OsString::from("secret-canary"));
+
+        assert_eq!(
+            request.validate(),
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::Environment,
+                reason: InvalidRequestReason::Empty,
+            })
+        );
+    }
+
+    #[test]
+    fn req_005_reserved_and_malformed_environment_names_are_rejected() {
+        for name in ["=C:", "A=B", "BAD\0NAME"] {
+            let mut request = valid_request();
+            request
+                .environment
+                .insert(OsString::from(name), OsString::from("value"));
+
+            assert!(matches!(
+                request.validate(),
+                Err(SandboxError::InvalidRequest {
+                    field: RequestField::Environment,
+                    reason: InvalidRequestReason::InvalidCharacter
+                        | InvalidRequestReason::ReservedName,
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn req_005_environment_value_with_nul_is_rejected() {
+        let mut request = valid_request();
+        request.environment.insert(
+            OsString::from("BOLT_VALUE"),
+            OsString::from("before\0after"),
+        );
+
+        assert_eq!(
+            request.validate(),
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::Environment,
+                reason: InvalidRequestReason::InvalidCharacter,
+            })
+        );
+    }
+
+    #[test]
+    fn req_005_ascii_case_colliding_environment_names_are_rejected() {
+        let mut request = valid_request();
+        request
+            .environment
+            .insert(OsString::from("Path"), OsString::from("first"));
+        request
+            .environment
+            .insert(OsString::from("PATH"), OsString::from("second"));
+
+        assert_eq!(
+            request.validate(),
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::Environment,
+                reason: InvalidRequestReason::ConflictingNames,
+            })
+        );
+    }
+}
