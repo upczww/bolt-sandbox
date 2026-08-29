@@ -18,3 +18,5 @@ mod preparation;
     reason = "startup orchestration is connected to the native launcher adapter later"
 )]
 mod startup;
+#[cfg(test)]
+mod streams;
