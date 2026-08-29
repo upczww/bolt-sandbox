@@ -1,3 +1,133 @@
+use std::{
+    ffi::OsString,
+    fs::File,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+use super::architecture::{
+    ImageArchitecture, ImageArchitectureError, detect_image_architecture_from_reader,
+};
+use crate::{
+    SandboxError, SandboxRequest,
+    policy::compiler::{self, payload},
+    request,
+};
+
+#[derive(Debug)]
+pub(super) struct PreparedLaunch {
+    program: PathBuf,
+    cwd: PathBuf,
+    program_handle: File,
+    architecture: ImageArchitecture,
+    command_line: Vec<u16>,
+    environment_block: Vec<u16>,
+    policy_payload: Vec<u8>,
+    stripped_credentials: usize,
+    timeout: Option<Duration>,
+}
+
+impl PreparedLaunch {
+    pub(super) fn program(&self) -> &Path {
+        &self.program
+    }
+
+    pub(super) fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
+    pub(super) const fn architecture(&self) -> ImageArchitecture {
+        self.architecture
+    }
+
+    pub(super) fn command_line(&self) -> &[u16] {
+        &self.command_line
+    }
+
+    pub(super) fn environment_block(&self) -> &[u16] {
+        &self.environment_block
+    }
+
+    pub(super) fn policy_payload(&self) -> &[u8] {
+        &self.policy_payload
+    }
+
+    pub(super) const fn stripped_credentials(&self) -> usize {
+        self.stripped_credentials
+    }
+
+    pub(super) const fn timeout(&self) -> Option<Duration> {
+        self.timeout
+    }
+
+    pub(super) const fn program_handle(&self) -> &File {
+        &self.program_handle
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum LaunchPreparationError {
+    Request(SandboxError),
+    ProgramOpen,
+    InvalidProgramImage,
+    UnsupportedArchitecture { machine: u16 },
+    PolicyPayload,
+}
+
+pub(super) fn prepare_launch(
+    request_value: &SandboxRequest,
+    credential_names: &[OsString],
+) -> Result<PreparedLaunch, LaunchPreparationError> {
+    request_value
+        .validate()
+        .map_err(LaunchPreparationError::Request)?;
+
+    let prepared_environment =
+        request::prepare_environment(&request_value.environment, credential_names)
+            .map_err(LaunchPreparationError::Request)?;
+    let command_line =
+        request::encode_command_line(&request_value.program, &request_value.arguments)
+            .map_err(LaunchPreparationError::Request)?;
+    let environment_block = request::encode_environment_block(&prepared_environment.variables)
+        .map_err(LaunchPreparationError::Request)?;
+    let compiled_policy = compiler::compile(&request_value.policy, &request_value.cwd)
+        .map_err(LaunchPreparationError::Request)?;
+    let policy_payload = payload::seal(&compiled_policy)
+        .map_err(|_| LaunchPreparationError::PolicyPayload)?
+        .into_bytes();
+
+    let mut program_handle =
+        File::open(&request_value.program).map_err(|_| LaunchPreparationError::ProgramOpen)?;
+    let architecture = detect_image_architecture_from_reader(&mut program_handle)
+        .map_err(map_architecture_error)?;
+
+    Ok(PreparedLaunch {
+        program: request_value.program.clone(),
+        cwd: request_value.cwd.clone(),
+        program_handle,
+        architecture,
+        command_line,
+        environment_block,
+        policy_payload,
+        stripped_credentials: prepared_environment.diagnostic.stripped_credentials,
+        timeout: request_value.timeout,
+    })
+}
+
+const fn map_architecture_error(error: ImageArchitectureError) -> LaunchPreparationError {
+    match error {
+        ImageArchitectureError::UnsupportedMachine { machine } => {
+            LaunchPreparationError::UnsupportedArchitecture { machine }
+        }
+        ImageArchitectureError::TruncatedDosHeader
+        | ImageArchitectureError::InvalidDosSignature
+        | ImageArchitectureError::PeHeaderOutOfRange
+        | ImageArchitectureError::TruncatedCoffHeader
+        | ImageArchitectureError::InvalidPeSignature
+        | ImageArchitectureError::ReadFailure => LaunchPreparationError::InvalidProgramImage,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -96,6 +226,7 @@ mod tests {
         assert_eq!(prepared.timeout(), request.timeout);
         assert_eq!(prepared.command_line().last(), Some(&0));
         assert!(payload::verify(prepared.policy_payload()).is_ok());
+        assert!(prepared.program_handle().metadata().is_ok());
     }
 
     #[test]
@@ -104,7 +235,7 @@ mod tests {
         let mut request = fixture.request();
         request.timeout = Some(Duration::ZERO);
 
-        assert_eq!(
+        assert!(matches!(
             prepare_launch(&request, &[]),
             Err(LaunchPreparationError::Request(
                 SandboxError::InvalidRequest {
@@ -112,7 +243,7 @@ mod tests {
                     reason: InvalidRequestReason::OutOfRange,
                 }
             ))
-        );
+        ));
     }
 
     #[test]
@@ -120,10 +251,10 @@ mod tests {
         let fixture = Fixture::x64();
         fs::write(&fixture.program, pe_image(0xAA64)).expect("fixture image must be replaced");
 
-        assert_eq!(
+        assert!(matches!(
             prepare_launch(&fixture.request(), &[]),
             Err(LaunchPreparationError::UnsupportedArchitecture { machine: 0xAA64 })
-        );
+        ));
     }
 
     #[test]

@@ -247,6 +247,14 @@ Request protocol version 1 also applies these pre-launch resource budgets:
 Every maximum is inclusive. A maximum-plus-one input is rejected before native
 allocation or process launch, and errors identify only the field and reason.
 
+The Rust launch-preparation transaction produces no launcher input until request
+validation, credential stripping, Windows command-line and environment-block
+encoding, policy compilation/sealing, target image inspection, and architecture
+selection have all succeeded. Its result owns the encoded buffers and retains
+the already opened program handle for later file-identity binding; errors expose
+only typed stages and never partial buffers, command data, environment values,
+or policy contents.
+
 ### 5.2 Launcher
 
 Responsibilities:

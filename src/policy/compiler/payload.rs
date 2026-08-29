@@ -20,7 +20,7 @@ const HEADER_LENGTH_WIRE: u16 = 44;
 pub(super) const MAX_POLICY_BODY_LENGTH: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum PolicyPayloadError {
+pub(crate) enum PolicyPayloadError {
     TruncatedHeader,
     InvalidMagic,
     InvalidHeaderLength,
@@ -37,7 +37,7 @@ pub(super) enum PolicyPayloadError {
     dead_code,
     reason = "sealed policy is passed to the native launcher in a later phase"
 )]
-pub(super) struct SealedPolicy {
+pub(crate) struct SealedPolicy {
     bytes: Vec<u8>,
 }
 
@@ -46,11 +46,11 @@ pub(super) struct SealedPolicy {
     reason = "sealed policy is passed to the native launcher in a later phase"
 )]
 impl SealedPolicy {
-    pub(super) fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
 
-    pub(super) fn into_bytes(self) -> Vec<u8> {
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
         self.bytes
     }
 
@@ -60,7 +60,7 @@ impl SealedPolicy {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub(super) struct VerifiedPolicy<'a> {
+pub(crate) struct VerifiedPolicy<'a> {
     version: u16,
     body: &'a [u8],
 }
@@ -83,7 +83,7 @@ impl VerifiedPolicy<'_> {
     dead_code,
     reason = "policy sealing is connected to the native launcher in a later phase"
 )]
-pub(super) fn seal(policy: &CompiledPolicy) -> Result<SealedPolicy, PolicyPayloadError> {
+pub(crate) fn seal(policy: &CompiledPolicy) -> Result<SealedPolicy, PolicyPayloadError> {
     let body = encode_body(policy)?;
     let body_length = u32::try_from(body.len()).map_err(|_| PolicyPayloadError::PayloadTooLarge)?;
     let mut bytes = vec![0; HEADER_LENGTH];
@@ -104,7 +104,7 @@ pub(super) fn seal(policy: &CompiledPolicy) -> Result<SealedPolicy, PolicyPayloa
     dead_code,
     reason = "policy verification is connected to native startup in a later phase"
 )]
-pub(super) fn verify(encoded: &[u8]) -> Result<VerifiedPolicy<'_>, PolicyPayloadError> {
+pub(crate) fn verify(encoded: &[u8]) -> Result<VerifiedPolicy<'_>, PolicyPayloadError> {
     if encoded.len() < HEADER_LENGTH {
         return Err(PolicyPayloadError::TruncatedHeader);
     }

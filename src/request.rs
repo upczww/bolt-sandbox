@@ -125,7 +125,10 @@ fn validate_environment(environment: &BTreeMap<OsString, OsString>) -> Result<()
     Ok(())
 }
 
-fn encode_command_line(program: &Path, arguments: &[OsString]) -> Result<Vec<u16>, SandboxError> {
+pub(crate) fn encode_command_line(
+    program: &Path,
+    arguments: &[OsString],
+) -> Result<Vec<u16>, SandboxError> {
     if contains_nul(program.as_os_str()) || arguments.iter().any(|value| contains_nul(value)) {
         return Err(invalid_arguments(InvalidRequestReason::InvalidCharacter));
     }
@@ -224,24 +227,24 @@ fn push_repeated(encoded: &mut Vec<u16>, code_unit: u16, count: usize) {
     dead_code,
     reason = "prepared environment is consumed by the process runtime in the next phase"
 )]
-struct PreparedEnvironment {
-    variables: BTreeMap<OsString, OsString>,
-    diagnostic: EnvironmentSanitization,
+pub(crate) struct PreparedEnvironment {
+    pub(crate) variables: BTreeMap<OsString, OsString>,
+    pub(crate) diagnostic: EnvironmentSanitization,
 }
 
 #[allow(
     dead_code,
     reason = "sanitization diagnostics are emitted by the process runtime in the next phase"
 )]
-struct EnvironmentSanitization {
-    stripped_credentials: usize,
+pub(crate) struct EnvironmentSanitization {
+    pub(crate) stripped_credentials: usize,
 }
 
 #[allow(
     dead_code,
     reason = "environment preparation is wired into child creation in the next phase"
 )]
-fn prepare_environment(
+pub(crate) fn prepare_environment(
     environment: &BTreeMap<OsString, OsString>,
     credential_names: &[OsString],
 ) -> Result<PreparedEnvironment, SandboxError> {
@@ -273,7 +276,7 @@ fn prepare_environment(
     dead_code,
     reason = "encoded environment block is passed to CreateProcessW in the runtime phase"
 )]
-fn encode_environment_block(
+pub(crate) fn encode_environment_block(
     environment: &BTreeMap<OsString, OsString>,
 ) -> Result<Vec<u16>, SandboxError> {
     validate_environment(environment)?;

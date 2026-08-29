@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{InvalidRequestReason, RequestField, SandboxError};
 
-mod payload;
+pub(crate) mod payload;
 
 const MAX_NETWORK_RULES_PER_CATEGORY: usize = 1_024;
 const MAX_TOTAL_NETWORK_RULES: usize = 2_048;
