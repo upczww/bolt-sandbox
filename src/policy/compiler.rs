@@ -885,8 +885,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        InvalidRequestReason, IpCidr, NetworkAllowList, NetworkPolicy, PortRange, RequestField,
-        SandboxError,
+        InvalidRequestReason, IpCidr, NetworkAllowList, NetworkPolicy, PortRange, RecoveryLimits,
+        RecoveryPolicy, RequestField, SandboxError,
     };
 
     fn policy_with_filesystem(
@@ -1654,5 +1654,86 @@ mod tests {
         };
         *rules = vec![r"HKCU\Software\Repeated".into(); count];
         policy
+    }
+
+    fn recovery_policy(maximum_bytes: u64, maximum_items: u32) -> SandboxPolicy {
+        SandboxPolicy {
+            recovery: RecoveryPolicy::Enabled(RecoveryLimits {
+                directory: PathBuf::from(r"C:\trusted-recovery"),
+                maximum_bytes,
+                maximum_items,
+            }),
+            ..SandboxPolicy::default()
+        }
+    }
+
+    #[test]
+    fn pol_023_disabled_and_maximum_recovery_quotas_compile_explicitly() {
+        let disabled = compile(&SandboxPolicy::default(), Path::new(r"C:\work"))
+            .expect("disabled recovery must compile");
+        assert!(matches!(
+            disabled.recovery,
+            CompiledRecoveryPolicy::Disabled
+        ));
+
+        let maximum = compile(&recovery_policy(u64::MAX, u32::MAX), Path::new(r"C:\work"))
+            .expect("representable maximum quotas must compile");
+        assert!(matches!(
+            maximum.recovery,
+            CompiledRecoveryPolicy::Enabled(CompiledRecoveryLimits {
+                maximum_bytes: u64::MAX,
+                maximum_items: u32::MAX,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn pol_023_zero_quotas_and_relative_directory_are_rejected() {
+        for policy in [recovery_policy(0, 1), recovery_policy(1, 0)] {
+            assert_eq!(
+                compile(&policy, Path::new(r"C:\work")).err(),
+                Some(SandboxError::InvalidRequest {
+                    field: RequestField::RecoveryPolicy,
+                    reason: InvalidRequestReason::OutOfRange,
+                })
+            );
+        }
+
+        let mut relative = recovery_policy(1, 1);
+        let RecoveryPolicy::Enabled(limits) = &mut relative.recovery else {
+            unreachable!();
+        };
+        limits.directory = PathBuf::from("relative-recovery");
+        assert_eq!(
+            compile(&relative, Path::new(r"C:\work")).err(),
+            Some(SandboxError::InvalidRequest {
+                field: RequestField::RecoveryPolicy,
+                reason: InvalidRequestReason::MustBeAbsolute,
+            })
+        );
+    }
+
+    #[test]
+    fn pol_023_runtime_quota_enforces_bytes_items_and_checked_overflow() {
+        let compiled = compile(&recovery_policy(10, 2), Path::new(r"C:\work"))
+            .expect("valid recovery policy must compile");
+        let CompiledRecoveryPolicy::Enabled(limits) = compiled.recovery else {
+            panic!("recovery must be enabled");
+        };
+        let mut quota = limits.quota();
+
+        assert_eq!(quota.reserve(7), Ok(()));
+        assert_eq!(quota.reserve(3), Ok(()));
+        assert_eq!(quota.reserve(0), Err(RecoveryQuotaError::ItemLimit));
+
+        let compiled = compile(&recovery_policy(u64::MAX, 2), Path::new(r"C:\work"))
+            .expect("maximum recovery policy must compile");
+        let CompiledRecoveryPolicy::Enabled(limits) = compiled.recovery else {
+            panic!("recovery must be enabled");
+        };
+        let mut quota = limits.quota();
+        assert_eq!(quota.reserve(u64::MAX), Ok(()));
+        assert_eq!(quota.reserve(1), Err(RecoveryQuotaError::CounterOverflow));
     }
 }
