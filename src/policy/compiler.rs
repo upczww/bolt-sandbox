@@ -6,8 +6,8 @@ use std::{
 };
 
 use super::{
-    ChildProcessPolicy, IpCidr, NetworkAllowList, NetworkPolicy, PortRange, RecoveryPolicy,
-    RegistryPolicy, SandboxPolicy,
+    ChildProcessPolicy, FilesystemPolicy, IpCidr, NetworkAllowList, NetworkPolicy, PortRange,
+    RecoveryPolicy, RegistryPolicy, SandboxPolicy,
 };
 use crate::{InvalidRequestReason, RequestField, SandboxError};
 
@@ -15,6 +15,9 @@ pub(crate) mod payload;
 
 const MAX_NETWORK_RULES_PER_CATEGORY: usize = 1_024;
 const MAX_TOTAL_NETWORK_RULES: usize = 2_048;
+const MAX_FILESYSTEM_RULES_PER_CATEGORY: usize = 1_024;
+const MAX_TOTAL_FILESYSTEM_RULES: usize = 2_048;
+const MAX_FILESYSTEM_PATH_CODE_UNITS: usize = 32_767;
 const MAX_REGISTRY_RULES_PER_CATEGORY: usize = 1_024;
 const MAX_TOTAL_REGISTRY_RULES: usize = 2_048;
 const MAX_REGISTRY_KEY_CODE_UNITS: usize = 255;
@@ -37,6 +40,7 @@ pub(crate) fn compile_with_security_denies(
     mandatory_filesystem_denies: &[std::path::PathBuf],
     mandatory_registry_denies: &[String],
 ) -> Result<CompiledPolicy, SandboxError> {
+    validate_filesystem_policy_limits(&policy.filesystem)?;
     let mut filesystem = CompiledFilesystemPolicy::default();
     filesystem.add_rule(cwd, FilesystemRuleKind::ReadWrite)?;
     filesystem.add_rules(&policy.filesystem.read_write, FilesystemRuleKind::ReadWrite)?;
@@ -72,6 +76,29 @@ pub(crate) fn compile_with_security_denies(
         FilesystemDecision::Allow
     );
     Ok(compiled)
+}
+
+fn validate_filesystem_policy_limits(policy: &FilesystemPolicy) -> Result<(), SandboxError> {
+    let category_counts = [
+        policy.read_write.len(),
+        policy.read_only.len(),
+        policy.deny.len(),
+        policy.metadata_read.len(),
+        policy.inherit_user.len(),
+    ];
+    if category_counts
+        .iter()
+        .any(|count| *count > MAX_FILESYSTEM_RULES_PER_CATEGORY)
+        || category_counts
+            .into_iter()
+            .try_fold(0_usize, usize::checked_add)
+            .is_none_or(|count| count > MAX_TOTAL_FILESYSTEM_RULES)
+    {
+        return Err(invalid_filesystem_policy(
+            InvalidRequestReason::TooManyItems,
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) struct CompiledPolicy {
@@ -912,7 +939,14 @@ impl NormalizedPath {
                 }
             }
         }
-        Ok(Self { components })
+        let normalized = Self { components };
+        if normalized
+            .encoded_length()
+            .is_none_or(|length| length > MAX_FILESYSTEM_PATH_CODE_UNITS)
+        {
+            return Err(invalid_filesystem_policy(InvalidRequestReason::TooLarge));
+        }
+        Ok(normalized)
     }
 
     fn contains(&self, candidate: &Self) -> bool {
@@ -926,6 +960,31 @@ impl NormalizedPath {
 
     fn depth(&self) -> usize {
         self.components.len()
+    }
+
+    fn encoded_length(&self) -> Option<usize> {
+        let mut length = 0_usize;
+        let mut previous_was_normal = false;
+        for component in &self.components {
+            match component {
+                NormalizedComponent::Prefix(value) => {
+                    length = length.checked_add(value.encode_wide().count())?;
+                    previous_was_normal = false;
+                }
+                NormalizedComponent::Root => {
+                    length = length.checked_add(1)?;
+                    previous_was_normal = false;
+                }
+                NormalizedComponent::Normal(value) => {
+                    if previous_was_normal {
+                        length = length.checked_add(1)?;
+                    }
+                    length = length.checked_add(value.encode_wide().count())?;
+                    previous_was_normal = true;
+                }
+            }
+        }
+        Some(length)
     }
 }
 
@@ -1185,10 +1244,7 @@ mod tests {
 
     #[test]
     fn pol_022_filesystem_category_limits_are_checked_before_deduplication() {
-        let repeated = vec![
-            PathBuf::from(r"C:\same");
-            MAX_FILESYSTEM_RULES_PER_CATEGORY + 1
-        ];
+        let repeated = vec![PathBuf::from(r"C:\same"); MAX_FILESYSTEM_RULES_PER_CATEGORY + 1];
 
         for configure in [
             |policy: &mut super::super::FilesystemPolicy, paths| {
@@ -1238,19 +1294,9 @@ mod tests {
             })
         };
 
-        assert!(
-            compile(
-                &make_policy(683, 683, 682),
-                Path::new(r"C:\work"),
-            )
-            .is_ok()
-        );
+        assert!(compile(&make_policy(683, 683, 682), Path::new(r"C:\work"),).is_ok());
         assert_eq!(
-            compile(
-                &make_policy(683, 683, 683),
-                Path::new(r"C:\work"),
-            )
-            .err(),
+            compile(&make_policy(683, 683, 683), Path::new(r"C:\work"),).err(),
             Some(SandboxError::InvalidRequest {
                 field: RequestField::FilesystemPolicy,
                 reason: InvalidRequestReason::TooManyItems,

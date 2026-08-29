@@ -330,6 +330,15 @@ must not become readable merely because a child path is granted. The runtime may
 permit the minimum path traversal metadata required by Windows while denying
 content enumeration and file reads outside granted roots.
 
+Filesystem policy protocol version 1 accepts at most 1,024 request rules in
+each of `read_write`, `read_only`, `deny`, `metadata_read`, and `inherit_user`,
+with at most 2,048 request rules in total. Counts are checked before
+normalization or deduplication. A normalized absolute path is limited to 32,767
+UTF-16 code units. These maxima are inclusive; maximum-plus-one fails before
+policy sealing or process launch with bounded field-only diagnostics. The
+trusted current-directory grant and host-supplied mandatory denies are not
+request rules, but remain subject to path and serialized-payload limits.
+
 ### 6.2 Required Coverage
 
 At minimum, cover:
