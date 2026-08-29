@@ -354,4 +354,58 @@ mod tests {
         assert!(deadline.has_expired(start + Duration::from_millis(50)));
         assert!(deadline.has_expired(start + Duration::from_secs(1)));
     }
+
+    #[test]
+    fn life_014_terminal_event_must_match_the_committed_timeout_cause() {
+        let mut lifecycle = LifecycleController::new();
+        lifecycle.start().expect("start must succeed");
+        lifecycle
+            .observe_triggers(TriggerSet {
+                timed_out: true,
+                ..TriggerSet::default()
+            })
+            .expect("timeout must commit");
+        lifecycle
+            .mark_job_terminated()
+            .expect("termination must begin draining");
+
+        assert_eq!(
+            lifecycle.mark_terminal_event(exit_event(ProcessExitReason::Exited)),
+            Err(LifecycleError::TerminalReasonMismatch {
+                cause: TerminationCause::TimedOut,
+                actual: ProcessExitReason::Exited,
+            })
+        );
+        assert_eq!(
+            lifecycle.mark_terminal_event(exit_event(ProcessExitReason::TimedOut)),
+            Ok(LifecycleAction::None)
+        );
+    }
+
+    #[test]
+    fn life_005_cancelled_execution_requires_terminated_terminal_reason() {
+        let mut lifecycle = LifecycleController::new();
+        lifecycle.start().expect("start must succeed");
+        lifecycle
+            .observe_triggers(TriggerSet {
+                cancelled: true,
+                ..TriggerSet::default()
+            })
+            .expect("cancellation must commit");
+        lifecycle
+            .mark_job_terminated()
+            .expect("termination must begin draining");
+
+        assert_eq!(
+            lifecycle.mark_terminal_event(exit_event(ProcessExitReason::TimedOut)),
+            Err(LifecycleError::TerminalReasonMismatch {
+                cause: TerminationCause::Cancelled,
+                actual: ProcessExitReason::TimedOut,
+            })
+        );
+        assert_eq!(
+            lifecycle.mark_terminal_event(exit_event(ProcessExitReason::Terminated)),
+            Ok(LifecycleAction::None)
+        );
+    }
 }
