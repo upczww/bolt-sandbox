@@ -1,3 +1,76 @@
+use super::framing::{self, FrameKind};
+use crate::SandboxEvent;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HandshakeState {
+    AwaitingReady,
+    Ready,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HandshakeError {
+    Protocol,
+    DuplicateReady,
+    UnexpectedSequence { expected: u64, actual: u64 },
+    UnexpectedMessage,
+    InvalidReadyPayload,
+    NonceMismatch,
+}
+
+pub(super) struct Handshake {
+    expected_nonce: [u8; 16],
+    state: HandshakeState,
+}
+
+impl Handshake {
+    pub(super) fn new(expected_nonce: [u8; 16]) -> Self {
+        Self {
+            expected_nonce,
+            state: HandshakeState::AwaitingReady,
+        }
+    }
+
+    pub(super) fn state(&self) -> HandshakeState {
+        self.state
+    }
+
+    pub(super) fn accept(&mut self, encoded: &[u8]) -> Result<SandboxEvent, HandshakeError> {
+        if self.state == HandshakeState::Ready {
+            return Err(HandshakeError::DuplicateReady);
+        }
+
+        let frame = framing::decode(encoded).map_err(|_| HandshakeError::Protocol)?;
+        if frame.sequence != 0 {
+            return Err(HandshakeError::UnexpectedSequence {
+                expected: 0,
+                actual: frame.sequence,
+            });
+        }
+        if frame.kind != FrameKind::Ready {
+            return Err(HandshakeError::UnexpectedMessage);
+        }
+        let nonce: [u8; 16] = frame
+            .payload
+            .try_into()
+            .map_err(|_| HandshakeError::InvalidReadyPayload)?;
+        if !constant_time_eq(&nonce, &self.expected_nonce) {
+            return Err(HandshakeError::NonceMismatch);
+        }
+
+        self.state = HandshakeState::Ready;
+        Ok(SandboxEvent::Ready)
+    }
+}
+
+fn constant_time_eq(left: &[u8; 16], right: &[u8; 16]) -> bool {
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

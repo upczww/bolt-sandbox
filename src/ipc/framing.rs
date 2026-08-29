@@ -1,5 +1,5 @@
 const MAGIC: [u8; 4] = *b"BLT1";
-const PROTOCOL_VERSION: u16 = 1;
+pub(super) const PROTOCOL_VERSION: u16 = 1;
 const HEADER_LENGTH: usize = 24;
 const VERSION_OFFSET: usize = 4;
 const KIND_OFFSET: usize = 6;
@@ -9,16 +9,16 @@ const CHECKSUM_OFFSET: usize = 20;
 const MAX_PAYLOAD_LENGTH: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct Frame {
-    version: u16,
-    kind: FrameKind,
-    sequence: u64,
-    payload: Vec<u8>,
+pub(super) struct Frame {
+    pub(super) version: u16,
+    pub(super) kind: FrameKind,
+    pub(super) sequence: u64,
+    pub(super) payload: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
-enum FrameKind {
+pub(super) enum FrameKind {
     Ready = 1,
 }
 
@@ -34,7 +34,7 @@ impl TryFrom<u16> for FrameKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ProtocolError {
+pub(super) enum ProtocolError {
     TruncatedHeader,
     TruncatedPayload,
     PayloadTooLarge,
@@ -45,7 +45,7 @@ enum ProtocolError {
     TrailingBytes,
 }
 
-fn encode(frame: &Frame) -> Result<Vec<u8>, ProtocolError> {
+pub(super) fn encode(frame: &Frame) -> Result<Vec<u8>, ProtocolError> {
     if frame.version != PROTOCOL_VERSION {
         return Err(ProtocolError::UnsupportedVersion);
     }
@@ -68,7 +68,7 @@ fn encode(frame: &Frame) -> Result<Vec<u8>, ProtocolError> {
     Ok(encoded)
 }
 
-fn decode(encoded: &[u8]) -> Result<Frame, ProtocolError> {
+pub(super) fn decode(encoded: &[u8]) -> Result<Frame, ProtocolError> {
     if encoded.len() < HEADER_LENGTH {
         return Err(ProtocolError::TruncatedHeader);
     }
