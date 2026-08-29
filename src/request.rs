@@ -127,6 +127,35 @@ fn prepare_environment(
     })
 }
 
+#[allow(
+    dead_code,
+    reason = "encoded environment block is passed to CreateProcessW in the runtime phase"
+)]
+fn encode_environment_block(
+    environment: &BTreeMap<OsString, OsString>,
+) -> Result<Vec<u16>, SandboxError> {
+    validate_environment(environment)?;
+
+    let mut sorted = Vec::with_capacity(environment.len());
+    for (name, value) in environment {
+        sorted.push((normalize_environment_name(name)?, name, value));
+    }
+    sorted.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut encoded = Vec::new();
+    for (_, name, value) in sorted {
+        encoded.extend(name.encode_wide());
+        encoded.push(u16::from(b'='));
+        encoded.extend(value.encode_wide());
+        encoded.push(0);
+    }
+    if encoded.is_empty() {
+        encoded.push(0);
+    }
+    encoded.push(0);
+    Ok(encoded)
+}
+
 fn validate_environment_name(name: &OsStr) -> Result<(), SandboxError> {
     if name.is_empty() {
         return Err(invalid_environment(InvalidRequestReason::Empty));
@@ -370,9 +399,6 @@ mod tests {
 
     #[test]
     fn req_005_empty_environment_encodes_with_double_terminator() {
-        assert_eq!(
-            encode_environment_block(&BTreeMap::new()),
-            Ok(vec![0, 0])
-        );
+        assert_eq!(encode_environment_block(&BTreeMap::new()), Ok(vec![0, 0]));
     }
 }
