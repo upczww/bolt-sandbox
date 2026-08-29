@@ -1060,7 +1060,9 @@ const fn invalid_recovery_policy(reason: InvalidRequestReason) -> SandboxError {
 #[cfg(test)]
 mod tests {
     use std::{
+        ffi::OsString,
         net::{IpAddr, Ipv4Addr, Ipv6Addr},
+        os::windows::ffi::OsStringExt,
         path::{Path, PathBuf},
     };
 
@@ -1240,6 +1242,27 @@ mod tests {
                 reason: InvalidRequestReason::EscapesRoot,
             })
         ));
+    }
+
+    #[test]
+    fn pol_013_embedded_nul_in_filesystem_rule_fails_closed() {
+        let path = PathBuf::from(OsString::from_wide(&[
+            u16::from(b'C'),
+            u16::from(b':'),
+            u16::from(b'\\'),
+            u16::from(b'a'),
+            0,
+            u16::from(b'b'),
+        ]));
+        let policy = policy_with_filesystem(|filesystem| filesystem.read_only.push(path));
+
+        assert_eq!(
+            compile(&policy, Path::new(r"C:\work")).err(),
+            Some(SandboxError::InvalidRequest {
+                field: RequestField::FilesystemPolicy,
+                reason: InvalidRequestReason::InvalidCharacter,
+            })
+        );
     }
 
     #[test]
