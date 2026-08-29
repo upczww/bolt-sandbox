@@ -1,4 +1,5 @@
 #include "TreeNode.h"
+#include "PathTree.h"
 
 #include <memory>
 #include <string>
@@ -33,5 +34,28 @@ bool RunBuildXlTreeTests() {
     }
 
     children.erase(L"MIXEDCASE");
-    return !children.find(L"mixedcase", found);
+    if (children.find(L"mixedcase", found)) {
+        return false;
+    }
+
+    PathTree paths;
+    if (!paths.TryInsert(L"C:\\Root\\first.txt") ||
+        !paths.TryInsert(L"c:\\root\\nested\\second.txt") ||
+        !paths.TryInsert(L"D:\\outside.txt")) {
+        return false;
+    }
+
+    std::vector<std::wstring> descendants;
+    paths.RetrieveAndRemoveAllDescendants(L"C:\\ROOT", descendants);
+    if (descendants.size() != 2U) {
+        return false;
+    }
+
+    descendants.clear();
+    paths.RetrieveAndRemoveAllDescendants(L"c:\\root", descendants);
+    if (!descendants.empty()) {
+        return false;
+    }
+    paths.RetrieveAndRemoveAllDescendants(L"D:\\", descendants);
+    return descendants.size() == 1U && descendants[0] == L"D:\\outside.txt";
 }
