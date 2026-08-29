@@ -1,0 +1,25 @@
+{
+  "name": "Microsoft Detours",
+  "upstream": "https://github.com/microsoft/Detours",
+  "tag": "v4.0.1",
+  "revision": "e4bfd6b03e50de46b47abfbd1e46b384f0c5f833",
+  "license": "MIT",
+  "modifications": "None; source files are copied byte-for-byte from the pinned revision.",
+  "import_boundary": "Static library sources required by the upstream src/Makefile; samples and tools are excluded.",
+  "imported_files": [
+    { "path": "LICENSE.md", "sha256": "f854ae8aabc0404652b48a2b3bf7f21ec174c69d73f5596934c20884eb0639ef" },
+    { "path": "src/creatwth.cpp", "sha256": "c77edffae9f5c91f5a6d6acb5d994b5a421550552a1446acefcb0fa104ec0d33" },
+    { "path": "src/detours.cpp", "sha256": "0af9c49f1b5a7d42f0dd2739e3e09d8d11ac230b71c8847dbdbc8e869e1c5a91" },
+    { "path": "src/detours.h", "sha256": "d9870cd2815958a335ff041c4d53d1951a8b7014a84d1c6e1b689b91607e09c9" },
+    { "path": "src/detver.h", "sha256": "030559dacbf2a3672b65f305be62175f8e6b8693b11885fc73c217350ba4a92f" },
+    { "path": "src/disasm.cpp", "sha256": "1084f5e0d3b236a71c46f2c98ff6b44cd2af35b6a100bc823ec33e34e26b3208" },
+    { "path": "src/disolarm.cpp", "sha256": "9d0d2519a8e45809b9dc7aa69fbabbe4dd1657c0bec6fb1595d664cd0fe57746" },
+    { "path": "src/disolarm64.cpp", "sha256": "9d90e7d1890c89285f4666c61f4323ecc98f5b05ebab7041967d8211723728ce" },
+    { "path": "src/disolia64.cpp", "sha256": "7e76161e2af3140598306f947f51388ce4b7bede3028fdeaf9163a59c1df080b" },
+    { "path": "src/disolx64.cpp", "sha256": "508e36655e69e9340d9cb6a170ea7d8d3ead5f3ae3725b298696407e7edc9251" },
+    { "path": "src/disolx86.cpp", "sha256": "2ca65c70c08f451473ac04871adfb2cd223e62144fe99458b8991c393c29cac7" },
+    { "path": "src/image.cpp", "sha256": "9f4c21eca192c6303c2934f0f027f3f5964f4e05034c71056ea51d6801720c10" },
+    { "path": "src/modules.cpp", "sha256": "642ad5043e1010d7ba2edc9c3c7c8a82b1aed8e6e5c22e9643c5e701f345f979" },
+    { "path": "src/uimports.cpp", "sha256": "e98d2b368c28d3f6329bad45dd53b5841d5f58c56c5d79ae0c13fd4a726c7898" }
+  ]
+}
