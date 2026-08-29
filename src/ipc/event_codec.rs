@@ -124,9 +124,16 @@ impl ProcessExitReason {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        net::{IpAddr, Ipv6Addr, SocketAddr},
+        path::PathBuf,
+    };
+
     use super::*;
     use crate::{
-        ProcessExit, ProcessExitReason, SandboxEvent,
+        ChildInjectionFailure, ChildInjectionFailureReason, FilesystemOperation,
+        FilesystemViolation, NetworkOperation, NetworkTarget, NetworkViolation, ProcessExit,
+        ProcessExitReason, RecoveryArtifact, RegistryOperation, RegistryViolation, SandboxEvent,
         ipc::framing::{self, ProtocolError},
     };
 
@@ -146,6 +153,87 @@ mod tests {
 
         assert_eq!(decoded.sequence, 9);
         assert_eq!(decoded.event, exited_event());
+    }
+
+    #[test]
+    fn evt_001_all_security_event_families_round_trip_as_typed_events() {
+        let events = [
+            SandboxEvent::FilesystemViolation(FilesystemViolation {
+                process_id: 101,
+                operation: FilesystemOperation::Write,
+                path: PathBuf::from(r"C:\workspace\denied-文件.txt"),
+            }),
+            SandboxEvent::RegistryViolation(RegistryViolation {
+                process_id: 102,
+                operation: RegistryOperation::SetValue,
+                key: r"HKEY_CURRENT_USER\Software\Denied".to_owned(),
+            }),
+            SandboxEvent::NetworkViolation(NetworkViolation {
+                process_id: 103,
+                operation: NetworkOperation::Connect,
+                target: NetworkTarget::Socket(SocketAddr::new(
+                    IpAddr::V6(Ipv6Addr::LOCALHOST),
+                    8443,
+                )),
+            }),
+            SandboxEvent::RecoveryArtifactCreated(RecoveryArtifact {
+                process_id: 104,
+                artifact_id: 55,
+                original_path: PathBuf::from(r"C:\workspace\changed.txt"),
+                byte_count: 4096,
+            }),
+            SandboxEvent::ChildInjectionFailed(ChildInjectionFailure {
+                parent_process_id: 105,
+                child_process_id: 106,
+                reason: ChildInjectionFailureReason::HandshakeFailed,
+            }),
+        ];
+
+        for (sequence, event) in (10_u64..).zip(events) {
+            let encoded = encode_event(&event, sequence).expect("typed event must encode");
+            let decoded = decode_event(&encoded).expect("typed event must decode");
+
+            assert_eq!(decoded.sequence, sequence);
+            assert_eq!(decoded.event, event);
+        }
+    }
+
+    #[test]
+    fn evt_001_domain_network_violation_round_trips_without_stringly_typed_socket() {
+        let event = SandboxEvent::NetworkViolation(NetworkViolation {
+            process_id: 22,
+            operation: NetworkOperation::Resolve,
+            target: NetworkTarget::Domain("xn--bcher-kva.example".to_owned()),
+        });
+
+        let encoded = encode_event(&event, 2).expect("domain event must encode");
+        let decoded = decode_event(&encoded).expect("domain event must decode");
+
+        assert_eq!(decoded.event, event);
+    }
+
+    #[test]
+    fn proc_014_all_child_injection_failure_reasons_round_trip_without_command_data() {
+        for reason in [
+            ChildInjectionFailureReason::UnsupportedArchitecture,
+            ChildInjectionFailureReason::PolicyUnavailable,
+            ChildInjectionFailureReason::InjectionFailed,
+            ChildInjectionFailureReason::HandshakeFailed,
+        ] {
+            let event = SandboxEvent::ChildInjectionFailed(ChildInjectionFailure {
+                parent_process_id: 1,
+                child_process_id: 2,
+                reason,
+            });
+            let encoded = encode_event(&event, 3).expect("child failure must encode");
+
+            assert_eq!(
+                decode_event(&encoded)
+                    .expect("child failure must decode")
+                    .event,
+                event
+            );
+        }
     }
 
     #[test]

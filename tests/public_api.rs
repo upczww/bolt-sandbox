@@ -7,9 +7,11 @@ use std::{
 };
 
 use bolt_sandbox::{
-    ChildProcessPolicy, FilesystemPolicy, IpCidr, MAX_TIMEOUT, MIN_TIMEOUT, NetworkAllowList,
-    NetworkPolicy, PortRange, ProcessExit, ProcessExitReason, RecoveryPolicy, RegistryPolicy,
-    RequestField, SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest,
+    ChildInjectionFailure, ChildInjectionFailureReason, ChildProcessPolicy, FilesystemOperation,
+    FilesystemPolicy, FilesystemViolation, IpCidr, MAX_TIMEOUT, MIN_TIMEOUT, NetworkAllowList,
+    NetworkPolicy, NetworkTarget, NetworkViolation, PortRange, ProcessExit, ProcessExitReason,
+    RecoveryPolicy, RegistryPolicy, RequestField, SandboxError, SandboxEvent, SandboxPolicy,
+    SandboxRequest,
 };
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {
@@ -76,6 +78,29 @@ fn req_013_public_event_contract_exposes_ready_without_native_types() {
     let event = SandboxEvent::Ready;
 
     assert_eq!(event, SandboxEvent::Ready);
+}
+
+#[test]
+fn req_013_typed_security_events_are_public_without_native_status_types() {
+    let filesystem = SandboxEvent::FilesystemViolation(FilesystemViolation {
+        process_id: 7,
+        operation: FilesystemOperation::Write,
+        path: PathBuf::from(r"C:\denied.txt"),
+    });
+    let network = SandboxEvent::NetworkViolation(NetworkViolation {
+        process_id: 7,
+        operation: bolt_sandbox::NetworkOperation::Resolve,
+        target: NetworkTarget::Domain("example.com".to_owned()),
+    });
+    let child = SandboxEvent::ChildInjectionFailed(ChildInjectionFailure {
+        parent_process_id: 7,
+        child_process_id: 8,
+        reason: ChildInjectionFailureReason::InjectionFailed,
+    });
+
+    assert!(matches!(filesystem, SandboxEvent::FilesystemViolation(_)));
+    assert!(matches!(network, SandboxEvent::NetworkViolation(_)));
+    assert!(matches!(child, SandboxEvent::ChildInjectionFailed(_)));
 }
 
 #[test]
