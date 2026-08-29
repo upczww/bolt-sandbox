@@ -215,6 +215,7 @@ These commands become mandatory as their manifests/scripts are introduced:
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets
+pwsh scripts/test-rust-coverage.ps1
 pwsh scripts/build-windows.ps1
 pwsh scripts/test-windows.ps1 -Suite Unit
 pwsh scripts/test-windows.ps1 -Suite Integration -Architecture x64
@@ -250,6 +251,9 @@ The initial bootstrap sequence is:
 
 - Rust and independently authored native decision logic: at least 90% line and
   85% branch coverage; the repository-wide floor is 80%.
+- `scripts/test-rust-coverage.ps1` enforces Rust totals of at least 90% lines,
+  85% branches, 80% regions, and 80% functions using the pinned
+  `cargo-llvm-cov` version and nightly branch instrumentation.
 - All policy precedence, fail-closed, mandatory-deny, and secret-redaction
   branches require direct tests regardless of percentage.
 - No skipped, disabled, quarantined, or flaky tests on a release branch.

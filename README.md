@@ -29,12 +29,20 @@ have not been introduced yet.
 
 ## Development
 
-Prerequisites: Rust 1.85 or newer and PowerShell 7 on Windows.
+Prerequisites: Rust 1.85 or newer and PowerShell 7 on Windows. Coverage also
+requires `cargo-llvm-cov 0.9.0`, a separate nightly toolchain, and its matching
+LLVM tools:
+
+```powershell
+rustup toolchain install nightly --profile minimal --component llvm-tools-preview
+cargo +stable install cargo-llvm-cov --version 0.9.0 --locked
+```
 
 ```powershell
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets
+pwsh -NoProfile -File scripts/test-rust-coverage.ps1
 pwsh -NoProfile -File scripts/verify-test-traceability.ps1
 ```
 
