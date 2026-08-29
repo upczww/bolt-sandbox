@@ -82,13 +82,22 @@ fn validate_environment(environment: &BTreeMap<OsString, OsString>) -> Result<()
             return Err(invalid_environment(InvalidRequestReason::InvalidCharacter));
         }
 
-        let mut normalized_name = name.clone();
-        normalized_name.make_ascii_uppercase();
+        let normalized_name = normalize_environment_name(name)?;
         if !normalized_names.insert(normalized_name) {
             return Err(invalid_environment(InvalidRequestReason::ConflictingNames));
         }
     }
     Ok(())
+}
+
+fn normalize_environment_name(name: &OsStr) -> Result<String, SandboxError> {
+    let mut normalized = String::new();
+    for decoded in char::decode_utf16(name.encode_wide()) {
+        let character =
+            decoded.map_err(|_| invalid_environment(InvalidRequestReason::InvalidCharacter))?;
+        normalized.extend(character.to_uppercase());
+    }
+    Ok(normalized)
 }
 
 fn contains_nul(value: &OsStr) -> bool {
