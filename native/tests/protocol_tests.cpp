@@ -21,6 +21,7 @@ bool RunJobTests();
 bool RunNamedPipeTests();
 bool RunProcessTests();
 bool RunDetoursTests();
+bool RunEventFrameTests();
 int RunProcessChild(int argument_count, wchar_t** arguments);
 
 namespace {
@@ -114,6 +115,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunDetoursTests()) {
         return 8;
+    }
+    if (!RunEventFrameTests()) {
+        return 9;
     }
     return 0;
 }
