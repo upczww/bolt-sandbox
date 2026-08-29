@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include <detours.h>
+
 namespace bolt::common {
 namespace {
 
@@ -124,6 +126,7 @@ ProcessStatus SuspendedProcess::Create(
     output.process_ = process.hProcess;
     output.thread_ = process.hThread;
     output.assigned_ = false;
+    output.injected_ = false;
     output.resumed_ = false;
     return ProcessStatus::kSuccess;
 }
@@ -139,8 +142,33 @@ ProcessStatus SuspendedProcess::AssignTo(ExecutionJob& job) noexcept {
     return ProcessStatus::kSuccess;
 }
 
+ProcessStatus SuspendedProcess::Inject(const std::string_view dll_path) noexcept {
+    if (process_ == nullptr || !assigned_ || injected_ || resumed_) {
+        return ProcessStatus::kInvalidState;
+    }
+    if (dll_path.empty() || dll_path.find('\0') != std::string_view::npos) {
+        return ProcessStatus::kInvalidDllPath;
+    }
+    std::string path;
+    try {
+        path.assign(dll_path);
+    } catch (...) {
+        return ProcessStatus::kAllocationFailed;
+    }
+    const DWORD attributes = GetFileAttributesA(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        return ProcessStatus::kInvalidDllPath;
+    }
+    LPCSTR dlls[] = {path.c_str()};
+    if (!DetourUpdateProcessWithDll(process_, dlls, 1)) {
+        return ProcessStatus::kInjectFailed;
+    }
+    injected_ = true;
+    return ProcessStatus::kSuccess;
+}
+
 ProcessStatus SuspendedProcess::Resume() noexcept {
-    if (thread_ == nullptr || !assigned_ || resumed_) {
+    if (thread_ == nullptr || !assigned_ || !injected_ || resumed_) {
         return ProcessStatus::kInvalidState;
     }
     if (ResumeThread(thread_) == static_cast<DWORD>(-1)) {
@@ -181,6 +209,7 @@ void SuspendedProcess::Close() noexcept {
     process_ = nullptr;
     thread_ = nullptr;
     assigned_ = false;
+    injected_ = false;
     resumed_ = false;
     if (process != nullptr && !resumed) {
         TerminateProcess(process, ERROR_PROCESS_ABORTED);

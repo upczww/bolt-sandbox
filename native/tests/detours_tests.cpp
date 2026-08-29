@@ -4,13 +4,6 @@
 #include <detours.h>
 
 bool RunDetoursTests() {
-    const HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
-    if (kernel32 == nullptr) {
-        return false;
-    }
-    const FARPROC function = GetProcAddress(kernel32, "CreateProcessW");
-    if (function == nullptr) {
-        return false;
-    }
-    return DetourGetContainingModule(reinterpret_cast<PVOID>(function)) != nullptr;
+    const auto address = reinterpret_cast<PVOID>(&RunDetoursTests);
+    return DetourGetContainingModule(address) == GetModuleHandleW(nullptr);
 }

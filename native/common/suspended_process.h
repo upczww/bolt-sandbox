@@ -33,6 +33,8 @@ enum class ProcessStatus : std::uint8_t {
     kCreateFailed,
     kInvalidState,
     kAssignFailed,
+    kInvalidDllPath,
+    kInjectFailed,
     kResumeFailed,
     kWaitTimeout,
     kWaitFailed,
@@ -54,6 +56,7 @@ class SuspendedProcess final {
         SuspendedProcess& output) noexcept;
 
     ProcessStatus AssignTo(ExecutionJob& job) noexcept;
+    ProcessStatus Inject(std::string_view dll_path) noexcept;
     ProcessStatus Resume() noexcept;
     ProcessStatus Wait(DWORD milliseconds) noexcept;
     ProcessStatus ExitCode(DWORD& exit_code) const noexcept;
@@ -66,6 +69,7 @@ class SuspendedProcess final {
     HANDLE process_ = nullptr;
     HANDLE thread_ = nullptr;
     bool assigned_ = false;
+    bool injected_ = false;
     bool resumed_ = false;
 };
 
