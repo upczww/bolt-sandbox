@@ -275,6 +275,24 @@ Responsibilities:
 
 The DLL must not write policy or audit data to world-readable temporary files.
 
+### 5.4 Immutable Policy Payload
+
+Policy payload protocol version 1 uses a deterministic little-endian binary
+encoding. The 44-byte envelope contains, in order, the four-byte `BLP1` magic,
+a 16-bit version, a 16-bit header length, a 32-bit body length, and a 32-byte
+SHA-256 digest. The digest covers the envelope bytes preceding the digest and
+the complete body. The body explicitly records child-process behavior and the
+canonical filesystem, network, and registry sections; collection order and
+ASCII casing do not change the resulting bytes.
+
+The body is limited to 1,048,576 bytes. Both sealing and verification enforce
+the limit with checked arithmetic. Verification rejects an unknown version,
+invalid header size, oversized or non-exact body length, and digest mismatch
+before native policy installation. The digest detects corruption or mutation;
+the private mapping ACL and read-only child view prevent an untrusted process
+from replacing the body and recomputing the unkeyed digest. The launcher resumes
+no process until the mapping and digest have both been verified.
+
 ## 6. Filesystem Enforcement
 
 ### 6.1 Policy Semantics

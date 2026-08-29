@@ -4,7 +4,10 @@ use std::{
     path::{Component, Path},
 };
 
-use super::{IpCidr, NetworkAllowList, NetworkPolicy, PortRange, RegistryPolicy, SandboxPolicy};
+use super::{
+    ChildProcessPolicy, IpCidr, NetworkAllowList, NetworkPolicy, PortRange, RegistryPolicy,
+    SandboxPolicy,
+};
 use crate::{InvalidRequestReason, RequestField, SandboxError};
 
 mod payload;
@@ -54,6 +57,7 @@ pub(crate) fn compile_with_security_denies(
         filesystem,
         network,
         registry,
+        child_processes: policy.child_processes,
     };
     debug_assert!(compiled.filesystem.allows_read_write(cwd));
     debug_assert_eq!(
@@ -79,6 +83,7 @@ pub(crate) struct CompiledPolicy {
         reason = "compiled registry policy is consumed by the registry runtime in a later phase"
     )]
     pub(crate) registry: CompiledRegistryPolicy,
+    pub(crate) child_processes: ChildProcessPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
