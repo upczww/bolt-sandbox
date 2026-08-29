@@ -4,14 +4,19 @@ use std::{error::Error, fmt};
 pub enum RequestField {
     Program,
     CurrentDirectory,
+    Environment,
     FilesystemPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InvalidRequestReason {
+    Empty,
     MustBeAbsolute,
     NotAFile,
     NotADirectory,
+    InvalidCharacter,
+    ReservedName,
+    ConflictingNames,
     EscapesRoot,
     ConflictingRules,
 }

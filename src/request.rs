@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, ffi::OsString, path::PathBuf, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::{OsStr, OsString},
+    os::windows::ffi::OsStrExt,
+    path::PathBuf,
+    time::Duration,
+};
 
 use crate::{InvalidRequestReason, RequestField, SandboxError, SandboxPolicy, policy};
 
@@ -48,9 +54,51 @@ impl SandboxRequest {
             });
         }
 
+        validate_environment(&self.environment)?;
+
         let _compiled_policy = policy::compiler::compile(&self.policy, &self.cwd)?;
 
         Ok(())
+    }
+}
+
+fn validate_environment(environment: &BTreeMap<OsString, OsString>) -> Result<(), SandboxError> {
+    let mut normalized_names = BTreeSet::new();
+    for (name, value) in environment {
+        if name.is_empty() {
+            return Err(invalid_environment(InvalidRequestReason::Empty));
+        }
+        if contains_nul(name) || contains_nul(value) {
+            return Err(invalid_environment(InvalidRequestReason::InvalidCharacter));
+        }
+        if name.as_os_str().encode_wide().next() == Some(u16::from(b'=')) {
+            return Err(invalid_environment(InvalidRequestReason::ReservedName));
+        }
+        if name
+            .as_os_str()
+            .encode_wide()
+            .any(|code_unit| code_unit == u16::from(b'='))
+        {
+            return Err(invalid_environment(InvalidRequestReason::InvalidCharacter));
+        }
+
+        let mut normalized_name = name.clone();
+        normalized_name.make_ascii_uppercase();
+        if !normalized_names.insert(normalized_name) {
+            return Err(invalid_environment(InvalidRequestReason::ConflictingNames));
+        }
+    }
+    Ok(())
+}
+
+fn contains_nul(value: &OsStr) -> bool {
+    value.encode_wide().any(|code_unit| code_unit == 0)
+}
+
+const fn invalid_environment(reason: InvalidRequestReason) -> SandboxError {
+    SandboxError::InvalidRequest {
+        field: RequestField::Environment,
+        reason,
     }
 }
 
