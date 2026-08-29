@@ -13,3 +13,8 @@ mod lifecycle;
     reason = "launch preparation is connected to the native launcher adapter later"
 )]
 mod preparation;
+#[allow(
+    dead_code,
+    reason = "startup orchestration is connected to the native launcher adapter later"
+)]
+mod startup;
