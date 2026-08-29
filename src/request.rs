@@ -555,6 +555,28 @@ mod tests {
     }
 
     #[test]
+    fn req_004_windows_command_line_encoding_preserves_argument_boundaries() {
+        let mut expected: Vec<u16> =
+            r#""C:\Program Files\tool.exe" "" plain "space separated" "a\\\"b""#
+                .encode_utf16()
+                .collect();
+        expected.push(0);
+
+        assert_eq!(
+            encode_command_line(
+                &PathBuf::from(r"C:\Program Files\tool.exe"),
+                &[
+                    OsString::new(),
+                    OsString::from("plain"),
+                    OsString::from("space separated"),
+                    OsString::from(r#"a\"b"#),
+                ],
+            ),
+            Ok(expected)
+        );
+    }
+
+    #[test]
     fn req_012_environment_item_maximum_and_maximum_plus_one() {
         let mut request = valid_request();
         request.environment.insert(
