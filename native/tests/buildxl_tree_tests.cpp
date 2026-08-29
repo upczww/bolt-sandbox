@@ -1,5 +1,6 @@
 #include "TreeNode.h"
 #include "PathTree.h"
+#include "CanonicalizedPath.h"
 
 #include <memory>
 #include <string>
@@ -57,5 +58,25 @@ bool RunBuildXlTreeTests() {
         return false;
     }
     paths.RetrieveAndRemoveAllDescendants(L"D:\\", descendants);
-    return descendants.size() == 1U && descendants[0] == L"D:\\outside.txt";
+    if (descendants.size() != 1U || descendants[0] != L"D:\\outside.txt") {
+        return false;
+    }
+
+    const auto canonical = CanonicalizedPath::Canonicalize(L"C:\\root\\.\\child\\..\\file.txt");
+    if (canonical.IsNull() || canonical.Type != PathType::Win32 ||
+        std::wstring(canonical.GetPathString()) != L"C:\\root\\file.txt" ||
+        std::wstring(canonical.GetLastComponent()) != L"file.txt") {
+        return false;
+    }
+
+    const auto device = CanonicalizedPath::Canonicalize(L"\\\\.\\C:\\root\\..\\file.txt");
+    if (device.IsNull() || device.Type != PathType::LocalDevice ||
+        std::wstring(device.GetPathStringWithoutTypePrefix()) != L"C:\\file.txt") {
+        return false;
+    }
+
+    std::size_t extension_start = 0;
+    const auto extended = canonical.RemoveLastComponent().Extend(L"\\nested\\result.bin", &extension_start);
+    return std::wstring(extended.GetPathString()) == L"C:\\root\\nested\\result.bin" &&
+           extension_start == 8U;
 }
