@@ -4,8 +4,11 @@ use std::{
     path::{Component, Path},
 };
 
-use super::{IpCidr, NetworkPolicy, PortRange, SandboxPolicy};
+use super::{IpCidr, NetworkAllowList, NetworkPolicy, PortRange, SandboxPolicy};
 use crate::{InvalidRequestReason, RequestField, SandboxError};
+
+const MAX_NETWORK_RULES_PER_CATEGORY: usize = 1_024;
+const MAX_TOTAL_NETWORK_RULES: usize = 2_048;
 
 pub(crate) fn compile(policy: &SandboxPolicy, cwd: &Path) -> Result<CompiledPolicy, SandboxError> {
     compile_with_mandatory_denies(policy, cwd, &[])
@@ -72,6 +75,7 @@ pub(crate) enum CompiledNetworkMode {
     dead_code,
     reason = "compiled network decisions are consumed by the network runtime in a later phase"
 )]
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) enum CompiledNetworkPolicy {
     Unrestricted,
     Denied,
@@ -126,12 +130,14 @@ impl CompiledNetworkPolicy {
     dead_code,
     reason = "compiled allow-list fields are consumed by the network runtime in a later phase"
 )]
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) struct CompiledNetworkAllowList {
     domains: Vec<CompiledDomainRule>,
     addresses: Vec<IpCidr>,
     ports: Vec<PortRange>,
 }
 
+#[derive(Debug, Eq, PartialEq)]
 struct CompiledDomainRule {
     ascii_domain: String,
     wildcard: bool,
@@ -164,6 +170,7 @@ fn compile_network_policy(policy: &NetworkPolicy) -> Result<CompiledNetworkPolic
         NetworkPolicy::Unrestricted => Ok(CompiledNetworkPolicy::Unrestricted),
         NetworkPolicy::Denied => Ok(CompiledNetworkPolicy::Denied),
         NetworkPolicy::AllowList(allow_list) => {
+            validate_network_rule_counts(allow_list)?;
             let mut domains = Vec::with_capacity(allow_list.domains.len());
             for input in &allow_list.domains {
                 let wildcard = input.starts_with("*.");
@@ -191,6 +198,26 @@ fn compile_network_policy(policy: &NetworkPolicy) -> Result<CompiledNetworkPolic
             }))
         }
     }
+}
+
+fn validate_network_rule_counts(allow_list: &NetworkAllowList) -> Result<(), SandboxError> {
+    if allow_list.domains.len() > MAX_NETWORK_RULES_PER_CATEGORY
+        || allow_list.addresses.len() > MAX_NETWORK_RULES_PER_CATEGORY
+        || allow_list.ports.len() > MAX_NETWORK_RULES_PER_CATEGORY
+    {
+        return Err(invalid_network_policy(InvalidRequestReason::TooManyItems));
+    }
+
+    let total = allow_list
+        .domains
+        .len()
+        .checked_add(allow_list.addresses.len())
+        .and_then(|count| count.checked_add(allow_list.ports.len()))
+        .ok_or_else(|| invalid_network_policy(InvalidRequestReason::TooManyItems))?;
+    if total > MAX_TOTAL_NETWORK_RULES {
+        return Err(invalid_network_policy(InvalidRequestReason::TooManyItems));
+    }
+    Ok(())
 }
 
 fn canonical_domain(domain: &str, allow_wildcard_input: bool) -> Result<String, SandboxError> {
@@ -984,11 +1011,13 @@ mod tests {
                 },
             ),
         ] {
-            assert!(compile(
-                &policy_with_network(NetworkPolicy::AllowList(at_maximum)),
-                Path::new(r"C:\work\project"),
-            )
-            .is_ok());
+            assert!(
+                compile(
+                    &policy_with_network(NetworkPolicy::AllowList(at_maximum)),
+                    Path::new(r"C:\work\project"),
+                )
+                .is_ok()
+            );
             assert_eq!(
                 compile(
                     &policy_with_network(NetworkPolicy::AllowList(over_maximum)),
@@ -1028,11 +1057,13 @@ mod tests {
             ..NetworkAllowList::default()
         };
 
-        assert!(compile(
-            &policy_with_network(NetworkPolicy::AllowList(at_maximum)),
-            Path::new(r"C:\work\project"),
-        )
-        .is_ok());
+        assert!(
+            compile(
+                &policy_with_network(NetworkPolicy::AllowList(at_maximum)),
+                Path::new(r"C:\work\project"),
+            )
+            .is_ok()
+        );
         assert_eq!(
             compile(
                 &policy_with_network(NetworkPolicy::AllowList(over_maximum)),
@@ -1095,10 +1126,10 @@ mod tests {
             ],
         }));
 
-        let first = compile(&first, Path::new(r"C:\work\project"))
-            .expect("first policy must compile");
-        let second = compile(&second, Path::new(r"C:\work\project"))
-            .expect("second policy must compile");
+        let first =
+            compile(&first, Path::new(r"C:\work\project")).expect("first policy must compile");
+        let second =
+            compile(&second, Path::new(r"C:\work\project")).expect("second policy must compile");
 
         assert_eq!(first.network, second.network);
     }
