@@ -1,5 +1,7 @@
 #include "common/suspended_process.h"
 
+#include "protocol/runtime_payload.h"
+
 #include <limits>
 #include <string>
 #include <vector>
@@ -126,8 +128,11 @@ ProcessStatus SuspendedProcess::Create(
     output.process_ = process.hProcess;
     output.thread_ = process.hThread;
     output.assigned_ = false;
+    output.payload_installed_ = false;
     output.injected_ = false;
+    output.initialization_started_ = false;
     output.resumed_ = false;
+    output.release_event_ = nullptr;
     return ProcessStatus::kSuccess;
 }
 
@@ -142,8 +147,56 @@ ProcessStatus SuspendedProcess::AssignTo(ExecutionJob& job) noexcept {
     return ProcessStatus::kSuccess;
 }
 
+ProcessStatus SuspendedProcess::InstallRuntimePayload(
+    const HANDLE policy_handle,
+    const std::size_t policy_length,
+    const HANDLE event_handle,
+    const HANDLE release_handle,
+    const std::array<std::uint8_t, 16>& nonce) noexcept {
+    if (process_ == nullptr || !assigned_ || payload_installed_ || injected_ ||
+        initialization_started_) {
+        return ProcessStatus::kInvalidState;
+    }
+    const HANDLE handles[] = {policy_handle, event_handle, release_handle};
+    for (const HANDLE handle : handles) {
+        DWORD flags = 0;
+        if (handle == nullptr || handle == INVALID_HANDLE_VALUE ||
+            !GetHandleInformation(handle, &flags) || (flags & HANDLE_FLAG_INHERIT) == 0) {
+            return ProcessStatus::kInvalidRuntimePayload;
+        }
+    }
+    if (policy_length > std::numeric_limits<std::uint32_t>::max()) {
+        return ProcessStatus::kInvalidRuntimePayload;
+    }
+    const DWORD process_id = GetProcessId(process_);
+    if (process_id == 0) {
+        return ProcessStatus::kInvalidRuntimePayload;
+    }
+    protocol::RuntimePayload payload{};
+    payload.target_process_id = process_id;
+    payload.policy_length = static_cast<std::uint32_t>(policy_length);
+    payload.policy_handle = reinterpret_cast<std::uintptr_t>(policy_handle);
+    payload.event_handle = reinterpret_cast<std::uintptr_t>(event_handle);
+    payload.release_handle = reinterpret_cast<std::uintptr_t>(release_handle);
+    payload.handshake_nonce = nonce;
+    auto encoded = protocol::EncodeRuntimePayload(payload);
+    protocol::RuntimePayload checked{};
+    if (protocol::DecodeRuntimePayload(encoded.data(), encoded.size(), checked) !=
+        protocol::RuntimePayloadStatus::kSuccess) {
+        return ProcessStatus::kInvalidRuntimePayload;
+    }
+    if (!DetourCopyPayloadToProcess(
+            process_, protocol::kRuntimePayloadGuid, encoded.data(),
+            static_cast<DWORD>(encoded.size()))) {
+        return ProcessStatus::kPayloadCopyFailed;
+    }
+    payload_installed_ = true;
+    release_event_ = release_handle;
+    return ProcessStatus::kSuccess;
+}
+
 ProcessStatus SuspendedProcess::Inject(const std::string_view dll_path) noexcept {
-    if (process_ == nullptr || !assigned_ || injected_ || resumed_) {
+    if (process_ == nullptr || !assigned_ || !payload_installed_ || injected_ || resumed_) {
         return ProcessStatus::kInvalidState;
     }
     if (dll_path.empty() || dll_path.find('\0') != std::string_view::npos) {
@@ -168,11 +221,27 @@ ProcessStatus SuspendedProcess::Inject(const std::string_view dll_path) noexcept
 }
 
 ProcessStatus SuspendedProcess::Resume() noexcept {
-    if (thread_ == nullptr || !assigned_ || !injected_ || resumed_) {
+    return ProcessStatus::kInvalidState;
+}
+
+ProcessStatus SuspendedProcess::BeginHookInitialization() noexcept {
+    if (thread_ == nullptr || !assigned_ || !payload_installed_ || !injected_ ||
+        initialization_started_ || resumed_) {
         return ProcessStatus::kInvalidState;
     }
     if (ResumeThread(thread_) == static_cast<DWORD>(-1)) {
-        return ProcessStatus::kResumeFailed;
+        return ProcessStatus::kInitializationFailed;
+    }
+    initialization_started_ = true;
+    return ProcessStatus::kSuccess;
+}
+
+ProcessStatus SuspendedProcess::ReleaseAfterReady() noexcept {
+    if (!initialization_started_ || resumed_ || release_event_ == nullptr) {
+        return ProcessStatus::kInvalidState;
+    }
+    if (!SetEvent(release_event_)) {
+        return ProcessStatus::kReleaseFailed;
     }
     resumed_ = true;
     return ProcessStatus::kSuccess;
@@ -209,8 +278,11 @@ void SuspendedProcess::Close() noexcept {
     process_ = nullptr;
     thread_ = nullptr;
     assigned_ = false;
+    payload_installed_ = false;
     injected_ = false;
+    initialization_started_ = false;
     resumed_ = false;
+    release_event_ = nullptr;
     if (process != nullptr && !resumed) {
         TerminateProcess(process, ERROR_PROCESS_ABORTED);
     }

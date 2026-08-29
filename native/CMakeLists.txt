@@ -33,6 +33,7 @@ target_include_directories(bolt-sandbox-detours PUBLIC ${DETOURS_SOURCE_DIR})
 add_library(bolt-sandbox-protocol STATIC
     protocol/event_frame.cpp
     protocol/policy_payload.cpp
+    protocol/runtime_payload.cpp
 )
 bolt_native_warnings(bolt-sandbox-protocol)
 target_include_directories(bolt-sandbox-protocol PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

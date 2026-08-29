@@ -45,7 +45,7 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         return 83;
     }
     const HMODULE hook = GetModuleHandleW(arguments[4]);
-    const auto initialized = reinterpret_cast<BOOL(WINAPI*)()>(
+    const auto initialized = reinterpret_cast<BOOL(*)()>(
         GetProcAddress(hook, "BoltSandboxRuntimeInitialized"));
     if (initialized == nullptr || !initialized()) {
         return 84;
@@ -82,8 +82,8 @@ bool RunProcessTests() {
             bolt::common::PipeStatus::kSuccess) {
         return false;
     }
-    const HANDLE event_client = CreateFileW(
-        pipe_name.c_str(), GENERIC_WRITE, 0, &inheritable, OPEN_EXISTING, 0, nullptr);
+    HANDLE event_client = CreateFileW(
+        pipe_name.c_str(), FILE_WRITE_DATA, 0, &inheritable, OPEN_EXISTING, 0, nullptr);
     if (event_client == INVALID_HANDLE_VALUE ||
         event_pipe.Accept() != bolt::common::PipeStatus::kSuccess) {
         return false;
@@ -116,25 +116,32 @@ bool RunProcessTests() {
                              bolt::common::JobStatus::kSuccess &&
                          bolt::common::SuspendedProcess::Create(options, process) ==
                              bolt::common::ProcessStatus::kSuccess;
-    if (!created || process.Wait(100) != bolt::common::ProcessStatus::kWaitTimeout ||
-        process.Resume() != bolt::common::ProcessStatus::kInvalidState ||
-        process.AssignTo(job) != bolt::common::ProcessStatus::kSuccess ||
-        process.Resume() != bolt::common::ProcessStatus::kInvalidState ||
-        process.InstallRuntimePayload(
-            policy.handle(), policy.length(), event_client, release, nonce) !=
-            bolt::common::ProcessStatus::kSuccess ||
-        process.Inject(hook_path.string()) != bolt::common::ProcessStatus::kSuccess ||
-        process.BeginHookInitialization() != bolt::common::ProcessStatus::kSuccess) {
+    const auto wait_suspended = process.Wait(100);
+    const auto early_resume = process.Resume();
+    const auto assigned = process.AssignTo(job);
+    const auto assigned_resume = process.Resume();
+    const auto payload_status = process.InstallRuntimePayload(
+        policy.handle(), policy.length(), event_client, release, nonce);
+    const auto inject_status = process.Inject(hook_path.string());
+    const auto initialization_status = process.BeginHookInitialization();
+    if (!created || wait_suspended != bolt::common::ProcessStatus::kWaitTimeout ||
+        early_resume != bolt::common::ProcessStatus::kInvalidState ||
+        assigned != bolt::common::ProcessStatus::kSuccess ||
+        assigned_resume != bolt::common::ProcessStatus::kInvalidState ||
+        payload_status != bolt::common::ProcessStatus::kSuccess ||
+        inject_status != bolt::common::ProcessStatus::kSuccess ||
+        initialization_status != bolt::common::ProcessStatus::kSuccess) {
         return false;
     }
+    CloseHandle(event_client);
+    event_client = INVALID_HANDLE_VALUE;
     std::array<std::uint8_t, bolt::protocol::kReadyFrameLength> ready{};
     DWORD bytes_read = 0;
-    if (!ReadFile(
-            event_pipe.handle(), ready.data(), static_cast<DWORD>(ready.size()), &bytes_read,
-            nullptr) ||
-        bytes_read != ready.size() ||
-        bolt::protocol::ValidateReadyFrame(ready.data(), ready.size(), nonce) !=
-            bolt::protocol::ReadyFrameStatus::kSuccess ||
+    const BOOL read_ok = ReadFile(
+        event_pipe.handle(), ready.data(), static_cast<DWORD>(ready.size()), &bytes_read, nullptr);
+    const auto ready_status = bolt::protocol::ValidateReadyFrame(ready.data(), ready.size(), nonce);
+    if (!read_ok || bytes_read != ready.size() ||
+        ready_status != bolt::protocol::ReadyFrameStatus::kSuccess ||
         WaitForSingleObject(allowed, 0) != WAIT_TIMEOUT ||
         process.ReleaseAfterReady() != bolt::common::ProcessStatus::kSuccess ||
         process.Wait(5'000) != bolt::common::ProcessStatus::kSuccess) {
@@ -146,10 +153,12 @@ bool RunProcessTests() {
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             exit_code == 0 &&
                             WaitForSingleObject(allowed, 0) == WAIT_OBJECT_0 &&
-                            WaitForSingleObject(denied, 0) == WAIT_TIMEOUT;
+                             WaitForSingleObject(denied, 0) == WAIT_TIMEOUT;
     CloseHandle(allowed);
     CloseHandle(denied);
-    CloseHandle(event_client);
+    if (event_client != INVALID_HANDLE_VALUE) {
+        CloseHandle(event_client);
+    }
     CloseHandle(release);
     if (!exact_exit) {
         return false;
@@ -158,6 +167,6 @@ bool RunProcessTests() {
     auto breakaway = options;
     breakaway.creation_flags = CREATE_BREAKAWAY_FROM_JOB;
     bolt::common::SuspendedProcess rejected;
-    return bolt::common::SuspendedProcess::Create(breakaway, rejected) ==
-           bolt::common::ProcessStatus::kUnsupportedFlags;
+    const auto breakaway_status = bolt::common::SuspendedProcess::Create(breakaway, rejected);
+    return breakaway_status == bolt::common::ProcessStatus::kUnsupportedFlags;
 }

@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <string_view>
 
 #include <windows.h>
@@ -33,8 +34,12 @@ enum class ProcessStatus : std::uint8_t {
     kCreateFailed,
     kInvalidState,
     kAssignFailed,
+    kInvalidRuntimePayload,
+    kPayloadCopyFailed,
     kInvalidDllPath,
     kInjectFailed,
+    kInitializationFailed,
+    kReleaseFailed,
     kResumeFailed,
     kWaitTimeout,
     kWaitFailed,
@@ -56,7 +61,15 @@ class SuspendedProcess final {
         SuspendedProcess& output) noexcept;
 
     ProcessStatus AssignTo(ExecutionJob& job) noexcept;
+    ProcessStatus InstallRuntimePayload(
+        HANDLE policy_handle,
+        std::size_t policy_length,
+        HANDLE event_handle,
+        HANDLE release_handle,
+        const std::array<std::uint8_t, 16>& nonce) noexcept;
     ProcessStatus Inject(std::string_view dll_path) noexcept;
+    ProcessStatus BeginHookInitialization() noexcept;
+    ProcessStatus ReleaseAfterReady() noexcept;
     ProcessStatus Resume() noexcept;
     ProcessStatus Wait(DWORD milliseconds) noexcept;
     ProcessStatus ExitCode(DWORD& exit_code) const noexcept;
@@ -69,8 +82,11 @@ class SuspendedProcess final {
     HANDLE process_ = nullptr;
     HANDLE thread_ = nullptr;
     bool assigned_ = false;
+    bool payload_installed_ = false;
     bool injected_ = false;
+    bool initialization_started_ = false;
     bool resumed_ = false;
+    HANDLE release_event_ = nullptr;
 };
 
 }  // namespace bolt::common
