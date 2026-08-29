@@ -2,6 +2,7 @@
 
 mod error;
 mod event;
+mod ipc;
 mod policy;
 mod request;
 
