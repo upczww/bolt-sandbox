@@ -244,6 +244,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+    use crate::{InvalidRequestReason, RequestField, SandboxError};
 
     fn policy_with_filesystem(configure: impl FnOnce(&mut super::super::FilesystemPolicy)) -> SandboxPolicy {
         let mut policy = SandboxPolicy::default();
@@ -255,7 +256,7 @@ mod tests {
     fn pol_001_default_policy_grants_cwd_read_write_recursively() {
         let cwd = Path::new(r"C:\work\project");
 
-        let compiled = compile(&SandboxPolicy::default(), cwd);
+        let compiled = compile(&SandboxPolicy::default(), cwd).expect("default policy must compile");
 
         assert!(compiled.filesystem.allows_read_write(cwd));
         assert!(
@@ -269,7 +270,7 @@ mod tests {
     fn pol_002_default_cwd_grant_does_not_grant_parent() {
         let cwd = Path::new(r"C:\work\project");
 
-        let compiled = compile(&SandboxPolicy::default(), cwd);
+        let compiled = compile(&SandboxPolicy::default(), cwd).expect("default policy must compile");
 
         assert!(!compiled.filesystem.allows_read_write(Path::new(r"C:\work")));
         assert!(
@@ -286,7 +287,7 @@ mod tests {
             filesystem.deny.push(cwd.join("secrets"));
         });
 
-        let compiled = compile(&policy, cwd);
+        let compiled = compile(&policy, cwd).expect("deny overlap must compile");
 
         assert_eq!(
             compiled.filesystem.decide(
@@ -314,7 +315,7 @@ mod tests {
                 .push(PathBuf::from(r"C:\sdk\cache"));
         });
 
-        let compiled = compile(&policy, cwd);
+        let compiled = compile(&policy, cwd).expect("different-depth grants must compile");
 
         assert_eq!(
             compiled.filesystem.decide(
@@ -350,7 +351,7 @@ mod tests {
                 .push(PathBuf::from(r"C:\WORK\PROJECT\src"));
         });
 
-        let compiled = compile(&policy, cwd);
+        let compiled = compile(&policy, cwd).expect("equivalent rules must compile");
 
         assert_eq!(compiled.filesystem.read_write_rule_count(), 2);
         assert_eq!(
@@ -367,7 +368,8 @@ mod tests {
         let compiled = compile(
             &SandboxPolicy::default(),
             Path::new(r"C:\work\project"),
-        );
+        )
+        .expect("default policy must compile");
 
         assert_eq!(
             compiled
@@ -375,5 +377,63 @@ mod tests {
                 .decide(Path::new(r"C:\outside\file.txt"), FilesystemAccess::Read),
             FilesystemDecision::Deny
         );
+    }
+
+    #[test]
+    fn pol_013_relative_filesystem_rule_is_rejected() {
+        let policy = policy_with_filesystem(|filesystem| {
+            filesystem.read_write.push(PathBuf::from("relative"));
+        });
+
+        let result = compile(&policy, Path::new(r"C:\work\project"));
+
+        assert!(matches!(
+            result,
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::FilesystemPolicy,
+                reason: InvalidRequestReason::MustBeAbsolute,
+            })
+        ));
+    }
+
+    #[test]
+    fn pol_013_parent_component_cannot_escape_volume_root() {
+        let policy = policy_with_filesystem(|filesystem| {
+            filesystem
+                .read_only
+                .push(PathBuf::from(r"C:\..\outside"));
+        });
+
+        let result = compile(&policy, Path::new(r"C:\work\project"));
+
+        assert!(matches!(
+            result,
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::FilesystemPolicy,
+                reason: InvalidRequestReason::EscapesRoot,
+            })
+        ));
+    }
+
+    #[test]
+    fn pol_012_conflicting_grants_for_same_normalized_root_are_rejected() {
+        let policy = policy_with_filesystem(|filesystem| {
+            filesystem
+                .read_only
+                .push(PathBuf::from(r"C:\SDK\.\cache"));
+            filesystem
+                .read_write
+                .push(PathBuf::from(r"c:\sdk\cache"));
+        });
+
+        let result = compile(&policy, Path::new(r"C:\work\project"));
+
+        assert!(matches!(
+            result,
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::FilesystemPolicy,
+                reason: InvalidRequestReason::ConflictingRules,
+            })
+        ));
     }
 }
