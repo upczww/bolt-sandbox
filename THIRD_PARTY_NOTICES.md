@@ -17,6 +17,27 @@ under the MIT License.
 The vendored `LICENSE.md` retains the upstream license text. Samples, tools,
 and non-library files are not imported.
 
+## Microsoft BuildXL
+
+Bolt Sandbox adapts the minimum audited portion of BuildXL DetoursServices for
+Windows sandbox policy lookup and filesystem interception. BuildXL is licensed
+under the MIT License.
+
+- Source: https://github.com/microsoft/BuildXL
+- Revision: `c73b56a4c3e6b3956ffa73d7f88866c9f772bf23`
+- License: MIT
+- Upstream component: `Public/Src/Sandbox/Windows/DetoursServices`
+- Import manifest: `native/third_party/buildxl/provenance.json`
+- Modification boundary: vendored files remain byte-for-byte identical to
+  upstream; Bolt compatibility headers, adapters, protocol translation, and
+  tests live outside the vendored directory.
+
+The import begins with BuildXL's independently testable path-tree data
+structure. Additional DetoursServices files will be admitted only with their
+transitive dependencies, hashes, notices, and behavior tests recorded. The
+BuildXL scheduler, C# engine, build graph, and manifest wire protocol are
+explicitly excluded.
+
 ## getrandom 0.4.3
 
 Bolt Sandbox depends on the `getrandom` Rust crate to obtain execution pipe
