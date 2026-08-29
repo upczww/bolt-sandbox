@@ -68,6 +68,8 @@ fn read_u32(bytes: &[u8], offset: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{self, Cursor, Read, Seek, SeekFrom};
+
     use super::*;
 
     const PE_OFFSET: usize = 0x80;
@@ -143,6 +145,71 @@ mod tests {
         assert_eq!(
             detect_image_architecture(&invalid),
             Err(ImageArchitectureError::InvalidPeSignature)
+        );
+    }
+
+    struct RecordingReader {
+        inner: Cursor<Vec<u8>>,
+        maximum_read_request: usize,
+        total_bytes_read: usize,
+    }
+
+    impl RecordingReader {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                inner: Cursor::new(bytes),
+                maximum_read_request: 0,
+                total_bytes_read: 0,
+            }
+        }
+    }
+
+    impl Read for RecordingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.maximum_read_request = self.maximum_read_request.max(buffer.len());
+            let count = self.inner.read(buffer)?;
+            self.total_bytes_read += count;
+            Ok(count)
+        }
+    }
+
+    impl Seek for RecordingReader {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.inner.seek(position)
+        }
+    }
+
+    #[test]
+    fn proc_030_reader_detection_uses_fixed_header_reads_not_image_sized_allocation() {
+        let mut reader = RecordingReader::new(pe_image(0x8664));
+
+        assert_eq!(
+            detect_image_architecture_from_reader(&mut reader),
+            Ok(ImageArchitecture::X64)
+        );
+        assert_eq!(reader.maximum_read_request, DOS_HEADER_LENGTH);
+        assert_eq!(
+            reader.total_bytes_read,
+            DOS_HEADER_LENGTH + PE_PREFIX_LENGTH
+        );
+    }
+
+    #[test]
+    fn proc_030_reader_short_reads_map_to_the_exact_header_stage() {
+        let mut short_dos = Cursor::new(vec![0; DOS_HEADER_LENGTH - 1]);
+        assert_eq!(
+            detect_image_architecture_from_reader(&mut short_dos),
+            Err(ImageArchitectureError::TruncatedDosHeader)
+        );
+
+        let mut short_coff = Cursor::new({
+            let mut bytes = pe_image(0x8664);
+            bytes.truncate(PE_OFFSET + PE_PREFIX_LENGTH - 1);
+            bytes
+        });
+        assert_eq!(
+            detect_image_architecture_from_reader(&mut short_coff),
+            Err(ImageArchitectureError::TruncatedCoffHeader)
         );
     }
 }
