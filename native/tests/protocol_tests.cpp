@@ -18,6 +18,7 @@ static_assert(bolt::protocol::kPolicyMaximumBodyLength == 1'048'576);
 
 bool RunPolicyPayloadTests();
 bool RunJobTests();
+bool RunNamedPipeTests();
 
 namespace {
 
@@ -98,6 +99,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunJobTests()) {
         return 5;
+    }
+    if (!RunNamedPipeTests()) {
+        return 6;
     }
     return 0;
 }
