@@ -432,4 +432,50 @@ mod tests {
             Ok(LifecycleAction::None)
         );
     }
+
+    #[test]
+    fn life_016_completion_flags_each_lost_receiver_without_cancelling() {
+        let mut lifecycle = LifecycleController::new();
+        lifecycle.start().expect("start must succeed");
+
+        lifecycle
+            .mark_receiver_lost(ReceiverKind::Stdout)
+            .expect("stdout receiver loss must be recorded");
+        lifecycle
+            .mark_receiver_lost(ReceiverKind::Events)
+            .expect("event receiver loss must be recorded");
+        lifecycle
+            .mark_receiver_lost(ReceiverKind::Stdout)
+            .expect("duplicate receiver loss must be idempotent");
+        assert_eq!(lifecycle.phase(), LifecyclePhase::Running);
+
+        assert_eq!(
+            lifecycle.observe_triggers(TriggerSet {
+                process_exited: true,
+                ..TriggerSet::default()
+            }),
+            Ok(LifecycleAction::BeginDrain)
+        );
+        lifecycle
+            .mark_stream_eof(StreamKind::Stdout)
+            .expect("stdout EOF must drain");
+        lifecycle
+            .mark_stream_eof(StreamKind::Stderr)
+            .expect("stderr EOF must drain");
+        lifecycle
+            .mark_terminal_event(exit_event(ProcessExitReason::Exited))
+            .expect("terminal event must drain");
+
+        assert_eq!(
+            lifecycle.mark_event_eof(),
+            Ok(LifecycleAction::Completed(ExecutionOutcome {
+                exit: exit_event(ProcessExitReason::Exited),
+                receiver_loss: ReceiverLoss {
+                    stdout: true,
+                    stderr: false,
+                    events: true,
+                },
+            }))
+        );
+    }
 }
