@@ -367,7 +367,10 @@ assuming the host architecture or trusting its filename. The parser requires a
 complete 64-byte DOS header, `MZ` and `PE\0\0` signatures, a checked in-range
 `e_lfanew`, and a complete COFF machine field. Protocol version 1 accepts only
 `IMAGE_FILE_MACHINE_I386` and `IMAGE_FILE_MACHINE_AMD64`; ARM64 and every unknown
-machine value produce an explicit unsupported-architecture result.
+machine value produce an explicit unsupported-architecture result. Detection
+operates on the already opened target handle and reads exactly the 64-byte DOS
+header plus the six-byte PE signature/machine prefix; it never allocates or
+loads according to the executable's total size.
 
 ## 8. Network Enforcement
 

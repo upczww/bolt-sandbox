@@ -1,3 +1,5 @@
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
+
 const DOS_HEADER_LENGTH: usize = 0x40;
 const PE_OFFSET_FIELD: usize = 0x3C;
 const PE_PREFIX_LENGTH: usize = 6;
@@ -18,6 +20,63 @@ pub(super) enum ImageArchitectureError {
     TruncatedCoffHeader,
     InvalidPeSignature,
     UnsupportedMachine { machine: u16 },
+    ReadFailure,
+}
+
+pub(super) fn detect_image_architecture_from_reader<R: Read + Seek>(
+    reader: &mut R,
+) -> Result<ImageArchitecture, ImageArchitectureError> {
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| ImageArchitectureError::ReadFailure)?;
+    let mut dos_header = [0_u8; DOS_HEADER_LENGTH];
+    reader.read_exact(&mut dos_header).map_err(|error| {
+        map_read_error(error.kind(), ImageArchitectureError::TruncatedDosHeader)
+    })?;
+    if dos_header[..2] != *b"MZ" {
+        return Err(ImageArchitectureError::InvalidDosSignature);
+    }
+    let pe_offset = usize::try_from(read_u32(&dos_header, PE_OFFSET_FIELD))
+        .map_err(|_| ImageArchitectureError::PeHeaderOutOfRange)?;
+    if pe_offset < DOS_HEADER_LENGTH {
+        return Err(ImageArchitectureError::PeHeaderOutOfRange);
+    }
+
+    reader
+        .seek(SeekFrom::Start(
+            u64::try_from(pe_offset).map_err(|_| ImageArchitectureError::PeHeaderOutOfRange)?,
+        ))
+        .map_err(|_| ImageArchitectureError::ReadFailure)?;
+    let mut pe_prefix = [0_u8; PE_PREFIX_LENGTH];
+    reader.read_exact(&mut pe_prefix).map_err(|error| {
+        map_read_error(error.kind(), ImageArchitectureError::TruncatedCoffHeader)
+    })?;
+    parse_pe_prefix(pe_prefix)
+}
+
+const fn map_read_error(
+    kind: ErrorKind,
+    truncated: ImageArchitectureError,
+) -> ImageArchitectureError {
+    if matches!(kind, ErrorKind::UnexpectedEof) {
+        truncated
+    } else {
+        ImageArchitectureError::ReadFailure
+    }
+}
+
+fn parse_pe_prefix(
+    prefix: [u8; PE_PREFIX_LENGTH],
+) -> Result<ImageArchitecture, ImageArchitectureError> {
+    if prefix[..4] != *b"PE\0\0" {
+        return Err(ImageArchitectureError::InvalidPeSignature);
+    }
+    let machine = read_u16(&prefix, 4);
+    match machine {
+        IMAGE_FILE_MACHINE_I386 => Ok(ImageArchitecture::X86),
+        IMAGE_FILE_MACHINE_AMD64 => Ok(ImageArchitecture::X64),
+        _ => Err(ImageArchitectureError::UnsupportedMachine { machine }),
+    }
 }
 
 pub(super) fn detect_image_architecture(
@@ -41,16 +100,10 @@ pub(super) fn detect_image_architecture(
     if pe_end > image.len() {
         return Err(ImageArchitectureError::TruncatedCoffHeader);
     }
-    if image[pe_offset..pe_offset + 4] != *b"PE\0\0" {
-        return Err(ImageArchitectureError::InvalidPeSignature);
-    }
-
-    let machine = read_u16(image, pe_offset + 4);
-    match machine {
-        IMAGE_FILE_MACHINE_I386 => Ok(ImageArchitecture::X86),
-        IMAGE_FILE_MACHINE_AMD64 => Ok(ImageArchitecture::X64),
-        _ => Err(ImageArchitectureError::UnsupportedMachine { machine }),
-    }
+    let prefix: [u8; PE_PREFIX_LENGTH] = image[pe_offset..pe_end]
+        .try_into()
+        .map_err(|_| ImageArchitectureError::TruncatedCoffHeader)?;
+    parse_pe_prefix(prefix)
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> u16 {
