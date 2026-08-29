@@ -1132,4 +1132,145 @@ mod tests {
 
         assert_eq!(first.network, second.network);
     }
+
+    #[test]
+    fn reg_001_to_007_registry_grants_and_default_deny_are_explicit() {
+        let mut policy = SandboxPolicy::default();
+        policy
+            .registry
+            .read_only
+            .push(r"HKCU\Software\ReadOnly".into());
+        policy
+            .registry
+            .read_write
+            .push(r"HKCU\Software\ReadWrite".into());
+        policy
+            .registry
+            .inherit_user
+            .push(r"HKCU\Software\Compatibility".into());
+        policy
+            .registry
+            .no_access
+            .push(r"HKCU\Software\ReadWrite\Denied".into());
+
+        let compiled = compile(&policy, Path::new(r"C:\work\project"))
+            .expect("valid registry policy must compile");
+
+        assert_eq!(
+            compiled
+                .registry
+                .decide(r"HKCU\Software\ReadOnly\Value", RegistryAccess::Read),
+            RegistryDecision::Allow
+        );
+        assert_eq!(
+            compiled.registry.decide(
+                r"HKCU\Software\ReadOnly\Value",
+                RegistryAccess::Write,
+            ),
+            RegistryDecision::Deny
+        );
+        assert_eq!(
+            compiled.registry.decide(
+                r"HKCU\Software\ReadWrite\Value",
+                RegistryAccess::Write,
+            ),
+            RegistryDecision::Allow
+        );
+        assert_eq!(
+            compiled.registry.decide(
+                r"HKCU\Software\Compatibility\Value",
+                RegistryAccess::Read,
+            ),
+            RegistryDecision::InheritUser
+        );
+        assert_eq!(
+            compiled.registry.decide(
+                r"HKCU\Software\ReadWrite\Denied\Value",
+                RegistryAccess::Read,
+            ),
+            RegistryDecision::Deny
+        );
+        assert_eq!(
+            compiled
+                .registry
+                .decide(r"HKCU\Software\Outside", RegistryAccess::Read),
+            RegistryDecision::Deny
+        );
+    }
+
+    #[test]
+    fn pol_008_mandatory_registry_deny_overrides_broad_grant() {
+        let mut policy = SandboxPolicy::default();
+        policy.registry.read_write.push(r"HKCU\Software".into());
+
+        let compiled = compile_with_security_denies(
+            &policy,
+            Path::new(r"C:\work\project"),
+            &[],
+            &[r"HKCU\Software\BoltBroker\Credentials".into()],
+        )
+        .expect("mandatory registry deny must compile");
+
+        assert_eq!(
+            compiled.registry.decide(
+                r"HKCU\Software\BoltBroker\Credentials\Token",
+                RegistryAccess::Read,
+            ),
+            RegistryDecision::Deny
+        );
+        assert_eq!(
+            compiled.registry.decide(
+                r"HKCU\Software\OrdinaryApp\Setting",
+                RegistryAccess::Write,
+            ),
+            RegistryDecision::Allow
+        );
+    }
+
+    #[test]
+    fn reg_010_registry_aliases_and_redundant_separators_share_one_rule() {
+        let mut policy = SandboxPolicy::default();
+        policy
+            .registry
+            .read_only
+            .push(r"HKEY_LOCAL_MACHINE\Software\\Vendor".into());
+        policy
+            .registry
+            .read_only
+            .push(r"HKLM\SOFTWARE\vendor".into());
+
+        let compiled = compile(&policy, Path::new(r"C:\work\project"))
+            .expect("equivalent registry aliases must compile");
+
+        assert_eq!(compiled.registry.read_only_rule_count(), 1);
+        assert_eq!(
+            compiled.registry.decide(
+                r"\Registry\Machine\Software\VENDOR\Product",
+                RegistryAccess::Read,
+            ),
+            RegistryDecision::Allow
+        );
+    }
+
+    #[test]
+    fn pol_020_malformed_registry_roots_are_rejected() {
+        for key in [
+            "",
+            r"UNKNOWN\Software",
+            r"HKCU:\Software",
+            "HKCU\0Software",
+            r"\Registry\User",
+        ] {
+            let mut policy = SandboxPolicy::default();
+            policy.registry.read_only.push(key.into());
+
+            assert!(matches!(
+                compile(&policy, Path::new(r"C:\work\project")),
+                Err(SandboxError::InvalidRequest {
+                    field: RequestField::RegistryPolicy,
+                    reason: InvalidRequestReason::InvalidCharacter,
+                })
+            ));
+        }
+    }
 }
