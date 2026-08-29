@@ -1,3 +1,177 @@
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum StartupState {
+    Prepared,
+    CreatingSuspended,
+    AssigningJob,
+    InjectingHook,
+    AwaitingReady,
+    Resuming,
+    Running,
+    Terminating,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StartupAction {
+    None,
+    CreateSuspended,
+    AssignJob,
+    InjectHook,
+    AwaitReady,
+    ResumeTarget,
+    Started,
+    TerminateJob,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StartupOperation {
+    Begin,
+    TargetCreated,
+    JobAssigned,
+    HookInjected,
+    ReadyVerified,
+    TargetResumed,
+    Fail,
+    TerminationComplete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StartupError {
+    InvalidTransition {
+        state: StartupState,
+        operation: StartupOperation,
+    },
+}
+
+pub(super) struct StartupCoordinator {
+    state: StartupState,
+}
+
+impl StartupCoordinator {
+    pub(super) const fn new() -> Self {
+        Self {
+            state: StartupState::Prepared,
+        }
+    }
+
+    pub(super) const fn state(&self) -> StartupState {
+        self.state
+    }
+
+    pub(super) fn begin(&mut self) -> Result<StartupAction, StartupError> {
+        self.advance(
+            StartupState::Prepared,
+            StartupState::CreatingSuspended,
+            StartupOperation::Begin,
+            StartupAction::CreateSuspended,
+        )
+    }
+
+    pub(super) fn target_created(&mut self) -> Result<StartupAction, StartupError> {
+        self.advance(
+            StartupState::CreatingSuspended,
+            StartupState::AssigningJob,
+            StartupOperation::TargetCreated,
+            StartupAction::AssignJob,
+        )
+    }
+
+    pub(super) fn job_assigned(&mut self) -> Result<StartupAction, StartupError> {
+        self.advance(
+            StartupState::AssigningJob,
+            StartupState::InjectingHook,
+            StartupOperation::JobAssigned,
+            StartupAction::InjectHook,
+        )
+    }
+
+    pub(super) fn hook_injected(&mut self) -> Result<StartupAction, StartupError> {
+        self.advance(
+            StartupState::InjectingHook,
+            StartupState::AwaitingReady,
+            StartupOperation::HookInjected,
+            StartupAction::AwaitReady,
+        )
+    }
+
+    pub(super) fn ready_verified(&mut self) -> Result<StartupAction, StartupError> {
+        self.advance(
+            StartupState::AwaitingReady,
+            StartupState::Resuming,
+            StartupOperation::ReadyVerified,
+            StartupAction::ResumeTarget,
+        )
+    }
+
+    pub(super) fn target_resumed(&mut self) -> Result<StartupAction, StartupError> {
+        self.advance(
+            StartupState::Resuming,
+            StartupState::Running,
+            StartupOperation::TargetResumed,
+            StartupAction::Started,
+        )
+    }
+
+    pub(super) fn fail(&mut self) -> Result<StartupAction, StartupError> {
+        match self.state {
+            StartupState::Prepared | StartupState::CreatingSuspended => {
+                self.state = StartupState::Failed;
+                Ok(StartupAction::Failed)
+            }
+            StartupState::AssigningJob
+            | StartupState::InjectingHook
+            | StartupState::AwaitingReady
+            | StartupState::Resuming => {
+                self.state = StartupState::Terminating;
+                Ok(StartupAction::TerminateJob)
+            }
+            StartupState::Terminating | StartupState::Failed => Ok(StartupAction::None),
+            StartupState::Running => Err(self.invalid_transition(StartupOperation::Fail)),
+        }
+    }
+
+    pub(super) fn termination_complete(&mut self) -> Result<StartupAction, StartupError> {
+        match self.state {
+            StartupState::Terminating => {
+                self.state = StartupState::Failed;
+                Ok(StartupAction::Failed)
+            }
+            StartupState::Failed => Ok(StartupAction::None),
+            StartupState::Prepared
+            | StartupState::CreatingSuspended
+            | StartupState::AssigningJob
+            | StartupState::InjectingHook
+            | StartupState::AwaitingReady
+            | StartupState::Resuming
+            | StartupState::Running => {
+                Err(self.invalid_transition(StartupOperation::TerminationComplete))
+            }
+        }
+    }
+
+    fn advance(
+        &mut self,
+        expected: StartupState,
+        next: StartupState,
+        operation: StartupOperation,
+        action: StartupAction,
+    ) -> Result<StartupAction, StartupError> {
+        if self.state != expected {
+            return Err(self.invalid_transition(operation));
+        }
+        self.state = next;
+        Ok(action)
+    }
+
+    const fn invalid_transition(&self, operation: StartupOperation) -> StartupError {
+        StartupError::InvalidTransition {
+            state: self.state,
+            operation,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

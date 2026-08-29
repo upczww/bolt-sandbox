@@ -269,6 +269,15 @@ Responsibilities:
 The launcher must not parse agent prompts, settings files, or application
 configuration.
 
+The Rust startup coordinator permits only this action order: create suspended,
+assign the target to the execution Job, inject the architecture-matched hook,
+await authenticated `Ready`, then resume. A callback cannot skip or reorder a
+state. Failure before confirmed process creation returns directly; failure from
+Job assignment through resume emits one idempotent whole-Job termination action
+and reaches failed state only after termination completes. Once running, later
+infrastructure failure is handled by the lifecycle controller rather than being
+misclassified as an initialization failure.
+
 ### 5.3 Hook DLL
 
 Responsibilities:
