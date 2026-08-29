@@ -9,6 +9,9 @@ use crate::{InvalidRequestReason, RequestField, SandboxError};
 
 const MAX_NETWORK_RULES_PER_CATEGORY: usize = 1_024;
 const MAX_TOTAL_NETWORK_RULES: usize = 2_048;
+const MAX_REGISTRY_RULES_PER_CATEGORY: usize = 1_024;
+const MAX_TOTAL_REGISTRY_RULES: usize = 2_048;
+const MAX_REGISTRY_KEY_CODE_UNITS: usize = 255;
 
 pub(crate) fn compile(policy: &SandboxPolicy, cwd: &Path) -> Result<CompiledPolicy, SandboxError> {
     compile_with_mandatory_denies(policy, cwd, &[])
@@ -414,6 +417,7 @@ fn compile_registry_policy(
     policy: &RegistryPolicy,
     mandatory_denies: &[String],
 ) -> Result<CompiledRegistryPolicy, SandboxError> {
+    validate_registry_rule_counts(policy, mandatory_denies)?;
     let mut compiled = RegistryPolicyBuilder::default();
     compiled.add_rules(&policy.read_write, RegistryRuleKind::ReadWrite)?;
     compiled.add_rules(&policy.read_only, RegistryRuleKind::ReadOnly)?;
@@ -426,6 +430,34 @@ fn compile_registry_policy(
     Ok(CompiledRegistryPolicy {
         rules: compiled.rules,
     })
+}
+
+fn validate_registry_rule_counts(
+    policy: &RegistryPolicy,
+    mandatory_denies: &[String],
+) -> Result<(), SandboxError> {
+    let no_access_count = policy
+        .no_access
+        .len()
+        .checked_add(mandatory_denies.len())
+        .ok_or_else(|| invalid_registry_policy(InvalidRequestReason::TooManyItems))?;
+    if no_access_count > MAX_REGISTRY_RULES_PER_CATEGORY
+        || policy.read_only.len() > MAX_REGISTRY_RULES_PER_CATEGORY
+        || policy.inherit_user.len() > MAX_REGISTRY_RULES_PER_CATEGORY
+        || policy.read_write.len() > MAX_REGISTRY_RULES_PER_CATEGORY
+    {
+        return Err(invalid_registry_policy(InvalidRequestReason::TooManyItems));
+    }
+
+    let total = no_access_count
+        .checked_add(policy.read_only.len())
+        .and_then(|count| count.checked_add(policy.inherit_user.len()))
+        .and_then(|count| count.checked_add(policy.read_write.len()))
+        .ok_or_else(|| invalid_registry_policy(InvalidRequestReason::TooManyItems))?;
+    if total > MAX_TOTAL_REGISTRY_RULES {
+        return Err(invalid_registry_policy(InvalidRequestReason::TooManyItems));
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -533,10 +565,14 @@ impl NormalizedRegistryKey {
             }
         };
 
-        Ok(Self {
+        let normalized = Self {
             hive,
             components: parts[component_offset..].to_vec(),
-        })
+        };
+        if normalized.encoded_length() > MAX_REGISTRY_KEY_CODE_UNITS {
+            return Err(invalid_registry_policy(InvalidRequestReason::TooLarge));
+        }
+        Ok(normalized)
     }
 
     fn contains(&self, candidate: &Self) -> bool {
@@ -552,6 +588,15 @@ impl NormalizedRegistryKey {
     fn depth(&self) -> usize {
         self.components.len()
     }
+
+    fn encoded_length(&self) -> usize {
+        self.hive.canonical_name().encode_utf16().count()
+            + self
+                .components
+                .iter()
+                .map(|component| 1 + component.encode_utf16().count())
+                .sum::<usize>()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -561,6 +606,18 @@ enum RegistryHive {
     LocalMachine,
     Users,
     CurrentConfig,
+}
+
+impl RegistryHive {
+    const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::ClassesRoot => "HKEY_CLASSES_ROOT",
+            Self::CurrentUser => "HKEY_CURRENT_USER",
+            Self::LocalMachine => "HKEY_LOCAL_MACHINE",
+            Self::Users => "HKEY_USERS",
+            Self::CurrentConfig => "HKEY_CURRENT_CONFIG",
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1519,14 +1576,10 @@ mod tests {
             RegistryRuleKind::InheritUser,
             RegistryRuleKind::ReadWrite,
         ] {
-            let at_maximum = policy_with_repeated_registry_rule(
-                kind,
-                MAX_REGISTRY_RULES_PER_CATEGORY,
-            );
-            let over_maximum = policy_with_repeated_registry_rule(
-                kind,
-                MAX_REGISTRY_RULES_PER_CATEGORY + 1,
-            );
+            let at_maximum =
+                policy_with_repeated_registry_rule(kind, MAX_REGISTRY_RULES_PER_CATEGORY);
+            let over_maximum =
+                policy_with_repeated_registry_rule(kind, MAX_REGISTRY_RULES_PER_CATEGORY + 1);
 
             assert!(compile(&at_maximum, Path::new(r"C:\work\project")).is_ok());
             assert_eq!(
@@ -1584,10 +1637,7 @@ mod tests {
         );
     }
 
-    fn policy_with_repeated_registry_rule(
-        kind: RegistryRuleKind,
-        count: usize,
-    ) -> SandboxPolicy {
+    fn policy_with_repeated_registry_rule(kind: RegistryRuleKind, count: usize) -> SandboxPolicy {
         let mut policy = SandboxPolicy::default();
         let rules = match kind {
             RegistryRuleKind::NoAccess => &mut policy.registry.no_access,
