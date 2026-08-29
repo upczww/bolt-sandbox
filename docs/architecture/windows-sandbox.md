@@ -350,6 +350,11 @@ Supported modes:
 - `Denied`: outbound traffic is denied except required loopback IPC.
 - `AllowList`: only configured domains, IP ranges, and ports are allowed.
 
+Protocol version 1 accepts at most 1,024 domain rules, 1,024 CIDR rules, and
+1,024 port ranges, with at most 2,048 network rules in total. These limits are
+checked on untrusted input before normalization or duplicate removal. Equivalent
+rules compile to one deterministic canonical decision.
+
 Enforcement uses two layers:
 
 1. Hook Winsock, DNS, WinHTTP, and WinInet APIs to enforce policy and report

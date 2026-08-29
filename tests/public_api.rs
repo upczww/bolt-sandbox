@@ -1,14 +1,15 @@
 use std::{
     collections::BTreeMap,
     ffi::OsString,
+    net::{IpAddr, Ipv4Addr},
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use bolt_sandbox::{
-    ChildProcessPolicy, FilesystemPolicy, MAX_TIMEOUT, MIN_TIMEOUT, NetworkPolicy, ProcessExit,
-    ProcessExitReason, RecoveryPolicy, RegistryPolicy, RequestField, SandboxError, SandboxEvent,
-    SandboxPolicy, SandboxRequest,
+    ChildProcessPolicy, FilesystemPolicy, IpCidr, MAX_TIMEOUT, MIN_TIMEOUT, NetworkAllowList,
+    NetworkPolicy, PortRange, ProcessExit, ProcessExitReason, RecoveryPolicy, RegistryPolicy,
+    RequestField, SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest,
 };
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {
@@ -129,4 +130,21 @@ fn policy_types_are_constructible_without_native_dependencies() {
 fn req_007_public_timeout_bounds_match_the_documented_contract() {
     assert_eq!(MIN_TIMEOUT, Duration::from_millis(1));
     assert_eq!(MAX_TIMEOUT, Duration::from_secs(24 * 60 * 60));
+}
+
+#[test]
+fn req_013_network_policy_types_are_constructible_without_protocol_leakage() {
+    let policy = NetworkPolicy::AllowList(NetworkAllowList {
+        domains: vec!["example.com".into()],
+        addresses: vec![IpCidr {
+            address: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 0)),
+            prefix_length: 24,
+        }],
+        ports: vec![PortRange {
+            start: 443,
+            end: 443,
+        }],
+    });
+
+    assert!(matches!(policy, NetworkPolicy::AllowList(_)));
 }

@@ -929,4 +929,177 @@ mod tests {
             assert!(compile(&policy, Path::new(r"C:\work\project")).is_err());
         }
     }
+
+    #[test]
+    fn pol_022_network_category_limits_accept_maximum_and_reject_maximum_plus_one() {
+        let domains = (0..=MAX_NETWORK_RULES_PER_CATEGORY)
+            .map(|index| format!("d{index}.example"))
+            .collect::<Vec<_>>();
+        let addresses = (0..=MAX_NETWORK_RULES_PER_CATEGORY)
+            .map(|index| IpCidr {
+                address: IpAddr::V4(Ipv4Addr::from(
+                    0x0A00_0000_u32 + u32::try_from(index).expect("test index must fit u32"),
+                )),
+                prefix_length: 32,
+            })
+            .collect::<Vec<_>>();
+        let maximum_port =
+            u16::try_from(MAX_NETWORK_RULES_PER_CATEGORY).expect("rule limit must fit u16");
+        let ports = (1..=(maximum_port + 1))
+            .map(|port| PortRange {
+                start: port,
+                end: port,
+            })
+            .collect::<Vec<_>>();
+
+        for (at_maximum, over_maximum) in [
+            (
+                NetworkAllowList {
+                    domains: domains[..MAX_NETWORK_RULES_PER_CATEGORY].to_vec(),
+                    ..NetworkAllowList::default()
+                },
+                NetworkAllowList {
+                    domains,
+                    ..NetworkAllowList::default()
+                },
+            ),
+            (
+                NetworkAllowList {
+                    addresses: addresses[..MAX_NETWORK_RULES_PER_CATEGORY].to_vec(),
+                    ..NetworkAllowList::default()
+                },
+                NetworkAllowList {
+                    addresses,
+                    ..NetworkAllowList::default()
+                },
+            ),
+            (
+                NetworkAllowList {
+                    ports: ports[..MAX_NETWORK_RULES_PER_CATEGORY].to_vec(),
+                    ..NetworkAllowList::default()
+                },
+                NetworkAllowList {
+                    ports,
+                    ..NetworkAllowList::default()
+                },
+            ),
+        ] {
+            assert!(compile(
+                &policy_with_network(NetworkPolicy::AllowList(at_maximum)),
+                Path::new(r"C:\work\project"),
+            )
+            .is_ok());
+            assert_eq!(
+                compile(
+                    &policy_with_network(NetworkPolicy::AllowList(over_maximum)),
+                    Path::new(r"C:\work\project"),
+                )
+                .err(),
+                Some(SandboxError::InvalidRequest {
+                    field: RequestField::NetworkPolicy,
+                    reason: InvalidRequestReason::TooManyItems,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn pol_022_total_network_rule_limit_is_checked_before_deduplication() {
+        let addresses = (0..MAX_NETWORK_RULES_PER_CATEGORY)
+            .map(|index| IpCidr {
+                address: IpAddr::V4(Ipv4Addr::from(
+                    0x0A00_0000_u32 + u32::try_from(index).expect("test index must fit u32"),
+                )),
+                prefix_length: 32,
+            })
+            .collect::<Vec<_>>();
+        let at_maximum = NetworkAllowList {
+            domains: vec!["example.com".into(); MAX_NETWORK_RULES_PER_CATEGORY],
+            addresses: addresses.clone(),
+            ..NetworkAllowList::default()
+        };
+        let over_maximum = NetworkAllowList {
+            domains: vec!["example.com".into(); MAX_NETWORK_RULES_PER_CATEGORY],
+            addresses,
+            ports: vec![PortRange {
+                start: 443,
+                end: 443,
+            }],
+            ..NetworkAllowList::default()
+        };
+
+        assert!(compile(
+            &policy_with_network(NetworkPolicy::AllowList(at_maximum)),
+            Path::new(r"C:\work\project"),
+        )
+        .is_ok());
+        assert_eq!(
+            compile(
+                &policy_with_network(NetworkPolicy::AllowList(over_maximum)),
+                Path::new(r"C:\work\project"),
+            )
+            .err(),
+            Some(SandboxError::InvalidRequest {
+                field: RequestField::NetworkPolicy,
+                reason: InvalidRequestReason::TooManyItems,
+            })
+        );
+    }
+
+    #[test]
+    fn req_010_equivalent_network_rules_compile_deterministically() {
+        let first = policy_with_network(NetworkPolicy::AllowList(NetworkAllowList {
+            domains: vec!["Example.COM".into(), "münich.example".into()],
+            addresses: vec![
+                IpCidr {
+                    address: "2001:db8::".parse().expect("valid IPv6"),
+                    prefix_length: 32,
+                },
+                IpCidr {
+                    address: "192.0.2.0".parse().expect("valid IPv4"),
+                    prefix_length: 24,
+                },
+            ],
+            ports: vec![
+                PortRange {
+                    start: 8_000,
+                    end: 8_080,
+                },
+                PortRange {
+                    start: 443,
+                    end: 443,
+                },
+            ],
+        }));
+        let second = policy_with_network(NetworkPolicy::AllowList(NetworkAllowList {
+            domains: vec!["xn--mnich-kva.example".into(), "example.com".into()],
+            addresses: vec![
+                IpCidr {
+                    address: "192.0.2.0".parse().expect("valid IPv4"),
+                    prefix_length: 24,
+                },
+                IpCidr {
+                    address: "2001:db8::".parse().expect("valid IPv6"),
+                    prefix_length: 32,
+                },
+            ],
+            ports: vec![
+                PortRange {
+                    start: 443,
+                    end: 443,
+                },
+                PortRange {
+                    start: 8_000,
+                    end: 8_080,
+                },
+            ],
+        }));
+
+        let first = compile(&first, Path::new(r"C:\work\project"))
+            .expect("first policy must compile");
+        let second = compile(&second, Path::new(r"C:\work\project"))
+            .expect("second policy must compile");
+
+        assert_eq!(first.network, second.network);
+    }
 }
