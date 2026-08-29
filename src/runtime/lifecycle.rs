@@ -627,4 +627,40 @@ mod tests {
             ))
         );
     }
+
+    #[test]
+    fn life_010_terminal_event_may_arrive_before_process_wait_signal() {
+        let mut lifecycle = LifecycleController::new();
+        lifecycle.start().expect("start must succeed");
+
+        assert_eq!(
+            lifecycle.mark_terminal_event(exit_event(ProcessExitReason::Exited)),
+            Ok(LifecycleAction::BeginDrain)
+        );
+        assert_eq!(
+            lifecycle.phase(),
+            LifecyclePhase::Draining(TerminationCause::Exited)
+        );
+        assert_eq!(
+            lifecycle.observe_triggers(TriggerSet {
+                process_exited: true,
+                ..TriggerSet::default()
+            }),
+            Ok(LifecycleAction::None)
+        );
+
+        lifecycle
+            .mark_stream_eof(StreamKind::Stdout)
+            .expect("stdout EOF must drain");
+        lifecycle
+            .mark_stream_eof(StreamKind::Stderr)
+            .expect("stderr EOF must drain");
+        assert_eq!(
+            lifecycle.mark_event_eof(),
+            Ok(LifecycleAction::Completed(ExecutionOutcome {
+                terminal: ExecutionTerminal::Process(exit_event(ProcessExitReason::Exited)),
+                receiver_loss: ReceiverLoss::default(),
+            }))
+        );
+    }
 }
