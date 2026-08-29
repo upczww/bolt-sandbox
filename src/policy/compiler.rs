@@ -1,9 +1,37 @@
+use std::path::{Path, PathBuf};
+
+use super::SandboxPolicy;
+
+pub(crate) fn compile(policy: &SandboxPolicy, cwd: &Path) -> CompiledPolicy {
+    let mut read_write = policy.filesystem.read_write.clone();
+    if !read_write.iter().any(|root| root == cwd) {
+        read_write.push(cwd.to_path_buf());
+    }
+
+    CompiledPolicy {
+        filesystem: CompiledFilesystemPolicy { read_write },
+    }
+}
+
+pub(crate) struct CompiledPolicy {
+    pub(crate) filesystem: CompiledFilesystemPolicy,
+}
+
+pub(crate) struct CompiledFilesystemPolicy {
+    read_write: Vec<PathBuf>,
+}
+
+impl CompiledFilesystemPolicy {
+    pub(crate) fn allows_read_write(&self, path: &Path) -> bool {
+        self.read_write.iter().any(|root| path.starts_with(root))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::SandboxPolicy;
 
     #[test]
     fn pol_001_default_policy_grants_cwd_read_write_recursively() {
