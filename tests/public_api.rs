@@ -7,7 +7,8 @@ use std::{
 
 use bolt_sandbox::{
     ChildProcessPolicy, FilesystemPolicy, NetworkPolicy, RecoveryPolicy, RegistryPolicy,
-    RequestField, SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest,
+    ProcessExit, ProcessExitReason, RequestField, SandboxError, SandboxEvent, SandboxPolicy,
+    SandboxRequest,
 };
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {
@@ -74,6 +75,24 @@ fn req_013_public_event_contract_exposes_ready_without_native_types() {
     let event = SandboxEvent::Ready;
 
     assert_eq!(event, SandboxEvent::Ready);
+}
+
+#[test]
+fn evt_001_public_process_exit_is_typed_without_native_status_types() {
+    let event = SandboxEvent::ProcessExited(ProcessExit {
+        process_id: 1234,
+        exit_code: Some(7),
+        reason: ProcessExitReason::Exited,
+    });
+
+    assert_eq!(
+        event,
+        SandboxEvent::ProcessExited(ProcessExit {
+            process_id: 1234,
+            exit_code: Some(7),
+            reason: ProcessExitReason::Exited,
+        })
+    );
 }
 
 #[test]
