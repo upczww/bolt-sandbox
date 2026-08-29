@@ -40,6 +40,8 @@ impl SandboxRequest {
             });
         }
 
+        validate_arguments(&self.arguments)?;
+
         if !self.cwd.is_absolute() {
             return Err(SandboxError::InvalidRequest {
                 field: RequestField::CurrentDirectory,
@@ -60,6 +62,16 @@ impl SandboxRequest {
 
         Ok(())
     }
+}
+
+fn validate_arguments(arguments: &[OsString]) -> Result<(), SandboxError> {
+    if arguments.iter().any(|argument| contains_nul(argument)) {
+        return Err(SandboxError::InvalidRequest {
+            field: RequestField::Arguments,
+            reason: InvalidRequestReason::InvalidCharacter,
+        });
+    }
+    Ok(())
 }
 
 fn validate_environment(environment: &BTreeMap<OsString, OsString>) -> Result<(), SandboxError> {

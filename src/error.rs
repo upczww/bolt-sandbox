@@ -3,6 +3,7 @@ use std::{error::Error, fmt};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequestField {
     Program,
+    Arguments,
     CurrentDirectory,
     Environment,
     FilesystemPolicy,
