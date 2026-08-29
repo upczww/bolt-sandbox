@@ -20,6 +20,8 @@ pub enum InvalidRequestReason {
     ReservedName,
     ConflictingNames,
     OutOfRange,
+    TooManyItems,
+    TooLarge,
     EscapesRoot,
     ConflictingRules,
 }

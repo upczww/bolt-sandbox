@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     os::windows::ffi::OsStrExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -10,6 +10,16 @@ use crate::{InvalidRequestReason, RequestField, SandboxError, SandboxPolicy, pol
 
 pub const MIN_TIMEOUT: Duration = Duration::from_millis(1);
 pub const MAX_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
+const MAX_ARGUMENTS: usize = 4_096;
+const MAX_ENVIRONMENT_VARIABLES: usize = 4_096;
+const MAX_COMMAND_LINE_CODE_UNITS: usize = 32_767;
+const MAX_ENVIRONMENT_ITEM_CODE_UNITS: usize = 32_767;
+const MAX_ENVIRONMENT_BLOCK_CODE_UNITS: usize = 524_288;
+const SPACE: u16 = 0x20;
+const TAB: u16 = 0x09;
+const QUOTE: u16 = 0x22;
+const BACKSLASH: u16 = 0x5C;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxRequest {
@@ -43,7 +53,7 @@ impl SandboxRequest {
             });
         }
 
-        validate_arguments(&self.arguments)?;
+        validate_arguments(&self.program, &self.arguments)?;
 
         if !self.cwd.is_absolute() {
             return Err(SandboxError::InvalidRequest {
@@ -78,22 +88,32 @@ fn validate_timeout(timeout: Option<Duration>) -> Result<(), SandboxError> {
     Ok(())
 }
 
-fn validate_arguments(arguments: &[OsString]) -> Result<(), SandboxError> {
-    if arguments.iter().any(|argument| contains_nul(argument)) {
-        return Err(SandboxError::InvalidRequest {
-            field: RequestField::Arguments,
-            reason: InvalidRequestReason::InvalidCharacter,
-        });
+fn validate_arguments(program: &Path, arguments: &[OsString]) -> Result<(), SandboxError> {
+    if arguments.len() > MAX_ARGUMENTS {
+        return Err(invalid_arguments(InvalidRequestReason::TooManyItems));
     }
+    if arguments.iter().any(|argument| contains_nul(argument)) {
+        return Err(invalid_arguments(InvalidRequestReason::InvalidCharacter));
+    }
+    let _encoded = encode_command_line(program, arguments)?;
     Ok(())
 }
 
 fn validate_environment(environment: &BTreeMap<OsString, OsString>) -> Result<(), SandboxError> {
+    if environment.len() > MAX_ENVIRONMENT_VARIABLES {
+        return Err(invalid_environment(InvalidRequestReason::TooManyItems));
+    }
+
     let mut normalized_names = BTreeSet::new();
     for (name, value) in environment {
         validate_environment_name(name)?;
         if contains_nul(value) {
             return Err(invalid_environment(InvalidRequestReason::InvalidCharacter));
+        }
+        if name.encode_wide().count() > MAX_ENVIRONMENT_ITEM_CODE_UNITS
+            || value.encode_wide().count() > MAX_ENVIRONMENT_ITEM_CODE_UNITS
+        {
+            return Err(invalid_environment(InvalidRequestReason::TooLarge));
         }
 
         let normalized_name = normalize_environment_name(name)?;
@@ -101,7 +121,103 @@ fn validate_environment(environment: &BTreeMap<OsString, OsString>) -> Result<()
             return Err(invalid_environment(InvalidRequestReason::ConflictingNames));
         }
     }
+    let _encoded_length = encoded_environment_block_length(environment)?;
     Ok(())
+}
+
+fn encode_command_line(program: &Path, arguments: &[OsString]) -> Result<Vec<u16>, SandboxError> {
+    if contains_nul(program.as_os_str()) || arguments.iter().any(|value| contains_nul(value)) {
+        return Err(invalid_arguments(InvalidRequestReason::InvalidCharacter));
+    }
+
+    let mut encoded_length = encoded_argument_length(program.as_os_str())
+        .ok_or_else(|| invalid_arguments(InvalidRequestReason::TooLarge))?;
+    for argument in arguments {
+        encoded_length = encoded_length
+            .checked_add(1)
+            .and_then(|length| {
+                encoded_argument_length(argument)
+                    .and_then(|argument_length| length.checked_add(argument_length))
+            })
+            .ok_or_else(|| invalid_arguments(InvalidRequestReason::TooLarge))?;
+    }
+    encoded_length = encoded_length
+        .checked_add(1)
+        .ok_or_else(|| invalid_arguments(InvalidRequestReason::TooLarge))?;
+    if encoded_length > MAX_COMMAND_LINE_CODE_UNITS {
+        return Err(invalid_arguments(InvalidRequestReason::TooLarge));
+    }
+
+    let mut encoded = Vec::with_capacity(encoded_length);
+    append_quoted_argument(&mut encoded, program.as_os_str());
+    for argument in arguments {
+        encoded.push(SPACE);
+        append_quoted_argument(&mut encoded, argument);
+    }
+    encoded.push(0);
+    debug_assert_eq!(encoded.len(), encoded_length);
+    Ok(encoded)
+}
+
+fn encoded_argument_length(argument: &OsStr) -> Option<usize> {
+    if !argument_needs_quotes(argument) {
+        return Some(argument.encode_wide().count());
+    }
+
+    let mut length = 2_usize;
+    let mut backslashes = 0_usize;
+    for code_unit in argument.encode_wide() {
+        match code_unit {
+            BACKSLASH => backslashes = backslashes.checked_add(1)?,
+            QUOTE => {
+                length = length.checked_add(backslashes.checked_mul(2)?.checked_add(2)?)?;
+                backslashes = 0;
+            }
+            _ => {
+                length = length.checked_add(backslashes.checked_add(1)?)?;
+                backslashes = 0;
+            }
+        }
+    }
+    length.checked_add(backslashes.checked_mul(2)?)
+}
+
+fn argument_needs_quotes(argument: &OsStr) -> bool {
+    argument.is_empty()
+        || argument
+            .encode_wide()
+            .any(|code_unit| matches!(code_unit, SPACE | TAB | QUOTE))
+}
+
+fn append_quoted_argument(encoded: &mut Vec<u16>, argument: &OsStr) {
+    if !argument_needs_quotes(argument) {
+        encoded.extend(argument.encode_wide());
+        return;
+    }
+
+    encoded.push(QUOTE);
+    let mut backslashes = 0_usize;
+    for code_unit in argument.encode_wide() {
+        match code_unit {
+            BACKSLASH => backslashes += 1,
+            QUOTE => {
+                push_repeated(encoded, BACKSLASH, backslashes * 2 + 1);
+                encoded.push(QUOTE);
+                backslashes = 0;
+            }
+            _ => {
+                push_repeated(encoded, BACKSLASH, backslashes);
+                encoded.push(code_unit);
+                backslashes = 0;
+            }
+        }
+    }
+    push_repeated(encoded, BACKSLASH, backslashes * 2);
+    encoded.push(QUOTE);
+}
+
+fn push_repeated(encoded: &mut Vec<u16>, code_unit: u16, count: usize) {
+    encoded.resize(encoded.len() + count, code_unit);
 }
 
 #[allow(
@@ -168,7 +284,8 @@ fn encode_environment_block(
     }
     sorted.sort_by(|left, right| left.0.cmp(&right.0));
 
-    let mut encoded = Vec::new();
+    let encoded_length = encoded_environment_block_length(environment)?;
+    let mut encoded = Vec::with_capacity(encoded_length);
     for (_, name, value) in sorted {
         encoded.extend(name.encode_wide());
         encoded.push(u16::from(b'='));
@@ -179,7 +296,30 @@ fn encode_environment_block(
         encoded.push(0);
     }
     encoded.push(0);
+    debug_assert_eq!(encoded.len(), encoded_length);
     Ok(encoded)
+}
+
+fn encoded_environment_block_length(
+    environment: &BTreeMap<OsString, OsString>,
+) -> Result<usize, SandboxError> {
+    if environment.is_empty() {
+        return Ok(2);
+    }
+
+    let mut length = 1_usize;
+    for (name, value) in environment {
+        length = length
+            .checked_add(name.encode_wide().count())
+            .and_then(|length| length.checked_add(1))
+            .and_then(|length| length.checked_add(value.encode_wide().count()))
+            .and_then(|length| length.checked_add(1))
+            .ok_or_else(|| invalid_environment(InvalidRequestReason::TooLarge))?;
+        if length > MAX_ENVIRONMENT_BLOCK_CODE_UNITS {
+            return Err(invalid_environment(InvalidRequestReason::TooLarge));
+        }
+    }
+    Ok(length)
 }
 
 fn validate_environment_name(name: &OsStr) -> Result<(), SandboxError> {
@@ -218,6 +358,13 @@ fn contains_nul(value: &OsStr) -> bool {
 const fn invalid_environment(reason: InvalidRequestReason) -> SandboxError {
     SandboxError::InvalidRequest {
         field: RequestField::Environment,
+        reason,
+    }
+}
+
+const fn invalid_arguments(reason: InvalidRequestReason) -> SandboxError {
+    SandboxError::InvalidRequest {
+        field: RequestField::Arguments,
         reason,
     }
 }
@@ -508,17 +655,15 @@ mod tests {
     fn req_012_environment_count_maximum_and_maximum_plus_one() {
         let mut request = valid_request();
         for index in 0..MAX_ENVIRONMENT_VARIABLES {
-            request.environment.insert(
-                OsString::from(format!("BOLT_{index:04}")),
-                OsString::new(),
-            );
+            request
+                .environment
+                .insert(OsString::from(format!("BOLT_{index:04}")), OsString::new());
         }
         assert_eq!(request.validate(), Ok(()));
 
-        request.environment.insert(
-            OsString::from("BOLT_OVER_LIMIT"),
-            OsString::new(),
-        );
+        request
+            .environment
+            .insert(OsString::from("BOLT_OVER_LIMIT"), OsString::new());
         assert_eq!(
             request.validate(),
             Err(SandboxError::InvalidRequest {
@@ -532,12 +677,10 @@ mod tests {
     fn req_012_windows_command_line_maximum_and_maximum_plus_one() {
         let program = PathBuf::from(r"C:\p.exe");
         let fixed_code_units = program.as_os_str().encode_wide().count() + 2;
-        let at_maximum = OsString::from("a".repeat(
-            MAX_COMMAND_LINE_CODE_UNITS - fixed_code_units,
-        ));
+        let at_maximum = OsString::from("a".repeat(MAX_COMMAND_LINE_CODE_UNITS - fixed_code_units));
 
         assert_eq!(
-            encode_command_line(&program, &[at_maximum.clone()])
+            encode_command_line(&program, std::slice::from_ref(&at_maximum))
                 .expect("maximum command line must encode")
                 .len(),
             MAX_COMMAND_LINE_CODE_UNITS
@@ -603,10 +746,8 @@ mod tests {
         let mut environment = BTreeMap::new();
         let entry_overhead = 7;
         let full_value = MAX_ENVIRONMENT_ITEM_CODE_UNITS;
-        let final_value = MAX_ENVIRONMENT_BLOCK_CODE_UNITS
-            - 1
-            - (16 * entry_overhead)
-            - (15 * full_value);
+        let final_value =
+            MAX_ENVIRONMENT_BLOCK_CODE_UNITS - 1 - (16 * entry_overhead) - (15 * full_value);
         for index in 0..15 {
             environment.insert(
                 OsString::from(format!("K{index:04}")),
