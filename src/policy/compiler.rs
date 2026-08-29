@@ -1,12 +1,13 @@
 use std::{
     ffi::{OsStr, OsString},
     net::IpAddr,
+    os::windows::ffi::OsStrExt,
     path::{Component, Path},
 };
 
 use super::{
-    ChildProcessPolicy, IpCidr, NetworkAllowList, NetworkPolicy, PortRange, RegistryPolicy,
-    SandboxPolicy,
+    ChildProcessPolicy, IpCidr, NetworkAllowList, NetworkPolicy, PortRange, RecoveryPolicy,
+    RegistryPolicy, SandboxPolicy,
 };
 use crate::{InvalidRequestReason, RequestField, SandboxError};
 
@@ -53,11 +54,13 @@ pub(crate) fn compile_with_security_denies(
 
     let network = compile_network_policy(&policy.network)?;
     let registry = compile_registry_policy(&policy.registry, mandatory_registry_denies)?;
+    let recovery = compile_recovery_policy(&policy.recovery)?;
     let compiled = CompiledPolicy {
         filesystem,
         network,
         registry,
         child_processes: policy.child_processes,
+        recovery,
     };
     debug_assert!(compiled.filesystem.allows_read_write(cwd));
     debug_assert_eq!(
@@ -84,6 +87,118 @@ pub(crate) struct CompiledPolicy {
     )]
     pub(crate) registry: CompiledRegistryPolicy,
     pub(crate) child_processes: ChildProcessPolicy,
+    #[allow(
+        dead_code,
+        reason = "compiled recovery policy is consumed by the trusted Rust recovery coordinator"
+    )]
+    pub(crate) recovery: CompiledRecoveryPolicy,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum CompiledRecoveryPolicy {
+    Disabled,
+    Enabled(CompiledRecoveryLimits),
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct CompiledRecoveryLimits {
+    directory: std::path::PathBuf,
+    maximum_bytes: u64,
+    maximum_items: u32,
+}
+
+#[allow(
+    dead_code,
+    reason = "recovery quota is instantiated by the trusted recovery coordinator later"
+)]
+impl CompiledRecoveryLimits {
+    fn quota(&self) -> RecoveryQuota {
+        RecoveryQuota {
+            maximum_bytes: self.maximum_bytes,
+            maximum_items: self.maximum_items,
+            used_bytes: 0,
+            used_items: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "recovery quota errors are consumed by the trusted recovery coordinator later"
+)]
+pub(crate) enum RecoveryQuotaError {
+    ByteLimit,
+    ItemLimit,
+    CounterOverflow,
+}
+
+#[allow(
+    dead_code,
+    reason = "recovery quota is consumed by the trusted recovery coordinator later"
+)]
+pub(crate) struct RecoveryQuota {
+    maximum_bytes: u64,
+    maximum_items: u32,
+    used_bytes: u64,
+    used_items: u32,
+}
+
+#[allow(
+    dead_code,
+    reason = "recovery quota is consumed by the trusted recovery coordinator later"
+)]
+impl RecoveryQuota {
+    pub(crate) fn reserve(&mut self, byte_count: u64) -> Result<(), RecoveryQuotaError> {
+        let next_items = self
+            .used_items
+            .checked_add(1)
+            .ok_or(RecoveryQuotaError::CounterOverflow)?;
+        let next_bytes = self
+            .used_bytes
+            .checked_add(byte_count)
+            .ok_or(RecoveryQuotaError::CounterOverflow)?;
+        if next_items > self.maximum_items {
+            return Err(RecoveryQuotaError::ItemLimit);
+        }
+        if next_bytes > self.maximum_bytes {
+            return Err(RecoveryQuotaError::ByteLimit);
+        }
+        self.used_items = next_items;
+        self.used_bytes = next_bytes;
+        Ok(())
+    }
+}
+
+fn compile_recovery_policy(
+    policy: &RecoveryPolicy,
+) -> Result<CompiledRecoveryPolicy, SandboxError> {
+    let RecoveryPolicy::Enabled(limits) = policy else {
+        return Ok(CompiledRecoveryPolicy::Disabled);
+    };
+    if !limits.directory.is_absolute() {
+        return Err(invalid_recovery_policy(
+            InvalidRequestReason::MustBeAbsolute,
+        ));
+    }
+    if limits
+        .directory
+        .as_os_str()
+        .encode_wide()
+        .any(|code_unit| code_unit == 0)
+    {
+        return Err(invalid_recovery_policy(
+            InvalidRequestReason::InvalidCharacter,
+        ));
+    }
+    if limits.maximum_bytes == 0 || limits.maximum_items == 0 {
+        return Err(invalid_recovery_policy(InvalidRequestReason::OutOfRange));
+    }
+    Ok(CompiledRecoveryPolicy::Enabled(CompiledRecoveryLimits {
+        directory: limits.directory.clone(),
+        maximum_bytes: limits.maximum_bytes,
+        maximum_items: limits.maximum_items,
+    }))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -872,6 +987,13 @@ const fn invalid_network_policy(reason: InvalidRequestReason) -> SandboxError {
 const fn invalid_registry_policy(reason: InvalidRequestReason) -> SandboxError {
     SandboxError::InvalidRequest {
         field: RequestField::RegistryPolicy,
+        reason,
+    }
+}
+
+const fn invalid_recovery_policy(reason: InvalidRequestReason) -> SandboxError {
+    SandboxError::InvalidRequest {
+        field: RequestField::RecoveryPolicy,
         reason,
     }
 }

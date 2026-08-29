@@ -364,6 +364,13 @@ or destructive rename operations. Recovery must be:
 - Disabled for files identified as secrets unless the backup store provides
   equivalent access control and encryption.
 
+Recovery protocol version 1 requires an absolute, NUL-free trusted storage
+directory and nonzero byte/item quotas. The wire types' full nonzero ranges
+(`1..=u64::MAX` bytes and `1..=u32::MAX` items) are representable; runtime
+reservations use checked additions and commit neither counter when arithmetic or
+either quota check fails. Recovery configuration remains in trusted Rust state
+and is not serialized into the untrusted hook policy payload.
+
 Recovery is not a substitute for policy enforcement.
 
 ## 7. Child Processes

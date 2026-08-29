@@ -10,6 +10,7 @@ pub enum RequestField {
     FilesystemPolicy,
     NetworkPolicy,
     RegistryPolicy,
+    RecoveryPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
