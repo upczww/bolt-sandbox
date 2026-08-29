@@ -1,9 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    ffi::OsString,
-    path::PathBuf,
-    time::Duration,
-};
+use std::{collections::BTreeMap, ffi::OsString, path::PathBuf, time::Duration};
 
 use crate::{InvalidRequestReason, RequestField, SandboxError, SandboxPolicy};
 
@@ -18,6 +13,12 @@ pub struct SandboxRequest {
 }
 
 impl SandboxRequest {
+    /// Validates the host-owned fields needed before launcher startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SandboxError::InvalidRequest`] when the program or current
+    /// directory is not absolute or does not identify the required object type.
     pub fn validate(&self) -> Result<(), SandboxError> {
         if !self.program.is_absolute() {
             return Err(SandboxError::InvalidRequest {

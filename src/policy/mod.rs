@@ -8,25 +8,13 @@ pub use filesystem::FilesystemPolicy;
 pub use network::{NetworkAllowList, NetworkPolicy};
 pub use registry::RegistryPolicy;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SandboxPolicy {
     pub filesystem: FilesystemPolicy,
     pub registry: RegistryPolicy,
     pub network: NetworkPolicy,
     pub child_processes: ChildProcessPolicy,
     pub recovery: RecoveryPolicy,
-}
-
-impl Default for SandboxPolicy {
-    fn default() -> Self {
-        Self {
-            filesystem: FilesystemPolicy::default(),
-            registry: RegistryPolicy::default(),
-            network: NetworkPolicy::default(),
-            child_processes: ChildProcessPolicy::default(),
-            recovery: RecoveryPolicy::default(),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
