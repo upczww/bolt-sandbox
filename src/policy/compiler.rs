@@ -454,4 +454,51 @@ mod tests {
             })
         ));
     }
+
+    #[test]
+    fn pol_007_mandatory_deny_overrides_untrusted_broad_grant() {
+        let cwd = Path::new(r"C:\work\project");
+        let policy = policy_with_filesystem(|filesystem| {
+            filesystem
+                .read_write
+                .push(PathBuf::from(r"C:\Users\Alice"));
+        });
+
+        let compiled = compile_with_mandatory_denies(
+            &policy,
+            cwd,
+            &[PathBuf::from(r"C:\Users\Alice\.ssh")],
+        )
+        .expect("mandatory deny must coexist with broad grant");
+
+        assert_eq!(
+            compiled.filesystem.decide(
+                Path::new(r"C:\Users\Alice\.ssh\id_ed25519"),
+                FilesystemAccess::Read,
+            ),
+            FilesystemDecision::Deny
+        );
+        assert_eq!(
+            compiled.filesystem.decide(
+                Path::new(r"C:\Users\Alice\workspace\source.rs"),
+                FilesystemAccess::Write,
+            ),
+            FilesystemDecision::Allow
+        );
+    }
+
+    #[test]
+    fn pol_024_mandatory_deny_aliases_are_canonicalized_once() {
+        let compiled = compile_with_mandatory_denies(
+            &SandboxPolicy::default(),
+            Path::new(r"C:\work\project"),
+            &[
+                PathBuf::from(r"C:\Users\Alice\.ssh"),
+                PathBuf::from(r"c:\users\alice\.\.SSH"),
+            ],
+        )
+        .expect("equivalent mandatory denies must compile");
+
+        assert_eq!(compiled.filesystem.deny_rule_count(), 1);
+    }
 }
