@@ -7,11 +7,20 @@ use super::SandboxPolicy;
 use crate::{InvalidRequestReason, RequestField, SandboxError};
 
 pub(crate) fn compile(policy: &SandboxPolicy, cwd: &Path) -> Result<CompiledPolicy, SandboxError> {
+    compile_with_mandatory_denies(policy, cwd, &[])
+}
+
+pub(crate) fn compile_with_mandatory_denies(
+    policy: &SandboxPolicy,
+    cwd: &Path,
+    mandatory_denies: &[std::path::PathBuf],
+) -> Result<CompiledPolicy, SandboxError> {
     let mut filesystem = CompiledFilesystemPolicy::default();
     filesystem.add_rule(cwd, FilesystemRuleKind::ReadWrite)?;
     filesystem.add_rules(&policy.filesystem.read_write, FilesystemRuleKind::ReadWrite)?;
     filesystem.add_rules(&policy.filesystem.read_only, FilesystemRuleKind::ReadOnly)?;
     filesystem.add_rules(&policy.filesystem.deny, FilesystemRuleKind::Deny)?;
+    filesystem.add_rules(mandatory_denies, FilesystemRuleKind::Deny)?;
     filesystem.add_rules(
         &policy.filesystem.metadata_read,
         FilesystemRuleKind::MetadataRead,
@@ -117,6 +126,14 @@ impl CompiledFilesystemPolicy {
         self.rules
             .iter()
             .filter(|rule| rule.kind == FilesystemRuleKind::ReadWrite)
+            .count()
+    }
+
+    #[cfg(test)]
+    fn deny_rule_count(&self) -> usize {
+        self.rules
+            .iter()
+            .filter(|rule| rule.kind == FilesystemRuleKind::Deny)
             .count()
     }
 }
@@ -459,17 +476,12 @@ mod tests {
     fn pol_007_mandatory_deny_overrides_untrusted_broad_grant() {
         let cwd = Path::new(r"C:\work\project");
         let policy = policy_with_filesystem(|filesystem| {
-            filesystem
-                .read_write
-                .push(PathBuf::from(r"C:\Users\Alice"));
+            filesystem.read_write.push(PathBuf::from(r"C:\Users\Alice"));
         });
 
-        let compiled = compile_with_mandatory_denies(
-            &policy,
-            cwd,
-            &[PathBuf::from(r"C:\Users\Alice\.ssh")],
-        )
-        .expect("mandatory deny must coexist with broad grant");
+        let compiled =
+            compile_with_mandatory_denies(&policy, cwd, &[PathBuf::from(r"C:\Users\Alice\.ssh")])
+                .expect("mandatory deny must coexist with broad grant");
 
         assert_eq!(
             compiled.filesystem.decide(
