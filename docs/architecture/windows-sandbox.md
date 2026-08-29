@@ -250,10 +250,13 @@ allocation or process launch, and errors identify only the field and reason.
 The Rust launch-preparation transaction produces no launcher input until request
 validation, credential stripping, Windows command-line and environment-block
 encoding, policy compilation/sealing, target image inspection, and architecture
-selection have all succeeded. Its result owns the encoded buffers and retains
-the already opened program handle for later file-identity binding; errors expose
-only typed stages and never partial buffers, command data, environment values,
-or policy contents.
+selection have all succeeded. It generates the execution IPC identity only
+after those deterministic checks succeed, so an invalid request consumes no
+entropy; CSPRNG failure returns no partial launch preparation. Its result owns
+the identity and encoded buffers and retains the already opened program handle
+for later file-identity binding; errors expose only typed stages and never
+partial buffers, command data, environment values, nonce bytes, or policy
+contents.
 
 ### 5.2 Launcher
 

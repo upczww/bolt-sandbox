@@ -14,7 +14,7 @@ mod handshake;
     dead_code,
     reason = "execution identity is connected to secure named-pipe creation later"
 )]
-mod identity;
+pub(crate) mod identity;
 #[allow(
     dead_code,
     reason = "session protocol is wired into the launcher IPC transport in the next phase"

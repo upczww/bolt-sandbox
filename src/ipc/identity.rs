@@ -5,7 +5,7 @@ const PIPE_PREFIX: &str = r"\\.\pipe\bolt-sandbox-";
 const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ExecutionIdentityError {
+pub(crate) enum ExecutionIdentityError {
     EntropyUnavailable,
 }
 
@@ -21,13 +21,13 @@ impl EntropySource for SystemEntropy {
     }
 }
 
-pub(super) struct ExecutionIdentity {
+pub(crate) struct ExecutionIdentity {
     endpoint_name: String,
     handshake_nonce: [u8; HANDSHAKE_NONCE_LENGTH],
 }
 
 impl ExecutionIdentity {
-    pub(super) fn generate() -> Result<Self, ExecutionIdentityError> {
+    pub(crate) fn generate() -> Result<Self, ExecutionIdentityError> {
         Self::generate_with(&mut SystemEntropy)
     }
 
@@ -47,11 +47,11 @@ impl ExecutionIdentity {
         })
     }
 
-    pub(super) fn endpoint_name(&self) -> &str {
+    pub(crate) fn endpoint_name(&self) -> &str {
         &self.endpoint_name
     }
 
-    pub(super) const fn handshake_nonce(&self) -> &[u8; HANDSHAKE_NONCE_LENGTH] {
+    pub(crate) const fn handshake_nonce(&self) -> &[u8; HANDSHAKE_NONCE_LENGTH] {
         &self.handshake_nonce
     }
 }

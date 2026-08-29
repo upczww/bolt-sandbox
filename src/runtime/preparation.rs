@@ -10,11 +10,11 @@ use super::architecture::{
 };
 use crate::{
     SandboxError, SandboxRequest,
+    ipc::identity::ExecutionIdentity,
     policy::compiler::{self, payload},
     request,
 };
 
-#[derive(Debug)]
 pub(super) struct PreparedLaunch {
     program: PathBuf,
     cwd: PathBuf,
@@ -25,6 +25,7 @@ pub(super) struct PreparedLaunch {
     policy_payload: Vec<u8>,
     stripped_credentials: usize,
     timeout: Option<Duration>,
+    execution_identity: ExecutionIdentity,
 }
 
 impl PreparedLaunch {
@@ -63,6 +64,14 @@ impl PreparedLaunch {
     pub(super) const fn program_handle(&self) -> &File {
         &self.program_handle
     }
+
+    pub(super) fn ipc_endpoint_name(&self) -> &str {
+        self.execution_identity.endpoint_name()
+    }
+
+    pub(super) const fn handshake_nonce(&self) -> &[u8; 16] {
+        self.execution_identity.handshake_nonce()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,11 +81,22 @@ pub(super) enum LaunchPreparationError {
     InvalidProgramImage,
     UnsupportedArchitecture { machine: u16 },
     PolicyPayload,
+    ExecutionIdentity,
 }
 
 pub(super) fn prepare_launch(
     request_value: &SandboxRequest,
     credential_names: &[OsString],
+) -> Result<PreparedLaunch, LaunchPreparationError> {
+    prepare_launch_with_identity_factory(request_value, credential_names, || {
+        ExecutionIdentity::generate().map_err(|_| LaunchPreparationError::ExecutionIdentity)
+    })
+}
+
+fn prepare_launch_with_identity_factory(
+    request_value: &SandboxRequest,
+    credential_names: &[OsString],
+    create_identity: impl FnOnce() -> Result<ExecutionIdentity, LaunchPreparationError>,
 ) -> Result<PreparedLaunch, LaunchPreparationError> {
     request_value
         .validate()
@@ -100,6 +120,7 @@ pub(super) fn prepare_launch(
         File::open(&request_value.program).map_err(|_| LaunchPreparationError::ProgramOpen)?;
     let architecture = detect_image_architecture_from_reader(&mut program_handle)
         .map_err(map_architecture_error)?;
+    let execution_identity = create_identity()?;
 
     Ok(PreparedLaunch {
         program: request_value.program.clone(),
@@ -111,6 +132,7 @@ pub(super) fn prepare_launch(
         policy_payload,
         stripped_credentials: prepared_environment.diagnostic.stripped_credentials,
         timeout: request_value.timeout,
+        execution_identity,
     })
 }
 
@@ -299,10 +321,7 @@ mod tests {
             Err(LaunchPreparationError::ExecutionIdentity)
         });
 
-        assert!(matches!(
-            result,
-            Err(LaunchPreparationError::Request(_))
-        ));
+        assert!(matches!(result, Err(LaunchPreparationError::Request(_))));
         assert!(!entropy_consumed.get());
     }
 }
