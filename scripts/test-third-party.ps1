@@ -69,3 +69,64 @@ if (-not $notice.Contains($expectedRevision) -or
 }
 
 Write-Host "Detours provenance verified at $expectedRevision."
+
+$buildXlRoot = Join-Path $repositoryRoot 'native\third_party\buildxl'
+$buildXlProvenancePath = Join-Path $buildXlRoot 'provenance.json'
+$expectedBuildXlRevision = 'c73b56a4c3e6b3956ffa73d7f88866c9f772bf23'
+$expectedBuildXlUpstream = 'https://github.com/microsoft/BuildXL'
+
+if (-not (Test-Path -LiteralPath $buildXlProvenancePath -PathType Leaf)) {
+    throw 'BuildXL provenance manifest is missing.'
+}
+
+$buildXlProvenance = Get-Content -LiteralPath $buildXlProvenancePath -Raw | ConvertFrom-Json
+if ($buildXlProvenance.upstream -ne $expectedBuildXlUpstream -or
+    $buildXlProvenance.revision -ne $expectedBuildXlRevision -or
+    $buildXlProvenance.license -ne 'MIT') {
+    throw 'BuildXL provenance does not match the audited official revision.'
+}
+
+$buildXlFiles = @($buildXlProvenance.imported_files)
+if ($buildXlFiles.Count -eq 0) {
+    throw 'BuildXL imported source list is empty.'
+}
+
+$buildXlListedPaths = [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+)
+foreach ($entry in $buildXlFiles) {
+    $relativePath = [string]$entry.path
+    if ([string]::IsNullOrWhiteSpace($relativePath) -or
+        [System.IO.Path]::IsPathRooted($relativePath) -or
+        $relativePath.Contains('..')) {
+        throw "Unsafe BuildXL manifest path: $relativePath"
+    }
+    if (-not $buildXlListedPaths.Add($relativePath)) {
+        throw "Duplicate BuildXL manifest path: $relativePath"
+    }
+
+    $importedPath = Join-Path $buildXlRoot $relativePath
+    if (-not (Test-Path -LiteralPath $importedPath -PathType Leaf)) {
+        throw "Missing BuildXL source: $relativePath"
+    }
+    $actualHash = (Get-FileHash -LiteralPath $importedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne [string]$entry.sha256) {
+        throw "BuildXL source hash mismatch: $relativePath"
+    }
+}
+
+$buildXlUnlistedFiles = Get-ChildItem -LiteralPath $buildXlRoot -File -Recurse |
+    ForEach-Object {
+        [System.IO.Path]::GetRelativePath($buildXlRoot, $_.FullName).Replace('\', '/')
+    } |
+    Where-Object { $_ -ne 'provenance.json' -and -not $buildXlListedPaths.Contains($_) }
+if ($buildXlUnlistedFiles) {
+    throw "Unlisted BuildXL files: $($buildXlUnlistedFiles -join ', ')"
+}
+
+if (-not $notice.Contains($expectedBuildXlRevision) -or
+    -not $notice.Contains('native/third_party/buildxl/provenance.json')) {
+    throw 'THIRD_PARTY_NOTICES.md does not record the BuildXL revision and import boundary.'
+}
+
+Write-Host "BuildXL provenance verified at $expectedBuildXlRevision."
