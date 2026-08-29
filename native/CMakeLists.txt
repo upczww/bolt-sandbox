@@ -8,6 +8,28 @@ function(bolt_native_warnings target)
     target_compile_options(${target} PRIVATE /W4 /WX /permissive-)
 endfunction()
 
+set(DETOURS_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/detours/src)
+add_library(bolt-sandbox-detours STATIC
+    ${DETOURS_SOURCE_DIR}/creatwth.cpp
+    ${DETOURS_SOURCE_DIR}/detours.cpp
+    ${DETOURS_SOURCE_DIR}/disasm.cpp
+    ${DETOURS_SOURCE_DIR}/disolarm.cpp
+    ${DETOURS_SOURCE_DIR}/disolarm64.cpp
+    ${DETOURS_SOURCE_DIR}/disolia64.cpp
+    ${DETOURS_SOURCE_DIR}/disolx64.cpp
+    ${DETOURS_SOURCE_DIR}/disolx86.cpp
+    ${DETOURS_SOURCE_DIR}/image.cpp
+    ${DETOURS_SOURCE_DIR}/modules.cpp
+)
+target_compile_options(bolt-sandbox-detours PRIVATE /W4 /WX)
+target_compile_definitions(bolt-sandbox-detours PRIVATE WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601)
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    target_compile_definitions(bolt-sandbox-detours PUBLIC _AMD64_)
+else()
+    target_compile_definitions(bolt-sandbox-detours PUBLIC _X86_)
+endif()
+target_include_directories(bolt-sandbox-detours PUBLIC ${DETOURS_SOURCE_DIR})
+
 add_library(bolt-sandbox-protocol STATIC
     protocol/policy_payload.cpp
 )
@@ -55,5 +77,6 @@ bolt_native_warnings(bolt-sandbox-native-tests)
 target_include_directories(bolt-sandbox-native-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-protocol)
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-common)
+target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-detours)
 
 add_test(NAME native.protocol COMMAND bolt-sandbox-native-tests)

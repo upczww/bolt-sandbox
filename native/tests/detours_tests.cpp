@@ -1,7 +1,7 @@
-#include <detours.h>
-
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+
+#include <detours.h>
 
 bool RunDetoursTests() {
     const HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
