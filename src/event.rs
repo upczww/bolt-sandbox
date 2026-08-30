@@ -110,6 +110,7 @@ pub enum ProcessOperation {
     CreateWithLogon,
     Elevation,
     Breakaway,
+    MitigationWeakening,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

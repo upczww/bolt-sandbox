@@ -392,6 +392,12 @@ outputs are cleared, and the authenticated event channel records a typed
 `Breakaway` process violation. This deliberately strengthens BuildXL's
 build-oriented flag adaptation into Bolt's fail-closed lifecycle policy.
 
+BuildXL does not provide a `SetProcessMitigationPolicy` interception seam. Bolt
+adds one to the same all-or-nothing process-hook transaction: unrelated or
+strictly stronger requests pass through, while valid requests that omit a
+mandatory extension-point or image-load bit are rejected and recorded as
+`MitigationWeakening`.
+
 The next slices are:
 
 1. Activate access classification and handle overlay behind `PolicyView`.

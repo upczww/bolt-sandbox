@@ -40,6 +40,8 @@ decltype(&CreateProcessWithTokenW) g_create_process_with_token_w =
     CreateProcessWithTokenW;
 decltype(&CreateProcessWithLogonW) g_create_process_with_logon_w =
     CreateProcessWithLogonW;
+decltype(&SetProcessMitigationPolicy) g_set_process_mitigation_policy =
+    SetProcessMitigationPolicy;
 native::RtlCreateUserProcessFunction g_rtl_create_user_process = nullptr;
 native::NtCreateUserProcessFunction g_nt_create_user_process = nullptr;
 ChildProcessPolicy g_child_process_policy = ChildProcessPolicy::kDeny;
@@ -446,6 +448,55 @@ bool DenyRequestedBreakaway(
     hook::TryReportProcessViolation(protocol::ProcessOperation::kBreakaway);
     DenyChildCreation(process_information);
     return true;
+}
+
+bool ReadMitigationFlags(
+    const PVOID buffer,
+    const SIZE_T length,
+    DWORD& flags) noexcept {
+    if (buffer == nullptr || length != sizeof(flags)) {
+        return false;
+    }
+    SIZE_T bytes_read = 0;
+    return ReadProcessMemory(
+               GetCurrentProcess(), buffer, &flags, sizeof(flags),
+               &bytes_read) != FALSE &&
+           bytes_read == sizeof(flags);
+}
+
+bool RequestsRequiredMitigationWeakening(
+    const PROCESS_MITIGATION_POLICY policy,
+    const PVOID buffer,
+    const SIZE_T length) noexcept {
+    DWORD required_flags = 0;
+    if (policy == ProcessExtensionPointDisablePolicy) {
+        required_flags = 0x00000001;
+    } else if (policy == ProcessImageLoadPolicy) {
+        required_flags = 0x00000007;
+    } else {
+        return false;
+    }
+
+    DWORD requested_flags = 0;
+    return ReadMitigationFlags(buffer, length, requested_flags) &&
+           (requested_flags & required_flags) != required_flags;
+}
+
+BOOL WINAPI DetouredSetProcessMitigationPolicy(
+    const PROCESS_MITIGATION_POLICY policy,
+    const PVOID buffer,
+    const SIZE_T length) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_set_process_mitigation_policy(policy, buffer, length);
+    }
+    if (RequestsRequiredMitigationWeakening(policy, buffer, length)) {
+        hook::TryReportProcessViolation(
+            protocol::ProcessOperation::kMitigationWeakening);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return g_set_process_mitigation_policy(policy, buffer, length);
 }
 
 BOOL WINAPI DetouredCreateProcessW(
@@ -933,9 +984,15 @@ LONG AttachProcessHooks() noexcept {
     if (token_status != NO_ERROR) {
         return token_status;
     }
-    return DetourAttach(
+    const LONG logon_status = DetourAttach(
         reinterpret_cast<PVOID*>(&g_create_process_with_logon_w),
         reinterpret_cast<PVOID>(DetouredCreateProcessWithLogonW));
+    if (logon_status != NO_ERROR) {
+        return logon_status;
+    }
+    return DetourAttach(
+        reinterpret_cast<PVOID*>(&g_set_process_mitigation_policy),
+        reinterpret_cast<PVOID>(DetouredSetProcessMitigationPolicy));
 }
 
 }  // namespace bolt::process

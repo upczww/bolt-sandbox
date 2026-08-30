@@ -208,7 +208,7 @@ FrameEncodeStatus EncodeProcessViolationFrame(
     }
     const auto operation_value = static_cast<std::uint8_t>(operation);
     if (operation_value >
-        static_cast<std::uint8_t>(ProcessOperation::kBreakaway)) {
+        static_cast<std::uint8_t>(ProcessOperation::kMitigationWeakening)) {
         return FrameEncodeStatus::kInvalidOperation;
     }
     if (capacity < kProcessViolationFrameLength) {

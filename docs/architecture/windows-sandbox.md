@@ -578,6 +578,13 @@ break transacted-API compatibility probes, Detours injection, JIT-based tools,
 shell behavior, or the architecture's confined-child contract. They may only
 be added by a separately tested stricter backend/profile.
 
+After readiness, calls to `SetProcessMitigationPolicy` remain available for
+additional hardening. Requests for the extension-point or image-load policies
+are rejected before reaching Windows when they omit any mandatory bit, and a
+typed `MitigationWeakening` process violation is emitted. Malformed buffers and
+all unrelated policy classes pass to Windows so native validation and compatible
+self-hardening semantics are preserved.
+
 If resistance to malicious native binaries becomes a requirement, add an
 AppContainer/BaseContainer backend instead of attempting to make DLL hooks a
 kernel-grade boundary.
