@@ -126,7 +126,7 @@ and reason code—not merely identical serialized bytes.
 | FS-041 | Shell file copy/move/delete uses Explorer-compatible API | Same decisions and side-effect rules as direct APIs |
 | FS-042 | Enumerate allowed, read-only, denied, outside, and parent-only directories | Entries are visible only where enumeration is granted |
 | FS-043 | Probe metadata/attributes for allowed, metadata-only, and denied files | Only policy-authorized metadata is returned; no content disclosure |
-| FS-044 | Change attributes, timestamps, security descriptor, compression, or EFS state | Treated as mutation and allowed only under appropriate grant and user rights |
+| FS-044 | Change attributes, timestamps, security descriptor, compression, EFS state, or NTFS short name | Treated as mutation and allowed only under appropriate grant and user rights; no alias can be created through a denied inherited handle |
 | FS-045 | Target startup handle list contains an unauthorized file handle | Launcher sanitizes/closes the handle before resume; fixture observes an invalid handle and no target access |
 | FS-046 | Duplicate a permitted handle and request stronger access | Duplicate cannot amplify rights beyond original policy decision |
 | FS-047 | Open with delete-on-close, temporary, backup-semantics, or POSIX flags | Flags do not bypass policy and cleanup matches the decision |

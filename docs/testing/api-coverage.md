@@ -21,7 +21,7 @@ produce a recorded `not_present` capability result, not a skipped test.
 | Truncate | create dispositions, `SetEndOfFile`, allocation/end-of-file information classes | FS-004, FS-036 |
 | Enumeration | `FindFirstFile*`, `FindNextFile*`, `NtQueryDirectoryFile`, `NtQueryDirectoryFileEx` | FS-002, FS-010, FS-042 |
 | Metadata query | `GetFileAttributes*`, `GetFileInformationByHandle*`, `NtQueryInformationFile`, `NtQueryAttributesFile`, `NtQueryFullAttributesFile` | FS-010, FS-043 |
-| Metadata mutation | `SetFileAttributes*`, time/security/compression/encryption information and control operations | FS-044 |
+| Metadata mutation | `SetFileAttributes*`, time/security/compression/encryption operations, basic and short-name information classes | FS-044 |
 | Hard link | `CreateHardLinkW/A`, link information classes | FS-026..027 |
 | Symlink/reparse | `CreateSymbolicLinkW/A`, reparse-point controls, junction traversal | FS-021..025, FS-028, BYP-005 |
 | Alternate/object identity | ADS, 8.3 name, file ID/object ID, final path/volume identity | FS-017..018, FS-054, FS-060, SEM-003 |

@@ -2529,6 +2529,8 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
         static_cast<FILE_INFORMATION_CLASS>(65);
     constexpr FILE_INFORMATION_CLASS file_basic_information =
         static_cast<FILE_INFORMATION_CLASS>(4);
+    constexpr FILE_INFORMATION_CLASS file_short_name_information =
+        static_cast<FILE_INFORMATION_CLASS>(40);
     constexpr FILE_INFORMATION_CLASS file_link_information =
         static_cast<FILE_INFORMATION_CLASS>(11);
     constexpr FILE_INFORMATION_CLASS file_link_information_ex =
@@ -2540,9 +2542,11 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
     const bool is_rename = information_class == file_rename_information ||
                            information_class == file_rename_information_ex;
     const bool is_basic = information_class == file_basic_information;
+    const bool is_short_name = information_class == file_short_name_information;
     const bool is_link = information_class == file_link_information ||
                          information_class == file_link_information_ex;
-    if (!is_truncation && !is_disposition && !is_rename && !is_basic && !is_link) {
+    if (!is_truncation && !is_disposition && !is_rename && !is_basic &&
+        !is_short_name && !is_link) {
         return g_zw_set_information_file(
             file, io_status, information, information_size, information_class);
     }

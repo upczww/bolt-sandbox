@@ -160,6 +160,14 @@ contains `RootDirectory`, `SetFileInformationByHandle` rejects a non-null value
 with `ERROR_INVALID_PARAMETER` on the supported Windows baseline; the adapter
 preserves that native result for both standard and extended rename classes.
 
+Direct `FileShortNameInformation` requests also reuse the final-handle write
+decision. This closes an inherited-handle alias bypass in which a caller with a
+pre-existing `DELETE` handle could assign an NTFS 8.3 name under a denied root.
+The allowed-path characterization must succeed before the denied-path assertion,
+so a volume without short-name support cannot masquerade as policy enforcement.
+Denial returns `STATUS_ACCESS_DENIED`, clears the completion information, emits
+one `Write` violation, and leaves the existing long-name identity unchanged.
+
 BuildXL's vendored headers still mark `CreateFileMapping*` as a TODO. Bolt's
 adapter therefore reuses final handle identity rather than importing incomplete
 logic: `CreateFileMappingW/A` require write access for `PAGE_READWRITE` and
