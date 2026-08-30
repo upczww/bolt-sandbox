@@ -5,6 +5,8 @@
 #include <thread>
 #include <vector>
 
+#include <ws2tcpip.h>
+
 namespace {
 
 bool ReadExact(SOCKET socket, std::uint8_t* bytes, std::size_t length) {
@@ -139,6 +141,96 @@ bool RunCase(
            network_error == expected_error;
 }
 
+bool RunIpv6Case() {
+    const SOCKET listener = WSASocketW(
+        AF_INET6, SOCK_STREAM, IPPROTO_TCP, nullptr, 0,
+        WSA_FLAG_NO_HANDLE_INHERIT);
+    sockaddr_in6 endpoint{};
+    endpoint.sin6_family = AF_INET6;
+    endpoint.sin6_addr = in6addr_loopback;
+    endpoint.sin6_port = 0;
+    int endpoint_length = sizeof(endpoint);
+    if (listener == INVALID_SOCKET ||
+        bind(
+            listener, reinterpret_cast<const sockaddr*>(&endpoint),
+            sizeof(endpoint)) != 0 ||
+        listen(listener, 1) != 0 ||
+        getsockname(
+            listener, reinterpret_cast<sockaddr*>(&endpoint),
+            &endpoint_length) != 0) {
+        if (listener != INVALID_SOCKET) {
+            closesocket(listener);
+        }
+        return false;
+    }
+    bolt::protocol::DnsProxySession session{};
+    session.nonce[0] = 1;
+    session.authentication_key[0] = 2;
+    bool server_valid = false;
+    std::thread server([&] {
+        fd_set readable{};
+        FD_ZERO(&readable);
+        FD_SET(listener, &readable);
+        timeval wait{};
+        wait.tv_sec = 2;
+        if (select(0, &readable, nullptr, nullptr, &wait) != 1) {
+            return;
+        }
+        const SOCKET accepted = accept(listener, nullptr, nullptr);
+        std::array<std::uint8_t, 4> prefix{};
+        std::vector<std::uint8_t> request;
+        if (accepted != INVALID_SOCKET &&
+            ReadExact(accepted, prefix.data(), prefix.size())) {
+            request.resize(ReadLength(prefix));
+        }
+        bolt::protocol::TcpProxyRequest decoded{};
+        server_valid = !request.empty() &&
+            ReadExact(accepted, request.data(), request.size()) &&
+            bolt::protocol::DecodeTcpProxyRequest(
+                session, request.data(), request.size(), 1, decoded) ==
+                bolt::protocol::TcpProxyStatus::kSuccess &&
+            decoded.family ==
+                bolt::protocol::DnsProxyAddressFamily::kIpv6;
+        std::vector<std::uint8_t> response;
+        if (server_valid) {
+            server_valid = bolt::protocol::EncodeTcpProxyResponse(
+                session, 1, bolt::protocol::TcpProxyResult::kConnected, 0,
+                response) == bolt::protocol::TcpProxyStatus::kSuccess;
+        }
+        if (server_valid) {
+            const auto response_prefix = Prefix(response.size());
+            server_valid = WriteExact(
+                               accepted, response_prefix.data(),
+                               response_prefix.size()) &&
+                           WriteExact(
+                               accepted, response.data(), response.size());
+        }
+        if (accepted != INVALID_SOCKET) {
+            closesocket(accepted);
+        }
+    });
+    const SOCKET client = WSASocketW(
+        AF_INET6, SOCK_STREAM, IPPROTO_TCP, nullptr, 0,
+        WSA_FLAG_NO_HANDLE_INHERIT);
+    std::array<std::uint8_t, 16> target{};
+    target[0] = 0x20;
+    target[1] = 0x01;
+    target[2] = 0x0D;
+    target[3] = 0xB8;
+    target[15] = 0x20;
+    std::uint32_t network_error = 0;
+    const auto status = bolt::network::ConnectTcpSocketThroughProxy(
+        client, connect, ntohs(endpoint.sin6_port), session, 1, 99,
+        bolt::network::AddressFamily::kIpv6, target.data(), target.size(), 443,
+        "ipv6.example", network_error);
+    server.join();
+    closesocket(client);
+    closesocket(listener);
+    return server_valid &&
+        status == bolt::network::TcpProxyClientStatus::kConnected &&
+        network_error == 0;
+}
+
 }  // namespace
 
 bool RunTcpProxyClientTests() {
@@ -160,7 +252,8 @@ bool RunTcpProxyClientTests() {
         RunCase(
             bolt::protocol::TcpProxyResult::kConnected, 0, true,
             bolt::network::TcpProxyClientStatus::kProtocolFailed,
-            WSAEPROTONOSUPPORT);
+            WSAEPROTONOSUPPORT) &&
+        RunIpv6Case();
     WSACleanup();
     return passed;
 }
