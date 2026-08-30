@@ -704,6 +704,7 @@ mod tests {
             ProcessOperation::CreateWithLogon,
             ProcessOperation::Elevation,
             ProcessOperation::Breakaway,
+            ProcessOperation::MitigationWeakening,
         ] {
             let event = SandboxEvent::ProcessViolation(ProcessViolation {
                 process_id: 99,

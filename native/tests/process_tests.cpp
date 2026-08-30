@@ -2107,6 +2107,30 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
         return 253;
     }
 
+    PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY weakened_extension{};
+    SetLastError(ERROR_SUCCESS);
+    const BOOL weakened_extension_applied = SetProcessMitigationPolicy(
+        ProcessExtensionPointDisablePolicy, &weakened_extension,
+        sizeof(weakened_extension));
+    const DWORD weakened_extension_error = GetLastError();
+    if (weakened_extension_applied ||
+        weakened_extension_error != ERROR_ACCESS_DENIED ||
+        !HasRequiredProcessMitigations()) {
+        return 255;
+    }
+
+    PROCESS_MITIGATION_IMAGE_LOAD_POLICY weakened_image_load{};
+    SetLastError(ERROR_SUCCESS);
+    const BOOL weakened_image_load_applied = SetProcessMitigationPolicy(
+        ProcessImageLoadPolicy, &weakened_image_load,
+        sizeof(weakened_image_load));
+    const DWORD weakened_image_load_error = GetLastError();
+    if (weakened_image_load_applied ||
+        weakened_image_load_error != ERROR_ACCESS_DENIED ||
+        !HasRequiredProcessMitigations()) {
+        return 256;
+    }
+
     BOOL remains_in_job = FALSE;
     const BOOL job_query_succeeded =
         IsProcessInJob(GetCurrentProcess(), nullptr, &remains_in_job);
@@ -2471,6 +2495,8 @@ bool RunInheritedProcessTest(
         GetProcessId(process.process_handle()));
     constexpr auto breakaway_operation =
         static_cast<bolt::protocol::ProcessOperation>(3);
+    constexpr auto mitigation_weakening_operation =
+        static_cast<bolt::protocol::ProcessOperation>(4);
     bool breakaway_event_ok = true;
     if (parent_arguments.empty()) {
         for (std::uint64_t sequence = 1; sequence <= 7; ++sequence) {
@@ -2481,9 +2507,18 @@ bool RunInheritedProcessTest(
                     breakaway_operation, sequence);
         }
     }
+    const bool mitigation_weakening_events_ok =
+        !parent_arguments.empty() ||
+        (ReadProcessViolation(
+             event_pipe.handle(), parent_process_id,
+             mitigation_weakening_operation, 8) &&
+         ReadProcessViolation(
+             event_pipe.handle(), parent_process_id,
+             mitigation_weakening_operation, 9));
     DWORD exit_code = 0;
     const bool passed = ready_ok &&
                         breakaway_event_ok &&
+                        mitigation_weakening_events_ok &&
                         process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                         exit_code == 0;
     if (!passed) {
