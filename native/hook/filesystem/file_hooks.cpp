@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <utility>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -693,17 +694,35 @@ bool AuthorizeHandleIo(
 bool TryGetObjectAttributesPath(
     const POBJECT_ATTRIBUTES object_attributes,
     std::wstring& path) noexcept {
-    if (object_attributes == nullptr || object_attributes->RootDirectory != nullptr ||
-        object_attributes->ObjectName == nullptr ||
+    if (object_attributes == nullptr || object_attributes->ObjectName == nullptr ||
         object_attributes->ObjectName->Buffer == nullptr ||
         object_attributes->ObjectName->Length == 0 ||
         object_attributes->ObjectName->Length % sizeof(wchar_t) != 0) {
         return false;
     }
     try {
-        path.assign(
+        std::wstring object_path(
             object_attributes->ObjectName->Buffer,
             object_attributes->ObjectName->Length / sizeof(wchar_t));
+        if (object_path.find(L'\0') != std::wstring::npos) {
+            return false;
+        }
+        if (object_attributes->RootDirectory != nullptr) {
+            if (object_path.front() == L'\\' ||
+                std::filesystem::path(object_path).is_absolute()) {
+                return false;
+            }
+            std::wstring root_path;
+            if (!TryGetHandlePath(
+                    object_attributes->RootDirectory, root_path)) {
+                return false;
+            }
+            path = (std::filesystem::path(root_path) / object_path)
+                       .lexically_normal()
+                       .wstring();
+            return !path.empty();
+        }
+        path = std::move(object_path);
         constexpr wchar_t nt_prefix[] = L"\\??\\";
         if (path.rfind(nt_prefix, 0) == 0) {
             path.erase(0, std::size(nt_prefix) - 1);
