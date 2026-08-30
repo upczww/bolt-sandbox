@@ -133,6 +133,7 @@ target_include_directories(bolt-sandbox-buildxl-detoured-functions PRIVATE
 add_library(bolt-sandbox-protocol STATIC
     protocol/dns_proxy_startup.cpp
     protocol/dns_proxy_protocol.cpp
+    protocol/tcp_proxy_protocol.cpp
     protocol/event_frame.cpp
     protocol/policy_payload.cpp
     protocol/runtime_payload.cpp
