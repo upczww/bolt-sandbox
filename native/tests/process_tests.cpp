@@ -1615,7 +1615,7 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     elevation.fMask =
         SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
     elevation.hwnd = nullptr;
-    elevation.lpVerb = L"runas";
+    elevation.lpVerb = L"RuNaS";
     elevation.lpFile = missing_elevation_target.c_str();
     elevation.nShow = SW_HIDE;
     const BOOL elevation_started = ShellExecuteExW(&elevation);

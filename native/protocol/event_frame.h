@@ -25,6 +25,7 @@ enum class FilesystemOperation : std::uint8_t {
 enum class ProcessOperation : std::uint8_t {
     kCreateWithToken = 0,
     kCreateWithLogon = 1,
+    kElevation = 2,
 };
 
 enum class FrameEncodeStatus : std::uint8_t {

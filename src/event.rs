@@ -108,6 +108,7 @@ pub struct ProcessViolation {
 pub enum ProcessOperation {
     CreateWithToken,
     CreateWithLogon,
+    Elevation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

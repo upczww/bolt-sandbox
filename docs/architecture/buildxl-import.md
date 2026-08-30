@@ -350,6 +350,14 @@ semantics. Under `Deny`, both entry points fail before token validation and
 clear `PROCESS_INFORMATION`; ordinary Windows token or privilege failures under
 `Inherit` are returned unchanged when no process was created.
 
+Direct executable activation through `ShellExecuteExW` is verified to reach the
+same detoured `CreateProcessW` inheritance path. Bolt adds only a narrow,
+case-insensitive `runas` guard around that upstream-backed path: elevation is
+denied before Shell resolves the target or contacts an elevation broker, the
+returned process handle is cleared, and the event contains only process identity
+plus the fixed elevation operation. The reentrancy scope ends before ordinary
+Shell activation so its nested process creation remains detoured.
+
 The next slices are:
 
 1. Activate access classification and handle overlay behind `PolicyView`.

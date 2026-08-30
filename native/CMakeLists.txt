@@ -160,6 +160,7 @@ target_link_libraries(bolt-sandbox-process PRIVATE
     bolt-sandbox-buildxl
     bolt-sandbox-detours
     bolt-sandbox-protocol
+    shell32
 )
 
 add_library(bolt-sandbox-filesystem STATIC

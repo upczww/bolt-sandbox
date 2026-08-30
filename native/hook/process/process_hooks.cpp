@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <detours.h>
+#include <shellapi.h>
 
 namespace bolt::process {
 namespace {
@@ -33,6 +34,7 @@ CreateProcessW_t g_create_process_w = CreateProcessW;
 CreateProcessA_t g_create_process_a = CreateProcessA;
 CreateProcessAsUserW_t g_create_process_as_user_w = CreateProcessAsUserW;
 CreateProcessAsUserA_t g_create_process_as_user_a = CreateProcessAsUserA;
+decltype(&ShellExecuteExW) g_shell_execute_ex_w = ShellExecuteExW;
 decltype(&CreateProcessWithTokenW) g_create_process_with_token_w =
     CreateProcessWithTokenW;
 decltype(&CreateProcessWithLogonW) g_create_process_with_logon_w =
@@ -610,6 +612,31 @@ BOOL WINAPI DetouredCreateProcessWithLogonW(
     return DenyChildCreation(process_information);
 }
 
+bool IsElevationVerb(const LPCWSTR verb) noexcept {
+    return verb != nullptr &&
+           CompareStringOrdinal(verb, -1, L"runas", -1, TRUE) == CSTR_EQUAL;
+}
+
+BOOL WINAPI DetouredShellExecuteExW(
+    SHELLEXECUTEINFOW* const execute_information) noexcept {
+    {
+        DetouredScope scope;
+        if (scope.Detoured_IsDisabled()) {
+            return g_shell_execute_ex_w(execute_information);
+        }
+        if (execute_information != nullptr &&
+            execute_information->cbSize >= sizeof(SHELLEXECUTEINFOW) &&
+            IsElevationVerb(execute_information->lpVerb)) {
+            hook::TryReportProcessViolation(
+                protocol::ProcessOperation::kElevation);
+            execute_information->hProcess = nullptr;
+            SetLastError(ERROR_ACCESS_DENIED);
+            return FALSE;
+        }
+    }
+    return g_shell_execute_ex_w(execute_information);
+}
+
 }  // namespace
 
 bool ConfigureProcessRuntime(
@@ -683,6 +710,12 @@ LONG AttachProcessHooks() noexcept {
         reinterpret_cast<PVOID>(DetouredCreateProcessAsUserA));
     if (as_user_ansi_status != NO_ERROR) {
         return as_user_ansi_status;
+    }
+    const LONG shell_status = DetourAttach(
+        reinterpret_cast<PVOID*>(&g_shell_execute_ex_w),
+        reinterpret_cast<PVOID>(DetouredShellExecuteExW));
+    if (shell_status != NO_ERROR) {
+        return shell_status;
     }
     const LONG token_status = DetourAttach(
         reinterpret_cast<PVOID*>(&g_create_process_with_token_w),
