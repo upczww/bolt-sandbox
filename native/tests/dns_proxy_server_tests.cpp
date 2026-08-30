@@ -1,4 +1,5 @@
 #include "hook/network/dns_proxy_server.h"
+#include "hook/network/dns_binding_table.h"
 #include "hook/network/network_policy.h"
 #include "protocol/dns_proxy_protocol.h"
 #include "tests/policy_fixture.h"
@@ -50,12 +51,18 @@ bool RunDnsProxyServerTests() {
     std::vector<std::uint8_t> request;
     std::vector<std::uint8_t> response;
     FakeResolver resolver;
+    std::unique_ptr<bolt::network::DnsBindingTable> bindings;
+    if (bolt::network::DnsBindingTable::Create(4, bindings) !=
+        bolt::network::BindingStatus::kSuccess) {
+        return false;
+    }
     if (bolt::protocol::EncodeDnsProxyRequest(
             session, 1, 1'234, "api.example", 443, request) !=
             bolt::protocol::DnsProxyStatus::kSuccess ||
         bolt::network::ProcessDnsProxyRequest(
             session, *policy, 1, request.data(), request.size(), resolver,
-            response) != bolt::protocol::DnsProxyStatus::kSuccess) {
+            *bindings, 1'000, response) !=
+            bolt::protocol::DnsProxyStatus::kSuccess) {
         return false;
     }
     bolt::protocol::DnsProxyResponse decoded{};
@@ -67,12 +74,25 @@ bool RunDnsProxyServerTests() {
         decoded.addresses.size() != 1) {
         return false;
     }
+    const std::array<std::uint8_t, 4> bound_address = {192, 0, 2, 20};
+    const bolt::network::BindingKey bound_key{
+        session.nonce, 1'234, "api.example",
+        bolt::network::AddressFamily::kIpv4, bound_address.data(),
+        bound_address.size(), 443};
+    auto wrong_process = bound_key;
+    wrong_process.process_id = 1'235;
+    if (!bindings->IsAuthorized(bound_key, 30'999) ||
+        bindings->IsAuthorized(bound_key, 31'000) ||
+        bindings->IsAuthorized(wrong_process, 2'000)) {
+        return false;
+    }
     if (bolt::protocol::EncodeDnsProxyRequest(
             session, 2, 1'234, "denied.example", 443, request) !=
             bolt::protocol::DnsProxyStatus::kSuccess ||
         bolt::network::ProcessDnsProxyRequest(
             session, *policy, 2, request.data(), request.size(), resolver,
-            response) != bolt::protocol::DnsProxyStatus::kSuccess ||
+            *bindings, 2'000, response) !=
+            bolt::protocol::DnsProxyStatus::kSuccess ||
         resolver.calls != 1 ||
         bolt::protocol::DecodeDnsProxyResponse(
             session, response.data(), response.size(), 2, decoded) !=
@@ -85,6 +105,7 @@ bool RunDnsProxyServerTests() {
     response.assign(1, 0xff);
     return bolt::network::ProcessDnsProxyRequest(
                session, *policy, 2, request.data(), request.size(), resolver,
-               response) == bolt::protocol::DnsProxyStatus::kAuthenticationFailed &&
+               *bindings, 2'000, response) ==
+               bolt::protocol::DnsProxyStatus::kAuthenticationFailed &&
            response.empty() && resolver.calls == 1;
 }
