@@ -182,7 +182,7 @@ bool ReadFilesystemViolation(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 31) {
+    if (argument_count != 32) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -569,6 +569,18 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         }
         return 131;
     }
+    if (CreateHardLinkW(arguments[31], arguments[14], nullptr) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 132;
+    }
+    const std::string ansi_alias_hardlink = AnsiPath(arguments[31]);
+    const std::string ansi_allowed_hardlink_source = AnsiPath(arguments[14]);
+    if (ansi_alias_hardlink.empty() || ansi_allowed_hardlink_source.empty() ||
+        CreateHardLinkA(
+            ansi_alias_hardlink.c_str(), ansi_allowed_hardlink_source.c_str(), nullptr) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 133;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -636,6 +648,10 @@ bool RunProcessTests() {
         denied_root / L"mapping.txt";
     const std::filesystem::path read_only_mapping_path =
         read_only_root / L"mapping.txt";
+    const std::filesystem::path alias_hardlink_destination =
+        allowed_junction / L"hardlink-escape.txt";
+    const std::filesystem::path denied_hardlink_escape_target =
+        denied_junction_target / L"hardlink-escape.txt";
     if (!std::filesystem::create_directories(denied_junction_target, filesystem_error) ||
         filesystem_error) {
         return false;
@@ -704,6 +720,7 @@ bool RunProcessTests() {
     DeleteFileW(allowed_mapping_path.c_str());
     DeleteFileW(denied_mapping_path.c_str());
     DeleteFileW(read_only_mapping_path.c_str());
+    DeleteFileW(denied_hardlink_escape_target.c_str());
     const HANDLE delete_fixture = CreateFileW(
         denied_delete_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -844,7 +861,8 @@ bool RunProcessTests() {
                                       HandleText(denied_truncate_handle) + L" \"" +
                                       allowed_mapping_path.wstring() + L"\" " +
                                       HandleText(denied_mapping_handle) + L" " +
-                                      HandleText(read_only_mapping_handle);
+                                      HandleText(read_only_mapping_handle) + L" \"" +
+                                      alias_hardlink_destination.wstring() + L"\"";
     const HANDLE inherited[] = {
         allowed, policy.handle(), event_client, release, denied_disposition_handle,
         denied_truncate_handle, denied_mapping_handle, read_only_mapping_handle};
@@ -1024,7 +1042,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_mapping_path.wstring(), 36);
+            denied_mapping_path.wstring(), 36) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_hardlink_escape_target.wstring(), 37) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_hardlink_escape_target.wstring(), 38);
     DWORD exit_code = 0;
     CloseHandle(denied_disposition_handle);
     CloseHandle(denied_truncate_handle);
@@ -1060,7 +1086,8 @@ bool RunProcessTests() {
                             ReadFixture(denied_truncate_path) == truncate_nonce &&
                             ReadFixture(allowed_mapping_path) == "Xapping-content" &&
                             ReadFixture(denied_mapping_path) == mapping_nonce &&
-                            ReadFixture(read_only_mapping_path) == read_only_mapping_nonce;
+                            ReadFixture(read_only_mapping_path) == read_only_mapping_nonce &&
+                            !std::filesystem::exists(denied_hardlink_escape_target);
     CloseHandle(allowed);
     CloseHandle(denied);
     if (event_client != INVALID_HANDLE_VALUE) {
