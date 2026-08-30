@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -46,6 +47,19 @@ bool RunDnsBindingTests() {
         table->IsEndpointAuthorized(
             session_two, 10, bolt::network::AddressFamily::kIpv4,
             address_one.data(), address_one.size(), 443, 149)) {
+        return false;
+    }
+    std::array<char, 254> authorized_domain{};
+    if (!table->FindAuthorizedDomain(
+            session_one, 10, bolt::network::AddressFamily::kIpv4,
+            address_one.data(), address_one.size(), 443, 149,
+            authorized_domain.data(), authorized_domain.size()) ||
+        std::string(authorized_domain.data()) != "api.example" ||
+        table->FindAuthorizedDomain(
+            session_two, 10, bolt::network::AddressFamily::kIpv4,
+            address_one.data(), address_one.size(), 443, 149,
+            authorized_domain.data(), authorized_domain.size()) ||
+        authorized_domain[0] != '\0') {
         return false;
     }
     std::unique_ptr<bolt::network::DnsBindingTable> wildcard_table;
