@@ -123,6 +123,12 @@ source-read/destination-write authorization path. Both identities are resolved
 before Windows is called, preventing an allowed junction from placing a new
 hard-link directory entry in a denied target.
 
+`CreateSymbolicLinkW/A` retain BuildXL's exact signatures and ANSI-to-Unicode
+funnel. Bolt preserves BuildXL's write check for the link location and adds the
+FS-028 target metadata decision required by its containment model. Both final
+identities are resolved before Windows is called, so an allowed link location
+cannot create a reparse object aimed at a denied target.
+
 Bolt extends BuildXL's `DeviceIoControl_t` seam beyond upstream GET-path
 translation for `FSCTL_SET_REPARSE_POINT`. Mount-point and symbolic-link
 buffers are length-checked, unknown tags fail closed, and both the reparse

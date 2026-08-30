@@ -98,6 +98,8 @@ using SetFileTimeFunction = BOOL(WINAPI*)(
 SetFileTimeFunction g_set_file_time = SetFileTime;
 CreateHardLinkW_t g_create_hard_link_w = CreateHardLinkW;
 CreateHardLinkA_t g_create_hard_link_a = CreateHardLinkA;
+CreateSymbolicLinkW_t g_create_symbolic_link_w = CreateSymbolicLinkW;
+CreateSymbolicLinkA_t g_create_symbolic_link_a = CreateSymbolicLinkA;
 CopyFileW_t g_copy_file_w = CopyFileW;
 CopyFileExW_t g_copy_file_ex_w = CopyFileExW;
 CopyFileA_t g_copy_file_a = CopyFileA;
@@ -165,6 +167,54 @@ bool AuthorizeCopy(const wchar_t* existing_path, const wchar_t* new_path) noexce
         return false;
     }
     InvalidateResolvedPathForMutation(resolved_destination.c_str(), false);
+    return true;
+}
+
+bool AuthorizeSymbolicLink(
+    const wchar_t* link_path,
+    const wchar_t* target_path) noexcept {
+    const auto* policy = g_policy.get();
+    const auto link_text =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(link_path, Access::kWrite);
+    const auto target_text = policy == nullptr
+                                 ? PolicyEvaluation{}
+                                 : policy->Evaluate(target_path, Access::kMetadata);
+    if (link_text.decision == Decision::kDeny ||
+        target_text.decision == Decision::kDeny) {
+        const bool link_denied = link_text.decision == Decision::kDeny;
+        ReportDenied(
+            protocol::FilesystemOperation::kCreate,
+            link_denied ? EvaluatedPath(link_text, link_path)
+                        : EvaluatedPath(target_text, target_path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+
+    std::wstring resolved_link;
+    std::wstring resolved_target;
+    if (!ResolveFinalPathForPolicy(
+            EvaluatedPath(link_text, link_path), g_create_file_w, resolved_link) ||
+        !ResolveFinalPathForPolicy(
+            EvaluatedPath(target_text, target_path), g_create_file_w,
+            resolved_target)) {
+        ReportDenied(protocol::FilesystemOperation::kCreate, target_path);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    const auto link_final = policy->Evaluate(resolved_link.c_str(), Access::kWrite);
+    const auto target_final =
+        policy->Evaluate(resolved_target.c_str(), Access::kMetadata);
+    if (link_final.decision == Decision::kDeny ||
+        target_final.decision == Decision::kDeny) {
+        const bool link_denied = link_final.decision == Decision::kDeny;
+        ReportDenied(
+            protocol::FilesystemOperation::kCreate,
+            link_denied ? EvaluatedPath(link_final, resolved_link.c_str())
+                        : EvaluatedPath(target_final, resolved_target.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    InvalidateResolvedPathForMutation(resolved_link.c_str(), false);
     return true;
 }
 
@@ -1681,6 +1731,37 @@ BOOL WINAPI DetouredCreateHardLinkA(
         new_wide.c_str(), existing_wide.c_str(), security_attributes);
 }
 
+BOOLEAN WINAPI DetouredCreateSymbolicLinkW(
+    const LPCWSTR link_path,
+    const LPCWSTR target_path,
+    const DWORD flags) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_symbolic_link_w(link_path, target_path, flags);
+    }
+    return AuthorizeSymbolicLink(link_path, target_path)
+               ? g_create_symbolic_link_w(link_path, target_path, flags)
+               : FALSE;
+}
+
+BOOLEAN WINAPI DetouredCreateSymbolicLinkA(
+    const LPCSTR link_path,
+    const LPCSTR target_path,
+    const DWORD flags) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_symbolic_link_a(link_path, target_path, flags);
+    }
+    std::wstring link_wide;
+    std::wstring target_wide;
+    if (!ConvertAnsiPath(link_path, link_wide) ||
+        !ConvertAnsiPath(target_path, target_wide) ||
+        !AuthorizeSymbolicLink(link_wide.c_str(), target_wide.c_str())) {
+        return FALSE;
+    }
+    return g_create_symbolic_link_w(link_wide.c_str(), target_wide.c_str(), flags);
+}
+
 // Adapts BuildXL's CopyFile contract: source and destination are independent
 // policy identities requiring read and write access respectively. Bolt checks
 // both before invoking Windows so a denied source cannot leave a partial copy.
@@ -1997,6 +2078,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_hard_link_a),
             reinterpret_cast<PVOID>(DetouredCreateHardLinkA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_create_symbolic_link_w),
+            reinterpret_cast<PVOID>(DetouredCreateSymbolicLinkW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_create_symbolic_link_a),
+            reinterpret_cast<PVOID>(DetouredCreateSymbolicLinkA)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_copy_file_w),
             reinterpret_cast<PVOID>(DetouredCopyFileW)) != NO_ERROR ||
