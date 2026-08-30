@@ -2234,6 +2234,80 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         return 266;
     }
 
+    const std::wstring win32_root_rename_source =
+        std::wstring(arguments[16]) + L".win32-root-rename-source";
+    const std::wstring win32_root_rename_intermediate =
+        std::wstring(arguments[16]) + L".win32-root-rename-intermediate";
+    const std::wstring win32_root_rename_destination =
+        std::wstring(arguments[16]) + L".win32-root-rename-destination";
+    if (!CopyFileW(arguments[28], win32_root_rename_source.c_str(), TRUE)) {
+        return 267;
+    }
+    const HANDLE win32_rename_root = CreateFileW(
+        std::filesystem::path(win32_root_rename_source).parent_path().c_str(),
+        FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    const auto make_win32_root_rename = [win32_rename_root](const std::wstring& leaf) {
+        const std::size_t name_bytes = leaf.size() * sizeof(wchar_t);
+        std::vector<std::uint8_t> buffer(offsetof(FILE_RENAME_INFO, FileName) + name_bytes);
+        auto* information = reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
+        information->Flags = 0;
+        information->RootDirectory = win32_rename_root;
+        information->FileNameLength = static_cast<DWORD>(name_bytes);
+        std::memcpy(information->FileName, leaf.data(), name_bytes);
+        return buffer;
+    };
+    const HANDLE win32_root_source_handle = CreateFileW(
+        win32_root_rename_source.c_str(), DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    auto win32_root_rename_information = make_win32_root_rename(
+        std::filesystem::path(win32_root_rename_intermediate).filename().wstring());
+    const BOOL win32_root_rename_result =
+        win32_rename_root != INVALID_HANDLE_VALUE &&
+        win32_root_source_handle != INVALID_HANDLE_VALUE &&
+        SetFileInformationByHandle(
+            win32_root_source_handle, FileRenameInfo,
+            win32_root_rename_information.data(),
+            static_cast<DWORD>(win32_root_rename_information.size()));
+    if (win32_root_source_handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(win32_root_source_handle);
+    }
+    if (!win32_root_rename_result) {
+        if (win32_rename_root != INVALID_HANDLE_VALUE) {
+            CloseHandle(win32_rename_root);
+        }
+        return 268;
+    }
+    const HANDLE win32_root_intermediate_handle = CreateFileW(
+        win32_root_rename_intermediate.c_str(), DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    auto win32_root_rename_ex_information = make_win32_root_rename(
+        std::filesystem::path(win32_root_rename_destination).filename().wstring());
+    const BOOL win32_root_rename_ex_result =
+        win32_root_intermediate_handle != INVALID_HANDLE_VALUE &&
+        SetFileInformationByHandle(
+            win32_root_intermediate_handle, FileRenameInfoEx,
+            win32_root_rename_ex_information.data(),
+            static_cast<DWORD>(win32_root_rename_ex_information.size()));
+    if (win32_root_intermediate_handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(win32_root_intermediate_handle);
+    }
+    if (win32_rename_root != INVALID_HANDLE_VALUE) {
+        CloseHandle(win32_rename_root);
+    }
+    if (!win32_root_rename_ex_result ||
+        GetFileAttributesW(win32_root_rename_source.c_str()) != INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(win32_root_rename_intermediate.c_str()) !=
+            INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(win32_root_rename_destination.c_str()) ==
+            INVALID_FILE_ATTRIBUTES ||
+        !DeleteFileW(win32_root_rename_destination.c_str())) {
+        return 269;
+    }
+
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -2889,6 +2963,12 @@ bool RunProcessTests() {
         missing_copy_source.wstring() + L".root-rename-intermediate";
     const std::filesystem::path root_rename_destination =
         missing_copy_source.wstring() + L".root-rename-destination";
+    const std::filesystem::path win32_root_rename_source =
+        missing_copy_source.wstring() + L".win32-root-rename-source";
+    const std::filesystem::path win32_root_rename_intermediate =
+        missing_copy_source.wstring() + L".win32-root-rename-intermediate";
+    const std::filesystem::path win32_root_rename_destination =
+        missing_copy_source.wstring() + L".win32-root-rename-destination";
     const std::filesystem::path denied_junction_target = denied_root / L"junction-target";
     const std::filesystem::path denied_alias_target = denied_junction_target / L"protected.txt";
     const std::filesystem::path allowed_junction = allowed_root / L"junction";
@@ -3004,6 +3084,9 @@ bool RunProcessTests() {
     DeleteFileW(root_rename_source.c_str());
     DeleteFileW(root_rename_intermediate.c_str());
     DeleteFileW(root_rename_destination.c_str());
+    DeleteFileW(win32_root_rename_source.c_str());
+    DeleteFileW(win32_root_rename_intermediate.c_str());
+    DeleteFileW(win32_root_rename_destination.c_str());
     DeleteFileW(allowed_replace_target.c_str());
     DeleteFileW(allowed_handle_rename_source.c_str());
     DeleteFileW(denied_handle_rename_destination.c_str());
@@ -3822,6 +3905,9 @@ bool RunProcessTests() {
                             !std::filesystem::exists(root_rename_source) &&
                             !std::filesystem::exists(root_rename_intermediate) &&
                             !std::filesystem::exists(root_rename_destination) &&
+                            !std::filesystem::exists(win32_root_rename_source) &&
+                            !std::filesystem::exists(win32_root_rename_intermediate) &&
+                            !std::filesystem::exists(win32_root_rename_destination) &&
                             ReadFixture(denied_alias_target) == protected_nonce &&
                             GetFileAttributesW(denied_alias_target.c_str()) ==
                                 denied_alias_attributes_before &&
