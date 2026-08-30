@@ -61,8 +61,11 @@ std::unique_ptr<SocketTargetTable> g_socket_targets;
 std::array<std::uint8_t, 16> g_dns_session_id{};
 protocol::DnsProxySession g_tcp_proxy_session{};
 std::uint16_t g_tcp_proxy_port = 0;
+std::uint16_t g_tcp_proxy_ipv6_port = 0;
 std::uint64_t g_tcp_proxy_next_sequence = 1;
+std::uint64_t g_tcp_proxy_ipv6_next_sequence = 1;
 bool g_tcp_proxy_closed = false;
+bool g_tcp_proxy_ipv6_closed = false;
 SRWLOCK g_tcp_proxy_lock = SRWLOCK_INIT;
 
 class TcpProxyLock final {
@@ -608,8 +611,7 @@ bool TryProxyConnect(
     int& result) noexcept {
     result = SOCKET_ERROR;
     const auto* policy = g_policy.get();
-    if (policy == nullptr || policy->mode() != Mode::kAllowList ||
-        g_tcp_proxy_port == 0) {
+    if (policy == nullptr || policy->mode() != Mode::kAllowList) {
         return false;
     }
     protocol::NetworkEndpoint endpoint{};
@@ -623,6 +625,12 @@ bool TryProxyConnect(
             : AddressFamily::kIpv6;
     const std::size_t endpoint_length =
         family == AddressFamily::kIpv4 ? 4 : 16;
+    const std::uint16_t proxy_port = family == AddressFamily::kIpv4
+                                         ? g_tcp_proxy_port
+                                         : g_tcp_proxy_ipv6_port;
+    if (proxy_port == 0) {
+        return false;
+    }
     std::array<char, protocol::kMaximumEventDomainBytes + 1U> domain{};
     const bool explicit_address =
         policy->DecideAddress(
@@ -638,14 +646,20 @@ bool TryProxyConnect(
     }
 
     TcpProxyLock guard;
-    if (g_tcp_proxy_closed) {
+    bool& proxy_closed = family == AddressFamily::kIpv4
+                             ? g_tcp_proxy_closed
+                             : g_tcp_proxy_ipv6_closed;
+    std::uint64_t& next_sequence =
+        family == AddressFamily::kIpv4 ? g_tcp_proxy_next_sequence
+                                       : g_tcp_proxy_ipv6_next_sequence;
+    if (proxy_closed) {
         WSASetLastError(WSAENETDOWN);
         return true;
     }
     std::uint32_t network_error = 0;
     const auto status = ConnectTcpSocketThroughProxy(
-        socket, g_connect, g_tcp_proxy_port, g_tcp_proxy_session,
-        g_tcp_proxy_next_sequence, GetCurrentProcessId(), family,
+        socket, g_connect, proxy_port, g_tcp_proxy_session,
+        next_sequence, GetCurrentProcessId(), family,
         endpoint.address.data(), endpoint_length, endpoint.port,
         bound_domain ? domain.data() : nullptr, network_error);
     const bool authenticated_response =
@@ -654,15 +668,15 @@ bool TryProxyConnect(
         status == TcpProxyClientStatus::kConnectFailed ||
         status == TcpProxyClientStatus::kProxyFailure;
     if (authenticated_response) {
-        if (g_tcp_proxy_next_sequence ==
+        if (next_sequence ==
             std::numeric_limits<std::uint64_t>::max()) {
-            g_tcp_proxy_closed = true;
+            proxy_closed = true;
         } else {
-            ++g_tcp_proxy_next_sequence;
+            ++next_sequence;
         }
     } else if (status != TcpProxyClientStatus::kProxyConnectFailed &&
                status != TcpProxyClientStatus::kInvalidArgument) {
-        g_tcp_proxy_closed = true;
+        proxy_closed = true;
     }
     if (status == TcpProxyClientStatus::kConnected) {
         if (g_socket_targets == nullptr ||
@@ -1454,8 +1468,11 @@ HookInstallStatus InstallNetworkHooks(
     g_tcp_proxy_session.nonce = runtime.handshake_nonce;
     g_tcp_proxy_session.authentication_key = runtime.dns_authentication_key;
     g_tcp_proxy_port = runtime.tcp_proxy_port;
+    g_tcp_proxy_ipv6_port = runtime.tcp_proxy_ipv6_port;
     g_tcp_proxy_next_sequence = 1;
+    g_tcp_proxy_ipv6_next_sequence = 1;
     g_tcp_proxy_closed = false;
+    g_tcp_proxy_ipv6_closed = false;
     g_dns_bindings = std::move(bindings);
     g_dns_channel = std::move(channel);
     g_socket_targets = std::move(socket_targets);

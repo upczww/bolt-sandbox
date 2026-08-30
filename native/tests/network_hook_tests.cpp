@@ -833,7 +833,12 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
     if (results != nullptr && results->ai_addrlen >= sizeof(wrong_port)) {
         std::memcpy(&wrong_port, results->ai_addr, sizeof(wrong_port));
     }
-    wrong_port.sin_port = htons(static_cast<u_short>(_wtoi(arguments[3]) + 1));
+    std::uint16_t denied_port = 1;
+    while (denied_port == static_cast<std::uint16_t>(_wtoi(arguments[3])) ||
+           denied_port == static_cast<std::uint16_t>(_wtoi(arguments[4]))) {
+        ++denied_port;
+    }
+    wrong_port.sin_port = htons(denied_port);
     const SOCKET denied_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     const int denied_connect = connect(
         denied_socket, reinterpret_cast<const sockaddr*>(&wrong_port),
