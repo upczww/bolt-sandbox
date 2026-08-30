@@ -251,7 +251,8 @@ NTSTATUS CreateNativeNtProcess(
     const std::wstring& arguments,
     const bool inherit_handles,
     HANDLE& process,
-    HANDLE& thread) {
+    HANDLE& thread,
+    const ULONG additional_process_flags = 0) {
     const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     const auto create_parameters =
         reinterpret_cast<RtlCreateProcessParametersExFunction>(GetProcAddress(
@@ -301,7 +302,8 @@ NTSTATUS CreateNativeNtProcess(
     const NTSTATUS create_status = create_process(
         &process, &thread, PROCESS_ALL_ACCESS, THREAD_ALL_ACCESS, nullptr,
         nullptr,
-        inherit_handles ? process_create_flags_inherit_handles : 0,
+        (inherit_handles ? process_create_flags_inherit_handles : 0) |
+            additional_process_flags,
         thread_create_flags_create_suspended, parameters, &create_info,
         &attributes);
     destroy_parameters(parameters);
@@ -1981,22 +1983,135 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
         nullptr, FALSE, CREATE_BREAKAWAY_FROM_JOB, nullptr, nullptr,
         &breakaway_startup, &breakaway_process);
     const DWORD breakaway_error = GetLastError();
+    const auto denied_breakaway = [](
+                                       const BOOL created,
+                                       const DWORD error,
+                                       PROCESS_INFORMATION& information,
+                                       const UINT termination_code) {
+        const bool denied =
+            !created && error == ERROR_ACCESS_DENIED &&
+            information.hProcess == nullptr && information.hThread == nullptr &&
+            information.dwProcessId == 0 && information.dwThreadId == 0;
+        if (created) {
+            TerminateProcess(information.hProcess, termination_code);
+            WaitForSingleObject(information.hProcess, 5'000);
+            CloseHandle(information.hThread);
+            CloseHandle(information.hProcess);
+        }
+        return denied;
+    };
+    if (!denied_breakaway(
+            breakaway_created, breakaway_error, breakaway_process, 246)) {
+        return 246;
+    }
+
+    const std::string missing_breakaway_image_a =
+        AnsiPath(missing_breakaway_image.c_str());
+    std::vector<char> breakaway_command_line_a(
+        missing_breakaway_image_a.begin(), missing_breakaway_image_a.end());
+    breakaway_command_line_a.push_back('\0');
+    STARTUPINFOA breakaway_startup_a{};
+    breakaway_startup_a.cb = sizeof(breakaway_startup_a);
+    PROCESS_INFORMATION breakaway_process_a{
+        INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 1, 1};
+    SetLastError(ERROR_SUCCESS);
+    const BOOL breakaway_created_a = CreateProcessA(
+        missing_breakaway_image_a.c_str(), breakaway_command_line_a.data(),
+        nullptr, nullptr, FALSE, CREATE_BREAKAWAY_FROM_JOB, nullptr, nullptr,
+        &breakaway_startup_a, &breakaway_process_a);
+    const DWORD breakaway_error_a = GetLastError();
+    if (missing_breakaway_image_a.empty() ||
+        !denied_breakaway(
+            breakaway_created_a, breakaway_error_a, breakaway_process_a, 248)) {
+        return 248;
+    }
+
+    PROCESS_INFORMATION breakaway_as_user_w{
+        INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 1, 1};
+    std::wstring breakaway_as_user_command = breakaway_command_line;
+    SetLastError(ERROR_SUCCESS);
+    const BOOL breakaway_as_user_created_w = CreateProcessAsUserW(
+        nullptr, missing_breakaway_image.c_str(),
+        breakaway_as_user_command.data(), nullptr, nullptr, FALSE,
+        CREATE_BREAKAWAY_FROM_JOB, nullptr, nullptr, &breakaway_startup,
+        &breakaway_as_user_w);
+    const DWORD breakaway_as_user_error_w = GetLastError();
+    if (!denied_breakaway(
+            breakaway_as_user_created_w, breakaway_as_user_error_w,
+            breakaway_as_user_w, 249)) {
+        return 249;
+    }
+
+    PROCESS_INFORMATION breakaway_as_user_a{
+        INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 1, 1};
+    std::vector<char> breakaway_as_user_command_a = breakaway_command_line_a;
+    SetLastError(ERROR_SUCCESS);
+    const BOOL breakaway_as_user_created_a = CreateProcessAsUserA(
+        nullptr, missing_breakaway_image_a.c_str(),
+        breakaway_as_user_command_a.data(), nullptr, nullptr, FALSE,
+        CREATE_BREAKAWAY_FROM_JOB, nullptr, nullptr, &breakaway_startup_a,
+        &breakaway_as_user_a);
+    const DWORD breakaway_as_user_error_a = GetLastError();
+    if (!denied_breakaway(
+            breakaway_as_user_created_a, breakaway_as_user_error_a,
+            breakaway_as_user_a, 250)) {
+        return 250;
+    }
+
+    PROCESS_INFORMATION breakaway_with_token{
+        INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 1, 1};
+    std::wstring breakaway_with_token_command = breakaway_command_line;
+    SetLastError(ERROR_SUCCESS);
+    const BOOL breakaway_with_token_created = CreateProcessWithTokenW(
+        nullptr, 0, missing_breakaway_image.c_str(),
+        breakaway_with_token_command.data(), CREATE_BREAKAWAY_FROM_JOB, nullptr,
+        nullptr, &breakaway_startup, &breakaway_with_token);
+    const DWORD breakaway_with_token_error = GetLastError();
+    if (!denied_breakaway(
+            breakaway_with_token_created, breakaway_with_token_error,
+            breakaway_with_token, 251)) {
+        return 251;
+    }
+
+    PROCESS_INFORMATION breakaway_with_logon{
+        INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 1, 1};
+    std::wstring breakaway_with_logon_command = breakaway_command_line;
+    SetLastError(ERROR_SUCCESS);
+    const BOOL breakaway_with_logon_created = CreateProcessWithLogonW(
+        L"fixture-user", L".", L"fixture-credential", 0,
+        missing_breakaway_image.c_str(), breakaway_with_logon_command.data(),
+        CREATE_BREAKAWAY_FROM_JOB, nullptr, nullptr, &breakaway_startup,
+        &breakaway_with_logon);
+    const DWORD breakaway_with_logon_error = GetLastError();
+    if (!denied_breakaway(
+            breakaway_with_logon_created, breakaway_with_logon_error,
+            breakaway_with_logon, 252)) {
+        return 252;
+    }
+
+    constexpr ULONG process_create_flags_breakaway = 0x00000001;
+    HANDLE breakaway_nt_process = INVALID_HANDLE_VALUE;
+    HANDLE breakaway_nt_thread = INVALID_HANDLE_VALUE;
+    const NTSTATUS breakaway_nt_status = CreateNativeNtProcess(
+        missing_breakaway_image, L"", false, breakaway_nt_process,
+        breakaway_nt_thread, process_create_flags_breakaway);
+    constexpr NTSTATUS status_access_denied =
+        static_cast<NTSTATUS>(0xC0000022UL);
+    if (breakaway_nt_status != status_access_denied ||
+        breakaway_nt_process != nullptr || breakaway_nt_thread != nullptr) {
+        if (breakaway_nt_process != nullptr &&
+            breakaway_nt_process != INVALID_HANDLE_VALUE) {
+            TerminateProcess(breakaway_nt_process, 253);
+        }
+        CloseNativeNtProcess(breakaway_nt_process, breakaway_nt_thread);
+        return 253;
+    }
+
     BOOL remains_in_job = FALSE;
     const BOOL job_query_succeeded =
         IsProcessInJob(GetCurrentProcess(), nullptr, &remains_in_job);
-    if (breakaway_created || breakaway_error != ERROR_ACCESS_DENIED ||
-        breakaway_process.hProcess != nullptr ||
-        breakaway_process.hThread != nullptr ||
-        breakaway_process.dwProcessId != 0 ||
-        breakaway_process.dwThreadId != 0 || !job_query_succeeded ||
-        !remains_in_job) {
-        if (breakaway_created) {
-            TerminateProcess(breakaway_process.hProcess, 246);
-            WaitForSingleObject(breakaway_process.hProcess, 5'000);
-            CloseHandle(breakaway_process.hThread);
-            CloseHandle(breakaway_process.hProcess);
-        }
-        return 246;
+    if (!job_query_succeeded || !remains_in_job) {
+        return 254;
     }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
@@ -2356,10 +2471,16 @@ bool RunInheritedProcessTest(
         GetProcessId(process.process_handle()));
     constexpr auto breakaway_operation =
         static_cast<bolt::protocol::ProcessOperation>(3);
-    const bool breakaway_event_ok =
-        !parent_arguments.empty() ||
-        ReadProcessViolation(
-            event_pipe.handle(), parent_process_id, breakaway_operation, 1);
+    bool breakaway_event_ok = true;
+    if (parent_arguments.empty()) {
+        for (std::uint64_t sequence = 1; sequence <= 7; ++sequence) {
+            breakaway_event_ok =
+                breakaway_event_ok &&
+                ReadProcessViolation(
+                    event_pipe.handle(), parent_process_id,
+                    breakaway_operation, sequence);
+        }
+    }
     DWORD exit_code = 0;
     const bool passed = ready_ok &&
                         breakaway_event_ok &&
