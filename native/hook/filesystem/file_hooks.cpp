@@ -8,6 +8,7 @@
 #include "DetouredFunctionTypes.h"
 
 #include <memory>
+#include <string>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -34,6 +35,8 @@ using CreateHardLinkWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRI
 CreateHardLinkWFunction g_create_hard_link_w = CreateHardLinkW;
 CopyFileW_t g_copy_file_w = CopyFileW;
 CopyFileExW_t g_copy_file_ex_w = CopyFileExW;
+CopyFileA_t g_copy_file_a = CopyFileA;
+CopyFileExA_t g_copy_file_ex_a = CopyFileExA;
 
 void ReportDenied(
     const protocol::FilesystemOperation operation,
@@ -64,6 +67,31 @@ bool AuthorizeCopy(const wchar_t* existing_path, const wchar_t* new_path) noexce
         return false;
     }
     InvalidateResolvedPathForMutation(EvaluatedPath(destination, new_path), false);
+    return true;
+}
+
+bool ConvertAnsiPath(const char* path, std::wstring& converted) noexcept {
+    if (path == nullptr) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return false;
+    }
+    const int length = MultiByteToWideChar(CP_ACP, 0, path, -1, nullptr, 0);
+    if (length <= 1) {
+        SetLastError(ERROR_NO_UNICODE_TRANSLATION);
+        return false;
+    }
+    try {
+        converted.assign(static_cast<std::size_t>(length), L'\0');
+    } catch (...) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return false;
+    }
+    if (MultiByteToWideChar(CP_ACP, 0, path, -1, converted.data(), length) != length) {
+        converted.clear();
+        SetLastError(ERROR_NO_UNICODE_TRANSLATION);
+        return false;
+    }
+    converted.pop_back();
     return true;
 }
 
@@ -215,6 +243,38 @@ BOOL WINAPI DetouredCopyFileExW(
         existing_path, new_path, progress_routine, data, cancel, copy_flags);
 }
 
+BOOL WINAPI DetouredCopyFileA(
+    const LPCSTR existing_path,
+    const LPCSTR new_path,
+    const BOOL fail_if_exists) noexcept {
+    std::wstring existing_wide;
+    std::wstring new_wide;
+    if (!ConvertAnsiPath(existing_path, existing_wide) ||
+        !ConvertAnsiPath(new_path, new_wide) ||
+        !AuthorizeCopy(existing_wide.c_str(), new_wide.c_str())) {
+        return FALSE;
+    }
+    return g_copy_file_w(existing_wide.c_str(), new_wide.c_str(), fail_if_exists);
+}
+
+BOOL WINAPI DetouredCopyFileExA(
+    const LPCSTR existing_path,
+    const LPCSTR new_path,
+    const LPPROGRESS_ROUTINE progress_routine,
+    const LPVOID data,
+    const LPBOOL cancel,
+    const DWORD copy_flags) noexcept {
+    std::wstring existing_wide;
+    std::wstring new_wide;
+    if (!ConvertAnsiPath(existing_path, existing_wide) ||
+        !ConvertAnsiPath(new_path, new_wide) ||
+        !AuthorizeCopy(existing_wide.c_str(), new_wide.c_str())) {
+        return FALSE;
+    }
+    return g_copy_file_ex_w(
+        existing_wide.c_str(), new_wide.c_str(), progress_routine, data, cancel, copy_flags);
+}
+
 }  // namespace
 
 HookInstallStatus InstallFileHooks(
@@ -256,6 +316,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_copy_file_ex_w),
             reinterpret_cast<PVOID>(DetouredCopyFileExW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_copy_file_a),
+            reinterpret_cast<PVOID>(DetouredCopyFileA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_copy_file_ex_a),
+            reinterpret_cast<PVOID>(DetouredCopyFileExA)) != NO_ERROR ||
         DetourTransactionCommit() != NO_ERROR) {
         DetourTransactionAbort();
         return HookInstallStatus::kTransactionFailed;
