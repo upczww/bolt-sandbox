@@ -3,6 +3,7 @@
 #include "CanonicalizedPath.h"
 #include "FilesCheckedForAccess.h"
 #include "ResolvedPathCache.h"
+#include "hook/filesystem/path_cache.h"
 
 #include <memory>
 #include <string>
@@ -146,6 +147,18 @@ bool RunBuildXlTreeTests() {
     cache.InsertResolvingCheckResult(L"C:\\Tree\\Child\\Leaf", true);
     cache.Invalidate(L"C:\\Tree", true);
     if (cache.GetResolvingCheckResult(L"C:\\Tree\\Child\\Leaf").Found) {
+        return false;
+    }
+
+    auto& shared_cache = ResolvedPathCache::Instance();
+    if (!shared_cache.InsertResolvingCheckResult(
+            L"C:\\BoltCacheMutation\\Directory\\Child", true)) {
+        return false;
+    }
+    bolt::filesystem::InvalidateResolvedPathForMutation(
+        L"\\\\?\\C:\\BoltCacheMutation\\Directory", true);
+    if (shared_cache.GetResolvingCheckResult(
+            L"C:\\BoltCacheMutation\\Directory\\Child").Found) {
         return false;
     }
 
