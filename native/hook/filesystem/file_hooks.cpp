@@ -227,24 +227,52 @@ BOOL WINAPI DetouredMoveFileExW(
     if (scope.Detoured_IsDisabled()) {
         return g_move_file_ex_w(existing_path, new_path, flags);
     }
+    if (existing_path == nullptr || new_path == nullptr) {
+        return g_move_file_ex_w(existing_path, new_path, flags);
+    }
     const auto* policy = g_policy.get();
-    const auto source =
+    const auto source_text =
         policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(existing_path, Access::kWrite);
-    const auto destination = policy == nullptr || new_path == nullptr
-                                 ? PolicyEvaluation{}
-                                 : policy->Evaluate(new_path, Access::kWrite);
-    if (source.decision == Decision::kDeny ||
-        (new_path != nullptr && destination.decision == Decision::kDeny)) {
-        const bool source_denied = source.decision == Decision::kDeny;
+    const auto destination_text =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(new_path, Access::kWrite);
+    if (source_text.decision == Decision::kDeny ||
+        destination_text.decision == Decision::kDeny) {
+        const bool source_denied = source_text.decision == Decision::kDeny;
         ReportDenied(
             protocol::FilesystemOperation::kRename,
-            source_denied ? EvaluatedPath(source, existing_path)
-                          : EvaluatedPath(destination, new_path));
+            source_denied ? EvaluatedPath(source_text, existing_path)
+                          : EvaluatedPath(destination_text, new_path));
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
-    InvalidateResolvedPathForMutation(EvaluatedPath(source, existing_path), true);
-    InvalidateResolvedPathForMutation(EvaluatedPath(destination, new_path), true);
+
+    const wchar_t* source_path = EvaluatedPath(source_text, existing_path);
+    const wchar_t* destination_path = EvaluatedPath(destination_text, new_path);
+    std::wstring resolved_source;
+    std::wstring resolved_destination;
+    if (!ResolveFinalPathForPolicy(source_path, g_create_file_w, resolved_source) ||
+        !ResolveFinalPathForPolicy(
+            destination_path, g_create_file_w, resolved_destination)) {
+        ReportDenied(protocol::FilesystemOperation::kRename, source_path);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+
+    const auto source_final = policy->Evaluate(resolved_source.c_str(), Access::kWrite);
+    const auto destination_final =
+        policy->Evaluate(resolved_destination.c_str(), Access::kWrite);
+    if (source_final.decision == Decision::kDeny ||
+        destination_final.decision == Decision::kDeny) {
+        const bool source_denied = source_final.decision == Decision::kDeny;
+        ReportDenied(
+            protocol::FilesystemOperation::kRename,
+            source_denied ? EvaluatedPath(source_final, resolved_source.c_str())
+                          : EvaluatedPath(destination_final, resolved_destination.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    InvalidateResolvedPathForMutation(resolved_source.c_str(), true);
+    InvalidateResolvedPathForMutation(resolved_destination.c_str(), true);
     return g_move_file_ex_w(existing_path, new_path, flags);
 }
 

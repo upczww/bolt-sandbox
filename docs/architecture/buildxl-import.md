@@ -76,10 +76,10 @@ path cache on an allowed call. Unlike BuildXL's build-observation-oriented
 post-call source check, Bolt performs both checks before the call so a denied
 copy cannot leave a destination side effect.
 
-For textually allowed copy paths, Bolt resolves the nearest existing ancestor
+For textually allowed copy paths and `MoveFileExW` source/destination paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,
 appends any absent suffix, then evaluates the fully resolved source and
-destination again. Results use BuildXL's `ResolvedPathCache`; the existing
+destination again with the operation-specific access requirements. Results use BuildXL's `ResolvedPathCache`; the existing
 mutation invalidation path prevents stale junction/symlink targets. A denied
 final target is reported by its resolved canonical identity and Windows is not
 called.
