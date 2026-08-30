@@ -18,6 +18,8 @@ static_assert(bolt::protocol::kPolicyMaximumBodyLength == 1'048'576);
 
 bool RunPolicyPayloadTests();
 bool RunJobTests();
+bool RunStreamTests();
+int RunDualStreamWriter(int argument_count, wchar_t** arguments);
 int RunJobTreeParent(int argument_count, wchar_t** arguments);
 int RunIgnoreGracefulChild(int argument_count, wchar_t** arguments);
 bool RunNamedPipeTests();
@@ -116,6 +118,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--ignore-graceful") {
         return RunIgnoreGracefulChild(argument_count, arguments);
     }
+    if (argument_count >= 2 && std::wstring(arguments[1]) == L"--dual-stream-writer") {
+        return RunDualStreamWriter(argument_count, arguments);
+    }
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--process-child") {
         return RunProcessChild(argument_count, arguments);
     }
@@ -164,6 +169,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunJobTests()) {
         return 5;
+    }
+    if (!RunStreamTests()) {
+        return 16;
     }
     if (!RunNamedPipeTests()) {
         return 6;
