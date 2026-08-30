@@ -18,6 +18,7 @@ static_assert(bolt::protocol::kPolicyMaximumBodyLength == 1'048'576);
 
 bool RunPolicyPayloadTests();
 bool RunJobTests();
+int RunJobTreeParent(int argument_count, wchar_t** arguments);
 bool RunNamedPipeTests();
 bool RunProcessTests();
 bool RunDetoursTests();
@@ -105,6 +106,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--job-child") {
         Sleep(INFINITE);
         return 0;
+    }
+    if (argument_count >= 2 && std::wstring(arguments[1]) == L"--job-tree-parent") {
+        return RunJobTreeParent(argument_count, arguments);
     }
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--process-child") {
         return RunProcessChild(argument_count, arguments);
