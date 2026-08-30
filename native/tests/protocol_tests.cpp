@@ -41,6 +41,7 @@ bool RunDnsProxyProtocolTests();
 bool RunTcpProxyProtocolTests();
 bool RunTcpProxyServerTests();
 bool RunSystemTcpConnectorTests();
+bool RunTcpRelayTests();
 bool RunDnsProxyServerTests();
 bool RunDnsProxySessionTests();
 bool RunDnsProxyHandleTransportTests();
@@ -331,6 +332,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
         std::wstring(arguments[1]) == L"--system-tcp-connector-tests") {
         return RunSystemTcpConnectorTests() ? 0 : 1;
     }
+    if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--tcp-relay-tests") {
+        return RunTcpRelayTests() ? 0 : 1;
+    }
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-proxy-server-tests") {
         return RunDnsProxyServerTests() ? 0 : 1;
     }
@@ -490,6 +495,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunSystemTcpConnectorTests()) {
         return 32;
+    }
+    if (!RunTcpRelayTests()) {
+        return 33;
     }
     return 0;
 }
