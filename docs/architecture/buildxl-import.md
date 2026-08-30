@@ -118,6 +118,11 @@ mappings. The same classifier is attached directly to `NtCreateSection` for
 native callers. Anonymous page-file mappings and sections retain native
 behavior.
 
+`CreateHardLinkW/A` use BuildXL's exact function types and the shared
+source-read/destination-write authorization path. Both identities are resolved
+before Windows is called, preventing an allowed junction from placing a new
+hard-link directory entry in a denied target.
+
 For textually allowed copy, move, and replace operation paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,
 appends any absent suffix, then evaluates the fully resolved source and

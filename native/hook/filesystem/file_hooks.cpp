@@ -54,8 +54,8 @@ CreateFileMappingAFunction g_create_file_mapping_a = CreateFileMappingA;
 using NtCreateSectionFunction = NTSTATUS(NTAPI*)(
     PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PLARGE_INTEGER, ULONG, ULONG, HANDLE);
 NtCreateSectionFunction g_nt_create_section = nullptr;
-using CreateHardLinkWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRIBUTES);
-CreateHardLinkWFunction g_create_hard_link_w = CreateHardLinkW;
+CreateHardLinkW_t g_create_hard_link_w = CreateHardLinkW;
+CreateHardLinkA_t g_create_hard_link_a = CreateHardLinkA;
 CopyFileW_t g_copy_file_w = CopyFileW;
 CopyFileExW_t g_copy_file_ex_w = CopyFileExW;
 CopyFileA_t g_copy_file_a = CopyFileA;
@@ -947,23 +947,29 @@ BOOL WINAPI DetouredCreateHardLinkW(
     if (scope.Detoured_IsDisabled()) {
         return g_create_hard_link_w(new_path, existing_path, security_attributes);
     }
-    const auto* policy = g_policy.get();
-    const auto source =
-        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(existing_path, Access::kRead);
-    const auto destination =
-        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(new_path, Access::kWrite);
-    if (source.decision == Decision::kDeny || destination.decision == Decision::kDeny) {
-        const bool source_denied = source.decision == Decision::kDeny;
-        ReportDenied(
-            source_denied ? protocol::FilesystemOperation::kRead
-                          : protocol::FilesystemOperation::kCreate,
-            source_denied ? EvaluatedPath(source, existing_path)
-                          : EvaluatedPath(destination, new_path));
-        SetLastError(ERROR_ACCESS_DENIED);
+    if (!AuthorizeCopy(existing_path, new_path)) {
         return FALSE;
     }
-    InvalidateResolvedPathForMutation(EvaluatedPath(destination, new_path), false);
     return g_create_hard_link_w(new_path, existing_path, security_attributes);
+}
+
+BOOL WINAPI DetouredCreateHardLinkA(
+    const LPCSTR new_path,
+    const LPCSTR existing_path,
+    const LPSECURITY_ATTRIBUTES security_attributes) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_hard_link_a(new_path, existing_path, security_attributes);
+    }
+    std::wstring existing_wide;
+    std::wstring new_wide;
+    if (!ConvertAnsiPath(existing_path, existing_wide) ||
+        !ConvertAnsiPath(new_path, new_wide) ||
+        !AuthorizeCopy(existing_wide.c_str(), new_wide.c_str())) {
+        return FALSE;
+    }
+    return g_create_hard_link_w(
+        new_wide.c_str(), existing_wide.c_str(), security_attributes);
 }
 
 // Adapts BuildXL's CopyFile contract: source and destination are independent
@@ -1191,6 +1197,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_hard_link_w),
             reinterpret_cast<PVOID>(DetouredCreateHardLinkW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_create_hard_link_a),
+            reinterpret_cast<PVOID>(DetouredCreateHardLinkA)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_copy_file_w),
             reinterpret_cast<PVOID>(DetouredCopyFileW)) != NO_ERROR ||
