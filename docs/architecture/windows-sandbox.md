@@ -485,6 +485,14 @@ audit events are sufficient for the initial release.
 - Preserve the first occurrence and count dropped duplicate events.
 - Treat handshake loss as an initialization failure.
 
+The filesystem hook set is machine-declared in
+[`native/hook/filesystem/hooks-manifest.json`](../../native/hook/filesystem/hooks-manifest.json).
+Every Windows build compares that manifest with the exact `DetourAttach` pairs,
+API coverage claims, architecture/module metadata, and catalog IDs. Hook
+installation remains one all-or-nothing transaction; after Ready, an exported
+runtime count must equal all required entries plus capabilities marked
+`if_present` on that Windows version.
+
 Execution setup obtains 32 bytes in one operating-system CSPRNG request. The
 first 16 bytes form a lowercase-hex opaque suffix for
 `\\.\pipe\bolt-sandbox-<id>`; the remaining 16 bytes are an independent

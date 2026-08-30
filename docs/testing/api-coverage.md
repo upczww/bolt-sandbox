@@ -74,7 +74,9 @@ access masks/dispositions/information classes to policy operation classes.
 
 ## Coverage maintenance
 
-- The native hook manifest must list every installed target symbol, module,
+- The machine-readable
+  [`hooks-manifest.json`](../../native/hook/filesystem/hooks-manifest.json)
+  must list every installed filesystem target symbol, module,
   architecture, minimum OS version, operation class, and catalog case IDs.
 - CI compares that manifest with this inventory and fails on unmapped additions,
   removals, unavailable required symbols, or a hook without an allow/deny/error

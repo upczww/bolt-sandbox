@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $manifestPath = Join-Path $repositoryRoot 'native\hook\filesystem\hooks-manifest.json'
 $sourcePath = Join-Path $repositoryRoot 'native\hook\filesystem\file_hooks.cpp'
+$runtimeTestPath = Join-Path $repositoryRoot 'native\tests\process_tests.cpp'
 $catalogPath = Join-Path $repositoryRoot 'docs\testing\test-catalog.md'
 $coveragePath = Join-Path $repositoryRoot 'docs\testing\api-coverage.md'
 
@@ -118,6 +119,17 @@ $countMatch = [regex]::Match(
 if (-not $countMatch.Success -or
     [int]$countMatch.Groups[1].Value -ne $requiredHookCount) {
     throw "Runtime required hook count does not match manifest count $requiredHookCount."
+}
+$runtimeTest = Get-Content -Raw -LiteralPath $runtimeTestPath
+$testCountMatch = [regex]::Match(
+    $runtimeTest, 'required_filesystem_hook_count\s*=\s*(\d+)')
+if (-not $testCountMatch.Success -or
+    [int]$testCountMatch.Groups[1].Value -ne $requiredHookCount) {
+    throw "Runtime test hook count does not match manifest count $requiredHookCount."
+}
+if ($source -notmatch 'InstalledFileHookCount\(\)' -or
+    $runtimeTest -notmatch 'BoltSandboxInstalledFilesystemHookCount') {
+    throw 'Runtime filesystem hook count export or probe is missing.'
 }
 
 $coverage = Get-Content -Raw -LiteralPath $coveragePath
