@@ -74,6 +74,11 @@ NtQueryInformationFileFunction g_nt_query_information_file = nullptr;
 using NtQueryAttributesFileFunction = NTSTATUS(NTAPI*)(POBJECT_ATTRIBUTES, PVOID);
 NtQueryAttributesFileFunction g_nt_query_attributes_file = nullptr;
 NtQueryAttributesFileFunction g_nt_query_full_attributes_file = nullptr;
+NtQueryDirectoryFile_t g_nt_query_directory_file = nullptr;
+using NtQueryDirectoryFileExFunction = NTSTATUS(NTAPI*)(
+    HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
+    FILE_INFORMATION_CLASS, ULONG, PUNICODE_STRING);
+NtQueryDirectoryFileExFunction g_nt_query_directory_file_ex = nullptr;
 using SetFileAttributesWFunction = BOOL(WINAPI*)(LPCWSTR, DWORD);
 using SetFileAttributesAFunction = BOOL(WINAPI*)(LPCSTR, DWORD);
 SetFileAttributesWFunction g_set_file_attributes_w = SetFileAttributesW;
@@ -500,6 +505,26 @@ bool AuthorizeHandleMetadata(const HANDLE file) noexcept {
     return true;
 }
 
+bool AuthorizeHandleEnumeration(const HANDLE directory) noexcept {
+    std::wstring source_path;
+    if (!TryGetHandlePath(directory, source_path)) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    const auto* policy = g_policy.get();
+    const auto evaluation = policy == nullptr
+                                ? PolicyEvaluation{}
+                                : policy->Evaluate(source_path.c_str(), Access::kMetadata);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            protocol::FilesystemOperation::kEnumerate,
+            EvaluatedPath(evaluation, source_path.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    return true;
+}
+
 bool TryGetObjectAttributesPath(
     const POBJECT_ATTRIBUTES object_attributes,
     std::wstring& path) noexcept {
@@ -734,6 +759,69 @@ NTSTATUS NTAPI DetouredNtQueryFullAttributesFile(
         return g_nt_query_full_attributes_file(object_attributes, information);
     }
     constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+    return status_access_denied;
+}
+
+NTSTATUS NTAPI DetouredNtQueryDirectoryFile(
+    const HANDLE directory,
+    const HANDLE event,
+    const PIO_APC_ROUTINE apc_routine,
+    const PVOID apc_context,
+    const PIO_STATUS_BLOCK io_status,
+    const PVOID information,
+    const ULONG information_size,
+    const FILE_INFORMATION_CLASS information_class,
+    const BOOLEAN return_single_entry,
+    const PUNICODE_STRING name,
+    const BOOLEAN restart_scan) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_nt_query_directory_file(
+            directory, event, apc_routine, apc_context, io_status, information,
+            information_size, information_class, return_single_entry, name,
+            restart_scan);
+    }
+    if (AuthorizeHandleEnumeration(directory)) {
+        return g_nt_query_directory_file(
+            directory, event, apc_routine, apc_context, io_status, information,
+            information_size, information_class, return_single_entry, name,
+            restart_scan);
+    }
+    constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+    if (io_status != nullptr) {
+        io_status->Status = status_access_denied;
+        io_status->Information = 0;
+    }
+    return status_access_denied;
+}
+
+NTSTATUS NTAPI DetouredNtQueryDirectoryFileEx(
+    const HANDLE directory,
+    const HANDLE event,
+    const PIO_APC_ROUTINE apc_routine,
+    const PVOID apc_context,
+    const PIO_STATUS_BLOCK io_status,
+    const PVOID information,
+    const ULONG information_size,
+    const FILE_INFORMATION_CLASS information_class,
+    const ULONG query_flags,
+    const PUNICODE_STRING name) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_nt_query_directory_file_ex(
+            directory, event, apc_routine, apc_context, io_status, information,
+            information_size, information_class, query_flags, name);
+    }
+    if (AuthorizeHandleEnumeration(directory)) {
+        return g_nt_query_directory_file_ex(
+            directory, event, apc_routine, apc_context, io_status, information,
+            information_size, information_class, query_flags, name);
+    }
+    constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+    if (io_status != nullptr) {
+        io_status->Status = status_access_denied;
+        io_status->Information = 0;
+    }
     return status_access_denied;
 }
 
@@ -1754,9 +1842,14 @@ HookInstallStatus InstallFileHooks(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryAttributesFile"));
     g_nt_query_full_attributes_file = reinterpret_cast<NtQueryAttributesFileFunction>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryFullAttributesFile"));
+    g_nt_query_directory_file = reinterpret_cast<NtQueryDirectoryFile_t>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryDirectoryFile"));
+    g_nt_query_directory_file_ex = reinterpret_cast<NtQueryDirectoryFileExFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryDirectoryFileEx"));
     if (g_zw_set_information_file == nullptr || g_nt_create_section == nullptr ||
         g_nt_query_information_file == nullptr || g_nt_query_attributes_file == nullptr ||
-        g_nt_query_full_attributes_file == nullptr) {
+        g_nt_query_full_attributes_file == nullptr || g_nt_query_directory_file == nullptr ||
+        g_nt_query_directory_file_ex == nullptr) {
         return HookInstallStatus::kTransactionFailed;
     }
     if (DetourTransactionBegin() != NO_ERROR) {
@@ -1802,6 +1895,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_nt_query_full_attributes_file),
             reinterpret_cast<PVOID>(DetouredNtQueryFullAttributesFile)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_query_directory_file),
+            reinterpret_cast<PVOID>(DetouredNtQueryDirectoryFile)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_query_directory_file_ex),
+            reinterpret_cast<PVOID>(DetouredNtQueryDirectoryFileEx)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_set_file_attributes_w),
             reinterpret_cast<PVOID>(DetouredSetFileAttributesW)) != NO_ERROR ||

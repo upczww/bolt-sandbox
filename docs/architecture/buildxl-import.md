@@ -138,6 +138,12 @@ Directory enumeration begins with BuildXL's `FindFirstFileW/A` and
 authorization decision and report denied searches as `Enumerate` before any
 search handle or directory entry can be returned.
 
+Direct `NtQueryDirectoryFile` reuses BuildXL's exact function type, while
+`NtQueryDirectoryFileEx` supplies the newer native signature absent from the
+vendored revision. Both resolve the directory handle's final identity and
+return `STATUS_ACCESS_DENIED` with zero result information before synchronous
+or asynchronous enumeration can expose an entry.
+
 Metadata probing through `GetFileAttributesW/A` and
 `GetFileAttributesExW/A` shares one metadata-policy decision. Denied targets
 return the native failure sentinel, preserve `ERROR_ACCESS_DENIED`, and cannot
