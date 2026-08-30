@@ -17,6 +17,8 @@ std::unique_ptr<FilesystemPolicy> g_policy;
 using CreateFileWFunction = HANDLE(WINAPI*)(
     LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 CreateFileWFunction g_create_file_w = CreateFileW;
+using DeleteFileWFunction = BOOL(WINAPI*)(LPCWSTR);
+DeleteFileWFunction g_delete_file_w = DeleteFileW;
 
 Access ClassifyAccess(const DWORD desired_access, const DWORD creation_disposition) noexcept {
     constexpr DWORD write_access = GENERIC_WRITE | FILE_WRITE_DATA | FILE_APPEND_DATA |
@@ -49,6 +51,17 @@ HANDLE WINAPI DetouredCreateFileW(
         flags_and_attributes, template_file);
 }
 
+// BuildXL classifies DeleteFileW as a write and preserves the last reparse
+// point because the API deletes a link itself rather than its target.
+BOOL WINAPI DetouredDeleteFileW(const LPCWSTR filename) noexcept {
+    const auto* policy = g_policy.get();
+    if (policy == nullptr || policy->Decide(filename, Access::kWrite) == Decision::kDeny) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return g_delete_file_w(filename);
+}
+
 }  // namespace
 
 HookInstallStatus InstallFileHooks(
@@ -69,6 +82,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_file_w),
             reinterpret_cast<PVOID>(DetouredCreateFileW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_delete_file_w),
+            reinterpret_cast<PVOID>(DetouredDeleteFileW)) != NO_ERROR ||
         DetourTransactionCommit() != NO_ERROR) {
         DetourTransactionAbort();
         return HookInstallStatus::kTransactionFailed;
