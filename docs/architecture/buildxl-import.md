@@ -60,7 +60,9 @@ cached descendants, matching BuildXL's defense against stale reparse targets.
 Directory creation also resolves the parent directory's final identity and
 appends the new leaf before its second write-policy check, preventing an
 allowed path containing an intermediate junction from creating beneath a
-denied target.
+denied target. Directory removal uses the same parent-final/leaf-preserving
+deletion rule as files and invalidates cached descendants before an allowed
+native call.
 
 Create/open classification is a Bolt-owned compatibility seam derived from
 BuildXL's `WantsWriteAccess`, `WantsReadAccess`, and probe-only split. It treats

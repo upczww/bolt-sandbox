@@ -724,7 +724,9 @@ bool AuthorizeAttributeMutation(const wchar_t* path) noexcept {
     return true;
 }
 
-bool AuthorizeDeletion(const wchar_t* path) noexcept {
+bool AuthorizeDeletion(
+    const wchar_t* path,
+    const bool invalidate_descendants = false) noexcept {
     const auto* policy = g_policy.get();
     const auto evaluation =
         policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(path, Access::kWrite);
@@ -751,7 +753,8 @@ bool AuthorizeDeletion(const wchar_t* path) noexcept {
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
     }
-    InvalidateResolvedPathForMutation(resolved_path.c_str(), false);
+    InvalidateResolvedPathForMutation(
+        resolved_path.c_str(), invalidate_descendants);
     return true;
 }
 
@@ -1501,16 +1504,7 @@ BOOL WINAPI DetouredRemoveDirectoryW(const LPCWSTR path) noexcept {
     if (scope.Detoured_IsDisabled()) {
         return g_remove_directory_w(path);
     }
-    const auto* policy = g_policy.get();
-    const auto evaluation =
-        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(path, Access::kWrite);
-    if (evaluation.decision == Decision::kDeny) {
-        ReportDenied(protocol::FilesystemOperation::kDelete, EvaluatedPath(evaluation, path));
-        SetLastError(ERROR_ACCESS_DENIED);
-        return FALSE;
-    }
-    InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, path), true);
-    return g_remove_directory_w(path);
+    return AuthorizeDeletion(path, true) ? g_remove_directory_w(path) : FALSE;
 }
 
 // BuildXL funnels the move family through one two-sided policy decision. The
