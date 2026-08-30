@@ -882,6 +882,22 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
             status_access_denied) {
         return 163;
     }
+    constexpr DWORD allow_unprivileged_create = 0x2;
+    constexpr DWORD symbolic_link_flags =
+        SYMBOLIC_LINK_FLAG_DIRECTORY | allow_unprivileged_create;
+    if (CreateSymbolicLinkW(arguments[32], arguments[33], symbolic_link_flags) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 164;
+    }
+    const std::string ansi_forbidden_symlink = AnsiPath(arguments[32]);
+    const std::string ansi_forbidden_target = AnsiPath(arguments[33]);
+    if (ansi_forbidden_symlink.empty() || ansi_forbidden_target.empty() ||
+        CreateSymbolicLinkA(
+            ansi_forbidden_symlink.c_str(), ansi_forbidden_target.c_str(),
+            symbolic_link_flags) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 165;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1509,7 +1525,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kEnumerate,
-            denied_root.wstring(), 65);
+            denied_root.wstring(), 65) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_junction_target.wstring(), 66) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_junction_target.wstring(), 67);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
