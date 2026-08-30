@@ -2619,6 +2619,11 @@ int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
     if (!HasRequiredProcessMitigations()) {
         return 245;
     }
+    BOOL remains_in_job = FALSE;
+    if (!IsProcessInJob(GetCurrentProcess(), nullptr, &remains_in_job) ||
+        !remains_in_job) {
+        return 286;
+    }
     if (argument_count == 4) {
         const HANDLE entered = reinterpret_cast<HANDLE>(
             _wcstoui64(arguments[3], nullptr, 10));
@@ -2810,6 +2815,25 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
         IsProcessInJob(GetCurrentProcess(), nullptr, &remains_in_job);
     if (!job_query_succeeded || !remains_in_job) {
         return 254;
+    }
+    constexpr std::array<DWORD, 3> confined_flag_families = {
+        DETACHED_PROCESS,
+        CREATE_NEW_PROCESS_GROUP,
+        CREATE_NO_WINDOW,
+    };
+    for (const DWORD flags : confined_flag_families) {
+        std::wstring flagged_command =
+            L"\"" + executable + L"\" --inherit-leaf " + arguments[2];
+        STARTUPINFOW flagged_startup{};
+        flagged_startup.cb = sizeof(flagged_startup);
+        PROCESS_INFORMATION flagged_process{};
+        if (!CreateProcessW(
+                executable.c_str(), flagged_command.data(), nullptr, nullptr,
+                FALSE, flags, nullptr, nullptr, &flagged_startup,
+                &flagged_process) ||
+            !WaitForSuccessfulChild(flagged_process)) {
+            return 287;
+        }
     }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
