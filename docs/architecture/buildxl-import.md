@@ -23,15 +23,14 @@ The audit also compared the imported source blobs with main snapshot
 
 ## Staged import
 
-The first slice contains `TreeNode.h`, `TreeNode.cpp`, `PathTree.h`, and
-`PathTree.cpp`, providing BuildXL's case-insensitive path tree. A narrow adapter
-implements the Windows-only `TryDecomposePath` function from BuildXL
-`StringOperations.cpp` without importing that file's unrelated cross-platform
-and manifest dependencies.
+The path-core slice contains `TreeNode`, `PathTree`, and `CanonicalizedPath`,
+providing BuildXL's case-insensitive path tree and Win32 path canonicalization.
+A narrow adapter implements only the required Windows string operations and
+the `PathType` seam without importing BuildXL's manifest policy types.
 
 The next slices are:
 
-1. `CanonicalizedPath`, `PolicySearch`, and `PolicyResult`, behind Bolt-owned
-   policy adapters.
+1. Policy lookup and access classification behind Bolt-owned policy adapters;
+   BuildXL's manifest-specific `PolicySearch` wire format remains excluded.
 2. The filesystem detours, handle overlay, process injector, and reporting
    components needed by the architecture's enforcement matrix.

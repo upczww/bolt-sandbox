@@ -35,6 +35,7 @@ set(BUILDXL_DETOURS_SERVICES_DIR
 )
 add_library(bolt-sandbox-buildxl STATIC
     adapters/buildxl/string_operations_adapter.cpp
+    ${BUILDXL_DETOURS_SERVICES_DIR}/CanonicalizedPath.cpp
     ${BUILDXL_DETOURS_SERVICES_DIR}/PathTree.cpp
     ${BUILDXL_DETOURS_SERVICES_DIR}/TreeNode.cpp
 )

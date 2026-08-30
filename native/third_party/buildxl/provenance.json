@@ -12,6 +12,14 @@
       "sha256": "88dc396a6da58d834a863fe88a832c268e29d41c3c0419354d4eb7923973c77f"
     },
     {
+      "path": "Public/Src/Sandbox/Windows/DetoursServices/CanonicalizedPath.cpp",
+      "sha256": "ae1ec8d125e2bdcfed1a344cf4760a365fe6112e808132f9a205b08e4ca658b4"
+    },
+    {
+      "path": "Public/Src/Sandbox/Windows/DetoursServices/CanonicalizedPath.h",
+      "sha256": "4d6539f0874a15c36a08b27ba5697e0f7a16b68a566bf4bc822ede3232ad0ed1"
+    },
+    {
       "path": "Public/Src/Sandbox/Windows/DetoursServices/PathTree.cpp",
       "sha256": "9bfb27086d6c3cc2cd8b48c95aac02e1e73e8d1206c3605065d6b4c55ce3b32f"
     },
