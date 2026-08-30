@@ -8,9 +8,11 @@
   "upstream_path": "Public/Src/Sandbox/Windows/DetoursServices",
   "integration_policy": "vendored files are immutable; Bolt adapters replace BuildXL manifest and report seams",
   "currently_compiled_upstream_files": [
+    "Assertions.cpp",
     "CanonicalizedPath.cpp",
     "FilesCheckedForAccess.cpp",
     "PathTree.cpp",
+    "StringOperations.cpp",
     "TreeNode.cpp"
   ],
   "adaptation_baseline_not_linked": "all other imported DetoursServices source files",

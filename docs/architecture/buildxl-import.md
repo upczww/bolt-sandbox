@@ -30,11 +30,18 @@ metadata virtualization, detoured filesystem functions, and reporting seams.
 This is a source and provenance baseline: vendored does not mean linked or
 shipped. The exact file list and hashes are enforced by the import manifest.
 
-The currently compiled upstream subset is `TreeNode`, `PathTree`,
-`CanonicalizedPath`, and `FilesCheckedForAccess`. It provides BuildXL's
-case-insensitive path tree, Win32 path canonicalization, and checked-path set.
-A narrow Bolt adapter temporarily supplies the required Windows string
-operations and `PathType` seam.
+The currently compiled upstream subset is `Assertions`, `StringOperations`,
+`TreeNode`, `PathTree`, `CanonicalizedPath`, and `FilesCheckedForAccess`. It
+provides BuildXL's case-insensitive hashing and path comparison, Win32 path
+normalization, case-insensitive path tree, canonical paths, and checked-path
+set. The former hand-written string-operation subset has been removed.
+
+CMake copies the immutable path-core files byte-for-byte into a generated
+adaptation directory. In that directory only, Bolt's narrow
+`FileAccessHelpers` and `UtilityHelpers` compatibility headers replace the
+same-named BuildXL headers that otherwise pull in manifest, reporting, and
+process-injector globals. `Assertions.cpp` and `StringOperations.cpp` compile
+directly from the vendored paths.
 
 The remaining vendored files are not yet members of a Bolt build target. They
 are activated only after a failing behavior or compile-contract test defines
@@ -52,10 +59,8 @@ Bolt-owned adapters replace these coupled seams:
 
 The next slices are:
 
-1. Replace the temporary string-operation adapter with the complete upstream
-   implementation and verify path/reparse behavior.
-2. Activate access classification and handle overlay behind `PolicyView`.
-3. Activate filesystem detours by operation family and route reports through
+1. Activate access classification and handle overlay behind `PolicyView`.
+2. Activate filesystem detours by operation family and route reports through
    `EventSink`.
 
 The rest of `Public/Src/Sandbox/Windows` is deliberately not copied. It

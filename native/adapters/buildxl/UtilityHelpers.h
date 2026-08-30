@@ -3,9 +3,11 @@
 #pragma once
 
 #include <algorithm>
+#include <cassert>
 #include <cwctype>
 #include <functional>
 #include <string>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>

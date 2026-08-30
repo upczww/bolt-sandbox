@@ -2,14 +2,15 @@
 // BuildXL manifest policy types are intentionally not imported.
 #pragma once
 
-#include "StringOperations.h"
-
 #include <cassert>
 #include <memory>
 #include <string>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+
+#include "StringOperations.h"
 
 using std::unique_ptr;
 

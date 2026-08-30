@@ -33,19 +33,57 @@ target_include_directories(bolt-sandbox-detours PUBLIC ${DETOURS_SOURCE_DIR})
 set(BUILDXL_DETOURS_SERVICES_DIR
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/buildxl/Public/Src/Sandbox/Windows/DetoursServices
 )
+set(BUILDXL_ADAPTED_DIR ${CMAKE_CURRENT_BINARY_DIR}/buildxl-adapted)
+file(MAKE_DIRECTORY ${BUILDXL_ADAPTED_DIR})
+foreach(BUILDXL_PATH_CORE_FILE
+    CanonicalizedPath.cpp
+    CanonicalizedPath.h
+    FilesCheckedForAccess.cpp
+    FilesCheckedForAccess.h
+    PathTree.cpp
+    PathTree.h
+    TreeNode.cpp
+    TreeNode.h
+)
+    configure_file(
+        ${BUILDXL_DETOURS_SERVICES_DIR}/${BUILDXL_PATH_CORE_FILE}
+        ${BUILDXL_ADAPTED_DIR}/${BUILDXL_PATH_CORE_FILE}
+        COPYONLY
+    )
+endforeach()
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/buildxl/FileAccessHelpers.h
+    ${BUILDXL_ADAPTED_DIR}/FileAccessHelpers.h
+    COPYONLY
+)
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/buildxl/UtilityHelpers.h
+    ${BUILDXL_ADAPTED_DIR}/UtilityHelpers.h
+    COPYONLY
+)
+configure_file(
+    ${BUILDXL_DETOURS_SERVICES_DIR}/StringOperations.h
+    ${BUILDXL_ADAPTED_DIR}/StringOperations.h
+    COPYONLY
+)
 add_library(bolt-sandbox-buildxl STATIC
-    adapters/buildxl/string_operations_adapter.cpp
-    ${BUILDXL_DETOURS_SERVICES_DIR}/CanonicalizedPath.cpp
-    ${BUILDXL_DETOURS_SERVICES_DIR}/FilesCheckedForAccess.cpp
-    ${BUILDXL_DETOURS_SERVICES_DIR}/PathTree.cpp
-    ${BUILDXL_DETOURS_SERVICES_DIR}/TreeNode.cpp
+    ${BUILDXL_DETOURS_SERVICES_DIR}/Assertions.cpp
+    ${BUILDXL_DETOURS_SERVICES_DIR}/StringOperations.cpp
+    ${BUILDXL_ADAPTED_DIR}/CanonicalizedPath.cpp
+    ${BUILDXL_ADAPTED_DIR}/FilesCheckedForAccess.cpp
+    ${BUILDXL_ADAPTED_DIR}/PathTree.cpp
+    ${BUILDXL_ADAPTED_DIR}/TreeNode.cpp
 )
 bolt_native_warnings(bolt-sandbox-buildxl)
 target_compile_definitions(bolt-sandbox-buildxl PRIVATE _DO_NOT_EXPORT TEST)
 target_include_directories(bolt-sandbox-buildxl PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/buildxl
-    ${BUILDXL_DETOURS_SERVICES_DIR}
+    ${BUILDXL_ADAPTED_DIR}
 )
+target_include_directories(bolt-sandbox-buildxl PRIVATE
+    ${BUILDXL_DETOURS_SERVICES_DIR}
+    ${DETOURS_SOURCE_DIR}
+)
+target_link_libraries(bolt-sandbox-buildxl PRIVATE pathcch)
 
 add_library(bolt-sandbox-protocol STATIC
     protocol/event_frame.cpp
@@ -116,7 +154,6 @@ add_executable(bolt-sandbox-native-tests
 bolt_native_warnings(bolt-sandbox-native-tests)
 target_include_directories(bolt-sandbox-native-tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/buildxl/Public/Src/Sandbox/Windows/DetoursServices
 )
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-protocol)
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-common)
