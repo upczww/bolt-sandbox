@@ -373,7 +373,8 @@ bool AuthorizeReplace(
     } else if (replaced_text.decision == Decision::kDeny) {
         denied_text = &replaced_text;
         denied_fallback = replaced_path;
-    } else if (backup_text.decision == Decision::kDeny) {
+    } else if (backup_path != nullptr &&
+               backup_text.decision == Decision::kDeny) {
         denied_text = &backup_text;
         denied_fallback = backup_path;
     }
@@ -416,7 +417,8 @@ bool AuthorizeReplace(
     } else if (replaced_final.decision == Decision::kDeny) {
         denied_final = &replaced_final;
         denied_final_path = resolved_replaced.c_str();
-    } else if (backup_final.decision == Decision::kDeny) {
+    } else if (backup_path != nullptr &&
+               backup_final.decision == Decision::kDeny) {
         denied_final = &backup_final;
         denied_final_path = resolved_backup.c_str();
     }
