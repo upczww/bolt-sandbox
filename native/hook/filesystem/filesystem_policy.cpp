@@ -165,6 +165,28 @@ bool RootContains(const std::wstring& root, const wchar_t* path) noexcept {
            IsDirectorySeparator(path[root.size()]);
 }
 
+bool AssignPolicyPath(
+    const CanonicalizedPath& canonical,
+    std::wstring& normalized_path) {
+    const wchar_t* normalized = canonical.GetPathStringWithoutTypePrefix();
+    if (canonical.IsNull() || normalized == nullptr) {
+        return false;
+    }
+    constexpr wchar_t unc_marker[] = L"UNC\\";
+    if (canonical.Type == PathType::Win32Nt &&
+        std::wcslen(normalized) >= std::size(unc_marker) - 1 &&
+        CompareStringOrdinal(
+            normalized, static_cast<int>(std::size(unc_marker) - 1),
+            unc_marker, static_cast<int>(std::size(unc_marker) - 1), TRUE) ==
+            CSTR_EQUAL) {
+        normalized_path.assign(L"\\\\");
+        normalized_path.append(normalized + std::size(unc_marker) - 1);
+        return true;
+    }
+    normalized_path.assign(normalized);
+    return true;
+}
+
 Decision ApplyRule(const RuleKind kind, const Access access) noexcept {
     switch (kind) {
         case RuleKind::kReadWrite:
@@ -245,11 +267,10 @@ PolicyEvaluation FilesystemPolicy::Evaluate(
     }
     try {
         const auto canonical = CanonicalizedPath::Canonicalize(path);
-        const wchar_t* normalized = canonical.GetPathStringWithoutTypePrefix();
-        if (canonical.IsNull() || normalized == nullptr) {
+        if (!AssignPolicyPath(canonical, evaluation.normalized_path)) {
             return evaluation;
         }
-        evaluation.normalized_path.assign(normalized);
+        const wchar_t* normalized = evaluation.normalized_path.c_str();
 
         std::size_t maximum_depth = 0;
         for (const auto& rule : implementation_->rules) {
@@ -286,11 +307,10 @@ bool FilesystemPolicy::HasDeniedDescendant(const wchar_t* path) const noexcept {
     }
     try {
         const auto canonical = CanonicalizedPath::Canonicalize(path);
-        const wchar_t* normalized = canonical.GetPathStringWithoutTypePrefix();
-        if (canonical.IsNull() || normalized == nullptr) {
+        std::wstring normalized_root;
+        if (!AssignPolicyPath(canonical, normalized_root)) {
             return true;
         }
-        const std::wstring normalized_root(normalized);
         for (const auto& rule : implementation_->rules) {
             if (rule.kind == RuleKind::kDeny &&
                 rule.root.size() > normalized_root.size() &&

@@ -1603,6 +1603,108 @@ int RunFilesystemRaceChild(
             }
             return 327;
         }
+    } else if (mode == L"unc-paths") {
+        const std::filesystem::path root(arguments[3]);
+        const auto allowed_file = root / L"allowed" / L"plain.txt";
+        const auto denied_file = root / L"denied" / L"blocked.txt";
+        const auto protected_file = root / L"denied" / L"protected.txt";
+        const auto write_text = [](const wchar_t* path, const char* text) {
+            const HANDLE file = CreateFileW(
+                path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (file == INVALID_HANDLE_VALUE) {
+                return false;
+            }
+            DWORD written = 0;
+            const bool wrote =
+                WriteFile(
+                    file, text, static_cast<DWORD>(std::strlen(text)), &written,
+                    nullptr) != FALSE &&
+                written == std::strlen(text);
+            CloseHandle(file);
+            return wrote;
+        };
+        const auto extended_unc = [](const std::filesystem::path& path) {
+            const std::wstring value = path.wstring();
+            return value.rfind(L"\\\\", 0) == 0
+                       ? L"\\\\?\\UNC\\" + value.substr(2)
+                       : std::wstring{};
+        };
+        const std::wstring extended_allowed = extended_unc(allowed_file);
+        const std::wstring extended_denied = extended_unc(denied_file);
+        if (extended_allowed.empty() || extended_denied.empty()) {
+            return 352;
+        }
+        if (!write_text(allowed_file.c_str(), "plain")) {
+            return 353;
+        }
+        if (!write_text(extended_allowed.c_str(), "extended")) {
+            return 354;
+        }
+        if (ReadFixture(allowed_file) != "extended") {
+            return 355;
+        }
+        for (const auto& denied_path :
+             {denied_file.wstring(), extended_denied}) {
+            SetLastError(ERROR_SUCCESS);
+            const HANDLE denied = CreateFileW(
+                denied_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL, nullptr);
+            const DWORD error = GetLastError();
+            if (denied != INVALID_HANDLE_VALUE) {
+                CloseHandle(denied);
+                return 356;
+            }
+            if (error != ERROR_ACCESS_DENIED) {
+                return 357;
+            }
+        }
+        SetLastError(ERROR_SUCCESS);
+        const HANDLE protected_handle = CreateFileW(
+            protected_file.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const DWORD protected_error = GetLastError();
+        if (protected_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(protected_handle);
+            return 358;
+        }
+        if (protected_error != ERROR_ACCESS_DENIED) {
+            return 359;
+        }
+    } else if (mode == L"case-sensitive-paths") {
+        const std::filesystem::path root(arguments[3]);
+        const auto allowed_file = root / L"PolicyTarget.txt";
+        const auto denied_file = root / L"policytarget.txt";
+        const HANDLE allowed = CreateFileW(
+            allowed_file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (allowed == INVALID_HANDLE_VALUE) {
+            return 360;
+        }
+        constexpr char allowed_text[] = "Allowed";
+        DWORD written = 0;
+        const bool allowed_written =
+            WriteFile(
+                allowed, allowed_text, sizeof(allowed_text) - 1, &written,
+                nullptr) != FALSE &&
+            written == sizeof(allowed_text) - 1;
+        CloseHandle(allowed);
+        if (!allowed_written) {
+            return 361;
+        }
+        SetLastError(ERROR_SUCCESS);
+        const HANDLE denied = CreateFileW(
+            denied_file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        const DWORD denied_error = GetLastError();
+        if (denied != INVALID_HANDLE_VALUE) {
+            CloseHandle(denied);
+            return 362;
+        }
+        if (denied_error != ERROR_ACCESS_DENIED) {
+            return 363;
+        }
     } else if (mode == L"symlink-allowed" || mode == L"symlink-denied") {
         const std::filesystem::path alias(arguments[3]);
         SetLastError(ERROR_SUCCESS);
