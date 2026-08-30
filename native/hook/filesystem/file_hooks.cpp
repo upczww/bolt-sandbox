@@ -31,8 +31,14 @@ using CreateDirectoryWFunction = BOOL(WINAPI*)(LPCWSTR, LPSECURITY_ATTRIBUTES);
 CreateDirectoryWFunction g_create_directory_w = CreateDirectoryW;
 using RemoveDirectoryWFunction = BOOL(WINAPI*)(LPCWSTR);
 RemoveDirectoryWFunction g_remove_directory_w = RemoveDirectoryW;
-using MoveFileExWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, DWORD);
-MoveFileExWFunction g_move_file_ex_w = MoveFileExW;
+MoveFileW_t g_move_file_w = MoveFileW;
+MoveFileA_t g_move_file_a = MoveFileA;
+MoveFileExW_t g_move_file_ex_w = MoveFileExW;
+MoveFileExA_t g_move_file_ex_a = MoveFileExA;
+MoveFileWithProgressW_t g_move_file_with_progress_w = MoveFileWithProgressW;
+MoveFileWithProgressA_t g_move_file_with_progress_a = MoveFileWithProgressA;
+MoveFileTransactedW_t g_move_file_transacted_w = MoveFileTransactedW;
+MoveFileTransactedA_t g_move_file_transacted_a = MoveFileTransactedA;
 using CreateHardLinkWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRIBUTES);
 CreateHardLinkWFunction g_create_hard_link_w = CreateHardLinkW;
 CopyFileW_t g_copy_file_w = CopyFileW;
@@ -102,6 +108,56 @@ bool AuthorizeCopy(const wchar_t* existing_path, const wchar_t* new_path) noexce
         return false;
     }
     InvalidateResolvedPathForMutation(resolved_destination.c_str(), false);
+    return true;
+}
+
+bool AuthorizeMove(const wchar_t* existing_path, const wchar_t* new_path) noexcept {
+    if (existing_path == nullptr || new_path == nullptr) {
+        return true;
+    }
+    const auto* policy = g_policy.get();
+    const auto source_text =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(existing_path, Access::kWrite);
+    const auto destination_text =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(new_path, Access::kWrite);
+    if (source_text.decision == Decision::kDeny ||
+        destination_text.decision == Decision::kDeny) {
+        const bool source_denied = source_text.decision == Decision::kDeny;
+        ReportDenied(
+            protocol::FilesystemOperation::kRename,
+            source_denied ? EvaluatedPath(source_text, existing_path)
+                          : EvaluatedPath(destination_text, new_path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+
+    const wchar_t* source_path = EvaluatedPath(source_text, existing_path);
+    const wchar_t* destination_path = EvaluatedPath(destination_text, new_path);
+    std::wstring resolved_source;
+    std::wstring resolved_destination;
+    if (!ResolveFinalPathForPolicy(source_path, g_create_file_w, resolved_source) ||
+        !ResolveFinalPathForPolicy(
+            destination_path, g_create_file_w, resolved_destination)) {
+        ReportDenied(protocol::FilesystemOperation::kRename, source_path);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+
+    const auto source_final = policy->Evaluate(resolved_source.c_str(), Access::kWrite);
+    const auto destination_final =
+        policy->Evaluate(resolved_destination.c_str(), Access::kWrite);
+    if (source_final.decision == Decision::kDeny ||
+        destination_final.decision == Decision::kDeny) {
+        const bool source_denied = source_final.decision == Decision::kDeny;
+        ReportDenied(
+            protocol::FilesystemOperation::kRename,
+            source_denied ? EvaluatedPath(source_final, resolved_source.c_str())
+                          : EvaluatedPath(destination_final, resolved_destination.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    InvalidateResolvedPathForMutation(resolved_source.c_str(), true);
+    InvalidateResolvedPathForMutation(resolved_destination.c_str(), true);
     return true;
 }
 
@@ -217,8 +273,37 @@ BOOL WINAPI DetouredRemoveDirectoryW(const LPCWSTR path) noexcept {
     return g_remove_directory_w(path);
 }
 
-// BuildXL requires write access to both sides of a move: the source is
-// effectively deleted and the destination is created or replaced.
+// BuildXL funnels the move family through one two-sided policy decision. The
+// source is effectively deleted and the destination is created or replaced.
+BOOL WINAPI DetouredMoveFileW(
+    const LPCWSTR existing_path,
+    const LPCWSTR new_path) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_move_file_w(existing_path, new_path);
+    }
+    return AuthorizeMove(existing_path, new_path)
+               ? g_move_file_w(existing_path, new_path)
+               : FALSE;
+}
+
+BOOL WINAPI DetouredMoveFileA(
+    const LPCSTR existing_path,
+    const LPCSTR new_path) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_move_file_a(existing_path, new_path);
+    }
+    std::wstring existing_wide;
+    std::wstring new_wide;
+    if (!ConvertAnsiPath(existing_path, existing_wide) ||
+        !ConvertAnsiPath(new_path, new_wide) ||
+        !AuthorizeMove(existing_wide.c_str(), new_wide.c_str())) {
+        return FALSE;
+    }
+    return g_move_file_w(existing_wide.c_str(), new_wide.c_str());
+}
+
 BOOL WINAPI DetouredMoveFileExW(
     const LPCWSTR existing_path,
     const LPCWSTR new_path,
@@ -227,53 +312,107 @@ BOOL WINAPI DetouredMoveFileExW(
     if (scope.Detoured_IsDisabled()) {
         return g_move_file_ex_w(existing_path, new_path, flags);
     }
-    if (existing_path == nullptr || new_path == nullptr) {
-        return g_move_file_ex_w(existing_path, new_path, flags);
-    }
-    const auto* policy = g_policy.get();
-    const auto source_text =
-        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(existing_path, Access::kWrite);
-    const auto destination_text =
-        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(new_path, Access::kWrite);
-    if (source_text.decision == Decision::kDeny ||
-        destination_text.decision == Decision::kDeny) {
-        const bool source_denied = source_text.decision == Decision::kDeny;
-        ReportDenied(
-            protocol::FilesystemOperation::kRename,
-            source_denied ? EvaluatedPath(source_text, existing_path)
-                          : EvaluatedPath(destination_text, new_path));
-        SetLastError(ERROR_ACCESS_DENIED);
-        return FALSE;
-    }
+    return AuthorizeMove(existing_path, new_path)
+               ? g_move_file_ex_w(existing_path, new_path, flags)
+               : FALSE;
+}
 
-    const wchar_t* source_path = EvaluatedPath(source_text, existing_path);
-    const wchar_t* destination_path = EvaluatedPath(destination_text, new_path);
-    std::wstring resolved_source;
-    std::wstring resolved_destination;
-    if (!ResolveFinalPathForPolicy(source_path, g_create_file_w, resolved_source) ||
-        !ResolveFinalPathForPolicy(
-            destination_path, g_create_file_w, resolved_destination)) {
-        ReportDenied(protocol::FilesystemOperation::kRename, source_path);
-        SetLastError(ERROR_ACCESS_DENIED);
+BOOL WINAPI DetouredMoveFileExA(
+    const LPCSTR existing_path,
+    const LPCSTR new_path,
+    const DWORD flags) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_move_file_ex_a(existing_path, new_path, flags);
+    }
+    std::wstring existing_wide;
+    std::wstring new_wide;
+    if (!ConvertAnsiPath(existing_path, existing_wide) ||
+        !ConvertAnsiPath(new_path, new_wide) ||
+        !AuthorizeMove(existing_wide.c_str(), new_wide.c_str())) {
         return FALSE;
     }
+    return g_move_file_ex_w(existing_wide.c_str(), new_wide.c_str(), flags);
+}
 
-    const auto source_final = policy->Evaluate(resolved_source.c_str(), Access::kWrite);
-    const auto destination_final =
-        policy->Evaluate(resolved_destination.c_str(), Access::kWrite);
-    if (source_final.decision == Decision::kDeny ||
-        destination_final.decision == Decision::kDeny) {
-        const bool source_denied = source_final.decision == Decision::kDeny;
-        ReportDenied(
-            protocol::FilesystemOperation::kRename,
-            source_denied ? EvaluatedPath(source_final, resolved_source.c_str())
-                          : EvaluatedPath(destination_final, resolved_destination.c_str()));
-        SetLastError(ERROR_ACCESS_DENIED);
+BOOL WINAPI DetouredMoveFileWithProgressW(
+    const LPCWSTR existing_path,
+    const LPCWSTR new_path,
+    const LPPROGRESS_ROUTINE progress_routine,
+    const LPVOID data,
+    const DWORD flags) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_move_file_with_progress_w(
+            existing_path, new_path, progress_routine, data, flags);
+    }
+    return AuthorizeMove(existing_path, new_path)
+               ? g_move_file_with_progress_w(
+                     existing_path, new_path, progress_routine, data, flags)
+               : FALSE;
+}
+
+BOOL WINAPI DetouredMoveFileWithProgressA(
+    const LPCSTR existing_path,
+    const LPCSTR new_path,
+    const LPPROGRESS_ROUTINE progress_routine,
+    const LPVOID data,
+    const DWORD flags) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_move_file_with_progress_a(
+            existing_path, new_path, progress_routine, data, flags);
+    }
+    std::wstring existing_wide;
+    std::wstring new_wide;
+    if (!ConvertAnsiPath(existing_path, existing_wide) ||
+        !ConvertAnsiPath(new_path, new_wide) ||
+        !AuthorizeMove(existing_wide.c_str(), new_wide.c_str())) {
         return FALSE;
     }
-    InvalidateResolvedPathForMutation(resolved_source.c_str(), true);
-    InvalidateResolvedPathForMutation(resolved_destination.c_str(), true);
-    return g_move_file_ex_w(existing_path, new_path, flags);
+    return g_move_file_with_progress_w(
+        existing_wide.c_str(), new_wide.c_str(), progress_routine, data, flags);
+}
+
+BOOL WINAPI DetouredMoveFileTransactedW(
+    const LPCWSTR existing_path,
+    const LPCWSTR new_path,
+    const LPPROGRESS_ROUTINE progress_routine,
+    const LPVOID data,
+    const DWORD flags,
+    const HANDLE transaction) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_move_file_transacted_w(
+            existing_path, new_path, progress_routine, data, flags, transaction);
+    }
+    return AuthorizeMove(existing_path, new_path)
+               ? g_move_file_transacted_w(
+                     existing_path, new_path, progress_routine, data, flags, transaction)
+               : FALSE;
+}
+
+BOOL WINAPI DetouredMoveFileTransactedA(
+    const LPCSTR existing_path,
+    const LPCSTR new_path,
+    const LPPROGRESS_ROUTINE progress_routine,
+    const LPVOID data,
+    const DWORD flags,
+    const HANDLE transaction) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_move_file_transacted_a(
+            existing_path, new_path, progress_routine, data, flags, transaction);
+    }
+    std::wstring existing_wide;
+    std::wstring new_wide;
+    if (!ConvertAnsiPath(existing_path, existing_wide) ||
+        !ConvertAnsiPath(new_path, new_wide) ||
+        !AuthorizeMove(existing_wide.c_str(), new_wide.c_str())) {
+        return FALSE;
+    }
+    return g_move_file_transacted_w(
+        existing_wide.c_str(), new_wide.c_str(), progress_routine, data, flags, transaction);
 }
 
 // Mirrors BuildXL's two-sided hard-link check: reading the existing object and
@@ -473,8 +612,29 @@ HookInstallStatus InstallFileHooks(
             reinterpret_cast<PVOID*>(&g_remove_directory_w),
             reinterpret_cast<PVOID>(DetouredRemoveDirectoryW)) != NO_ERROR ||
         DetourAttach(
+            reinterpret_cast<PVOID*>(&g_move_file_w),
+            reinterpret_cast<PVOID>(DetouredMoveFileW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_move_file_a),
+            reinterpret_cast<PVOID>(DetouredMoveFileA)) != NO_ERROR ||
+        DetourAttach(
             reinterpret_cast<PVOID*>(&g_move_file_ex_w),
             reinterpret_cast<PVOID>(DetouredMoveFileExW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_move_file_ex_a),
+            reinterpret_cast<PVOID>(DetouredMoveFileExA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_move_file_with_progress_w),
+            reinterpret_cast<PVOID>(DetouredMoveFileWithProgressW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_move_file_with_progress_a),
+            reinterpret_cast<PVOID>(DetouredMoveFileWithProgressA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_move_file_transacted_w),
+            reinterpret_cast<PVOID>(DetouredMoveFileTransactedW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_move_file_transacted_a),
+            reinterpret_cast<PVOID>(DetouredMoveFileTransactedA)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_hard_link_w),
             reinterpret_cast<PVOID>(DetouredCreateHardLinkW)) != NO_ERROR ||

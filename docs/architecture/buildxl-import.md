@@ -76,7 +76,13 @@ path cache on an allowed call. Unlike BuildXL's build-observation-oriented
 post-call source check, Bolt performs both checks before the call so a denied
 copy cannot leave a destination side effect.
 
-For textually allowed copy paths and `MoveFileExW` source/destination paths, Bolt resolves the nearest existing ancestor
+The move family follows the same upstream funnel: `MoveFileW/A`,
+`MoveFileExW/A`, `MoveFileWithProgressW/A`, and `MoveFileTransactedW/A`
+share one source/destination authorization path. Both sides require write
+access, denied calls report `Rename`, and ANSI variants delegate to the
+wide-character implementation after conversion.
+
+For textually allowed copy and move source/destination paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,
 appends any absent suffix, then evaluates the fully resolved source and
 destination again with the operation-specific access requirements. Results use BuildXL's `ResolvedPathCache`; the existing
