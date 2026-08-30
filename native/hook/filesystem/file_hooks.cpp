@@ -121,6 +121,11 @@ using WriteFileFunction = BOOL(WINAPI*)(
     HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);
 ReadFileFunction g_read_file = ReadFile;
 WriteFileFunction g_write_file = WriteFile;
+using NtReadWriteFileFunction = NTSTATUS(NTAPI*)(
+    HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
+    PLARGE_INTEGER, PULONG);
+NtReadWriteFileFunction g_nt_read_file = nullptr;
+NtReadWriteFileFunction g_nt_write_file = nullptr;
 
 void ReportDenied(
     const protocol::FilesystemOperation operation,
@@ -1286,6 +1291,66 @@ BOOL WINAPI DetouredWriteFile(
     return g_write_file(file, buffer, bytes_to_write, bytes_written, overlapped);
 }
 
+NTSTATUS NTAPI DetouredNtReadFile(
+    const HANDLE file,
+    const HANDLE event,
+    const PIO_APC_ROUTINE apc_routine,
+    const PVOID apc_context,
+    const PIO_STATUS_BLOCK io_status,
+    const PVOID buffer,
+    const ULONG bytes_to_read,
+    const PLARGE_INTEGER byte_offset,
+    const PULONG key) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_nt_read_file(
+            file, event, apc_routine, apc_context, io_status, buffer,
+            bytes_to_read, byte_offset, key);
+    }
+    if (AuthorizeHandleIo(
+            file, Access::kRead, protocol::FilesystemOperation::kRead)) {
+        return g_nt_read_file(
+            file, event, apc_routine, apc_context, io_status, buffer,
+            bytes_to_read, byte_offset, key);
+    }
+    constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+    if (io_status != nullptr) {
+        io_status->Status = status_access_denied;
+        io_status->Information = 0;
+    }
+    return status_access_denied;
+}
+
+NTSTATUS NTAPI DetouredNtWriteFile(
+    const HANDLE file,
+    const HANDLE event,
+    const PIO_APC_ROUTINE apc_routine,
+    const PVOID apc_context,
+    const PIO_STATUS_BLOCK io_status,
+    const PVOID buffer,
+    const ULONG bytes_to_write,
+    const PLARGE_INTEGER byte_offset,
+    const PULONG key) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_nt_write_file(
+            file, event, apc_routine, apc_context, io_status, buffer,
+            bytes_to_write, byte_offset, key);
+    }
+    if (AuthorizeHandleIo(
+            file, Access::kWrite, protocol::FilesystemOperation::kWrite)) {
+        return g_nt_write_file(
+            file, event, apc_routine, apc_context, io_status, buffer,
+            bytes_to_write, byte_offset, key);
+    }
+    constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+    if (io_status != nullptr) {
+        io_status->Status = status_access_denied;
+        io_status->Information = 0;
+    }
+    return status_access_denied;
+}
+
 HANDLE WINAPI DetouredCreateFileW(
     const LPCWSTR filename,
     const DWORD desired_access,
@@ -2268,10 +2333,15 @@ HookInstallStatus InstallFileHooks(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryDirectoryFile"));
     g_nt_query_directory_file_ex = reinterpret_cast<NtQueryDirectoryFileExFunction>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryDirectoryFileEx"));
+    g_nt_read_file = reinterpret_cast<NtReadWriteFileFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtReadFile"));
+    g_nt_write_file = reinterpret_cast<NtReadWriteFileFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtWriteFile"));
     if (g_zw_set_information_file == nullptr || g_nt_create_section == nullptr ||
         g_nt_query_information_file == nullptr || g_nt_query_attributes_file == nullptr ||
         g_nt_query_full_attributes_file == nullptr || g_nt_query_directory_file == nullptr ||
-        g_nt_query_directory_file_ex == nullptr) {
+        g_nt_query_directory_file_ex == nullptr || g_nt_read_file == nullptr ||
+        g_nt_write_file == nullptr) {
         return HookInstallStatus::kTransactionFailed;
     }
     if (DetourTransactionBegin() != NO_ERROR) {
@@ -2356,6 +2426,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_write_file),
             reinterpret_cast<PVOID>(DetouredWriteFile)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_read_file),
+            reinterpret_cast<PVOID>(DetouredNtReadFile)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_write_file),
+            reinterpret_cast<PVOID>(DetouredNtWriteFile)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_file_w),
             reinterpret_cast<PVOID>(DetouredCreateFileW)) != NO_ERROR ||

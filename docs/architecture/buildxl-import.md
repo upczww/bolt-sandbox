@@ -77,6 +77,11 @@ closes inherited-handle bypasses and zeroes the byte count on policy denial.
 The authenticated event-pipe handle is the sole current non-disk write bypass,
 allowing `EventSink` to report violations without recursively blocking itself.
 
+Direct `NtReadFile` and `NtWriteFile` calls share the same handle decision.
+Denied native submissions return `STATUS_ACCESS_DENIED`, set result information
+to zero, leave caller buffers untouched, and do not signal the optional event
+or invoke an APC because no I/O request reaches the kernel.
+
 The first adapted BuildXL operation-family hooks are `CopyFileW/A`,
 `CopyFileExW/A`, `CopyFileTransactedW/A`, and the dynamically resolved
 `CopyFile2`. Like upstream BuildXL, ANSI entry points convert once and
