@@ -144,6 +144,16 @@ bool RunFilesystemPolicyTests() {
         return false;
     }
 
+    const bolt::filesystem::PolicyView& policy_view = *policy;
+    const auto evaluated = policy_view.Evaluate(
+        L"\\\\?\\C:\\work\\.\\nested\\..\\source.cpp", Access::kWrite);
+    const auto invalid = policy_view.Evaluate(nullptr, Access::kRead);
+    if (evaluated.decision != Decision::kAllow ||
+        evaluated.normalized_path != L"C:\\work\\source.cpp" ||
+        invalid.decision != Decision::kDeny || !invalid.normalized_path.empty()) {
+        return false;
+    }
+
     return policy->Decide(L"C:\\WORK\\source.cpp", Access::kWrite) == Decision::kAllow &&
            policy->Decide(L"C:\\work\\secret\\key", Access::kRead) == Decision::kDeny &&
            policy->Decide(L"C:\\sdk\\tool.exe", Access::kRead) == Decision::kAllow &&
