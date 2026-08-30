@@ -98,9 +98,11 @@ std::wstring HandleText(const HANDLE handle) {
 }
 
 std::wstring PipeName(const DWORD process_id) {
+    constexpr std::uint64_t shell_pipe_namespace = 0x5348'454C'4C00'0000;
     std::wostringstream suffix;
     suffix << std::hex << std::nouppercase << std::setfill(L'0')
-           << std::setw(32) << static_cast<std::uint64_t>(process_id);
+           << std::setw(32)
+           << (shell_pipe_namespace ^ static_cast<std::uint64_t>(process_id));
     return L"\\\\.\\pipe\\bolt-sandbox-" + suffix.str();
 }
 
