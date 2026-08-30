@@ -1,4 +1,5 @@
 #include "hook/filesystem/filesystem_policy.h"
+#include "hook/filesystem/access_classifier.h"
 
 #include "protocol/version.h"
 
@@ -117,6 +118,32 @@ bool RunFilesystemPolicyTests() {
 
     using bolt::filesystem::Access;
     using bolt::filesystem::Decision;
+    using bolt::protocol::FilesystemOperation;
+    const auto metadata = bolt::filesystem::ClassifyCreateFileRequest(
+        FILE_READ_ATTRIBUTES | FILE_READ_EA | READ_CONTROL | SYNCHRONIZE, OPEN_EXISTING);
+    const auto read = bolt::filesystem::ClassifyCreateFileRequest(
+        GENERIC_READ | GENERIC_EXECUTE, OPEN_EXISTING);
+    const auto write = bolt::filesystem::ClassifyCreateFileRequest(
+        GENERIC_READ | FILE_APPEND_DATA, OPEN_EXISTING);
+    const auto create =
+        bolt::filesystem::ClassifyCreateFileRequest(0, OPEN_ALWAYS);
+    const auto truncate =
+        bolt::filesystem::ClassifyCreateFileRequest(GENERIC_READ, TRUNCATE_EXISTING);
+    const auto maximum_allowed =
+        bolt::filesystem::ClassifyCreateFileRequest(MAXIMUM_ALLOWED, OPEN_EXISTING);
+    if (metadata.access != Access::kMetadata ||
+        metadata.operation != FilesystemOperation::kMetadata ||
+        read.access != Access::kRead || read.operation != FilesystemOperation::kRead ||
+        write.access != Access::kWrite || write.operation != FilesystemOperation::kWrite ||
+        create.access != Access::kWrite ||
+        create.operation != FilesystemOperation::kCreate ||
+        truncate.access != Access::kWrite ||
+        truncate.operation != FilesystemOperation::kWrite ||
+        maximum_allowed.access != Access::kWrite ||
+        maximum_allowed.operation != FilesystemOperation::kWrite) {
+        return false;
+    }
+
     return policy->Decide(L"C:\\WORK\\source.cpp", Access::kWrite) == Decision::kAllow &&
            policy->Decide(L"C:\\work\\secret\\key", Access::kRead) == Decision::kDeny &&
            policy->Decide(L"C:\\sdk\\tool.exe", Access::kRead) == Decision::kAllow &&
