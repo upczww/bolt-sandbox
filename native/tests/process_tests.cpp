@@ -1191,6 +1191,24 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         }
         return 195;
     }
+    const std::filesystem::path alias_create_directory_a =
+        std::filesystem::path(arguments[18]).parent_path() / L"created-directory-a";
+    const std::string ansi_alias_create_directory =
+        AnsiPath(alias_create_directory_a.c_str());
+    if (ansi_alias_create_directory.empty() ||
+        CreateDirectoryA(ansi_alias_create_directory.c_str(), nullptr) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 196;
+    }
+    const std::filesystem::path alias_remove_directory_a =
+        std::filesystem::path(arguments[18]).parent_path() / L"removable-directory-a";
+    const std::string ansi_alias_remove_directory =
+        AnsiPath(alias_remove_directory_a.c_str());
+    if (ansi_alias_remove_directory.empty() ||
+        RemoveDirectoryA(ansi_alias_remove_directory.c_str()) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 197;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1239,6 +1257,10 @@ bool RunProcessTests() {
     const std::filesystem::path denied_alias_removed_directory =
         denied_junction_target / L"removable-directory";
     const std::filesystem::path denied_alias_wildcard = denied_junction_target / L"*";
+    const std::filesystem::path denied_alias_created_directory_a =
+        denied_junction_target / L"created-directory-a";
+    const std::filesystem::path denied_alias_removed_directory_a =
+        denied_junction_target / L"removable-directory-a";
     const std::filesystem::path allowed_alias_move_source = allowed_root / L"move-source.txt";
     const std::filesystem::path alias_move_destination = allowed_junction / L"move-target.txt";
     const std::filesystem::path denied_alias_move_target =
@@ -1345,6 +1367,8 @@ bool RunProcessTests() {
     RemoveDirectoryW(forbidden_junction.c_str());
     RemoveDirectoryW(denied_alias_created_directory.c_str());
     RemoveDirectoryW(denied_alias_removed_directory.c_str());
+    RemoveDirectoryW(denied_alias_created_directory_a.c_str());
+    RemoveDirectoryW(denied_alias_removed_directory_a.c_str());
     const HANDLE delete_fixture = CreateFileW(
         denied_delete_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -1513,6 +1537,9 @@ bool RunProcessTests() {
         return false;
     }
     if (!CreateDirectoryW(denied_alias_removed_directory.c_str(), nullptr)) {
+        return false;
+    }
+    if (!CreateDirectoryW(denied_alias_removed_directory_a.c_str(), nullptr)) {
         return false;
     }
     const std::wstring command_line = L"\"" + executable + L"\" --process-child " +
@@ -1958,7 +1985,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kEnumerate,
-            denied_alias_wildcard.wstring(), 93);
+            denied_alias_wildcard.wstring(), 93) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_alias_created_directory_a.wstring(), 94) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kDelete,
+            denied_alias_removed_directory_a.wstring(), 95);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
@@ -2010,6 +2045,8 @@ bool RunProcessTests() {
                                 denied_alias_attributes_before &&
                             !std::filesystem::exists(denied_alias_created_directory) &&
                             std::filesystem::is_directory(denied_alias_removed_directory) &&
+                            !std::filesystem::exists(denied_alias_created_directory_a) &&
+                            std::filesystem::is_directory(denied_alias_removed_directory_a) &&
                             ReadFixture(allowed_alias_move_source) == move_nonce &&
                             !std::filesystem::exists(denied_alias_move_target) &&
                             ReadFixture(allowed_replace_target) == replace_target_nonce &&
@@ -2035,6 +2072,7 @@ bool RunProcessTests() {
     DeleteFileW(denied_delete_path.c_str());
     RemoveDirectoryW(denied_remove_directory.c_str());
     RemoveDirectoryW(denied_alias_removed_directory.c_str());
+    RemoveDirectoryW(denied_alias_removed_directory_a.c_str());
     DeleteFileW(denied_move_source.c_str());
     DeleteFileW(denied_copy_source.c_str());
     DeleteFileW(denied_copy_destination.c_str());

@@ -62,7 +62,10 @@ appends the new leaf before its second write-policy check, preventing an
 allowed path containing an intermediate junction from creating beneath a
 denied target. Directory removal uses the same parent-final/leaf-preserving
 deletion rule as files and invalidates cached descendants before an allowed
-native call.
+native call. x86 and x64 integration probes also exercise `CreateDirectoryA`
+and `RemoveDirectoryA`; on the supported Windows baseline those wrappers funnel
+through the installed wide-character hooks, including final-target events and
+denied-call output/side-effect preservation.
 
 Create/open classification is a Bolt-owned compatibility seam derived from
 BuildXL's `WantsWriteAccess`, `WantsReadAccess`, and probe-only split. It treats
