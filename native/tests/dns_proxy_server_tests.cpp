@@ -51,7 +51,7 @@ bool RunDnsProxyServerTests() {
     std::vector<std::uint8_t> response;
     FakeResolver resolver;
     if (bolt::protocol::EncodeDnsProxyRequest(
-            session, 1, "api.example", 443, request) !=
+            session, 1, 1'234, "api.example", 443, request) !=
             bolt::protocol::DnsProxyStatus::kSuccess ||
         bolt::network::ProcessDnsProxyRequest(
             session, *policy, 1, request.data(), request.size(), resolver,
@@ -68,7 +68,7 @@ bool RunDnsProxyServerTests() {
         return false;
     }
     if (bolt::protocol::EncodeDnsProxyRequest(
-            session, 2, "denied.example", 443, request) !=
+            session, 2, 1'234, "denied.example", 443, request) !=
             bolt::protocol::DnsProxyStatus::kSuccess ||
         bolt::network::ProcessDnsProxyRequest(
             session, *policy, 2, request.data(), request.size(), resolver,

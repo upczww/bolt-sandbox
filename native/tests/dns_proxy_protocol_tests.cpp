@@ -111,19 +111,19 @@ bool RunDnsProxyProtocolTests() {
     std::string oversized_domain(254, 'a');
     bolt::protocol::DnsProxySession invalid_session{};
     return bolt::protocol::EncodeDnsProxyRequest(
-               session, 8, maximum_domain.c_str(), 65'535, encoded) ==
+               session, 8, 1'234, maximum_domain.c_str(), 65'535, encoded) ==
                bolt::protocol::DnsProxyStatus::kSuccess &&
            bolt::protocol::EncodeDnsProxyRequest(
-               session, 9, oversized_domain.c_str(), 443, encoded) ==
+               session, 9, 1'234, oversized_domain.c_str(), 443, encoded) ==
                bolt::protocol::DnsProxyStatus::kInvalidDomain &&
            bolt::protocol::EncodeDnsProxyRequest(
-               session, 9, "api.example", 0, encoded,
+               session, 9, 1'234, "api.example", 0, encoded,
                bolt::protocol::DnsProxyQueryFamily::kIpv4) ==
                bolt::protocol::DnsProxyStatus::kSuccess &&
            bolt::protocol::EncodeDnsProxyRequest(
-               invalid_session, 1, "api.example", 443, encoded) ==
+               invalid_session, 1, 1'234, "api.example", 443, encoded) ==
                bolt::protocol::DnsProxyStatus::kInvalidArgument &&
            bolt::protocol::EncodeDnsProxyRequest(
-               session, 0, "api.example", 443, encoded) ==
+               session, 0, 1'234, "api.example", 443, encoded) ==
                bolt::protocol::DnsProxyStatus::kInvalidArgument;
 }

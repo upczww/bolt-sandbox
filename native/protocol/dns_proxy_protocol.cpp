@@ -22,7 +22,8 @@ constexpr std::size_t kPayloadLengthOffset = 8;
 constexpr std::size_t kSequenceOffset = 12;
 constexpr std::size_t kNonceOffset = 20;
 constexpr std::size_t kMacOffset = 36;
-constexpr std::size_t kRequestPortOffset = kDnsProxyHeaderLength;
+constexpr std::size_t kRequestProcessOffset = kDnsProxyHeaderLength;
+constexpr std::size_t kRequestPortOffset = kRequestProcessOffset + 4;
 constexpr std::size_t kRequestFamilyOffset = kRequestPortOffset + 2;
 constexpr std::size_t kRequestDomainLengthOffset = kRequestFamilyOffset + 2;
 constexpr std::size_t kRequestDomainOffset = kRequestDomainLengthOffset + 2;
@@ -156,6 +157,7 @@ std::size_t DnsProxyRequestFrameLength(const char* ascii_domain) noexcept {
 DnsProxyStatus EncodeDnsProxyRequest(
     const DnsProxySession& session,
     const std::uint64_t sequence,
+    const std::uint32_t process_id,
     const char* const ascii_domain,
     const std::uint16_t port,
     std::vector<std::uint8_t>& encoded,
@@ -163,6 +165,9 @@ DnsProxyStatus EncodeDnsProxyRequest(
     encoded.clear();
     if (!ValidSession(session) || sequence == 0) {
         return DnsProxyStatus::kInvalidArgument;
+    }
+    if (process_id == 0) {
+        return DnsProxyStatus::kInvalidProcess;
     }
     const std::size_t frame_length = DnsProxyRequestFrameLength(ascii_domain);
     if (frame_length == 0) {
@@ -183,6 +188,7 @@ DnsProxyStatus EncodeDnsProxyRequest(
             static_cast<std::uint32_t>(frame_length - kDnsProxyHeaderLength));
         WriteU64(encoded.data(), kSequenceOffset, sequence);
         std::copy(session.nonce.begin(), session.nonce.end(), encoded.begin() + kNonceOffset);
+        WriteU32(encoded.data(), kRequestProcessOffset, process_id);
         WriteU16(encoded.data(), kRequestPortOffset, port);
         encoded[kRequestFamilyOffset] = static_cast<std::uint8_t>(family);
         const std::size_t domain_length = frame_length - kRequestDomainOffset;
@@ -246,6 +252,10 @@ DnsProxyStatus DecodeDnsProxyRequest(
     if (ReadU64(encoded, kSequenceOffset) != expected_sequence) {
         return DnsProxyStatus::kUnexpectedSequence;
     }
+    const std::uint32_t process_id = ReadU32(encoded, kRequestProcessOffset);
+    if (process_id == 0) {
+        return DnsProxyStatus::kInvalidProcess;
+    }
     const std::uint16_t port = ReadU16(encoded, kRequestPortOffset);
     const std::size_t domain_length = ReadU16(encoded, kRequestDomainLengthOffset);
     const std::uint8_t family = encoded[kRequestFamilyOffset];
@@ -258,6 +268,7 @@ DnsProxyStatus DecodeDnsProxyRequest(
     }
     try {
         request.sequence = expected_sequence;
+        request.process_id = process_id;
         request.port = port;
         request.family = static_cast<DnsProxyQueryFamily>(family);
         request.ascii_domain.assign(

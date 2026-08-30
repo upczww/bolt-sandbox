@@ -65,10 +65,10 @@ bool RunDnsProxySessionTests() {
     FakeTransport transport;
     transport.frames.resize(2);
     if (bolt::protocol::EncodeDnsProxyRequest(
-            session, 1, "api.example", 443, transport.frames[0]) !=
+            session, 1, 1'234, "api.example", 443, transport.frames[0]) !=
             bolt::protocol::DnsProxyStatus::kSuccess ||
         bolt::protocol::EncodeDnsProxyRequest(
-            session, 2, "denied.example", 443, transport.frames[1]) !=
+            session, 2, 1'234, "denied.example", 443, transport.frames[1]) !=
             bolt::protocol::DnsProxyStatus::kSuccess) {
         return false;
     }

@@ -99,7 +99,8 @@ DnsProxyChannelStatus DnsProxyClientChannel::Resolve(
         std::vector<std::uint8_t> request;
         if (protocol::EncodeDnsProxyRequest(
                 implementation_->session, implementation_->next_sequence,
-                ascii_domain, port, request, family) !=
+                implementation_->process_id, ascii_domain, port, request,
+                family) !=
             protocol::DnsProxyStatus::kSuccess) {
             return DnsProxyChannelStatus::kInvalidArgument;
         }

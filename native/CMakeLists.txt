@@ -306,6 +306,7 @@ target_link_libraries(
 )
 
 add_test(NAME native.protocol COMMAND bolt-sandbox-native-tests)
+add_dependencies(bolt-sandbox-native-tests bolt-sandbox-hook)
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     add_dependencies(bolt-sandbox-native-tests bolt-sandbox-dns-proxy)
 endif()

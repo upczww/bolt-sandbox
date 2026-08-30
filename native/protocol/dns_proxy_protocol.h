@@ -28,6 +28,7 @@ enum class DnsProxyQueryFamily : std::uint8_t {
 
 struct DnsProxyRequest {
     std::uint64_t sequence = 0;
+    std::uint32_t process_id = 0;
     std::string ascii_domain;
     std::uint16_t port = 0;
     DnsProxyQueryFamily family = DnsProxyQueryFamily::kAny;
@@ -72,6 +73,7 @@ enum class DnsProxyStatus : std::uint8_t {
     kSessionMismatch,
     kAuthenticationFailed,
     kUnexpectedSequence,
+    kInvalidProcess,
     kInvalidDomain,
     kInvalidPort,
     kAllocationFailed,
@@ -83,6 +85,7 @@ std::size_t DnsProxyRequestFrameLength(const char* ascii_domain) noexcept;
 DnsProxyStatus EncodeDnsProxyRequest(
     const DnsProxySession& session,
     std::uint64_t sequence,
+    std::uint32_t process_id,
     const char* ascii_domain,
     std::uint16_t port,
     std::vector<std::uint8_t>& encoded,

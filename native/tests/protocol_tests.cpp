@@ -221,7 +221,7 @@ bool dns_proxy_accepts_valid_startup(const std::filesystem::path& directory) {
     CloseHandle(response_write);
     std::vector<std::uint8_t> request;
     const bool request_encoded = bolt::protocol::EncodeDnsProxyRequest(
-        startup_payload.session, 1, "localhost", 443, request) ==
+        startup_payload.session, 1, 1'234, "localhost", 443, request) ==
         bolt::protocol::DnsProxyStatus::kSuccess;
     const std::uint32_t request_length = static_cast<std::uint32_t>(request.size());
     const std::array<std::uint8_t, 4> request_prefix = {
