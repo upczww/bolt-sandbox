@@ -1,6 +1,7 @@
 #include "hook/filesystem/file_hooks.h"
 
 #include "hook/filesystem/access_classifier.h"
+#include "hook/filesystem/final_path_resolver.h"
 #include "hook/filesystem/filesystem_policy.h"
 #include "hook/filesystem/path_cache.h"
 #include "hook/event_sink.h"
@@ -8,10 +9,8 @@
 #include "DetouredFunctionTypes.h"
 #include "DetouredScope.h"
 
-#include <filesystem>
 #include <memory>
 #include <string>
-#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -76,69 +75,13 @@ bool AuthorizeCopy(const wchar_t* existing_path, const wchar_t* new_path) noexce
         return false;
     }
 
-    const auto resolve_path = [](const wchar_t* path, std::wstring& resolved) noexcept {
-        if (TryGetResolvedPathForPolicy(path, resolved)) {
-            return true;
-        }
-        if (path == nullptr || path[0] == L'\0') {
-            return false;
-        }
-        try {
-            std::filesystem::path candidate{path};
-            std::vector<std::filesystem::path> suffix;
-            constexpr std::size_t maximum_ancestors = 256;
-            for (std::size_t depth = 0; depth < maximum_ancestors; ++depth) {
-                const HANDLE handle = g_create_file_w(
-                    candidate.c_str(), GENERIC_READ,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                    OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-                if (handle != INVALID_HANDLE_VALUE) {
-                    const DWORD required = GetFinalPathNameByHandleW(
-                        handle, nullptr, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-                    if (required == 0) {
-                        CloseHandle(handle);
-                        return false;
-                    }
-                    std::wstring final_path(static_cast<std::size_t>(required) + 1, L'\0');
-                    const DWORD copied = GetFinalPathNameByHandleW(
-                        handle, final_path.data(), static_cast<DWORD>(final_path.size()),
-                        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-                    CloseHandle(handle);
-                    if (copied == 0 || copied >= final_path.size()) {
-                        return false;
-                    }
-                    final_path.resize(copied);
-                    std::filesystem::path combined{std::move(final_path)};
-                    for (auto iterator = suffix.rbegin(); iterator != suffix.rend(); ++iterator) {
-                        combined /= *iterator;
-                    }
-                    resolved = combined.lexically_normal().wstring();
-                    CacheResolvedPathForPolicy(path, resolved);
-                    return true;
-                }
-                const DWORD error = GetLastError();
-                if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
-                    return false;
-                }
-                const auto parent = candidate.parent_path();
-                if (parent.empty() || parent == candidate || candidate.filename().empty()) {
-                    return false;
-                }
-                suffix.push_back(candidate.filename());
-                candidate = parent;
-            }
-        } catch (...) {
-            resolved.clear();
-        }
-        return false;
-    };
-
     std::wstring resolved_source;
     std::wstring resolved_destination;
     const wchar_t* source_path = EvaluatedPath(source_text, existing_path);
     const wchar_t* destination_path = EvaluatedPath(destination_text, new_path);
-    if (!resolve_path(source_path, resolved_source) ||
-        !resolve_path(destination_path, resolved_destination)) {
+    if (!ResolveFinalPathForPolicy(source_path, g_create_file_w, resolved_source) ||
+        !ResolveFinalPathForPolicy(
+            destination_path, g_create_file_w, resolved_destination)) {
         ReportDenied(protocol::FilesystemOperation::kRead, source_path);
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
