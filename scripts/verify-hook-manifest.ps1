@@ -55,11 +55,19 @@ foreach ($hook in $hooks) {
     if (-not $symbols.Add([string]$hook.symbol)) {
         throw "Duplicate filesystem hook symbol: $($hook.symbol)"
     }
-    if ($hook.module -notmatch '^(kernel32|ntdll|shell32)\.dll$') {
+    if ($hook.module -notmatch '^(advapi32|kernel32|ntdll|shell32)\.dll$') {
         throw "Unexpected filesystem hook module: $($hook.module)"
     }
-    if (@($hook.architectures) -join ',' -ne 'x86,x64') {
+    $hookArchitectures = if ($null -eq $hook.architectures) {
+        @($manifest.architectures)
+    } else {
+        @($hook.architectures)
+    }
+    if ($hookArchitectures -join ',' -ne 'x86,x64') {
         throw "Hook $($hook.symbol) must cover x86 and x64."
+    }
+    if ($hook.availability -notin @('required', 'if_present')) {
+        throw "Hook $($hook.symbol) has invalid availability."
     }
     if (@($hook.operations).Count -eq 0) {
         throw "Hook $($hook.symbol) has no operation classification."
