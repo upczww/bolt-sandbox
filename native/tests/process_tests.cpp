@@ -30,7 +30,7 @@ std::wstring HandleText(const HANDLE handle) {
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 11) {
+    if (argument_count != 12) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -70,6 +70,10 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     if (MoveFileExW(arguments[9], arguments[10], MOVEFILE_REPLACE_EXISTING) ||
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 89;
+    }
+    if (CreateHardLinkW(arguments[11], arguments[9], nullptr) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 90;
     }
     return 0;
 }
@@ -137,12 +141,16 @@ bool RunProcessTests() {
     const std::filesystem::path denied_move_destination =
         std::filesystem::temp_directory_path() /
         (L"bolt-sandbox-denied-move-destination-" + unique_suffix);
+    const std::filesystem::path denied_hardlink_destination =
+        std::filesystem::temp_directory_path() /
+        (L"bolt-sandbox-denied-hardlink-" + unique_suffix);
     DeleteFileW(denied_path.c_str());
     DeleteFileW(denied_delete_path.c_str());
     RemoveDirectoryW(denied_create_directory.c_str());
     RemoveDirectoryW(denied_remove_directory.c_str());
     DeleteFileW(denied_move_source.c_str());
     DeleteFileW(denied_move_destination.c_str());
+    DeleteFileW(denied_hardlink_destination.c_str());
     const HANDLE delete_fixture = CreateFileW(
         denied_delete_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -169,7 +177,8 @@ bool RunProcessTests() {
                                       denied_create_directory.wstring() + L"\" \"" +
                                       denied_remove_directory.wstring() + L"\" \"" +
                                       denied_move_source.wstring() + L"\" \"" +
-                                      denied_move_destination.wstring() + L"\"";
+                                      denied_move_destination.wstring() + L"\" \"" +
+                                      denied_hardlink_destination.wstring() + L"\"";
     const HANDLE inherited[] = {allowed, policy.handle(), event_client, release};
     bolt::common::ProcessLaunchOptions options{
         executable,
@@ -232,7 +241,8 @@ bool RunProcessTests() {
                             !std::filesystem::exists(denied_create_directory) &&
                             std::filesystem::is_directory(denied_remove_directory) &&
                             std::filesystem::exists(denied_move_source) &&
-                            !std::filesystem::exists(denied_move_destination);
+                            !std::filesystem::exists(denied_move_destination) &&
+                            !std::filesystem::exists(denied_hardlink_destination);
     CloseHandle(allowed);
     CloseHandle(denied);
     if (event_client != INVALID_HANDLE_VALUE) {
