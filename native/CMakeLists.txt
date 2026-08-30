@@ -67,6 +67,13 @@ target_link_libraries(bolt-sandbox-common PUBLIC advapi32)
 target_link_libraries(bolt-sandbox-common PRIVATE bolt-sandbox-detours)
 target_link_libraries(bolt-sandbox-common PRIVATE bolt-sandbox-protocol)
 
+add_library(bolt-sandbox-filesystem STATIC
+    hook/filesystem/filesystem_policy.cpp
+)
+bolt_native_warnings(bolt-sandbox-filesystem)
+target_include_directories(bolt-sandbox-filesystem PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(bolt-sandbox-filesystem PRIVATE bolt-sandbox-buildxl bolt-sandbox-protocol)
+
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     add_executable(bolt-sandbox-launcher
         launcher/main.cpp
@@ -80,6 +87,7 @@ add_library(bolt-sandbox-hook SHARED
 bolt_native_warnings(bolt-sandbox-hook)
 target_include_directories(bolt-sandbox-hook PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(bolt-sandbox-hook PRIVATE bolt-sandbox-protocol bolt-sandbox-detours)
+target_link_libraries(bolt-sandbox-hook PRIVATE bolt-sandbox-filesystem)
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     set_target_properties(bolt-sandbox-hook PROPERTIES OUTPUT_NAME bolt-sandbox-x64)
 else()
@@ -108,5 +116,6 @@ target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-protocol)
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-common)
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-detours)
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-buildxl)
+target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-filesystem bcrypt)
 
 add_test(NAME native.protocol COMMAND bolt-sandbox-native-tests)
