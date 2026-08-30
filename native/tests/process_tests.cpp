@@ -3,11 +3,17 @@
 #include "common/private_pipe.h"
 #include "common/suspended_process.h"
 #include "protocol/event_frame.h"
+#include "tests/policy_fixture.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
@@ -29,6 +35,13 @@ std::wstring HandleText(const HANDLE handle) {
     return std::to_wstring(reinterpret_cast<std::uintptr_t>(handle));
 }
 
+std::wstring PipeName(const DWORD process_id) {
+    std::wostringstream suffix;
+    suffix << std::hex << std::nouppercase << std::setfill(L'0') << std::setw(32)
+           << static_cast<std::uint64_t>(process_id);
+    return L"\\\\.\\pipe\\bolt-sandbox-" + suffix.str();
+}
+
 std::string AnsiPath(const wchar_t* path) {
     const int length = WideCharToMultiByte(CP_ACP, 0, path, -1, nullptr, 0, nullptr, nullptr);
     if (length <= 1) {
@@ -41,6 +54,17 @@ std::string AnsiPath(const wchar_t* path) {
     }
     converted.pop_back();
     return converted;
+}
+
+bool WriteFixture(const std::filesystem::path& path, const std::string_view content) {
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    stream.write(content.data(), static_cast<std::streamsize>(content.size()));
+    return stream.good();
+}
+
+std::string ReadFixture(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>{stream}, std::istreambuf_iterator<char>{}};
 }
 
 bool ReadExact(const HANDLE handle, std::uint8_t* bytes, const std::size_t length) {
@@ -98,7 +122,7 @@ bool ReadFilesystemViolation(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 14) {
+    if (argument_count != 18) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -187,22 +211,57 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 98;
     }
+    if (!CopyFileW(arguments[14], arguments[15], TRUE)) {
+        return 99;
+    }
+    if (CopyFileExW(arguments[14], arguments[13], nullptr, nullptr, nullptr, 0) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 100;
+    }
+    if (CopyFileW(arguments[16], arguments[17], TRUE) ||
+        GetLastError() != ERROR_FILE_NOT_FOUND) {
+        return 101;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
-        return 99;
+        return 102;
     }
     return 0;
 }
 
 bool RunProcessTests() {
-    constexpr std::array<std::uint8_t, 54> policy_payload = {
-        0x42, 0x4c, 0x50, 0x31, 0x01, 0x00, 0x2c, 0x00, 0x0a, 0x00, 0x00, 0x00,
-        0x0c, 0xee, 0x19, 0x24, 0xbb, 0x11, 0x38, 0x05, 0x95, 0x58, 0xbc, 0x22,
-        0x1f, 0x5a, 0x7a, 0x1c, 0xf1, 0x59, 0x59, 0x20, 0x23, 0x31, 0x0c, 0x7d,
-        0x00, 0xcd, 0xa8, 0x2e, 0xed, 0x90, 0xbb, 0xeb, 0x01, 0x00, 0x00, 0x00,
-        0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-    };
+    const std::wstring unique_suffix = std::to_wstring(GetCurrentProcessId());
+    const std::filesystem::path test_root =
+        std::filesystem::temp_directory_path() /
+        (L"bolt-sandbox-process-" + unique_suffix);
+    const std::filesystem::path denied_root = test_root / L"denied";
+    const std::filesystem::path allowed_root = test_root / L"allowed";
+    std::error_code filesystem_error;
+    std::filesystem::remove_all(test_root, filesystem_error);
+    filesystem_error.clear();
+    if (!std::filesystem::create_directories(denied_root, filesystem_error) || filesystem_error ||
+        !std::filesystem::create_directories(allowed_root, filesystem_error) || filesystem_error) {
+        return false;
+    }
+
+    const std::filesystem::path denied_path = denied_root / L"create.txt";
+    const std::filesystem::path denied_delete_path = denied_root / L"delete.txt";
+    const std::filesystem::path denied_create_directory = denied_root / L"mkdir";
+    const std::filesystem::path denied_remove_directory = denied_root / L"rmdir";
+    const std::filesystem::path denied_move_source = denied_root / L"move-source.txt";
+    const std::filesystem::path denied_move_destination = denied_root / L"move-destination.txt";
+    const std::filesystem::path denied_hardlink_destination = denied_root / L"hardlink.txt";
+    const std::filesystem::path denied_copy_source = denied_root / L"copy-source.txt";
+    const std::filesystem::path denied_copy_destination = denied_root / L"copy-destination.txt";
+    const std::filesystem::path allowed_copy_source = allowed_root / L"copy-source.txt";
+    const std::filesystem::path allowed_copy_destination = allowed_root / L"copy-destination.txt";
+    const std::filesystem::path missing_copy_source = allowed_root / L"missing-source.txt";
+    const std::filesystem::path missing_copy_destination = allowed_root / L"missing-destination.txt";
+    const auto policy_payload = bolt::tests::SealPolicy({
+        {bolt::tests::FilesystemRuleKind::kReadWrite, test_root},
+        {bolt::tests::FilesystemRuleKind::kDeny, denied_root},
+    });
     constexpr std::array<std::uint8_t, 16> nonce = {
         0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5,
         0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5,
@@ -215,11 +274,11 @@ bool RunProcessTests() {
     const HANDLE release = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
     bolt::common::ImmutablePolicyMapping policy;
     bolt::common::PrivatePipe event_pipe;
-    const std::wstring pipe_name = L"\\\\.\\pipe\\bolt-sandbox-0123456789abcdef0123456789abcdef";
-    if (allowed == nullptr || denied == nullptr || release == nullptr ||
-        bolt::common::ImmutablePolicyMapping::Create(
-            policy_payload.data(), policy_payload.size(), policy) !=
-            bolt::common::PolicyMappingStatus::kSuccess ||
+    const std::wstring pipe_name = PipeName(GetCurrentProcessId());
+    const auto policy_status = bolt::common::ImmutablePolicyMapping::Create(
+        policy_payload.data(), policy_payload.size(), policy);
+    if (policy_payload.empty() || allowed == nullptr || denied == nullptr || release == nullptr ||
+        policy_status != bolt::common::PolicyMappingStatus::kSuccess ||
         bolt::common::PrivatePipe::Create(pipe_name, event_pipe) !=
             bolt::common::PipeStatus::kSuccess) {
         return false;
@@ -239,34 +298,6 @@ bool RunProcessTests() {
 #endif
     const std::filesystem::path hook_path =
         std::filesystem::path(executable).parent_path() / hook_name;
-    const auto unique_suffix = std::to_wstring(GetCurrentProcessId()) + L".txt";
-    const std::filesystem::path denied_path =
-        std::filesystem::temp_directory_path() /
-        (L"bolt-sandbox-denied-create-" + unique_suffix);
-    const std::filesystem::path denied_delete_path =
-        std::filesystem::temp_directory_path() /
-        (L"bolt-sandbox-denied-delete-" + unique_suffix);
-    const std::filesystem::path denied_create_directory =
-        std::filesystem::temp_directory_path() /
-        (L"bolt-sandbox-denied-mkdir-" + unique_suffix);
-    const std::filesystem::path denied_remove_directory =
-        std::filesystem::temp_directory_path() /
-        (L"bolt-sandbox-denied-rmdir-" + unique_suffix);
-    const std::filesystem::path denied_move_source =
-        std::filesystem::temp_directory_path() /
-        (L"bolt-sandbox-denied-move-source-" + unique_suffix);
-    const std::filesystem::path denied_move_destination =
-        std::filesystem::temp_directory_path() /
-        (L"bolt-sandbox-denied-move-destination-" + unique_suffix);
-    const std::filesystem::path denied_hardlink_destination =
-        std::filesystem::temp_directory_path() /
-        (L"bolt-sandbox-denied-hardlink-" + unique_suffix);
-    const std::filesystem::path denied_copy_source =
-        std::filesystem::temp_directory_path() /
-        (L"bolt-sandbox-denied-copy-source-" + unique_suffix);
-    const std::filesystem::path denied_copy_destination =
-        std::filesystem::temp_directory_path() /
-        (L"bolt-sandbox-denied-copy-destination-" + unique_suffix);
     DeleteFileW(denied_path.c_str());
     DeleteFileW(denied_delete_path.c_str());
     RemoveDirectoryW(denied_create_directory.c_str());
@@ -276,6 +307,10 @@ bool RunProcessTests() {
     DeleteFileW(denied_hardlink_destination.c_str());
     DeleteFileW(denied_copy_source.c_str());
     DeleteFileW(denied_copy_destination.c_str());
+    DeleteFileW(allowed_copy_source.c_str());
+    DeleteFileW(allowed_copy_destination.c_str());
+    DeleteFileW(missing_copy_source.c_str());
+    DeleteFileW(missing_copy_destination.c_str());
     const HANDLE delete_fixture = CreateFileW(
         denied_delete_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -300,6 +335,13 @@ bool RunProcessTests() {
         return false;
     }
     CloseHandle(copy_fixture);
+    constexpr std::string_view copy_nonce = "bolt-copy-nonce";
+    if (!WriteFixture(allowed_copy_source, copy_nonce)) {
+        DeleteFileW(denied_delete_path.c_str());
+        DeleteFileW(denied_move_source.c_str());
+        DeleteFileW(denied_copy_source.c_str());
+        return false;
+    }
     if (!CreateDirectoryW(denied_remove_directory.c_str(), nullptr)) {
         DeleteFileW(denied_delete_path.c_str());
         return false;
@@ -314,7 +356,11 @@ bool RunProcessTests() {
                                       denied_move_destination.wstring() + L"\" \"" +
                                       denied_hardlink_destination.wstring() + L"\" \"" +
                                       denied_copy_source.wstring() + L"\" \"" +
-                                      denied_copy_destination.wstring() + L"\"";
+                                      denied_copy_destination.wstring() + L"\" \"" +
+                                      allowed_copy_source.wstring() + L"\" \"" +
+                                      allowed_copy_destination.wstring() + L"\" \"" +
+                                      missing_copy_source.wstring() + L"\" \"" +
+                                      missing_copy_destination.wstring() + L"\"";
     const HANDLE inherited[] = {allowed, policy.handle(), event_client, release};
     bolt::common::ProcessLaunchOptions options{
         executable,
@@ -410,7 +456,11 @@ bool RunProcessTests() {
             bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 12) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 13);
+            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 13) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_copy_destination.wstring(), 14);
     DWORD exit_code = 0;
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
@@ -425,7 +475,11 @@ bool RunProcessTests() {
                             !std::filesystem::exists(denied_move_destination) &&
                             !std::filesystem::exists(denied_hardlink_destination) &&
                             std::filesystem::exists(denied_copy_source) &&
-                            !std::filesystem::exists(denied_copy_destination);
+                            !std::filesystem::exists(denied_copy_destination) &&
+                            ReadFixture(allowed_copy_source) == copy_nonce &&
+                            ReadFixture(allowed_copy_destination) == copy_nonce &&
+                            !std::filesystem::exists(missing_copy_source) &&
+                            !std::filesystem::exists(missing_copy_destination);
     CloseHandle(allowed);
     CloseHandle(denied);
     if (event_client != INVALID_HANDLE_VALUE) {
@@ -437,6 +491,9 @@ bool RunProcessTests() {
     DeleteFileW(denied_move_source.c_str());
     DeleteFileW(denied_copy_source.c_str());
     DeleteFileW(denied_copy_destination.c_str());
+    DeleteFileW(allowed_copy_source.c_str());
+    DeleteFileW(allowed_copy_destination.c_str());
+    std::filesystem::remove_all(test_root, filesystem_error);
     if (!exact_exit) {
         return false;
     }
