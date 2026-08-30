@@ -68,6 +68,12 @@ using SetFileAttributesWFunction = BOOL(WINAPI*)(LPCWSTR, DWORD);
 using SetFileAttributesAFunction = BOOL(WINAPI*)(LPCSTR, DWORD);
 SetFileAttributesWFunction g_set_file_attributes_w = SetFileAttributesW;
 SetFileAttributesAFunction g_set_file_attributes_a = SetFileAttributesA;
+using SetFileSecurityWFunction = BOOL(WINAPI*)(
+    LPCWSTR, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR);
+using SetFileSecurityAFunction = BOOL(WINAPI*)(
+    LPCSTR, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR);
+SetFileSecurityWFunction g_set_file_security_w = SetFileSecurityW;
+SetFileSecurityAFunction g_set_file_security_a = SetFileSecurityA;
 using SetFileTimeFunction = BOOL(WINAPI*)(
     HANDLE, const FILETIME*, const FILETIME*, const FILETIME*);
 SetFileTimeFunction g_set_file_time = SetFileTime;
@@ -610,6 +616,39 @@ BOOL WINAPI DetouredSetFileAttributesA(
         return FALSE;
     }
     return g_set_file_attributes_a(path, attributes);
+}
+
+BOOL WINAPI DetouredSetFileSecurityW(
+    const LPCWSTR path,
+    const SECURITY_INFORMATION security_information,
+    const PSECURITY_DESCRIPTOR security_descriptor) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_set_file_security_w(
+            path, security_information, security_descriptor);
+    }
+    return AuthorizeAttributeMutation(path)
+               ? g_set_file_security_w(
+                     path, security_information, security_descriptor)
+               : FALSE;
+}
+
+BOOL WINAPI DetouredSetFileSecurityA(
+    const LPCSTR path,
+    const SECURITY_INFORMATION security_information,
+    const PSECURITY_DESCRIPTOR security_descriptor) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_set_file_security_a(
+            path, security_information, security_descriptor);
+    }
+    std::wstring path_wide;
+    if (!ConvertAnsiPath(path, path_wide) ||
+        !AuthorizeAttributeMutation(path_wide.c_str())) {
+        return FALSE;
+    }
+    return g_set_file_security_a(
+        path, security_information, security_descriptor);
 }
 
 BOOL WINAPI DetouredSetFileTime(
@@ -1520,6 +1559,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_set_file_attributes_a),
             reinterpret_cast<PVOID>(DetouredSetFileAttributesA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_set_file_security_w),
+            reinterpret_cast<PVOID>(DetouredSetFileSecurityW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_set_file_security_a),
+            reinterpret_cast<PVOID>(DetouredSetFileSecurityA)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_set_file_time),
             reinterpret_cast<PVOID>(DetouredSetFileTime)) != NO_ERROR ||

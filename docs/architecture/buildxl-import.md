@@ -144,6 +144,12 @@ because the vendored BuildXL layer has no dedicated wrapper. Both variants
 require write access, report denied changes as `Write`, and invalidate the path
 cache before an allowed native call.
 
+Security descriptor mutation through `SetFileSecurityW/A` uses the same
+Bolt-owned write seam because the vendored BuildXL layer has no dedicated
+wrapper. ANSI paths are converted only for policy evaluation; the original
+native entry point receives the caller's descriptor after authorization.
+Denied calls preserve the descriptor and return `ERROR_ACCESS_DENIED`.
+
 `SetFileTime` closes the handle-based timestamp gap: non-empty time updates
 resolve the handle's final identity and require write access, while an all-null
 call retains native behavior. Denied updates report `Write` and leave every

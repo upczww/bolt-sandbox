@@ -162,6 +162,7 @@ add_library(bolt-sandbox-filesystem STATIC
 bolt_native_warnings(bolt-sandbox-filesystem)
 target_include_directories(bolt-sandbox-filesystem PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(bolt-sandbox-filesystem PRIVATE
+    advapi32
     bolt-sandbox-buildxl
     bolt-sandbox-detours
     bolt-sandbox-protocol
