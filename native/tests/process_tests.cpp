@@ -30,7 +30,7 @@ std::wstring HandleText(const HANDLE handle) {
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 6) {
+    if (argument_count != 7) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -57,6 +57,9 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
             CloseHandle(denied_file);
         }
         return 85;
+    }
+    if (DeleteFileW(arguments[6]) || GetLastError() != ERROR_ACCESS_DENIED) {
+        return 86;
     }
     return 0;
 }
@@ -105,13 +108,26 @@ bool RunProcessTests() {
 #endif
     const std::filesystem::path hook_path =
         std::filesystem::path(executable).parent_path() / hook_name;
+    const auto unique_suffix = std::to_wstring(GetCurrentProcessId()) + L".txt";
     const std::filesystem::path denied_path =
         std::filesystem::temp_directory_path() /
-        (L"bolt-sandbox-denied-" + std::to_wstring(GetCurrentProcessId()) + L".txt");
+        (L"bolt-sandbox-denied-create-" + unique_suffix);
+    const std::filesystem::path denied_delete_path =
+        std::filesystem::temp_directory_path() /
+        (L"bolt-sandbox-denied-delete-" + unique_suffix);
     DeleteFileW(denied_path.c_str());
+    DeleteFileW(denied_delete_path.c_str());
+    const HANDLE delete_fixture = CreateFileW(
+        denied_delete_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (delete_fixture == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    CloseHandle(delete_fixture);
     const std::wstring command_line = L"\"" + executable + L"\" --process-child " +
                                       HandleText(allowed) + L" " + HandleText(denied) + L" " +
-                                      hook_name + L" \"" + denied_path.wstring() + L"\"";
+                                      hook_name + L" \"" + denied_path.wstring() + L"\" \"" +
+                                      denied_delete_path.wstring() + L"\"";
     const HANDLE inherited[] = {allowed, policy.handle(), event_client, release};
     bolt::common::ProcessLaunchOptions options{
         executable,
@@ -169,13 +185,15 @@ bool RunProcessTests() {
                             exit_code == 0 &&
                             WaitForSingleObject(allowed, 0) == WAIT_OBJECT_0 &&
                             WaitForSingleObject(denied, 0) == WAIT_TIMEOUT &&
-                            !std::filesystem::exists(denied_path);
+                            !std::filesystem::exists(denied_path) &&
+                            std::filesystem::exists(denied_delete_path);
     CloseHandle(allowed);
     CloseHandle(denied);
     if (event_client != INVALID_HANDLE_VALUE) {
         CloseHandle(event_client);
     }
     CloseHandle(release);
+    DeleteFileW(denied_delete_path.c_str());
     if (!exact_exit) {
         return false;
     }
