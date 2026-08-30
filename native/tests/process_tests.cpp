@@ -175,10 +175,22 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
             HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED)) {
         return 96;
     }
+    if (CopyFileTransactedW(
+            arguments[12], arguments[13], nullptr, nullptr, nullptr, 0,
+            INVALID_HANDLE_VALUE) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 97;
+    }
+    if (CopyFileTransactedA(
+            ansi_copy_source.c_str(), ansi_copy_destination.c_str(), nullptr, nullptr, nullptr, 0,
+            INVALID_HANDLE_VALUE) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 98;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
-        return 97;
+        return 99;
     }
     return 0;
 }
@@ -392,7 +404,13 @@ bool RunProcessTests() {
             bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 10) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 11);
+            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 11) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 12) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 13);
     DWORD exit_code = 0;
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
