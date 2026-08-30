@@ -166,18 +166,14 @@ class RaceProcess final {
     bool Start(
         const std::wstring& executable,
         const std::filesystem::path& hook_path,
-        const std::filesystem::path& policy_root,
-        const bolt::tests::FilesystemRuleKind rule_kind,
+        const std::vector<bolt::tests::FilesystemRule>& filesystem_rules,
         const std::wstring_view mode,
         const std::filesystem::path& first_path,
         const std::filesystem::path& second_path,
         const HANDLE start,
         const std::uint64_t ordinal) {
-        const auto policy_payload = bolt::tests::SealPolicy({
-            {bolt::tests::FilesystemRuleKind::kReadOnly,
-             std::filesystem::path(executable).root_path()},
-            {rule_kind, policy_root},
-        }, bolt::tests::ChildProcessPolicyKind::kDeny);
+        const auto policy_payload = bolt::tests::SealPolicy(
+            filesystem_rules, bolt::tests::ChildProcessPolicyKind::kDeny);
         constexpr std::array<std::uint8_t, 16> nonce = {
             0x48, 0x48, 0x48, 0x48, 0x48, 0x48, 0x48, 0x48,
             0x48, 0x48, 0x48, 0x48, 0x48, 0x48, 0x48, 0x48,
@@ -259,10 +255,9 @@ class RaceProcess final {
         if (process_.Wait(10'000) != bolt::common::ProcessStatus::kSuccess) {
             return false;
         }
-        DWORD exit_code = 0;
-        return process_.ExitCode(exit_code) ==
+        return process_.ExitCode(exit_code_) ==
                    bolt::common::ProcessStatus::kSuccess &&
-               exit_code == 0;
+               exit_code_ == 0;
     }
 
     HANDLE event_pipe() const {
@@ -273,6 +268,10 @@ class RaceProcess final {
         return process_id_;
     }
 
+    DWORD exit_code() const {
+        return exit_code_;
+    }
+
   private:
     HANDLE release_ = nullptr;
     HANDLE ready_ = nullptr;
@@ -281,7 +280,19 @@ class RaceProcess final {
     bolt::common::SuspendedProcess process_;
     bolt::common::ExecutionJob job_;
     std::uint32_t process_id_ = 0;
+    DWORD exit_code_ = STILL_ACTIVE;
 };
+
+std::vector<bolt::tests::FilesystemRule> RacePolicyRules(
+    const std::wstring& executable,
+    const std::filesystem::path& policy_root,
+    const bolt::tests::FilesystemRuleKind rule_kind) {
+    return {
+        {bolt::tests::FilesystemRuleKind::kReadOnly,
+         std::filesystem::path(executable).root_path()},
+        {rule_kind, policy_root},
+    };
+}
 
 bool RunWriteRace(
     const std::wstring& executable,
@@ -298,15 +309,17 @@ bool RunWriteRace(
     const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
     RaceProcess allowed;
     RaceProcess denied;
+    const auto allowed_rules = RacePolicyRules(
+        executable, test_root, bolt::tests::FilesystemRuleKind::kReadWrite);
+    const auto denied_rules = RacePolicyRules(
+        executable, test_root, bolt::tests::FilesystemRuleKind::kReadOnly);
     const bool started =
         start != nullptr &&
         allowed.Start(
-            executable, hook_path, test_root,
-            bolt::tests::FilesystemRuleKind::kReadWrite, L"allowed-write",
+            executable, hook_path, allowed_rules, L"allowed-write",
             target, {}, start, ordinal++) &&
         denied.Start(
-            executable, hook_path, test_root,
-            bolt::tests::FilesystemRuleKind::kReadOnly, L"denied-write",
+            executable, hook_path, denied_rules, L"denied-write",
             target, {}, start, ordinal++);
     const bool released =
         started && allowed.WaitAtBarrier() && denied.WaitAtBarrier() &&
@@ -343,15 +356,17 @@ bool RunRenameDeleteRace(
     const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
     RaceProcess allowed;
     RaceProcess denied;
+    const auto allowed_rules = RacePolicyRules(
+        executable, test_root, bolt::tests::FilesystemRuleKind::kReadWrite);
+    const auto denied_rules = RacePolicyRules(
+        executable, test_root, bolt::tests::FilesystemRuleKind::kReadOnly);
     const bool started =
         start != nullptr &&
         allowed.Start(
-            executable, hook_path, test_root,
-            bolt::tests::FilesystemRuleKind::kReadWrite, L"allowed-rename",
+            executable, hook_path, allowed_rules, L"allowed-rename",
             source, destination, start, ordinal++) &&
         denied.Start(
-            executable, hook_path, test_root,
-            bolt::tests::FilesystemRuleKind::kReadOnly, L"denied-delete",
+            executable, hook_path, denied_rules, L"denied-delete",
             source, {}, start, ordinal++);
     const bool released =
         started && allowed.WaitAtBarrier() && denied.WaitAtBarrier() &&
@@ -367,6 +382,65 @@ bool RunRenameDeleteRace(
             bolt::protocol::FilesystemOperation::kDelete, source, 1);
     if (start != nullptr) {
         CloseHandle(start);
+    }
+    return passed;
+}
+
+bool RunMixedTreeRenameTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const std::filesystem::path& test_root,
+    std::uint64_t& ordinal) {
+    const auto source = test_root / L"mixed-tree";
+    const auto denied_child = source / L"denied-child";
+    const auto denied_file = denied_child / L"protected.txt";
+    const auto destination = test_root / L"mixed-tree-moved";
+    std::error_code error;
+    std::filesystem::remove_all(source, error);
+    error.clear();
+    std::filesystem::remove_all(destination, error);
+    error.clear();
+    if (!std::filesystem::create_directories(denied_child, error) || error ||
+        !WriteFixture(denied_file, "protected")) {
+        return false;
+    }
+
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const std::vector<bolt::tests::FilesystemRule> rules = {
+        {bolt::tests::FilesystemRuleKind::kReadOnly,
+         std::filesystem::path(executable).root_path()},
+        {bolt::tests::FilesystemRuleKind::kReadWrite, test_root},
+        {bolt::tests::FilesystemRuleKind::kDeny, denied_child},
+    };
+    RaceProcess process;
+    const bool started =
+        start != nullptr &&
+        process.Start(
+            executable, hook_path, rules, L"denied-mixed-rename", source,
+            destination, start, ordinal++);
+    const bool released =
+        started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
+    const bool exited = released && process.WaitForExit();
+    const bool passed =
+        exited && std::filesystem::is_directory(source) &&
+        ReadFixture(denied_file) == "protected" &&
+        !std::filesystem::exists(destination) &&
+        ReadExpectedViolations(
+            process.event_pipe(), process.process_id(),
+            bolt::protocol::FilesystemOperation::kRename, source, 1);
+    if (start != nullptr) {
+        CloseHandle(start);
+    }
+    if (!passed) {
+        std::fprintf(
+            stderr,
+            "mixed tree rename failed: exit=%lu source=%d destination=%d\n",
+            static_cast<unsigned long>(process.exit_code()),
+            std::filesystem::exists(source) ? 1 : 0,
+            std::filesystem::exists(destination) ? 1 : 0);
     }
     return passed;
 }
@@ -437,6 +511,12 @@ int RunFilesystemRaceChild(
         if (DeleteFileW(arguments[3]) || GetLastError() != ERROR_ACCESS_DENIED) {
             return 297;
         }
+    } else if (mode == L"denied-mixed-rename") {
+        if (MoveFileExW(
+                arguments[3], arguments[4], MOVEFILE_REPLACE_EXISTING) ||
+            GetLastError() != ERROR_ACCESS_DENIED) {
+            return 300;
+        }
     } else {
         return 298;
     }
@@ -468,6 +548,8 @@ bool RunFilesystemRaceTests() {
     const bool passed =
         RunWriteRace(executable, hook_path, test_root, ordinal) &&
         RunRenameDeleteRace(
+            executable, hook_path, test_root, ordinal) &&
+        RunMixedTreeRenameTest(
             executable, hook_path, test_root, ordinal);
     std::filesystem::remove_all(test_root, error);
     if (!passed) {
