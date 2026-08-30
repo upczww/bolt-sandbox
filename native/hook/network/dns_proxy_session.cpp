@@ -2,12 +2,17 @@
 
 #include <limits>
 
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 namespace bolt::network {
 
 DnsProxySessionStatus RunDnsProxySession(
     const protocol::DnsProxySession& session,
     const NetworkPolicy& policy,
     DnsResolver& resolver,
+    DnsBindingTable& bindings,
     DnsProxyTransport& transport,
     const std::size_t maximum_requests) noexcept {
     if (maximum_requests == 0) {
@@ -27,7 +32,8 @@ DnsProxySessionStatus RunDnsProxySession(
             std::vector<std::uint8_t> response;
             if (ProcessDnsProxyRequest(
                     session, policy, sequence, request.data(), request.size(),
-                    resolver, response) != protocol::DnsProxyStatus::kSuccess) {
+                    resolver, bindings, GetTickCount64(), response) !=
+                protocol::DnsProxyStatus::kSuccess) {
                 return DnsProxySessionStatus::kProtocolFailed;
             }
             if (response.empty() || !transport.WriteFrame(response)) {

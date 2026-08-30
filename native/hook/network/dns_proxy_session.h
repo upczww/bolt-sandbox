@@ -33,6 +33,7 @@ DnsProxySessionStatus RunDnsProxySession(
     const protocol::DnsProxySession& session,
     const NetworkPolicy& policy,
     DnsResolver& resolver,
+    DnsBindingTable& bindings,
     DnsProxyTransport& transport,
     std::size_t maximum_requests) noexcept;
 

@@ -9,6 +9,8 @@ protocol::DnsProxyStatus ProcessDnsProxyRequest(
     const std::uint8_t* const encoded_request,
     const std::size_t request_length,
     DnsResolver& resolver,
+    DnsBindingTable& bindings,
+    const std::uint64_t now,
     std::vector<std::uint8_t>& encoded_response) noexcept {
     encoded_response.clear();
     protocol::DnsProxyRequest request{};
@@ -39,6 +41,27 @@ protocol::DnsProxyStatus ProcessDnsProxyRequest(
                    addresses.size() > protocol::kDnsProxyMaximumAddressRecords) {
             result = protocol::DnsProxyResult::kFailure;
             addresses.clear();
+        } else {
+            for (const auto& address : addresses) {
+                const AddressFamily family =
+                    address.family == protocol::DnsProxyAddressFamily::kIpv4
+                        ? AddressFamily::kIpv4
+                        : AddressFamily::kIpv6;
+                const std::size_t address_length =
+                    family == AddressFamily::kIpv4 ? 4 : 16;
+                const BindingKey key{
+                    session.nonce, request.process_id,
+                    request.ascii_domain.c_str(), family,
+                    address.address.data(), address_length, request.port};
+                const std::uint64_t ttl_milliseconds =
+                    static_cast<std::uint64_t>(address.ttl_seconds) * 1'000U;
+                if (bindings.Upsert(key, now, ttl_milliseconds) !=
+                    BindingStatus::kSuccess) {
+                    result = protocol::DnsProxyResult::kFailure;
+                    addresses.clear();
+                    break;
+                }
+            }
         }
         return protocol::EncodeDnsProxyResponse(
             session, expected_sequence, result, addresses, encoded_response);

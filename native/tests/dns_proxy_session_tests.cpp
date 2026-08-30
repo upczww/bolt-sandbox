@@ -73,8 +73,13 @@ bool RunDnsProxySessionTests() {
         return false;
     }
     FakeResolver resolver;
+    std::unique_ptr<bolt::network::DnsBindingTable> bindings;
+    if (bolt::network::DnsBindingTable::Create(4, bindings) !=
+        bolt::network::BindingStatus::kSuccess) {
+        return false;
+    }
     if (bolt::network::RunDnsProxySession(
-            session, *policy, resolver, transport, 8) !=
+            session, *policy, resolver, *bindings, transport, 8) !=
             bolt::network::DnsProxySessionStatus::kCompleted ||
         resolver.calls != 1 || transport.writes.size() != 2) {
         return false;
@@ -94,7 +99,7 @@ bool RunDnsProxySessionTests() {
     tampered.frames.push_back(transport.frames[0]);
     tampered.frames[0].back() ^= 1;
     return bolt::network::RunDnsProxySession(
-               session, *policy, resolver, tampered, 8) ==
+               session, *policy, resolver, *bindings, tampered, 8) ==
                bolt::network::DnsProxySessionStatus::kProtocolFailed &&
            tampered.writes.empty();
 }

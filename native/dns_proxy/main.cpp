@@ -84,8 +84,17 @@ int RunProxy() noexcept {
         return 14;
     }
     bolt::network::SystemDnsResolver resolver;
+    std::unique_ptr<bolt::network::DnsBindingTable> bindings;
+    if (bolt::network::DnsBindingTable::Create(4'096, bindings) !=
+        bolt::network::BindingStatus::kSuccess) {
+        SecureZeroMemory(
+            startup.session.authentication_key.data(),
+            startup.session.authentication_key.size());
+        return 14;
+    }
     const auto session_status = bolt::network::RunDnsProxySession(
-        startup.session, *policy, resolver, *transport, startup.maximum_requests);
+        startup.session, *policy, resolver, *bindings, *transport,
+        startup.maximum_requests);
     SecureZeroMemory(
         startup.session.authentication_key.data(),
         startup.session.authentication_key.size());

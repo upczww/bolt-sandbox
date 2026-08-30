@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hook/network/dns_binding_table.h"
 #include "hook/network/network_policy.h"
 #include "protocol/dns_proxy_protocol.h"
 
@@ -26,6 +27,8 @@ protocol::DnsProxyStatus ProcessDnsProxyRequest(
     const std::uint8_t* encoded_request,
     std::size_t request_length,
     DnsResolver& resolver,
+    DnsBindingTable& bindings,
+    std::uint64_t now,
     std::vector<std::uint8_t>& encoded_response) noexcept;
 
 }  // namespace bolt::network
