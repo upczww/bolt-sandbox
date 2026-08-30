@@ -582,6 +582,19 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     if (initialized == nullptr || !initialized()) {
         return 84;
     }
+    using InstalledFilesystemHookCountFunction = std::uint32_t (*)();
+    const auto installed_filesystem_hook_count =
+        reinterpret_cast<InstalledFilesystemHookCountFunction>(
+            GetProcAddress(hook, "BoltSandboxInstalledFilesystemHookCount"));
+    constexpr std::uint32_t required_filesystem_hook_count = 70;
+    const bool copy_file_2_present =
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CopyFile2") != nullptr;
+    const std::uint32_t expected_filesystem_hook_count =
+        required_filesystem_hook_count + (copy_file_2_present ? 1U : 0U);
+    if (installed_filesystem_hook_count == nullptr ||
+        installed_filesystem_hook_count() != expected_filesystem_hook_count) {
+        return 286;
+    }
     if (!HasRequiredProcessMitigations()) {
         return 244;
     }
