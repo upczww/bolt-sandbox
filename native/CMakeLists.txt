@@ -69,11 +69,16 @@ target_link_libraries(bolt-sandbox-common PRIVATE bolt-sandbox-detours)
 target_link_libraries(bolt-sandbox-common PRIVATE bolt-sandbox-protocol)
 
 add_library(bolt-sandbox-filesystem STATIC
+    hook/filesystem/file_hooks.cpp
     hook/filesystem/filesystem_policy.cpp
 )
 bolt_native_warnings(bolt-sandbox-filesystem)
 target_include_directories(bolt-sandbox-filesystem PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(bolt-sandbox-filesystem PRIVATE bolt-sandbox-buildxl bolt-sandbox-protocol)
+target_link_libraries(bolt-sandbox-filesystem PRIVATE
+    bolt-sandbox-buildxl
+    bolt-sandbox-detours
+    bolt-sandbox-protocol
+)
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     add_executable(bolt-sandbox-launcher

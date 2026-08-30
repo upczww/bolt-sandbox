@@ -2,6 +2,7 @@
 #include "protocol/policy_payload.h"
 #include "protocol/runtime_payload.h"
 #include "protocol/version.h"
+#include "hook/filesystem/file_hooks.h"
 
 #include <cstdint>
 
@@ -56,10 +57,10 @@ bool InitializeRuntime() noexcept {
     if (policy == nullptr) {
         return false;
     }
-    const auto policy_status =
-        bolt::protocol::ValidatePolicyPayload(policy, payload.policy_length);
+    const auto hook_status =
+        bolt::filesystem::InstallFileHooks(policy, payload.policy_length);
     UnmapViewOfFile(policy);
-    if (policy_status != bolt::protocol::PolicyPayloadStatus::kValid) {
+    if (hook_status != bolt::filesystem::HookInstallStatus::kSuccess) {
         return false;
     }
 
