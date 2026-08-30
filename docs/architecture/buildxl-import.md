@@ -28,6 +28,10 @@ providing BuildXL's case-insensitive path tree and Win32 path canonicalization.
 A narrow adapter implements only the required Windows string operations and
 the `PathType` seam without importing BuildXL's manifest policy types.
 
+`FilesCheckedForAccess` is also compiled unchanged from upstream to provide the
+thread-safe, case-insensitive checked-path set used to suppress duplicate access
+work in hook paths.
+
 The next slices are:
 
 1. Policy lookup and access classification behind Bolt-owned policy adapters;

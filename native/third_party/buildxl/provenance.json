@@ -20,6 +20,14 @@
       "sha256": "4d6539f0874a15c36a08b27ba5697e0f7a16b68a566bf4bc822ede3232ad0ed1"
     },
     {
+      "path": "Public/Src/Sandbox/Windows/DetoursServices/FilesCheckedForAccess.cpp",
+      "sha256": "7886d3d083257a606eaaf82bba792e0f0a038e5ac5ae60a64b7a101c8e2b0bd8"
+    },
+    {
+      "path": "Public/Src/Sandbox/Windows/DetoursServices/FilesCheckedForAccess.h",
+      "sha256": "1098675e9cf9e7c08549a31723760f59758ca51403fb7a92cba4fd84cb6361e2"
+    },
+    {
       "path": "Public/Src/Sandbox/Windows/DetoursServices/PathTree.cpp",
       "sha256": "9bfb27086d6c3cc2cd8b48c95aac02e1e73e8d1206c3605065d6b4c55ce3b32f"
     },
