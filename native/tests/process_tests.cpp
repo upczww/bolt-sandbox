@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -18,6 +19,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <winioctl.h>
 
 namespace {
 
@@ -65,6 +67,63 @@ bool WriteFixture(const std::filesystem::path& path, const std::string_view cont
 std::string ReadFixture(const std::filesystem::path& path) {
     std::ifstream stream(path, std::ios::binary);
     return {std::istreambuf_iterator<char>{stream}, std::istreambuf_iterator<char>{}};
+}
+
+bool CreateJunction(
+    const std::filesystem::path& junction,
+    const std::filesystem::path& target) {
+    struct MountPointReparseDataBuffer {
+        ULONG tag;
+        USHORT data_length;
+        USHORT reserved;
+        USHORT substitute_offset;
+        USHORT substitute_length;
+        USHORT print_offset;
+        USHORT print_length;
+        WCHAR path_buffer[1];
+    };
+    constexpr DWORD reparse_header_size = 8;
+    if (!CreateDirectoryW(junction.c_str(), nullptr)) {
+        return false;
+    }
+    const HANDLE handle = CreateFileW(
+        junction.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        RemoveDirectoryW(junction.c_str());
+        return false;
+    }
+
+    const std::wstring substitute = L"\\??\\" + target.wstring();
+    const std::wstring print_name = target.wstring();
+    std::array<std::uint8_t, MAXIMUM_REPARSE_DATA_BUFFER_SIZE> storage{};
+    auto* const reparse =
+        reinterpret_cast<MountPointReparseDataBuffer*>(storage.data());
+    reparse->tag = IO_REPARSE_TAG_MOUNT_POINT;
+    reparse->substitute_offset = 0;
+    reparse->substitute_length =
+        static_cast<USHORT>(substitute.size() * sizeof(wchar_t));
+    reparse->print_offset = reparse->substitute_length + sizeof(wchar_t);
+    reparse->print_length =
+        static_cast<USHORT>(print_name.size() * sizeof(wchar_t));
+    std::memcpy(
+        reparse->path_buffer, substitute.data(), reparse->substitute_length);
+    std::memcpy(
+        reinterpret_cast<std::uint8_t*>(reparse->path_buffer) + reparse->print_offset,
+        print_name.data(), reparse->print_length);
+    const DWORD path_bytes = reparse->print_offset + reparse->print_length +
+                             sizeof(wchar_t);
+    reparse->data_length = static_cast<USHORT>(8 + path_bytes);
+    DWORD returned = 0;
+    const BOOL created = DeviceIoControl(
+        handle, FSCTL_SET_REPARSE_POINT, reparse,
+        reparse_header_size + reparse->data_length, nullptr, 0, &returned,
+        nullptr);
+    CloseHandle(handle);
+    if (!created) {
+        RemoveDirectoryW(junction.c_str());
+    }
+    return created != FALSE;
 }
 
 bool ReadExact(const HANDLE handle, std::uint8_t* bytes, const std::size_t length) {
@@ -122,7 +181,7 @@ bool ReadFilesystemViolation(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 18) {
+    if (argument_count != 19) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -222,10 +281,14 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_FILE_NOT_FOUND) {
         return 101;
     }
+    if (CopyFileW(arguments[14], arguments[18], FALSE) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 102;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
-        return 102;
+        return 103;
     }
     return 0;
 }
@@ -258,6 +321,14 @@ bool RunProcessTests() {
     const std::filesystem::path allowed_copy_destination = allowed_root / L"copy-destination.txt";
     const std::filesystem::path missing_copy_source = allowed_root / L"missing-source.txt";
     const std::filesystem::path missing_copy_destination = allowed_root / L"missing-destination.txt";
+    const std::filesystem::path denied_junction_target = denied_root / L"junction-target";
+    const std::filesystem::path denied_alias_target = denied_junction_target / L"protected.txt";
+    const std::filesystem::path allowed_junction = allowed_root / L"junction";
+    const std::filesystem::path alias_copy_destination = allowed_junction / L"protected.txt";
+    if (!std::filesystem::create_directories(denied_junction_target, filesystem_error) ||
+        filesystem_error) {
+        return false;
+    }
     const auto policy_payload = bolt::tests::SealPolicy({
         {bolt::tests::FilesystemRuleKind::kReadWrite, test_root},
         {bolt::tests::FilesystemRuleKind::kDeny, denied_root},
@@ -342,6 +413,11 @@ bool RunProcessTests() {
         DeleteFileW(denied_copy_source.c_str());
         return false;
     }
+    constexpr std::string_view protected_nonce = "protected-target";
+    if (!WriteFixture(denied_alias_target, protected_nonce) ||
+        !CreateJunction(allowed_junction, denied_junction_target)) {
+        return false;
+    }
     if (!CreateDirectoryW(denied_remove_directory.c_str(), nullptr)) {
         DeleteFileW(denied_delete_path.c_str());
         return false;
@@ -360,7 +436,8 @@ bool RunProcessTests() {
                                       allowed_copy_source.wstring() + L"\" \"" +
                                       allowed_copy_destination.wstring() + L"\" \"" +
                                       missing_copy_source.wstring() + L"\" \"" +
-                                      missing_copy_destination.wstring() + L"\"";
+                                      missing_copy_destination.wstring() + L"\" \"" +
+                                      alias_copy_destination.wstring() + L"\"";
     const HANDLE inherited[] = {allowed, policy.handle(), event_client, release};
     bolt::common::ProcessLaunchOptions options{
         executable,
@@ -460,7 +537,10 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
-            denied_copy_destination.wstring(), 14);
+            denied_copy_destination.wstring(), 14) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate, denied_alias_target.wstring(), 15);
     DWORD exit_code = 0;
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
@@ -479,7 +559,8 @@ bool RunProcessTests() {
                             ReadFixture(allowed_copy_source) == copy_nonce &&
                             ReadFixture(allowed_copy_destination) == copy_nonce &&
                             !std::filesystem::exists(missing_copy_source) &&
-                            !std::filesystem::exists(missing_copy_destination);
+                            !std::filesystem::exists(missing_copy_destination) &&
+                            ReadFixture(denied_alias_target) == protected_nonce;
     CloseHandle(allowed);
     CloseHandle(denied);
     if (event_client != INVALID_HANDLE_VALUE) {
