@@ -149,7 +149,17 @@ foreach ($line in Get-Content -LiteralPath $catalogPath) {
     }
 }
 
-$markdownDocuments = Get-ChildItem -LiteralPath $repositoryRoot -Recurse -Filter '*.md' -File
+$markdownPaths = @(
+    & git -C $repositoryRoot ls-files --cached --others --exclude-standard -- '*.md'
+)
+if ($LASTEXITCODE -ne 0) {
+    throw 'Unable to enumerate repository Markdown files.'
+}
+$markdownDocuments = @(
+    $markdownPaths | ForEach-Object {
+        Get-Item -LiteralPath (Join-Path $repositoryRoot $_)
+    }
+)
 foreach ($document in $markdownDocuments) {
     $text = Get-Content -Raw -LiteralPath $document.FullName
     foreach ($link in [regex]::Matches($text, '\[[^\]]+\]\(([^)#]+\.md)(?:#[^)]+)?\)')) {
