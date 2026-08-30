@@ -143,6 +143,7 @@ using NtNotifyChangeDirectoryFileExFunction = NTSTATUS(NTAPI*)(
 NtNotifyChangeDirectoryFileFunction g_nt_notify_change_directory_file = nullptr;
 NtNotifyChangeDirectoryFileExFunction g_nt_notify_change_directory_file_ex =
     nullptr;
+OpenFileById_t g_open_file_by_id = OpenFileById;
 
 void ReportDenied(
     const protocol::FilesystemOperation operation,
@@ -1401,6 +1402,53 @@ NTSTATUS NTAPI DetouredNtNotifyChangeDirectoryFileEx(
     return g_nt_notify_change_directory_file_ex(
         directory, event, apc_routine, apc_context, io_status, buffer,
         buffer_size, completion_filter, watch_tree, information_class);
+}
+
+HANDLE WINAPI DetouredOpenFileById(
+    const HANDLE volume,
+    const LPFILE_ID_DESCRIPTOR file_id,
+    const DWORD desired_access,
+    const DWORD share_mode,
+    const LPSECURITY_ATTRIBUTES security_attributes,
+    const DWORD flags) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_open_file_by_id(
+            volume, file_id, desired_access, share_mode, security_attributes,
+            flags);
+    }
+
+    auto request =
+        ClassifyCreateFileRequest(desired_access, OPEN_EXISTING);
+    const bool delete_on_close = (flags & FILE_FLAG_DELETE_ON_CLOSE) != 0;
+    if (delete_on_close) {
+        request = {Access::kWrite, protocol::FilesystemOperation::kDelete};
+    }
+    const HANDLE opened = g_open_file_by_id(
+        volume, file_id, desired_access, share_mode, security_attributes,
+        flags & ~FILE_FLAG_DELETE_ON_CLOSE);
+    if (opened == INVALID_HANDLE_VALUE) {
+        return INVALID_HANDLE_VALUE;
+    }
+    if (!AuthorizeHandleIo(opened, request.access, request.operation)) {
+        const DWORD error = GetLastError();
+        CloseHandle(opened);
+        SetLastError(error);
+        return INVALID_HANDLE_VALUE;
+    }
+    if (delete_on_close) {
+        FILE_DISPOSITION_INFO disposition{};
+        disposition.DeleteFile = TRUE;
+        if (!g_set_file_information_by_handle(
+                opened, FileDispositionInfo, &disposition,
+                sizeof(disposition))) {
+            const DWORD error = GetLastError();
+            CloseHandle(opened);
+            SetLastError(error);
+            return INVALID_HANDLE_VALUE;
+        }
+    }
+    return opened;
 }
 
 BOOL WINAPI DetouredSetFileAttributesW(
@@ -2715,6 +2763,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_nt_notify_change_directory_file_ex),
             reinterpret_cast<PVOID>(DetouredNtNotifyChangeDirectoryFileEx)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_open_file_by_id),
+            reinterpret_cast<PVOID>(DetouredOpenFileById)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_set_file_attributes_w),
             reinterpret_cast<PVOID>(DetouredSetFileAttributesW)) != NO_ERROR ||

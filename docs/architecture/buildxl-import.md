@@ -221,6 +221,14 @@ absolute names paired with a root handle fail closed. Denial returns
 `STATUS_ACCESS_DENIED`, clears the output handle and completion information,
 and never calls ntdll.
 
+`OpenFileById` reuses BuildXL's exact function type; the vendored implementation
+is an explicit policy TODO and is not linked. Bolt opens the identified object
+without the destructive delete-on-close flag, authorizes the returned handle's
+final identity using the requested access class, and closes denied handles
+before returning `ERROR_ACCESS_DENIED`. For an allowed delete-on-close request,
+the existing handle-disposition seam applies deletion only after final-identity
+authorization, avoiding a side effect during the identity probe.
+
 Metadata probing through `GetFileAttributesW/A` and
 `GetFileAttributesExW/A` shares one metadata-policy decision. Denied targets
 return the native failure sentinel, preserve `ERROR_ACCESS_DENIED`, and cannot
