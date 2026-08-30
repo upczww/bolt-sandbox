@@ -513,6 +513,13 @@ strings. Event paths are limited to 32,767 UTF-16 code units and UTF-8 text
 fields to 4,096 bytes. Decoders reject unknown discriminants, over-limit fields,
 invalid UTF-8, truncation, and trailing payload bytes.
 
+The native pipe allocates fixed 128 KiB inbound and outbound buffers per
+execution. This exceeds one maximum-size filesystem event frame and leaves
+bounded progress space for preceding records during orderly flush. The DLL
+still owns only 64 preallocated event records; increasing transport headroom
+does not make hook queues unbounded or permit hooked application threads to wait
+on a slow consumer.
+
 The Rust event-channel driver owns the session decoder and routes transport
 state by lifecycle phase. Protocol failure or disconnect before the execution
 enters `Running` remains a typed initialization failure and issues no runtime

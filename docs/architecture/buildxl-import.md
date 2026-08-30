@@ -382,7 +382,12 @@ Bolt-owned adapters replace these coupled seams:
   monotonic sequences after the Ready frame, and performs pipe writes on a
   dedicated worker. Hook calls only attempt a bounded enqueue and never wait
   for the pipe consumer; an explicit bounded drain is available for orderly
-  process shutdown.
+  process shutdown. The private pipe uses fixed 128 KiB buffers so one
+  near-maximum UTF-16 filesystem event can drain after ordinary queued records
+  without losing the stream at process exit. Integration probes synchronize 16
+  concurrent denied operations and a simultaneous flush, verify thread-local
+  nested `DetouredScope` behavior, and drain a 32,700-code-unit event on both
+  native architectures.
 - Process injection and lifecycle adapters map Bolt execution state without a
   BuildXL scheduler, build graph, or C# host.
 
