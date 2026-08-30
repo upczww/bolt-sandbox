@@ -814,18 +814,6 @@ bool DenySend(
     }
     protocol::NetworkEndpoint endpoint{};
     const bool endpoint_valid = ReadEndpoint(address, address_length, endpoint);
-    if (policy != nullptr && policy->mode() == Mode::kAllowList && endpoint_valid &&
-        policy->DecidePort(endpoint.port) == Decision::kAllow) {
-        const AddressFamily family =
-            endpoint.family == protocol::NetworkAddressFamily::kIpv4
-                ? AddressFamily::kIpv4
-                : AddressFamily::kIpv6;
-        const std::size_t length = family == AddressFamily::kIpv4 ? 4 : 16;
-        if (policy->DecideAddress(family, endpoint.address.data(), length) ==
-            Decision::kAllow) {
-            return false;
-        }
-    }
     if (endpoint_valid) {
         hook::TryReportNetworkViolation(
             protocol::NetworkOperation::kSend, endpoint);
