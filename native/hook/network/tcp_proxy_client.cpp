@@ -101,11 +101,16 @@ TcpProxyClientStatus ConnectTcpSocketThroughProxy(
     }
     WSAPROTOCOL_INFOW socket_protocol{};
     int protocol_length = sizeof(socket_protocol);
+    const int expected_socket_family =
+        family == AddressFamily::kIpv4
+            ? AF_INET
+            : family == AddressFamily::kIpv6 ? AF_INET6 : AF_UNSPEC;
     if (getsockopt(
             socket, SOL_SOCKET, SO_PROTOCOL_INFOW,
             reinterpret_cast<char*>(&socket_protocol), &protocol_length) ==
             SOCKET_ERROR ||
-        socket_protocol.iAddressFamily != AF_INET) {
+        expected_socket_family == AF_UNSPEC ||
+        socket_protocol.iAddressFamily != expected_socket_family) {
         network_error = WSAEAFNOSUPPORT;
         return TcpProxyClientStatus::kInvalidArgument;
     }
@@ -132,13 +137,24 @@ TcpProxyClientStatus ConnectTcpSocketThroughProxy(
             network_error = WSAEINVAL;
             return TcpProxyClientStatus::kInvalidArgument;
         }
-        sockaddr_in proxy{};
-        proxy.sin_family = AF_INET;
-        proxy.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        proxy.sin_port = htons(proxy_port);
+        sockaddr_storage proxy{};
+        int proxy_length = 0;
+        if (family == AddressFamily::kIpv4) {
+            auto* endpoint = reinterpret_cast<sockaddr_in*>(&proxy);
+            endpoint->sin_family = AF_INET;
+            endpoint->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            endpoint->sin_port = htons(proxy_port);
+            proxy_length = sizeof(*endpoint);
+        } else {
+            auto* endpoint = reinterpret_cast<sockaddr_in6*>(&proxy);
+            endpoint->sin6_family = AF_INET6;
+            endpoint->sin6_addr = in6addr_loopback;
+            endpoint->sin6_port = htons(proxy_port);
+            proxy_length = sizeof(*endpoint);
+        }
         if (original_connect(
                 socket, reinterpret_cast<const sockaddr*>(&proxy),
-                sizeof(proxy)) == SOCKET_ERROR) {
+                proxy_length) == SOCKET_ERROR) {
             network_error = static_cast<std::uint32_t>(WSAGetLastError());
             return TcpProxyClientStatus::kProxyConnectFailed;
         }
