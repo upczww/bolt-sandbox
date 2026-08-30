@@ -122,7 +122,9 @@ bool CreateJunction(
         nullptr);
     CloseHandle(handle);
     if (!created) {
+        const DWORD error = GetLastError();
         RemoveDirectoryW(junction.c_str());
+        SetLastError(error);
     }
     return created != FALSE;
 }
@@ -182,7 +184,7 @@ bool ReadFilesystemViolation(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 32) {
+    if (argument_count != 34) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -581,6 +583,10 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 133;
     }
+    if (CreateJunction(arguments[32], arguments[33]) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 134;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -652,6 +658,8 @@ bool RunProcessTests() {
         allowed_junction / L"hardlink-escape.txt";
     const std::filesystem::path denied_hardlink_escape_target =
         denied_junction_target / L"hardlink-escape.txt";
+    const std::filesystem::path forbidden_junction =
+        allowed_root / L"forbidden-junction";
     if (!std::filesystem::create_directories(denied_junction_target, filesystem_error) ||
         filesystem_error) {
         return false;
@@ -721,6 +729,7 @@ bool RunProcessTests() {
     DeleteFileW(denied_mapping_path.c_str());
     DeleteFileW(read_only_mapping_path.c_str());
     DeleteFileW(denied_hardlink_escape_target.c_str());
+    RemoveDirectoryW(forbidden_junction.c_str());
     const HANDLE delete_fixture = CreateFileW(
         denied_delete_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -862,7 +871,9 @@ bool RunProcessTests() {
                                       allowed_mapping_path.wstring() + L"\" " +
                                       HandleText(denied_mapping_handle) + L" " +
                                       HandleText(read_only_mapping_handle) + L" \"" +
-                                      alias_hardlink_destination.wstring() + L"\"";
+                                      alias_hardlink_destination.wstring() + L"\" \"" +
+                                      forbidden_junction.wstring() + L"\" \"" +
+                                      denied_junction_target.wstring() + L"\"";
     const HANDLE inherited[] = {
         allowed, policy.handle(), event_client, release, denied_disposition_handle,
         denied_truncate_handle, denied_mapping_handle, read_only_mapping_handle};
@@ -1050,7 +1061,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
-            denied_hardlink_escape_target.wstring(), 38);
+            denied_hardlink_escape_target.wstring(), 38) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_junction_target.wstring(), 39);
     DWORD exit_code = 0;
     CloseHandle(denied_disposition_handle);
     CloseHandle(denied_truncate_handle);
@@ -1087,7 +1102,8 @@ bool RunProcessTests() {
                             ReadFixture(allowed_mapping_path) == "Xapping-content" &&
                             ReadFixture(denied_mapping_path) == mapping_nonce &&
                             ReadFixture(read_only_mapping_path) == read_only_mapping_nonce &&
-                            !std::filesystem::exists(denied_hardlink_escape_target);
+                            !std::filesystem::exists(denied_hardlink_escape_target) &&
+                            !std::filesystem::exists(forbidden_junction);
     CloseHandle(allowed);
     CloseHandle(denied);
     if (event_client != INVALID_HANDLE_VALUE) {
