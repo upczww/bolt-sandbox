@@ -11,7 +11,7 @@ produce a recorded `not_present` capability result, not a skipped test.
 
 | API/operation family | Representative entry points | Catalog evidence |
 | --- | --- | --- |
-| Open/create | `CreateFileW/A`, `NtCreateFile`, `NtOpenFile`, root-handle relative opens | FS-001..009, FS-011..020, FS-051..052 |
+| Open/create | `CreateFileW/A`, `CreateDirectoryW/A/ExW/ExA`, `NtCreateFile`, `NtOpenFile`, root-handle relative opens | FS-001..009, FS-011..020, FS-051..052 |
 | Read/write sync | `ReadFile`, `WriteFile`, `NtReadFile`, `NtWriteFile` | FS-001..009, FS-051, SEM-004 |
 | Read/write async | `ReadFileEx`, `WriteFileEx`, overlapped `ReadFile`/`WriteFile`, IOCP/thread-pool completion | FS-057..059 |
 | Copy | `CopyFileW/A`, `CopyFileExW/A`, `CopyFile2` | FS-039..040, FS-051 |

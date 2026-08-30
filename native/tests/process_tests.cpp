@@ -2366,6 +2366,46 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         return 273;
     }
 
+    const std::filesystem::path directory_template =
+        std::filesystem::path(arguments[15]).parent_path();
+    const std::filesystem::path allowed_directory_ex_w =
+        std::wstring(arguments[15]) + L".directory-ex-w";
+    const std::filesystem::path allowed_directory_ex_a =
+        std::wstring(arguments[15]) + L".directory-ex-a";
+    if (!CreateDirectoryExW(
+            directory_template.c_str(), allowed_directory_ex_w.c_str(), nullptr) ||
+        !RemoveDirectoryW(allowed_directory_ex_w.c_str())) {
+        return 274;
+    }
+    const std::string ansi_directory_template = AnsiPath(directory_template.c_str());
+    const std::string ansi_allowed_directory_ex_a =
+        AnsiPath(allowed_directory_ex_a.c_str());
+    if (ansi_directory_template.empty() || ansi_allowed_directory_ex_a.empty() ||
+        !CreateDirectoryExA(
+            ansi_directory_template.c_str(), ansi_allowed_directory_ex_a.c_str(),
+            nullptr) ||
+        !RemoveDirectoryA(ansi_allowed_directory_ex_a.c_str())) {
+        return 275;
+    }
+    const std::filesystem::path denied_directory_ex_w =
+        std::wstring(arguments[7]) + L".ex-w";
+    if (CreateDirectoryExW(
+            directory_template.c_str(), denied_directory_ex_w.c_str(), nullptr) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 276;
+    }
+    const std::filesystem::path denied_directory_ex_a =
+        std::wstring(arguments[7]) + L".ex-a";
+    const std::string ansi_denied_directory_ex_a =
+        AnsiPath(denied_directory_ex_a.c_str());
+    if (ansi_denied_directory_ex_a.empty() ||
+        CreateDirectoryExA(
+            ansi_directory_template.c_str(), ansi_denied_directory_ex_a.c_str(),
+            nullptr) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 277;
+    }
+
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -3005,6 +3045,14 @@ bool RunProcessTests() {
     const std::filesystem::path denied_copy_destination = denied_root / L"copy-destination.txt";
     const std::filesystem::path allowed_copy_source = allowed_root / L"copy-source.txt";
     const std::filesystem::path allowed_copy_destination = allowed_root / L"copy-destination.txt";
+    const std::filesystem::path allowed_directory_ex_w =
+        allowed_copy_destination.wstring() + L".directory-ex-w";
+    const std::filesystem::path allowed_directory_ex_a =
+        allowed_copy_destination.wstring() + L".directory-ex-a";
+    const std::filesystem::path denied_directory_ex_w =
+        denied_create_directory.wstring() + L".ex-w";
+    const std::filesystem::path denied_directory_ex_a =
+        denied_create_directory.wstring() + L".ex-a";
     const std::filesystem::path missing_copy_source = allowed_root / L"missing-source.txt";
     const std::filesystem::path missing_copy_destination = allowed_root / L"missing-destination.txt";
     const std::filesystem::path allowed_native_link =
@@ -3926,7 +3974,23 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_truncate_path.wstring(), 115);
+            denied_truncate_path.wstring(), 115) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_directory_ex_w.wstring(), 116) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_directory_ex_w.wstring(), 117) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_directory_ex_a.wstring(), 118) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_directory_ex_a.wstring(), 119);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
@@ -3973,6 +4037,10 @@ bool RunProcessTests() {
                             !std::filesystem::exists(denied_copy_destination) &&
                             ReadFixture(allowed_copy_source) == copy_nonce &&
                             ReadFixture(allowed_copy_destination) == copy_nonce &&
+                            !std::filesystem::exists(allowed_directory_ex_w) &&
+                            !std::filesystem::exists(allowed_directory_ex_a) &&
+                            !std::filesystem::exists(denied_directory_ex_w) &&
+                            !std::filesystem::exists(denied_directory_ex_a) &&
                             !std::filesystem::exists(missing_copy_source) &&
                             !std::filesystem::exists(missing_copy_destination) &&
                             !std::filesystem::exists(allowed_native_link) &&

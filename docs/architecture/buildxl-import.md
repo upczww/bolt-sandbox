@@ -67,6 +67,13 @@ and `RemoveDirectoryA`; on the supported Windows baseline those wrappers funnel
 through the installed wide-character hooks, including final-target events and
 denied-call output/side-effect preservation.
 
+The vendored BuildXL `CreateDirectoryExW` body remains a policy TODO, so Bolt
+does not claim coverage from that wrapper alone. Integration probes demonstrate
+that `CreateDirectoryExW/A` on the supported Windows baseline converge on both
+the installed directory-create and native-create seams. Allowed template-based
+creation succeeds and cleans up; denied W/A destinations emit the two observed
+`Create` decisions per call and leave no directory behind.
+
 Create/open classification is a Bolt-owned compatibility seam derived from
 BuildXL's `WantsWriteAccess`, `WantsReadAccess`, and probe-only split. It treats
 attribute/EA/security/synchronization-only opens as metadata, execution/content
