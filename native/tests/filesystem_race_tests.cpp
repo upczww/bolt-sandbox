@@ -1716,35 +1716,6 @@ int RunFilesystemRaceChild(
             return 346;
         }
 
-        const std::wstring current_executable = CurrentExecutable();
-        const HANDLE image_file = CreateFileW(
-            current_executable.c_str(), GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL, nullptr);
-        const HANDLE image_mapping = image_file == INVALID_HANDLE_VALUE
-                                         ? nullptr
-                                         : CreateFileMappingW(
-                                               image_file, nullptr,
-                                               PAGE_READONLY | SEC_IMAGE, 0, 0,
-                                               nullptr);
-        if (image_file == INVALID_HANDLE_VALUE) {
-            return 347;
-        }
-        if (image_mapping == nullptr) {
-            CloseHandle(image_file);
-            return 348;
-        }
-        void* image_view = image_mapping == nullptr
-                               ? nullptr
-                               : MapViewOfFile(image_mapping, FILE_MAP_READ, 0, 0, 0);
-        if (image_view == nullptr) {
-            CloseHandle(image_mapping);
-            CloseHandle(image_file);
-            return 349;
-        }
-        UnmapViewOfFile(image_view);
-        CloseHandle(image_mapping);
-        CloseHandle(image_file);
     } else {
         return 298;
     }
