@@ -3510,21 +3510,17 @@ bool RunUnicodeLaunchPathTest(
     const auto staged_directory = test_root / L"launch space \U0001F680";
     const auto staged_executable =
         staged_directory / std::filesystem::path(executable).filename();
-    const auto staged_hook = staged_directory / hook_path.filename();
     std::error_code error;
     if (!std::filesystem::create_directories(staged_directory, error) || error ||
         !std::filesystem::copy_file(
             executable, staged_executable,
-            std::filesystem::copy_options::overwrite_existing, error) || error ||
-        !std::filesystem::copy_file(
-            hook_path, staged_hook,
             std::filesystem::copy_options::overwrite_existing, error) || error) {
         return false;
     }
     const std::wstring arguments =
         L"--nested-process " + std::wstring(hook_name) + L" 1";
     const bool passed = RunInheritedProcessTest(
-        staged_executable.wstring(), staged_hook, hook_name,
+        staged_executable.wstring(), hook_path, hook_name,
         PipeName(GetCurrentProcessId() ^ 0x5100'0022U), arguments, 0x64);
     std::filesystem::remove_all(staged_directory, error);
     return passed;
