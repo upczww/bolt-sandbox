@@ -2671,41 +2671,47 @@ bool RunProcessTests() {
         return false;
     }
 
-#if defined(_WIN64)
     const std::filesystem::path current_output_directory =
         std::filesystem::path(executable).parent_path();
     const std::filesystem::path native_target_directory =
         current_output_directory.parent_path().parent_path();
-    const std::filesystem::path x86_output_directory =
-        native_target_directory / L"x86" /
+#if defined(_WIN64)
+    constexpr auto opposite_architecture_directory = L"x86";
+    constexpr auto opposite_hook_name = L"bolt-sandbox-x86.dll";
+#else
+    constexpr auto opposite_architecture_directory = L"x64";
+    constexpr auto opposite_hook_name = L"bolt-sandbox-x64.dll";
+#endif
+    const std::filesystem::path opposite_output_directory =
+        native_target_directory / opposite_architecture_directory /
 #if defined(NDEBUG)
         L"Release";
 #else
         L"Debug";
 #endif
-    const std::filesystem::path x86_executable =
-        x86_output_directory / L"bolt-sandbox-native-tests.exe";
-    const std::filesystem::path x86_hook_source =
-        x86_output_directory / L"bolt-sandbox-x86.dll";
-    const std::filesystem::path staged_x86_hook =
-        current_output_directory / L"bolt-sandbox-x86.dll";
+    const std::filesystem::path opposite_executable =
+        opposite_output_directory / L"bolt-sandbox-native-tests.exe";
+    const std::filesystem::path opposite_hook_source =
+        opposite_output_directory / opposite_hook_name;
+    const std::filesystem::path staged_opposite_hook =
+        current_output_directory / opposite_hook_name;
     filesystem_error.clear();
     std::filesystem::copy_file(
-        x86_hook_source, staged_x86_hook,
+        opposite_hook_source, staged_opposite_hook,
         std::filesystem::copy_options::overwrite_existing, filesystem_error);
-    if (filesystem_error || !std::filesystem::is_regular_file(x86_executable)) {
+    if (filesystem_error ||
+        !std::filesystem::is_regular_file(opposite_executable)) {
         return false;
     }
     const std::wstring cross_arguments =
-        L"--cross-architecture-parent \"" + x86_executable.wstring() +
-        L"\" bolt-sandbox-x86.dll";
+        L"--cross-architecture-parent \"" + opposite_executable.wstring() +
+        L"\" " + opposite_hook_name;
     const bool cross_architecture_inherited = RunInheritedProcessTest(
         executable, hook_path, hook_name, pipe_name, cross_arguments);
-    std::filesystem::remove(staged_x86_hook, filesystem_error);
+    std::filesystem::remove(staged_opposite_hook, filesystem_error);
     if (!cross_architecture_inherited) {
         return false;
     }
-#endif
 
     auto breakaway = options;
     breakaway.creation_flags = CREATE_BREAKAWAY_FROM_JOB;
