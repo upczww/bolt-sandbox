@@ -623,6 +623,26 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         }
         return 138;
     }
+    if (GetFileAttributesW(arguments[6]) != INVALID_FILE_ATTRIBUTES ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 139;
+    }
+    const std::string ansi_denied_metadata = AnsiPath(arguments[6]);
+    if (ansi_denied_metadata.empty() ||
+        GetFileAttributesA(ansi_denied_metadata.c_str()) != INVALID_FILE_ATTRIBUTES ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 140;
+    }
+    WIN32_FILE_ATTRIBUTE_DATA attribute_data{};
+    if (GetFileAttributesExW(arguments[6], GetFileExInfoStandard, &attribute_data) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 141;
+    }
+    if (GetFileAttributesExA(
+            ansi_denied_metadata.c_str(), GetFileExInfoStandard, &attribute_data) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 142;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1119,7 +1139,23 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kEnumerate,
-            denied_wildcard.wstring(), 43);
+            denied_wildcard.wstring(), 43) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_delete_path.wstring(), 44) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_delete_path.wstring(), 45) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_delete_path.wstring(), 46) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_delete_path.wstring(), 47);
     DWORD exit_code = 0;
     CloseHandle(denied_disposition_handle);
     CloseHandle(denied_truncate_handle);
