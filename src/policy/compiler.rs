@@ -1406,6 +1406,49 @@ mod tests {
     }
 
     #[test]
+    fn fs_049_all_sensitive_categories_override_broad_grants() {
+        let cwd = Path::new(r"C:\work\project");
+        let policy = policy_with_filesystem(|filesystem| {
+            filesystem.read_write.push(PathBuf::from(r"C:\Users\Alice"));
+        });
+        let mandatory_denies = [
+            PathBuf::from(r"C:\Users\Alice\.ssh"),
+            PathBuf::from(r"C:\Users\Alice\.gnupg"),
+            PathBuf::from(r"C:\Users\Alice\AppData\Local\Browser\CredentialStore"),
+            PathBuf::from(r"C:\Users\Alice\AppData\Roaming\ApplicationSecrets"),
+            PathBuf::from(r"C:\Users\Alice\AppData\Local\Bolt\BrokerState"),
+        ];
+        let compiled = compile_with_mandatory_denies(&policy, cwd, &mandatory_denies)
+            .expect("all mandatory sensitive categories must compile");
+
+        for denied_root in &mandatory_denies {
+            assert_eq!(
+                compiled
+                    .filesystem
+                    .decide(&denied_root.join("protected.bin"), FilesystemAccess::Read),
+                FilesystemDecision::Deny,
+                "mandatory category must remain denied: {}",
+                denied_root.display()
+            );
+            assert_eq!(
+                compiled
+                    .filesystem
+                    .decide(&denied_root.join("protected.bin"), FilesystemAccess::Write),
+                FilesystemDecision::Deny,
+                "mandatory category must reject writes: {}",
+                denied_root.display()
+            );
+        }
+        assert_eq!(
+            compiled.filesystem.decide(
+                Path::new(r"C:\Users\Alice\workspace\source.rs"),
+                FilesystemAccess::Write,
+            ),
+            FilesystemDecision::Allow
+        );
+    }
+
+    #[test]
     fn pol_024_mandatory_deny_aliases_are_canonicalized_once() {
         let compiled = compile_with_mandatory_denies(
             &SandboxPolicy::default(),

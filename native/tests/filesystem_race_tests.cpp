@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -20,6 +21,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <sddl.h>
 
 namespace {
 
@@ -56,6 +58,35 @@ bool WriteFixture(
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     stream.write(content.data(), static_cast<std::streamsize>(content.size()));
     return stream.good();
+}
+
+bool ReadSecurityDescriptor(
+    const std::filesystem::path& path,
+    std::vector<std::uint8_t>& descriptor) {
+    DWORD required = 0;
+    if (GetFileSecurityW(
+            path.c_str(), DACL_SECURITY_INFORMATION, nullptr, 0, &required) ||
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER || required == 0) {
+        return false;
+    }
+    descriptor.assign(required, 0);
+    return GetFileSecurityW(
+               path.c_str(), DACL_SECURITY_INFORMATION, descriptor.data(),
+               required, &required) != FALSE;
+}
+
+bool ApplyReadWriteDeniedAcl(const std::filesystem::path& path) {
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:P(D;;0x00000007;;;WD)(A;;0x00100080;;;WD)(A;;GA;;;SY)(A;;GA;;;BA)(A;;WDWO;;;OW)",
+            SDDL_REVISION_1, &descriptor, nullptr)) {
+        return false;
+    }
+    const bool applied = SetFileSecurityW(
+                             path.c_str(), DACL_SECURITY_INFORMATION,
+                             descriptor) != FALSE;
+    LocalFree(descriptor);
+    return applied;
 }
 
 std::string ReadFixture(const std::filesystem::path& path) {
@@ -134,6 +165,57 @@ bool PipeHasNoEvents(const HANDLE pipe) {
         return available == 0;
     }
     return GetLastError() == ERROR_BROKEN_PIPE;
+}
+
+bool PipeHasNoViolationForPath(
+    const HANDLE pipe,
+    const std::filesystem::path& forbidden_path) {
+    for (;;) {
+        std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
+        DWORD first_read = 0;
+        if (!ReadFile(
+                pipe, header.data(), static_cast<DWORD>(header.size()),
+                &first_read, nullptr)) {
+            return GetLastError() == ERROR_BROKEN_PIPE;
+        }
+        if (first_read != header.size()) {
+            return false;
+        }
+        const std::size_t payload_length = ReadU32(header.data() + 8);
+        std::vector<std::uint8_t> payload(payload_length);
+        if (!ReadExact(pipe, payload.data(), payload.size())) {
+            return false;
+        }
+        if (payload.size() < 9) {
+            continue;
+        }
+        const std::size_t path_length = ReadU32(payload.data() + 5);
+        if (9 + path_length * sizeof(wchar_t) != payload.size()) {
+            continue;
+        }
+        std::wstring path(path_length, L'\0');
+        std::memcpy(
+            path.data(), payload.data() + 9, path.size() * sizeof(wchar_t));
+        if (CompareStringOrdinal(
+                path.c_str(), -1, forbidden_path.c_str(), -1, TRUE) ==
+            CSTR_EQUAL) {
+            std::fprintf(
+                stderr, "forbidden-path violation operation=%u\n",
+                static_cast<unsigned>(payload[4]));
+            return false;
+        }
+    }
+}
+
+bool EnumeratesDirectory(const std::filesystem::path& directory) {
+    WIN32_FIND_DATAW data{};
+    const std::filesystem::path wildcard = directory / L"*";
+    const HANDLE find = FindFirstFileW(wildcard.c_str(), &data);
+    if (find == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    FindClose(find);
+    return true;
 }
 
 using FlushEventsFunction = BOOL (*)(DWORD);
@@ -496,6 +578,131 @@ bool RunAllowedReplaceRenameTest(
     return passed;
 }
 
+bool RunPolicySemanticsTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const std::filesystem::path& test_root,
+    std::uint64_t& ordinal) {
+    const auto allowed = test_root / L"semantics-allowed";
+    const auto read_only = test_root / L"semantics-read-only";
+    const auto metadata = test_root / L"semantics-metadata";
+    const auto denied = test_root / L"semantics-denied";
+    const auto outside = test_root / L"semantics-outside";
+    const auto parent = test_root / L"semantics-parent";
+    const auto child_grant = parent / L"child-grant";
+    std::error_code error;
+    for (const auto& path : {
+             allowed, read_only, metadata, denied, outside, child_grant}) {
+        if (!std::filesystem::create_directories(path, error) || error) {
+            return false;
+        }
+    }
+    if (!WriteFixture(read_only / L"read-only.txt", "read-only") ||
+        !WriteFixture(metadata / L"metadata.txt", "metadata") ||
+        !WriteFixture(denied / L"denied.txt", "denied") ||
+        !WriteFixture(outside / L"outside.txt", "outside") ||
+        !WriteFixture(child_grant / L"granted.txt", "granted")) {
+        return false;
+    }
+
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const std::vector<bolt::tests::FilesystemRule> rules = {
+        {bolt::tests::FilesystemRuleKind::kReadWrite, allowed},
+        {bolt::tests::FilesystemRuleKind::kReadOnly, read_only},
+        {bolt::tests::FilesystemRuleKind::kMetadataRead, metadata},
+        {bolt::tests::FilesystemRuleKind::kDeny, denied},
+        {bolt::tests::FilesystemRuleKind::kReadWrite, child_grant},
+    };
+    RaceProcess process;
+    const bool started =
+        start != nullptr &&
+        process.Start(
+            executable, hook_path, rules, L"policy-semantics", test_root, {},
+            start, ordinal++);
+    const bool released =
+        started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
+    const bool exited = released && process.WaitForExit();
+    const bool passed =
+        exited && ReadFixture(allowed / L"nested" / L"created.txt") == "created" &&
+        ReadFixture(read_only / L"read-only.txt") == "read-only" &&
+        ReadFixture(metadata / L"metadata.txt") == "metadata" &&
+        ReadFixture(denied / L"denied.txt") == "denied" &&
+        ReadFixture(outside / L"outside.txt") == "outside" &&
+        ReadFixture(child_grant / L"granted.txt") == "granted";
+    if (start != nullptr) {
+        CloseHandle(start);
+    }
+    if (!passed) {
+        std::fprintf(
+            stderr, "policy semantics failed: exit=%lu created=%d\n",
+            static_cast<unsigned long>(process.exit_code()),
+            std::filesystem::exists(allowed / L"nested" / L"created.txt") ? 1 : 0);
+    }
+    return passed;
+}
+
+bool RunInheritUserAclTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const std::filesystem::path& test_root,
+    std::uint64_t& ordinal) {
+    const auto inherit_root = test_root / L"inherit-user";
+    const auto allowed_file = inherit_root / L"allowed.txt";
+    const auto denied_file = inherit_root / L"acl-denied.txt";
+    std::error_code error;
+    if (!std::filesystem::create_directories(inherit_root, error) || error ||
+        !WriteFixture(allowed_file, "allowed") ||
+        !WriteFixture(denied_file, "denied")) {
+        return false;
+    }
+    std::vector<std::uint8_t> original_descriptor;
+    if (!ReadSecurityDescriptor(denied_file, original_descriptor) ||
+        !ApplyReadWriteDeniedAcl(denied_file)) {
+        return false;
+    }
+
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const std::vector<bolt::tests::FilesystemRule> rules = {
+        {bolt::tests::FilesystemRuleKind::kInheritUser, inherit_root},
+    };
+    RaceProcess process;
+    const bool started =
+        start != nullptr &&
+        process.Start(
+            executable, hook_path, rules, L"inherit-user-acl", inherit_root, {},
+            start, ordinal++);
+    const bool released =
+        started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
+    const bool exited = released && process.WaitForExit();
+    const bool no_violation =
+        exited && PipeHasNoViolationForPath(process.event_pipe(), denied_file);
+
+    const bool restored = SetFileSecurityW(
+                              denied_file.c_str(), DACL_SECURITY_INFORMATION,
+                              original_descriptor.data()) != FALSE;
+    const bool passed =
+        no_violation && restored && ReadFixture(allowed_file) == "Allowed" &&
+        ReadFixture(denied_file) == "denied";
+    if (start != nullptr) {
+        CloseHandle(start);
+    }
+    if (!passed) {
+        std::fprintf(
+            stderr,
+            "inherit_user ACL failed: exit=%lu no_violation=%d restored=%d allowed=%zu denied=%zu\n",
+            static_cast<unsigned long>(process.exit_code()), no_violation ? 1 : 0,
+            restored ? 1 : 0, ReadFixture(allowed_file).size(),
+            ReadFixture(denied_file).size());
+    }
+    return passed;
+}
+
 }  // namespace
 
 int RunFilesystemRaceChild(
@@ -579,6 +786,112 @@ int RunFilesystemRaceChild(
             !MoveFileW(target.c_str(), renamed.c_str())) {
             return 301;
         }
+    } else if (mode == L"policy-semantics") {
+        const std::filesystem::path root(arguments[3]);
+        const auto allowed = root / L"semantics-allowed";
+        const auto read_only = root / L"semantics-read-only";
+        const auto metadata = root / L"semantics-metadata";
+        const auto denied = root / L"semantics-denied";
+        const auto outside = root / L"semantics-outside";
+        const auto parent = root / L"semantics-parent";
+        const auto child_grant = parent / L"child-grant";
+        const auto nested = allowed / L"nested";
+        if (!CreateDirectoryW(nested.c_str(), nullptr)) {
+            return 302;
+        }
+        const auto created = nested / L"created.txt";
+        const HANDLE created_file = CreateFileW(
+            created.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        DWORD written = 0;
+        const bool created_ok =
+            created_file != INVALID_HANDLE_VALUE &&
+            WriteFile(created_file, "created", 7, &written, nullptr) != FALSE &&
+            written == 7;
+        if (created_file != INVALID_HANDLE_VALUE) {
+            CloseHandle(created_file);
+        }
+        if (!created_ok || !EnumeratesDirectory(nested) ||
+            !EnumeratesDirectory(read_only)) {
+            return 303;
+        }
+        SetLastError(ERROR_SUCCESS);
+        if (EnumeratesDirectory(denied) || GetLastError() != ERROR_ACCESS_DENIED) {
+            return 304;
+        }
+        SetLastError(ERROR_SUCCESS);
+        if (EnumeratesDirectory(outside) || GetLastError() != ERROR_ACCESS_DENIED) {
+            return 305;
+        }
+        if (ReadFixture(child_grant / L"granted.txt") != "granted") {
+            return 306;
+        }
+        SetLastError(ERROR_SUCCESS);
+        if (GetFileAttributesW(parent.c_str()) != INVALID_FILE_ATTRIBUTES ||
+            GetLastError() != ERROR_ACCESS_DENIED) {
+            return 307;
+        }
+        if (GetFileAttributesW((metadata / L"metadata.txt").c_str()) ==
+            INVALID_FILE_ATTRIBUTES) {
+            return 308;
+        }
+        SetLastError(ERROR_SUCCESS);
+        const HANDLE metadata_read = CreateFileW(
+            (metadata / L"metadata.txt").c_str(), GENERIC_READ,
+            FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (metadata_read != INVALID_HANDLE_VALUE ||
+            GetLastError() != ERROR_ACCESS_DENIED) {
+            if (metadata_read != INVALID_HANDLE_VALUE) {
+                CloseHandle(metadata_read);
+            }
+            return 309;
+        }
+        const HANDLE read_only_file = CreateFileW(
+            (read_only / L"read-only.txt").c_str(), GENERIC_READ,
+            FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (read_only_file == INVALID_HANDLE_VALUE) {
+            return 310;
+        }
+        CloseHandle(read_only_file);
+    } else if (mode == L"inherit-user-acl") {
+        const std::filesystem::path root(arguments[3]);
+        const auto allowed_file = root / L"allowed.txt";
+        const auto denied_file = root / L"acl-denied.txt";
+        const HANDLE allowed = CreateFileW(
+            allowed_file.c_str(), GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (allowed == INVALID_HANDLE_VALUE) {
+            return 311;
+        }
+        std::array<char, 7> content{};
+        DWORD read = 0;
+        DWORD written = 0;
+        LARGE_INTEGER beginning{};
+        const bool allowed_ok =
+            ReadFile(allowed, content.data(), 7, &read, nullptr) != FALSE &&
+            read == 7 && std::string_view(content.data(), content.size()) == "allowed" &&
+            SetFilePointerEx(allowed, beginning, nullptr, FILE_BEGIN) != FALSE &&
+            WriteFile(allowed, "Allowed", 7, &written, nullptr) != FALSE &&
+            written == 7;
+        CloseHandle(allowed);
+        if (!allowed_ok) {
+            return 312;
+        }
+        SetLastError(ERROR_SUCCESS);
+        const HANDLE denied = CreateFileW(
+            denied_file.c_str(), GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        const DWORD denied_error = GetLastError();
+        if (denied != INVALID_HANDLE_VALUE || denied_error != ERROR_ACCESS_DENIED) {
+            if (denied != INVALID_HANDLE_VALUE) {
+                CloseHandle(denied);
+            }
+            return 313;
+        }
     } else {
         return 298;
     }
@@ -614,6 +927,10 @@ bool RunFilesystemRaceTests() {
         RunMixedTreeRenameTest(
             executable, hook_path, test_root, ordinal) &&
         RunAllowedReplaceRenameTest(
+            executable, hook_path, test_root, ordinal) &&
+        RunPolicySemanticsTest(
+            executable, hook_path, test_root, ordinal) &&
+        RunInheritUserAclTest(
             executable, hook_path, test_root, ordinal);
     std::filesystem::remove_all(test_root, error);
     if (!passed) {
