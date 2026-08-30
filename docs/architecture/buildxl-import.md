@@ -33,7 +33,9 @@ shipped. The exact file list and hashes are enforced by the import manifest.
 
 The currently compiled upstream subset is `Assertions`, `StringOperations`,
 `TreeNode`, `PathTree`, `ResolvedPathCache`, `CanonicalizedPath`, and
-`FilesCheckedForAccess`. It
+`FilesCheckedForAccess`. The complete immutable `DetouredFunctions.cpp`
+translation unit is also compiled as an object-only compatibility contract for
+x86/x64 Debug and Release, but is not linked into Bolt. This subset
 provides BuildXL's case-insensitive hashing and path comparison, Win32 path
 normalization, case-insensitive path tree, reparse-resolution cache and
 invalidation, canonical paths, and checked-path set. The former hand-written
@@ -58,7 +60,8 @@ opens as reads, all mutation or unknown rights as writes, and classifies
 `CREATE_NEW`, `CREATE_ALWAYS`, and `OPEN_ALWAYS` as creates. Unknown creation
 dispositions fail closed as writes.
 
-The remaining vendored files are not yet members of a Bolt build target. They
+The remaining vendored files are not yet members of a Bolt runtime link target.
+They
 are activated only after a failing behavior or compile-contract test defines
 the required boundary. In particular, `DataTypes`, `PolicySearch`,
 `PolicyResult`, and `SendReport` preserve the dependency context of the

@@ -10,13 +10,14 @@
   "currently_compiled_upstream_files": [
     "Assertions.cpp",
     "CanonicalizedPath.cpp",
+    "DetouredFunctions.cpp (compile-contract object only; not linked)",
     "FilesCheckedForAccess.cpp",
     "PathTree.cpp",
     "ResolvedPathCache.h",
     "StringOperations.cpp",
     "TreeNode.cpp"
   ],
-  "adaptation_baseline_not_linked": "all other imported DetoursServices source files",
+  "adaptation_baseline_not_linked": "DetouredFunctions.cpp compile-contract object and all other imported DetoursServices source files",
   "excluded_from_bolt_build": [
     "DataTypes.h",
     "PolicyResult.cpp",

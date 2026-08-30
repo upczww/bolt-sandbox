@@ -94,7 +94,15 @@ add_library(bolt-sandbox-buildxl-detoured-functions OBJECT
 )
 bolt_native_warnings(bolt-sandbox-buildxl-detoured-functions)
 target_compile_definitions(
-    bolt-sandbox-buildxl-detoured-functions PRIVATE _DO_NOT_EXPORT
+    bolt-sandbox-buildxl-detoured-functions PRIVATE
+        _DO_NOT_EXPORT
+        UNICODE
+        _UNICODE
+)
+target_compile_options(
+    bolt-sandbox-buildxl-detoured-functions PRIVATE
+        /wd4189
+        /wd4595
 )
 target_include_directories(bolt-sandbox-buildxl-detoured-functions PRIVATE
     ${BUILDXL_DETOURS_SERVICES_DIR}
