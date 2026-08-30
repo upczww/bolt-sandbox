@@ -28,6 +28,11 @@ not be placed on its command line or in its environment.
   require distinct file IDs, and verify that an allow rule for one identity
   cannot authorize the denied identity. The same conflicting policy must be
   rejected on a case-insensitive directory.
+- Volume-alias fixtures exercise `\\.\`, `\\?\Volume{GUID}\`, `\??\`, and
+  direct `\Device\HarddiskVolume...` paths against DOS-path policy rules. The
+  volume GUID and native-device probes run in an isolated Job with a shared
+  stage word and a three-second watchdog; timeout terminates the whole Job and
+  reports the last completed stage instead of blocking the suite.
 
 ## Process fixtures
 

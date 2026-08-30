@@ -197,6 +197,15 @@ differ only by case and Windows confirms both the parent directory's
 case-sensitive flag and distinct target file IDs. Ambiguous, missing, remote,
 or case-insensitive collisions fail policy loading closed.
 
+Volume GUID and native-device aliases use a second bounded adaptation. Before
+the Detours transaction attaches filesystem hooks, Bolt snapshots logical-drive
+mappings with `GetVolumeNameForVolumeMountPointW` and `QueryDosDeviceW` into the
+immutable native policy view. `\\?\Volume{GUID}\`, `\\.\`, `\??\`, and direct
+`\Device\...` inputs are rewritten to their mapped DOS identity before rule
+matching, then checked again using the opened handle's final DOS path. Policy
+evaluation performs no per-operation volume-manager query; an unknown or
+unmapped device identity remains denied.
+
 BuildXL's vendored `ReplaceFileW` hook currently contains a policy TODO and
 only invalidates its cache. Bolt therefore keeps the upstream signature and
 scope pattern but supplies the architecture-required fail-closed adapter:

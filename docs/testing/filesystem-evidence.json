@@ -16,7 +16,7 @@
     {"id":"FS-013","status":"covered","evidence":[{"file":"native/tests/buildxl_tree_tests.cpp","anchor":"HashPath(mixed_case_path"}]},
     {"id":"FS-014","status":"covered","evidence":[{"file":"native/tests/filesystem_race_tests.cpp","anchor":"BoundaryLongPath("},{"file":"native/tests/shell_file_operation_tests.cpp","anchor":"target_code_units = 32'700"}]},
     {"id":"FS-015","status":"covered","evidence":[{"file":"native/tests/filesystem_race_tests.cpp","anchor":"RunUncPathTest("},{"file":"native/hook/filesystem/filesystem_policy.cpp","anchor":"unc_marker[]"}]},
-    {"id":"FS-016","status":"partial","reason":"NT prefixes and root-relative paths are covered; explicit volume GUID and arbitrary NT device aliases remain incomplete.","evidence":[{"file":"native/tests/process_tests.cpp","anchor":"std::wstring nt_create_path"}]},
+    {"id":"FS-016","status":"covered","evidence":[{"file":"native/tests/process_tests.cpp","anchor":"std::wstring nt_create_path"},{"file":"native/tests/filesystem_race_tests.cpp","anchor":"RunVolumeGuidAliasTest("},{"file":"native/tests/filesystem_race_tests.cpp","anchor":"native-device-aliases"},{"file":"native/hook/filesystem/filesystem_policy.cpp","anchor":"LoadPathAliases("}]},
     {"id":"FS-017","status":"covered","evidence":[{"file":"native/tests/process_tests.cpp","anchor":"file_short_name_information"}]},
     {"id":"FS-018","status":"covered","evidence":[{"file":"native/tests/filesystem_race_tests.cpp","anchor":"base.txt:stream"}]},
     {"id":"FS-019","status":"covered","evidence":[{"file":"native/tests/filesystem_race_tests.cpp","anchor":"CreateMailslotW("}]},
