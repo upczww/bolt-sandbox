@@ -105,7 +105,10 @@ then invokes the real API. Bolt also attaches BuildXL's exact
 `ZwSetInformationFile_t` seam and applies the same check to allocation and
 end-of-file information classes. Its disposition and extended-disposition
 branches mirror the Win32 delete-flag split and report `Delete`. Direct NT
-callers receive native `STATUS_ACCESS_DENIED` without modifying the file.
+rename and extended-rename classes decode the NT length-delimited target and
+reuse two-sided move authorization. Direct NT callers receive native
+`STATUS_ACCESS_DENIED` without modifying the file; unsupported root-handle
+relative rename identities fail closed.
 
 For textually allowed copy, move, and replace operation paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,

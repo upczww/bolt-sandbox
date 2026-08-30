@@ -710,11 +710,17 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
         static_cast<FILE_INFORMATION_CLASS>(13);
     constexpr FILE_INFORMATION_CLASS file_disposition_information_ex =
         static_cast<FILE_INFORMATION_CLASS>(64);
+    constexpr FILE_INFORMATION_CLASS file_rename_information =
+        static_cast<FILE_INFORMATION_CLASS>(10);
+    constexpr FILE_INFORMATION_CLASS file_rename_information_ex =
+        static_cast<FILE_INFORMATION_CLASS>(65);
     const bool is_truncation = information_class == file_allocation_information ||
                                information_class == file_end_of_file_information;
     const bool is_disposition = information_class == file_disposition_information ||
                                 information_class == file_disposition_information_ex;
-    if (!is_truncation && !is_disposition) {
+    const bool is_rename = information_class == file_rename_information ||
+                           information_class == file_rename_information_ex;
+    if (!is_truncation && !is_disposition && !is_rename) {
         return g_zw_set_information_file(
             file, io_status, information, information_size, information_class);
     }
@@ -749,6 +755,59 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
     }
 
     constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+    if (is_rename) {
+        struct NtFileRenameInformation {
+            BOOLEAN replace_or_flags;
+            HANDLE root_directory;
+            ULONG file_name_length;
+            WCHAR file_name[1];
+        };
+        constexpr std::size_t header_size =
+            offsetof(NtFileRenameInformation, file_name);
+        if (information == nullptr || information_size < header_size) {
+            return g_zw_set_information_file(
+                file, io_status, information, information_size, information_class);
+        }
+        const auto* rename = static_cast<const NtFileRenameInformation*>(information);
+        if (rename->root_directory != nullptr || rename->file_name_length == 0 ||
+            rename->file_name_length % sizeof(wchar_t) != 0 ||
+            rename->file_name_length > information_size - header_size) {
+            if (io_status != nullptr) {
+                io_status->Status = status_access_denied;
+                io_status->Information = 0;
+            }
+            return status_access_denied;
+        }
+        std::wstring source_path;
+        std::wstring destination_path;
+        if (!TryGetHandlePath(file, source_path)) {
+            if (io_status != nullptr) {
+                io_status->Status = status_access_denied;
+                io_status->Information = 0;
+            }
+            return status_access_denied;
+        }
+        try {
+            destination_path.assign(
+                rename->file_name, rename->file_name_length / sizeof(wchar_t));
+        } catch (...) {
+            if (io_status != nullptr) {
+                io_status->Status = status_access_denied;
+                io_status->Information = 0;
+            }
+            return status_access_denied;
+        }
+        if (!AuthorizeMove(source_path.c_str(), destination_path.c_str())) {
+            if (io_status != nullptr) {
+                io_status->Status = status_access_denied;
+                io_status->Information = 0;
+            }
+            return status_access_denied;
+        }
+        return g_zw_set_information_file(
+            file, io_status, information, information_size, information_class);
+    }
+
     std::wstring source_path;
     if (!TryGetHandlePath(file, source_path)) {
         if (io_status != nullptr) {
