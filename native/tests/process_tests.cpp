@@ -181,7 +181,7 @@ bool ReadFilesystemViolation(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 21) {
+    if (argument_count != 22) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -331,6 +331,18 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 103;
     }
+    if (ReplaceFileW(arguments[21], arguments[12], nullptr, 0, nullptr, nullptr) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 113;
+    }
+    const std::string ansi_replace_target = AnsiPath(arguments[21]);
+    if (ansi_replace_target.empty() ||
+        ReplaceFileA(
+            ansi_replace_target.c_str(), ansi_copy_source.c_str(), nullptr, 0, nullptr,
+            nullptr) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 114;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -375,6 +387,8 @@ bool RunProcessTests() {
     const std::filesystem::path alias_move_destination = allowed_junction / L"move-target.txt";
     const std::filesystem::path denied_alias_move_target =
         denied_junction_target / L"move-target.txt";
+    const std::filesystem::path allowed_replace_target =
+        allowed_root / L"replace-target.txt";
     if (!std::filesystem::create_directories(denied_junction_target, filesystem_error) ||
         filesystem_error) {
         return false;
@@ -432,6 +446,7 @@ bool RunProcessTests() {
     DeleteFileW(allowed_copy_destination.c_str());
     DeleteFileW(missing_copy_source.c_str());
     DeleteFileW(missing_copy_destination.c_str());
+    DeleteFileW(allowed_replace_target.c_str());
     const HANDLE delete_fixture = CreateFileW(
         denied_delete_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -456,6 +471,12 @@ bool RunProcessTests() {
         return false;
     }
     CloseHandle(copy_fixture);
+    constexpr std::string_view replacement_nonce = "denied-replacement";
+    constexpr std::string_view replace_target_nonce = "replace-target";
+    if (!WriteFixture(denied_copy_source, replacement_nonce) ||
+        !WriteFixture(allowed_replace_target, replace_target_nonce)) {
+        return false;
+    }
     constexpr std::string_view copy_nonce = "bolt-copy-nonce";
     if (!WriteFixture(allowed_copy_source, copy_nonce)) {
         DeleteFileW(denied_delete_path.c_str());
@@ -493,7 +514,8 @@ bool RunProcessTests() {
                                       missing_copy_destination.wstring() + L"\" \"" +
                                       alias_copy_destination.wstring() + L"\" \"" +
                                       allowed_alias_move_source.wstring() + L"\" \"" +
-                                      alias_move_destination.wstring() + L"\"";
+                                      alias_move_destination.wstring() + L"\" \"" +
+                                      allowed_replace_target.wstring() + L"\"";
     const HANDLE inherited[] = {allowed, policy.handle(), event_client, release};
     bolt::common::ProcessLaunchOptions options{
         executable,
@@ -621,7 +643,13 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kRename,
-            denied_alias_move_target.wstring(), 23);
+            denied_alias_move_target.wstring(), 23) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRename, denied_copy_source.wstring(), 24) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRename, denied_copy_source.wstring(), 25);
     DWORD exit_code = 0;
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
@@ -635,7 +663,7 @@ bool RunProcessTests() {
                             std::filesystem::exists(denied_move_source) &&
                             !std::filesystem::exists(denied_move_destination) &&
                             !std::filesystem::exists(denied_hardlink_destination) &&
-                            std::filesystem::exists(denied_copy_source) &&
+                            ReadFixture(denied_copy_source) == replacement_nonce &&
                             !std::filesystem::exists(denied_copy_destination) &&
                             ReadFixture(allowed_copy_source) == copy_nonce &&
                             ReadFixture(allowed_copy_destination) == copy_nonce &&
@@ -643,7 +671,8 @@ bool RunProcessTests() {
                             !std::filesystem::exists(missing_copy_destination) &&
                             ReadFixture(denied_alias_target) == protected_nonce &&
                             ReadFixture(allowed_alias_move_source) == move_nonce &&
-                            !std::filesystem::exists(denied_alias_move_target);
+                            !std::filesystem::exists(denied_alias_move_target) &&
+                            ReadFixture(allowed_replace_target) == replace_target_nonce;
     CloseHandle(allowed);
     CloseHandle(denied);
     if (event_client != INVALID_HANDLE_VALUE) {
@@ -658,6 +687,7 @@ bool RunProcessTests() {
     DeleteFileW(allowed_copy_source.c_str());
     DeleteFileW(allowed_copy_destination.c_str());
     DeleteFileW(allowed_alias_move_source.c_str());
+    DeleteFileW(allowed_replace_target.c_str());
     std::filesystem::remove_all(test_root, filesystem_error);
     if (!exact_exit) {
         return false;
