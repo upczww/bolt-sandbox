@@ -4612,16 +4612,20 @@ bool RunProcessTests() {
     }
 
     std::array<bool, 2> concurrent_session_results{};
+    const std::wstring concurrent_session_arguments =
+        L"--nested-process " + std::wstring(hook_name) + L" 2";
     std::array<std::thread, 2> concurrent_sessions = {
         std::thread([&] {
             concurrent_session_results[0] = RunInheritedProcessTest(
                 executable, hook_path, hook_name,
-                PipeName(GetCurrentProcessId() ^ 0x5100'0001U), {}, 0x61);
+                PipeName(GetCurrentProcessId() ^ 0x5100'0001U),
+                concurrent_session_arguments, 0x61);
         }),
         std::thread([&] {
             concurrent_session_results[1] = RunInheritedProcessTest(
                 executable, hook_path, hook_name,
-                PipeName(GetCurrentProcessId() ^ 0x5100'0002U), {}, 0x62);
+                PipeName(GetCurrentProcessId() ^ 0x5100'0002U),
+                concurrent_session_arguments, 0x62);
         }),
     };
     for (auto& session : concurrent_sessions) {

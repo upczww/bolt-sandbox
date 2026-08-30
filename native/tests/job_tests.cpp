@@ -126,6 +126,52 @@ bool RunJobTreeTermination(const bool close_job) {
     return stopped;
 }
 
+bool RunIgnoredGracefulTermination() {
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE request = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const HANDLE acknowledged =
+        CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    std::wstring executable(32'768, L'\0');
+    const DWORD length = GetModuleFileNameW(
+        nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    if (request == nullptr || acknowledged == nullptr || length == 0 ||
+        length == executable.size()) {
+        return false;
+    }
+    executable.resize(length);
+    std::wstring command =
+        L"\"" + executable + L"\" --ignore-graceful " +
+        HandleText(request) + L" " + HandleText(acknowledged);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    bolt::common::ExecutionJob job;
+    const bool started =
+        bolt::common::ExecutionJob::Create(job) ==
+            bolt::common::JobStatus::kSuccess &&
+        CreateProcessW(
+            executable.c_str(), command.data(), nullptr, nullptr, TRUE,
+            CREATE_SUSPENDED, nullptr, nullptr, &startup, &process) != FALSE &&
+        job.Assign(process.hProcess) == bolt::common::JobStatus::kSuccess &&
+        ResumeThread(process.hThread) != static_cast<DWORD>(-1);
+    const bool ignored =
+        started && SetEvent(request) != FALSE &&
+        WaitForSingleObject(acknowledged, 5'000) == WAIT_OBJECT_0 &&
+        WaitForSingleObject(process.hProcess, 0) == WAIT_TIMEOUT;
+    const bool forced =
+        ignored && job.Terminate(307) == bolt::common::JobStatus::kSuccess &&
+        WaitForSingleObject(process.hProcess, 5'000) == WAIT_OBJECT_0;
+    if (!forced && process.hProcess != nullptr) {
+        TerminateProcess(process.hProcess, 308);
+    }
+    CloseProcessInformation(process);
+    CloseHandle(acknowledged);
+    CloseHandle(request);
+    return forced;
+}
+
 }  // namespace
 
 int RunJobTreeParent(const int argument_count, wchar_t** arguments) {
@@ -168,6 +214,22 @@ int RunJobTreeParent(const int argument_count, wchar_t** arguments) {
     return 0;
 }
 
+int RunIgnoreGracefulChild(const int argument_count, wchar_t** arguments) {
+    if (argument_count != 4) {
+        return 309;
+    }
+    const HANDLE request = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[2], nullptr, 10));
+    const HANDLE acknowledged = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[3], nullptr, 10));
+    if (WaitForSingleObject(request, 5'000) != WAIT_OBJECT_0 ||
+        !SetEvent(acknowledged)) {
+        return 310;
+    }
+    Sleep(INFINITE);
+    return 0;
+}
+
 bool RunJobTests() {
     bolt::common::ExecutionJob limits_job;
     if (bolt::common::ExecutionJob::Create(limits_job) != bolt::common::JobStatus::kSuccess ||
@@ -200,5 +262,6 @@ bool RunJobTests() {
     return bolt::common::ExecutionJob::Create(terminate_job) == bolt::common::JobStatus::kSuccess &&
            terminate_job.Terminate(92) == bolt::common::JobStatus::kSuccess &&
            terminate_job.Terminate(92) == bolt::common::JobStatus::kSuccess &&
-           RunJobTreeTermination(true) && RunJobTreeTermination(false);
+           RunJobTreeTermination(true) && RunJobTreeTermination(false) &&
+           RunIgnoredGracefulTermination();
 }
