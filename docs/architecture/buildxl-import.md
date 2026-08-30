@@ -149,6 +149,13 @@ before invoking Windows. Direct `NtQueryInformationFile` calls share that
 decision and return native `STATUS_ACCESS_DENIED`, preventing a previously
 obtained handle from leaking attributes, size, timestamps, names, or IDs.
 
+Path-based `NtQueryAttributesFile` and `NtQueryFullAttributesFile` calls decode
+the length-delimited absolute `OBJECT_ATTRIBUTES` name and pass the DOS/UNC
+identity through the same metadata seam. Denials return
+`STATUS_ACCESS_DENIED` before the native call. Root-directory-relative names
+remain fail-closed until their dedicated FS-052 identity tests activate that
+resolution path.
+
 Attribute mutation through `SetFileAttributesW/A` is a Bolt-owned Win32 seam
 because the vendored BuildXL layer has no dedicated wrapper. Both variants
 require write access, report denied changes as `Write`, and invalidate the path
