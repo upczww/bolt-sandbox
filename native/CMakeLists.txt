@@ -179,6 +179,7 @@ add_library(bolt-sandbox-network STATIC
     hook/network/dns_proxy_handle_transport.cpp
     hook/network/network_hooks.cpp
     hook/network/network_policy.cpp
+    hook/network/socket_target_table.cpp
     hook/network/system_dns_resolver.cpp
     hook/network/system_tcp_connector.cpp
     hook/network/tcp_relay.cpp
