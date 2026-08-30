@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -59,6 +60,126 @@ std::string AnsiPath(const wchar_t* path) {
     }
     converted.pop_back();
     return converted;
+}
+
+// Narrow Native ABI fixture derived from winsiderss/phnt commit
+// 53fbbdc5b5d2b08761db1c7b26bfa8c820924356 (MIT).
+struct NativeSectionImageInformation {
+    PVOID transfer_address;
+    ULONG zero_bits;
+    SIZE_T maximum_stack_size;
+    SIZE_T committed_stack_size;
+    ULONG subsystem_type;
+    ULONG subsystem_version;
+    ULONG operating_system_version;
+    USHORT image_characteristics;
+    USHORT dll_characteristics;
+    USHORT machine;
+    BOOLEAN image_contains_code;
+    UCHAR image_flags;
+    ULONG loader_flags;
+    ULONG image_file_size;
+    ULONG checksum;
+};
+
+struct NativeRtlUserProcessInformation {
+    ULONG length;
+    HANDLE process;
+    HANDLE thread;
+    CLIENT_ID client_id;
+    NativeSectionImageInformation image_information;
+};
+
+#if defined(_WIN64)
+static_assert(sizeof(NativeSectionImageInformation) == 64);
+static_assert(sizeof(NativeRtlUserProcessInformation) == 104);
+#else
+static_assert(sizeof(NativeSectionImageInformation) == 48);
+static_assert(sizeof(NativeRtlUserProcessInformation) == 68);
+#endif
+
+using RtlCreateProcessParametersExFunction = NTSTATUS(NTAPI*)(
+    PRTL_USER_PROCESS_PARAMETERS*, PCUNICODE_STRING, PCUNICODE_STRING,
+    PCUNICODE_STRING, PCUNICODE_STRING, PVOID, PCUNICODE_STRING,
+    PCUNICODE_STRING, PCUNICODE_STRING, PCUNICODE_STRING, ULONG);
+using RtlDestroyProcessParametersFunction = NTSTATUS(NTAPI*)(
+    PRTL_USER_PROCESS_PARAMETERS);
+using RtlCreateUserProcessFunction = NTSTATUS(NTAPI*)(
+    PCUNICODE_STRING, ULONG, PRTL_USER_PROCESS_PARAMETERS,
+    PSECURITY_DESCRIPTOR, PSECURITY_DESCRIPTOR, HANDLE, BOOLEAN, HANDLE, HANDLE,
+    NativeRtlUserProcessInformation*);
+
+bool InitializeUnicodeString(
+    std::wstring& value,
+    UNICODE_STRING& output) {
+    constexpr std::size_t maximum_code_units =
+        ((std::numeric_limits<USHORT>::max)() / sizeof(wchar_t)) - 1;
+    if (value.size() > maximum_code_units) {
+        return false;
+    }
+    output.Length = static_cast<USHORT>(value.size() * sizeof(wchar_t));
+    output.MaximumLength =
+        static_cast<USHORT>((value.size() + 1) * sizeof(wchar_t));
+    output.Buffer = value.data();
+    return true;
+}
+
+NTSTATUS CreateNativeRtlProcess(
+    const std::wstring& executable,
+    const std::wstring& arguments,
+    const bool inherit_handles,
+    NativeRtlUserProcessInformation& information) {
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto create_parameters =
+        reinterpret_cast<RtlCreateProcessParametersExFunction>(GetProcAddress(
+            ntdll, "RtlCreateProcessParametersEx"));
+    const auto destroy_parameters =
+        reinterpret_cast<RtlDestroyProcessParametersFunction>(GetProcAddress(
+            ntdll, "RtlDestroyProcessParameters"));
+    const auto create_process = reinterpret_cast<RtlCreateUserProcessFunction>(
+        GetProcAddress(ntdll, "RtlCreateUserProcess"));
+    if (create_parameters == nullptr || destroy_parameters == nullptr ||
+        create_process == nullptr) {
+        return static_cast<NTSTATUS>(0xC0000002UL);
+    }
+
+    std::wstring nt_image_path = L"\\??\\" + executable;
+    std::wstring command_line = L"\"" + executable + L"\"";
+    if (!arguments.empty()) {
+        command_line += L" ";
+        command_line += arguments;
+    }
+    UNICODE_STRING image{};
+    UNICODE_STRING command{};
+    if (!InitializeUnicodeString(nt_image_path, image) ||
+        !InitializeUnicodeString(command_line, command)) {
+        return static_cast<NTSTATUS>(0xC0000106UL);
+    }
+    PRTL_USER_PROCESS_PARAMETERS parameters = nullptr;
+    const NTSTATUS parameter_status = create_parameters(
+        &parameters, &image, nullptr, nullptr, &command, nullptr, nullptr,
+        nullptr, nullptr, nullptr, 1);
+    if (parameter_status < 0) {
+        return parameter_status;
+    }
+    information = {};
+    information.length = sizeof(information);
+    const NTSTATUS create_status = create_process(
+        &image, 0, parameters, nullptr, nullptr, nullptr,
+        inherit_handles ? TRUE : FALSE, nullptr, nullptr, &information);
+    destroy_parameters(parameters);
+    return create_status;
+}
+
+void CloseNativeProcessInformation(
+    NativeRtlUserProcessInformation& information) {
+    if (information.thread != nullptr) {
+        CloseHandle(information.thread);
+    }
+    if (information.process != nullptr) {
+        CloseHandle(information.process);
+    }
+    information = {};
 }
 
 HANDLE CreateRestrictedPrimaryToken() {
@@ -1573,6 +1694,22 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         }
         return 216;
     }
+    NativeRtlUserProcessInformation denied_native_process{};
+    const NTSTATUS denied_native_status = CreateNativeRtlProcess(
+        descendant_executable + L".missing-native-image", L"", false,
+        denied_native_process);
+    if (denied_native_status != status_access_denied ||
+        denied_native_process.process != nullptr ||
+        denied_native_process.thread != nullptr ||
+        denied_native_process.client_id.UniqueProcess != nullptr ||
+        denied_native_process.client_id.UniqueThread != nullptr) {
+        if (denied_native_process.process != nullptr) {
+            TerminateProcess(denied_native_process.process, 218);
+            WaitForSingleObject(denied_native_process.process, 5'000);
+        }
+        CloseNativeProcessInformation(denied_native_process);
+        return 218;
+    }
     std::wstring token_command = descendant_command;
     PROCESS_INFORMATION token_process{};
     const BOOL token_created = CreateProcessWithTokenW(
@@ -1783,6 +1920,48 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
     CloseHandle(shell_execute.hProcess);
     if (!shell_exited || shell_exit_code != 0) {
         return 240;
+    }
+
+    const HANDLE native_entered =
+        CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    if (native_entered == nullptr) {
+        return 241;
+    }
+    const std::wstring native_arguments =
+        L"--inherit-leaf " + std::wstring(arguments[2]) + L" " +
+        HandleText(native_entered);
+    NativeRtlUserProcessInformation native_process{};
+    const NTSTATUS native_status = CreateNativeRtlProcess(
+        executable, native_arguments, true, native_process);
+    const bool native_created = native_status >= 0 &&
+                                native_process.process != nullptr &&
+                                native_process.thread != nullptr;
+    const bool native_stayed_suspended =
+        native_created &&
+        WaitForSingleObject(native_entered, 100) == WAIT_TIMEOUT;
+    const bool native_resumed =
+        native_created &&
+        ResumeThread(native_process.thread) != static_cast<DWORD>(-1);
+    const bool native_entered_after_resume =
+        native_resumed &&
+        WaitForSingleObject(native_entered, 5'000) == WAIT_OBJECT_0;
+    const DWORD native_wait = native_created
+                                  ? WaitForSingleObject(
+                                        native_process.process, 5'000)
+                                  : WAIT_FAILED;
+    DWORD native_exit_code = 0;
+    const bool native_exited =
+        native_wait == WAIT_OBJECT_0 &&
+        GetExitCodeProcess(native_process.process, &native_exit_code) != FALSE;
+    if (native_created && !native_exited) {
+        TerminateProcess(native_process.process, 242);
+        WaitForSingleObject(native_process.process, 5'000);
+    }
+    CloseNativeProcessInformation(native_process);
+    CloseHandle(native_entered);
+    if (!native_stayed_suspended || !native_entered_after_resume ||
+        !native_exited || native_exit_code != 0) {
+        return 242;
     }
 
     const std::wstring wide_command_line =
