@@ -44,6 +44,7 @@ bool RunSystemTcpConnectorTests();
 bool RunTcpRelayTests();
 bool RunTcpProxyConnectionTests();
 bool RunTcpProxyClientTests();
+bool RunSocketTargetTableTests();
 bool RunDnsProxyServerTests();
 bool RunDnsProxySessionTests();
 bool RunDnsProxyHandleTransportTests();
@@ -350,6 +351,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
         std::wstring(arguments[1]) == L"--tcp-proxy-client-tests") {
         return RunTcpProxyClientTests() ? 0 : 1;
     }
+    if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--socket-target-table-tests") {
+        return RunSocketTargetTableTests() ? 0 : 1;
+    }
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-proxy-server-tests") {
         return RunDnsProxyServerTests() ? 0 : 1;
     }
@@ -518,6 +523,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunTcpProxyClientTests()) {
         return 35;
+    }
+    if (!RunSocketTargetTableTests()) {
+        return 36;
     }
     return 0;
 }

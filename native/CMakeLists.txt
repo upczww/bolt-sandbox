@@ -278,6 +278,7 @@ add_executable(bolt-sandbox-native-tests
     tests/tcp_relay_tests.cpp
     tests/tcp_proxy_connection_tests.cpp
     tests/tcp_proxy_client_tests.cpp
+    tests/socket_target_table_tests.cpp
     tests/dns_proxy_server_tests.cpp
     tests/dns_proxy_session_tests.cpp
     tests/dns_proxy_process_tests.cpp
