@@ -182,7 +182,7 @@ bool ReadFilesystemViolation(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 28) {
+    if (argument_count != 30) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -478,6 +478,55 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         return 124;
     }
     CloseHandle(direct_rename_handle);
+    const HANDLE allowed_mapping_file = CreateFileW(
+        arguments[28], GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    const HANDLE allowed_mapping = allowed_mapping_file == INVALID_HANDLE_VALUE
+                                       ? nullptr
+                                       : CreateFileMappingW(
+                                             allowed_mapping_file, nullptr, PAGE_READWRITE, 0, 0,
+                                             nullptr);
+    void* allowed_view = allowed_mapping == nullptr
+                             ? nullptr
+                             : MapViewOfFile(allowed_mapping, FILE_MAP_WRITE, 0, 0, 0);
+    if (allowed_view == nullptr) {
+        if (allowed_mapping != nullptr) {
+            CloseHandle(allowed_mapping);
+        }
+        if (allowed_mapping_file != INVALID_HANDLE_VALUE) {
+            CloseHandle(allowed_mapping_file);
+        }
+        return 125;
+    }
+    static_cast<char*>(allowed_view)[0] = 'X';
+    if (!FlushViewOfFile(allowed_view, 1)) {
+        UnmapViewOfFile(allowed_view);
+        CloseHandle(allowed_mapping);
+        CloseHandle(allowed_mapping_file);
+        return 126;
+    }
+    UnmapViewOfFile(allowed_view);
+    CloseHandle(allowed_mapping);
+    CloseHandle(allowed_mapping_file);
+
+    const auto denied_mapping_file =
+        reinterpret_cast<HANDLE>(_wcstoui64(arguments[29], nullptr, 10));
+    const HANDLE denied_mapping_w =
+        CreateFileMappingW(denied_mapping_file, nullptr, PAGE_READWRITE, 0, 0, nullptr);
+    if (denied_mapping_w != nullptr || GetLastError() != ERROR_ACCESS_DENIED) {
+        if (denied_mapping_w != nullptr) {
+            CloseHandle(denied_mapping_w);
+        }
+        return 127;
+    }
+    const HANDLE denied_mapping_a =
+        CreateFileMappingA(denied_mapping_file, nullptr, PAGE_READWRITE, 0, 0, nullptr);
+    if (denied_mapping_a != nullptr || GetLastError() != ERROR_ACCESS_DENIED) {
+        if (denied_mapping_a != nullptr) {
+            CloseHandle(denied_mapping_a);
+        }
+        return 128;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -536,6 +585,10 @@ bool RunProcessTests() {
         allowed_root / L"handle-truncate.txt";
     const std::filesystem::path denied_truncate_path =
         denied_root / L"handle-truncate.txt";
+    const std::filesystem::path allowed_mapping_path =
+        allowed_root / L"mapping.txt";
+    const std::filesystem::path denied_mapping_path =
+        denied_root / L"mapping.txt";
     if (!std::filesystem::create_directories(denied_junction_target, filesystem_error) ||
         filesystem_error) {
         return false;
@@ -600,6 +653,8 @@ bool RunProcessTests() {
     DeleteFileW(denied_disposition_path.c_str());
     DeleteFileW(allowed_truncate_path.c_str());
     DeleteFileW(denied_truncate_path.c_str());
+    DeleteFileW(allowed_mapping_path.c_str());
+    DeleteFileW(denied_mapping_path.c_str());
     const HANDLE delete_fixture = CreateFileW(
         denied_delete_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -660,6 +715,22 @@ bool RunProcessTests() {
         CloseHandle(denied_disposition_handle);
         return false;
     }
+    constexpr std::string_view mapping_nonce = "mapping-content";
+    if (!WriteFixture(allowed_mapping_path, mapping_nonce) ||
+        !WriteFixture(denied_mapping_path, mapping_nonce)) {
+        CloseHandle(denied_disposition_handle);
+        CloseHandle(denied_truncate_handle);
+        return false;
+    }
+    const HANDLE denied_mapping_handle = CreateFileW(
+        denied_mapping_path.c_str(), GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &inheritable, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (denied_mapping_handle == INVALID_HANDLE_VALUE) {
+        CloseHandle(denied_disposition_handle);
+        CloseHandle(denied_truncate_handle);
+        return false;
+    }
     constexpr std::string_view copy_nonce = "bolt-copy-nonce";
     if (!WriteFixture(allowed_copy_source, copy_nonce)) {
         DeleteFileW(denied_delete_path.c_str());
@@ -704,10 +775,12 @@ bool RunProcessTests() {
                                       allowed_disposition_path.wstring() + L"\" " +
                                       HandleText(denied_disposition_handle) + L" \"" +
                                       allowed_truncate_path.wstring() + L"\" " +
-                                      HandleText(denied_truncate_handle);
+                                      HandleText(denied_truncate_handle) + L" \"" +
+                                      allowed_mapping_path.wstring() + L"\" " +
+                                      HandleText(denied_mapping_handle);
     const HANDLE inherited[] = {
         allowed, policy.handle(), event_client, release, denied_disposition_handle,
-        denied_truncate_handle};
+        denied_truncate_handle, denied_mapping_handle};
     bolt::common::ProcessLaunchOptions options{
         executable,
         command_line,
@@ -868,10 +941,19 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kRename,
-            denied_handle_rename_destination.wstring(), 32);
+            denied_handle_rename_destination.wstring(), 32) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_mapping_path.wstring(), 33) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_mapping_path.wstring(), 34);
     DWORD exit_code = 0;
     CloseHandle(denied_disposition_handle);
     CloseHandle(denied_truncate_handle);
+    CloseHandle(denied_mapping_handle);
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
                             exit_code == 0 &&
@@ -899,7 +981,9 @@ bool RunProcessTests() {
                             !std::filesystem::exists(allowed_disposition_path) &&
                             ReadFixture(denied_disposition_path) == disposition_nonce &&
                             ReadFixture(allowed_truncate_path) == truncate_nonce.substr(0, 4) &&
-                            ReadFixture(denied_truncate_path) == truncate_nonce;
+                            ReadFixture(denied_truncate_path) == truncate_nonce &&
+                            ReadFixture(allowed_mapping_path) == "Xapping-content" &&
+                            ReadFixture(denied_mapping_path) == mapping_nonce;
     CloseHandle(allowed);
     CloseHandle(denied);
     if (event_client != INVALID_HANDLE_VALUE) {
@@ -919,6 +1003,8 @@ bool RunProcessTests() {
     DeleteFileW(denied_disposition_path.c_str());
     DeleteFileW(allowed_truncate_path.c_str());
     DeleteFileW(denied_truncate_path.c_str());
+    DeleteFileW(allowed_mapping_path.c_str());
+    DeleteFileW(denied_mapping_path.c_str());
     std::filesystem::remove_all(test_root, filesystem_error);
     if (!exact_exit) {
         return false;
