@@ -45,6 +45,12 @@ SetFileInformationByHandle_t g_set_file_information_by_handle = SetFileInformati
 using SetEndOfFileFunction = BOOL(WINAPI*)(HANDLE);
 SetEndOfFileFunction g_set_end_of_file = SetEndOfFile;
 ZwSetInformationFile_t g_zw_set_information_file = nullptr;
+using CreateFileMappingWFunction = HANDLE(WINAPI*)(
+    HANDLE, LPSECURITY_ATTRIBUTES, DWORD, DWORD, DWORD, LPCWSTR);
+using CreateFileMappingAFunction = HANDLE(WINAPI*)(
+    HANDLE, LPSECURITY_ATTRIBUTES, DWORD, DWORD, DWORD, LPCSTR);
+CreateFileMappingWFunction g_create_file_mapping_w = CreateFileMappingW;
+CreateFileMappingAFunction g_create_file_mapping_a = CreateFileMappingA;
 using CreateHardLinkWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRIBUTES);
 CreateHardLinkWFunction g_create_hard_link_w = CreateHardLinkW;
 CopyFileW_t g_copy_file_w = CopyFileW;
@@ -298,6 +304,34 @@ bool TryGetHandlePath(const HANDLE handle, std::wstring& path) noexcept {
         return false;
     }
     path.resize(written);
+    return true;
+}
+
+bool AuthorizeFileMapping(const HANDLE file, const DWORD protection) noexcept {
+    if (file == INVALID_HANDLE_VALUE) {
+        return true;
+    }
+    std::wstring source_path;
+    if (!TryGetHandlePath(file, source_path)) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    const DWORD base_protection = protection & 0xffU;
+    const bool writes_file = base_protection == PAGE_READWRITE ||
+                             base_protection == PAGE_EXECUTE_READWRITE;
+    const Access access = writes_file ? Access::kWrite : Access::kRead;
+    const auto* policy = g_policy.get();
+    const auto evaluation = policy == nullptr
+                                ? PolicyEvaluation{}
+                                : policy->Evaluate(source_path.c_str(), access);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            writes_file ? protocol::FilesystemOperation::kWrite
+                        : protocol::FilesystemOperation::kRead,
+            EvaluatedPath(evaluation, source_path.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
     return true;
 }
 
@@ -696,6 +730,44 @@ BOOL WINAPI DetouredSetEndOfFile(const HANDLE file) noexcept {
     return g_set_end_of_file(file);
 }
 
+HANDLE WINAPI DetouredCreateFileMappingW(
+    const HANDLE file,
+    const LPSECURITY_ATTRIBUTES security_attributes,
+    const DWORD protection,
+    const DWORD maximum_size_high,
+    const DWORD maximum_size_low,
+    const LPCWSTR name) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_file_mapping_w(
+            file, security_attributes, protection, maximum_size_high, maximum_size_low, name);
+    }
+    if (!AuthorizeFileMapping(file, protection)) {
+        return nullptr;
+    }
+    return g_create_file_mapping_w(
+        file, security_attributes, protection, maximum_size_high, maximum_size_low, name);
+}
+
+HANDLE WINAPI DetouredCreateFileMappingA(
+    const HANDLE file,
+    const LPSECURITY_ATTRIBUTES security_attributes,
+    const DWORD protection,
+    const DWORD maximum_size_high,
+    const DWORD maximum_size_low,
+    const LPCSTR name) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_file_mapping_a(
+            file, security_attributes, protection, maximum_size_high, maximum_size_low, name);
+    }
+    if (!AuthorizeFileMapping(file, protection)) {
+        return nullptr;
+    }
+    return g_create_file_mapping_a(
+        file, security_attributes, protection, maximum_size_high, maximum_size_low, name);
+}
+
 NTSTATUS NTAPI DetouredZwSetInformationFile(
     const HANDLE file,
     const PIO_STATUS_BLOCK io_status,
@@ -1073,6 +1145,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_set_end_of_file),
             reinterpret_cast<PVOID>(DetouredSetEndOfFile)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_create_file_mapping_w),
+            reinterpret_cast<PVOID>(DetouredCreateFileMappingW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_create_file_mapping_a),
+            reinterpret_cast<PVOID>(DetouredCreateFileMappingA)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_zw_set_information_file),
             reinterpret_cast<PVOID>(DetouredZwSetInformationFile)) != NO_ERROR ||
