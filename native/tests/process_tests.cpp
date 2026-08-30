@@ -208,7 +208,7 @@ bool ReadFilesystemViolation(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 36) {
+    if (argument_count != 37) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -846,6 +846,42 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
             status_access_denied) {
         return 161;
     }
+    using NtQueryDirectoryFileFunction = NTSTATUS(NTAPI*)(
+        HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
+        FILE_INFORMATION_CLASS, BOOLEAN, PUNICODE_STRING, BOOLEAN);
+    using NtQueryDirectoryFileExFunction = NTSTATUS(NTAPI*)(
+        HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
+        FILE_INFORMATION_CLASS, ULONG, PUNICODE_STRING);
+    const auto nt_query_directory_file =
+        reinterpret_cast<NtQueryDirectoryFileFunction>(GetProcAddress(
+            GetModuleHandleW(L"ntdll.dll"), "NtQueryDirectoryFile"));
+    const auto nt_query_directory_file_ex =
+        reinterpret_cast<NtQueryDirectoryFileExFunction>(GetProcAddress(
+            GetModuleHandleW(L"ntdll.dll"), "NtQueryDirectoryFileEx"));
+    const auto denied_directory_handle =
+        reinterpret_cast<HANDLE>(_wcstoui64(arguments[36], nullptr, 10));
+    std::array<std::uint8_t, 1'024> directory_information{};
+    constexpr FILE_INFORMATION_CLASS file_directory_information =
+        static_cast<FILE_INFORMATION_CLASS>(1);
+    if (nt_query_directory_file == nullptr ||
+        nt_query_directory_file(
+            denied_directory_handle, nullptr, nullptr, nullptr, &io_status,
+            directory_information.data(),
+            static_cast<ULONG>(directory_information.size()),
+            file_directory_information, FALSE, nullptr, TRUE) !=
+            status_access_denied) {
+        return 162;
+    }
+    constexpr ULONG restart_scan = 0x01;
+    if (nt_query_directory_file_ex == nullptr ||
+        nt_query_directory_file_ex(
+            denied_directory_handle, nullptr, nullptr, nullptr, &io_status,
+            directory_information.data(),
+            static_cast<ULONG>(directory_information.size()),
+            file_directory_information, restart_scan, nullptr) !=
+            status_access_denied) {
+        return 163;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1112,6 +1148,17 @@ bool RunProcessTests() {
         CloseHandle(denied_mapping_handle);
         return false;
     }
+    const HANDLE denied_directory_handle = CreateFileW(
+        denied_root.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &inheritable,
+        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (denied_directory_handle == INVALID_HANDLE_VALUE) {
+        CloseHandle(denied_disposition_handle);
+        CloseHandle(denied_truncate_handle);
+        CloseHandle(denied_mapping_handle);
+        CloseHandle(read_only_mapping_handle);
+        return false;
+    }
     constexpr std::string_view copy_nonce = "bolt-copy-nonce";
     if (!WriteFixture(allowed_copy_source, copy_nonce)) {
         DeleteFileW(denied_delete_path.c_str());
@@ -1164,10 +1211,12 @@ bool RunProcessTests() {
                                       forbidden_junction.wstring() + L"\" \"" +
                                       denied_junction_target.wstring() + L"\" \"" +
                                       denied_wildcard.wstring() + L"\" \"" +
-                                      denied_event_name + L"\"";
+                                      denied_event_name + L"\" " +
+                                      HandleText(denied_directory_handle);
     const HANDLE inherited[] = {
         allowed, policy.handle(), event_client, release, denied_disposition_handle,
-        denied_truncate_handle, denied_mapping_handle, read_only_mapping_handle};
+        denied_truncate_handle, denied_mapping_handle, read_only_mapping_handle,
+        denied_directory_handle};
     bolt::common::ProcessLaunchOptions options{
         executable,
         command_line,
@@ -1452,7 +1501,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kMetadata,
-            denied_delete_path.wstring(), 63);
+            denied_delete_path.wstring(), 63) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_root.wstring(), 64) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_root.wstring(), 65);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
@@ -1476,6 +1533,7 @@ bool RunProcessTests() {
     CloseHandle(denied_truncate_handle);
     CloseHandle(denied_mapping_handle);
     CloseHandle(read_only_mapping_handle);
+    CloseHandle(denied_directory_handle);
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
                             exit_code == 0 &&
