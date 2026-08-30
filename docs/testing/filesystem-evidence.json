@@ -35,7 +35,7 @@
     {"id":"FS-032","status":"covered","evidence":[{"file":"native/tests/process_tests.cpp","anchor":"allowed_replace_target"}]},
     {"id":"FS-033","status":"gap","reason":"No fixture performs both replace and rename wholly within read_write and validates resulting content."},
     {"id":"FS-034","status":"covered","evidence":[{"file":"native/tests/process_tests.cpp","anchor":"denied_disposition_path"}]},
-    {"id":"FS-035","status":"gap","reason":"No mixed-grant directory tree deletion/rename fixture verifies unauthorized descendants remain intact."},
+    {"id":"FS-035","status":"covered","evidence":[{"file":"native/tests/filesystem_race_tests.cpp","anchor":"RunMixedTreeRenameTest("}]},
     {"id":"FS-036","status":"covered","evidence":[{"file":"native/tests/process_tests.cpp","anchor":"denied_truncate_path"}]},
     {"id":"FS-037","status":"covered","evidence":[{"file":"native/tests/process_tests.cpp","anchor":"forbidden_read_only_write"}]},
     {"id":"FS-038","status":"covered","evidence":[{"file":"native/tests/process_tests.cpp","anchor":"read_only_view"}]},

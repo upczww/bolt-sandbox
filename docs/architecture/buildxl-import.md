@@ -158,6 +158,14 @@ the denied delete cannot remove either identity. These operations converge on
 the existing path and handle funnels, so no global filesystem lock or parallel
 race-specific hook is added.
 
+Directory-tree rename additionally checks policy structure below both the
+source and destination identities. Once the real source is confirmed to be a
+directory, a deeper explicit deny causes the shared path/handle move funnel to
+reject the whole operation before Windows can relocate any descendant. The
+same check runs again on final resolved identities, preventing a junction alias
+from hiding a mixed-grant subtree; ordinary file rename is not over-restricted
+by unrelated descendant-shaped rules.
+
 BuildXL's vendored `ReplaceFileW` hook currently contains a policy TODO and
 only invalidates its cache. Bolt therefore keeps the upstream signature and
 scope pattern but supplies the architecture-required fail-closed adapter:
