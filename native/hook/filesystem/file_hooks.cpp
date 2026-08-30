@@ -37,6 +37,12 @@ void ReportDenied(
     static_cast<void>(hook::TryReportFilesystemViolation(operation, path));
 }
 
+const wchar_t* EvaluatedPath(
+    const PolicyEvaluation& evaluation,
+    const wchar_t* fallback) noexcept {
+    return evaluation.normalized_path.empty() ? fallback : evaluation.normalized_path.c_str();
+}
+
 HANDLE WINAPI DetouredCreateFileW(
     const LPCWSTR filename,
     const DWORD desired_access,
@@ -47,13 +53,15 @@ HANDLE WINAPI DetouredCreateFileW(
     const HANDLE template_file) noexcept {
     const auto* policy = g_policy.get();
     const auto request = ClassifyCreateFileRequest(desired_access, creation_disposition);
-    if (policy == nullptr || policy->Decide(filename, request.access) == Decision::kDeny) {
-        ReportDenied(request.operation, filename);
+    const auto evaluation =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(filename, request.access);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(request.operation, EvaluatedPath(evaluation, filename));
         SetLastError(ERROR_ACCESS_DENIED);
         return INVALID_HANDLE_VALUE;
     }
     if (request.access == Access::kWrite) {
-        InvalidateResolvedPathForMutation(filename, false);
+        InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, filename), false);
     }
     return g_create_file_w(
         filename, desired_access, share_mode, security_attributes, creation_disposition,
@@ -64,12 +72,15 @@ HANDLE WINAPI DetouredCreateFileW(
 // point because the API deletes a link itself rather than its target.
 BOOL WINAPI DetouredDeleteFileW(const LPCWSTR filename) noexcept {
     const auto* policy = g_policy.get();
-    if (policy == nullptr || policy->Decide(filename, Access::kWrite) == Decision::kDeny) {
-        ReportDenied(protocol::FilesystemOperation::kDelete, filename);
+    const auto evaluation =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(filename, Access::kWrite);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            protocol::FilesystemOperation::kDelete, EvaluatedPath(evaluation, filename));
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
-    InvalidateResolvedPathForMutation(filename, false);
+    InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, filename), false);
     return g_delete_file_w(filename);
 }
 
@@ -77,23 +88,27 @@ BOOL WINAPI DetouredCreateDirectoryW(
     const LPCWSTR path,
     const LPSECURITY_ATTRIBUTES security_attributes) noexcept {
     const auto* policy = g_policy.get();
-    if (policy == nullptr || policy->Decide(path, Access::kWrite) == Decision::kDeny) {
-        ReportDenied(protocol::FilesystemOperation::kCreate, path);
+    const auto evaluation =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(path, Access::kWrite);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(protocol::FilesystemOperation::kCreate, EvaluatedPath(evaluation, path));
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
-    InvalidateResolvedPathForMutation(path, true);
+    InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, path), true);
     return g_create_directory_w(path, security_attributes);
 }
 
 BOOL WINAPI DetouredRemoveDirectoryW(const LPCWSTR path) noexcept {
     const auto* policy = g_policy.get();
-    if (policy == nullptr || policy->Decide(path, Access::kWrite) == Decision::kDeny) {
-        ReportDenied(protocol::FilesystemOperation::kDelete, path);
+    const auto evaluation =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(path, Access::kWrite);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(protocol::FilesystemOperation::kDelete, EvaluatedPath(evaluation, path));
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
-    InvalidateResolvedPathForMutation(path, true);
+    InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, path), true);
     return g_remove_directory_w(path);
 }
 
@@ -104,15 +119,23 @@ BOOL WINAPI DetouredMoveFileExW(
     const LPCWSTR new_path,
     const DWORD flags) noexcept {
     const auto* policy = g_policy.get();
-    if (policy == nullptr ||
-        policy->Decide(existing_path, Access::kWrite) == Decision::kDeny ||
-        (new_path != nullptr && policy->Decide(new_path, Access::kWrite) == Decision::kDeny)) {
-        ReportDenied(protocol::FilesystemOperation::kRename, existing_path);
+    const auto source =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(existing_path, Access::kWrite);
+    const auto destination = policy == nullptr || new_path == nullptr
+                                 ? PolicyEvaluation{}
+                                 : policy->Evaluate(new_path, Access::kWrite);
+    if (source.decision == Decision::kDeny ||
+        (new_path != nullptr && destination.decision == Decision::kDeny)) {
+        const bool source_denied = source.decision == Decision::kDeny;
+        ReportDenied(
+            protocol::FilesystemOperation::kRename,
+            source_denied ? EvaluatedPath(source, existing_path)
+                          : EvaluatedPath(destination, new_path));
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
-    InvalidateResolvedPathForMutation(existing_path, true);
-    InvalidateResolvedPathForMutation(new_path, true);
+    InvalidateResolvedPathForMutation(EvaluatedPath(source, existing_path), true);
+    InvalidateResolvedPathForMutation(EvaluatedPath(destination, new_path), true);
     return g_move_file_ex_w(existing_path, new_path, flags);
 }
 
@@ -123,13 +146,21 @@ BOOL WINAPI DetouredCreateHardLinkW(
     const LPCWSTR existing_path,
     const LPSECURITY_ATTRIBUTES security_attributes) noexcept {
     const auto* policy = g_policy.get();
-    if (policy == nullptr || policy->Decide(existing_path, Access::kRead) == Decision::kDeny ||
-        policy->Decide(new_path, Access::kWrite) == Decision::kDeny) {
-        ReportDenied(protocol::FilesystemOperation::kCreate, new_path);
+    const auto source =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(existing_path, Access::kRead);
+    const auto destination =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(new_path, Access::kWrite);
+    if (source.decision == Decision::kDeny || destination.decision == Decision::kDeny) {
+        const bool source_denied = source.decision == Decision::kDeny;
+        ReportDenied(
+            source_denied ? protocol::FilesystemOperation::kRead
+                          : protocol::FilesystemOperation::kCreate,
+            source_denied ? EvaluatedPath(source, existing_path)
+                          : EvaluatedPath(destination, new_path));
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
-    InvalidateResolvedPathForMutation(new_path, false);
+    InvalidateResolvedPathForMutation(EvaluatedPath(destination, new_path), false);
     return g_create_hard_link_w(new_path, existing_path, security_attributes);
 }
 

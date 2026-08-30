@@ -66,7 +66,10 @@ must never become Bolt runtime inputs or outputs.
 
 Bolt-owned adapters replace these coupled seams:
 
-- `PolicyView` maps the authenticated Bolt policy payload to access decisions.
+- `PolicyView` maps the authenticated Bolt policy payload to one fail-closed
+  decision plus the canonical, prefix-independent path identity produced by
+  BuildXL. Hooks reuse that identity for events and cache invalidation; source
+  and destination evaluations remain distinct for rename and hard-link calls.
 - `EventSink` maps hook outcomes to Bolt events and backpressure behavior. Its
   current filesystem implementation uses 64 preallocated records, assigns
   monotonic sequences after the Ready frame, and performs pipe writes on a

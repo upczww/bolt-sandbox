@@ -236,42 +236,47 @@ PolicyLoadStatus FilesystemPolicy::Load(
     }
 }
 
-Decision FilesystemPolicy::Decide(const wchar_t* path, const Access access) const noexcept {
+PolicyEvaluation FilesystemPolicy::Evaluate(
+    const wchar_t* path,
+    const Access access) const noexcept {
+    PolicyEvaluation evaluation;
     if (path == nullptr || implementation_ == nullptr) {
-        return Decision::kDeny;
+        return evaluation;
     }
     try {
         const auto canonical = CanonicalizedPath::Canonicalize(path);
         const wchar_t* normalized = canonical.GetPathStringWithoutTypePrefix();
         if (canonical.IsNull() || normalized == nullptr) {
-            return Decision::kDeny;
+            return evaluation;
         }
+        evaluation.normalized_path.assign(normalized);
 
         std::size_t maximum_depth = 0;
-        Decision decision = Decision::kDeny;
         for (const auto& rule : implementation_->rules) {
             if (!RootContains(rule.root, normalized)) {
                 continue;
             }
             if (rule.kind == RuleKind::kDeny) {
-                return Decision::kDeny;
+                evaluation.decision = Decision::kDeny;
+                return evaluation;
             }
             if (rule.depth > maximum_depth) {
                 maximum_depth = rule.depth;
-                decision = ApplyRule(rule.kind, access);
+                evaluation.decision = ApplyRule(rule.kind, access);
             } else if (rule.depth == maximum_depth) {
                 const auto candidate = ApplyRule(rule.kind, access);
                 if (candidate == Decision::kDeny) {
-                    return Decision::kDeny;
+                    evaluation.decision = Decision::kDeny;
+                    return evaluation;
                 }
                 if (candidate == Decision::kInheritUser) {
-                    decision = candidate;
+                    evaluation.decision = candidate;
                 }
             }
         }
-        return decision;
+        return evaluation;
     } catch (...) {
-        return Decision::kDeny;
+        return PolicyEvaluation{};
     }
 }
 

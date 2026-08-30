@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 namespace bolt::filesystem {
 
@@ -25,9 +26,27 @@ enum class PolicyLoadStatus : std::uint8_t {
     kOutOfMemory,
 };
 
-class FilesystemPolicy final {
+struct PolicyEvaluation {
+    Decision decision = Decision::kDeny;
+    std::wstring normalized_path;
+};
+
+class PolicyView {
   public:
-    ~FilesystemPolicy();
+    virtual ~PolicyView() = default;
+
+    [[nodiscard]] virtual PolicyEvaluation Evaluate(
+        const wchar_t* path,
+        Access access) const noexcept = 0;
+
+    [[nodiscard]] Decision Decide(const wchar_t* path, Access access) const noexcept {
+        return Evaluate(path, access).decision;
+    }
+};
+
+class FilesystemPolicy final : public PolicyView {
+  public:
+    ~FilesystemPolicy() override;
 
     FilesystemPolicy(const FilesystemPolicy&) = delete;
     FilesystemPolicy& operator=(const FilesystemPolicy&) = delete;
@@ -37,7 +56,9 @@ class FilesystemPolicy final {
         std::size_t length,
         std::unique_ptr<FilesystemPolicy>& policy) noexcept;
 
-    [[nodiscard]] Decision Decide(const wchar_t* path, Access access) const noexcept;
+    [[nodiscard]] PolicyEvaluation Evaluate(
+        const wchar_t* path,
+        Access access) const noexcept override;
 
   private:
     struct Impl;
