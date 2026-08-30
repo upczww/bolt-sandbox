@@ -11,6 +11,7 @@
 
 #include <cstring>
 #include <cwchar>
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -29,8 +30,8 @@ std::unique_ptr<FilesystemPolicy> g_policy;
 using CreateFileWFunction = HANDLE(WINAPI*)(
     LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 CreateFileWFunction g_create_file_w = CreateFileW;
-using DeleteFileWFunction = BOOL(WINAPI*)(LPCWSTR);
-DeleteFileWFunction g_delete_file_w = DeleteFileW;
+DeleteFileW_t g_delete_file_w = DeleteFileW;
+DeleteFileA_t g_delete_file_a = DeleteFileA;
 using CreateDirectoryWFunction = BOOL(WINAPI*)(LPCWSTR, LPSECURITY_ATTRIBUTES);
 CreateDirectoryWFunction g_create_directory_w = CreateDirectoryW;
 using RemoveDirectoryWFunction = BOOL(WINAPI*)(LPCWSTR);
@@ -634,7 +635,38 @@ bool AuthorizeDeletion(const wchar_t* path) noexcept {
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
     }
-    InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, path), false);
+
+    std::wstring resolved_parent;
+    std::wstring resolved_path;
+    try {
+        const std::filesystem::path candidate{EvaluatedPath(evaluation, path)};
+        const auto parent = candidate.parent_path();
+        if (parent.empty() || candidate.filename().empty() ||
+            !ResolveFinalPathForPolicy(
+                parent.c_str(), g_create_file_w, resolved_parent)) {
+            ReportDenied(protocol::FilesystemOperation::kDelete, path);
+            SetLastError(ERROR_ACCESS_DENIED);
+            return false;
+        }
+        resolved_path =
+            (std::filesystem::path(resolved_parent) / candidate.filename())
+                .lexically_normal()
+                .wstring();
+    } catch (...) {
+        ReportDenied(protocol::FilesystemOperation::kDelete, path);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    const auto final_evaluation =
+        policy->Evaluate(resolved_path.c_str(), Access::kWrite);
+    if (final_evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            protocol::FilesystemOperation::kDelete,
+            EvaluatedPath(final_evaluation, resolved_path.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    InvalidateResolvedPathForMutation(resolved_path.c_str(), false);
     return true;
 }
 
@@ -1156,6 +1188,19 @@ BOOL WINAPI DetouredDeleteFileW(const LPCWSTR filename) noexcept {
         return g_delete_file_w(filename);
     }
     return AuthorizeDeletion(filename) ? g_delete_file_w(filename) : FALSE;
+}
+
+BOOL WINAPI DetouredDeleteFileA(const LPCSTR filename) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_delete_file_a(filename);
+    }
+    std::wstring filename_wide;
+    if (!ConvertAnsiPath(filename, filename_wide) ||
+        !AuthorizeDeletion(filename_wide.c_str())) {
+        return FALSE;
+    }
+    return g_delete_file_w(filename_wide.c_str());
 }
 
 BOOL WINAPI DetouredCreateDirectoryW(
@@ -2156,6 +2201,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_delete_file_w),
             reinterpret_cast<PVOID>(DetouredDeleteFileW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_delete_file_a),
+            reinterpret_cast<PVOID>(DetouredDeleteFileA)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_directory_w),
             reinterpret_cast<PVOID>(DetouredCreateDirectoryW)) != NO_ERROR ||

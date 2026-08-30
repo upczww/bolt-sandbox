@@ -106,6 +106,12 @@ clear disposition pass through unchanged. Unsupported or malformed mutation
 identities fail closed, while unrelated file information classes retain native
 Windows behavior.
 
+`DeleteFileW/A` preserve BuildXL's last-reparse-point deletion semantics while
+closing intermediate junction escapes: Bolt resolves the parent directory's
+final identity, appends the untouched leaf name, and requires write access to
+that resulting object before calling Windows. ANSI deletion follows BuildXL's
+conversion funnel into the same wide-character decision.
+
 Bolt also detours Win32 `SetEndOfFile` directly so an inherited or duplicated
 write handle cannot bypass path policy. The adapter resolves the handle's final
 identity, requires write access, reports denied truncation as `Write`, and only
