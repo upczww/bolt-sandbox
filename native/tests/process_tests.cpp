@@ -1483,6 +1483,41 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         descendant_process_a.dwThreadId != 0) {
         return 212;
     }
+    std::wstring token_command = descendant_command;
+    PROCESS_INFORMATION token_process{};
+    const BOOL token_created = CreateProcessWithTokenW(
+        nullptr, 0, descendant_executable.c_str(), token_command.data(), 0,
+        nullptr, nullptr, &descendant_startup, &token_process);
+    const DWORD token_error = GetLastError();
+    if (token_created || token_error != ERROR_ACCESS_DENIED ||
+        token_process.hProcess != nullptr || token_process.hThread != nullptr ||
+        token_process.dwProcessId != 0 || token_process.dwThreadId != 0) {
+        if (token_created) {
+            TerminateProcess(token_process.hProcess, 213);
+            WaitForSingleObject(token_process.hProcess, 5'000);
+            CloseHandle(token_process.hThread);
+            CloseHandle(token_process.hProcess);
+        }
+        return 213;
+    }
+    std::wstring logon_command = descendant_command;
+    PROCESS_INFORMATION logon_process{};
+    const BOOL logon_created = CreateProcessWithLogonW(
+        L"fixture-user", L".", L"fixture-credential", 0,
+        descendant_executable.c_str(), logon_command.data(), 0, nullptr,
+        nullptr, &descendant_startup, &logon_process);
+    const DWORD logon_error = GetLastError();
+    if (logon_created || logon_error != ERROR_ACCESS_DENIED ||
+        logon_process.hProcess != nullptr || logon_process.hThread != nullptr ||
+        logon_process.dwProcessId != 0 || logon_process.dwThreadId != 0) {
+        if (logon_created) {
+            TerminateProcess(logon_process.hProcess, 214);
+            WaitForSingleObject(logon_process.hProcess, 5'000);
+            CloseHandle(logon_process.hThread);
+            CloseHandle(logon_process.hProcess);
+        }
+        return 214;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
