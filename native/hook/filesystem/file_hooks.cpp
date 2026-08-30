@@ -19,6 +19,10 @@ using CreateFileWFunction = HANDLE(WINAPI*)(
 CreateFileWFunction g_create_file_w = CreateFileW;
 using DeleteFileWFunction = BOOL(WINAPI*)(LPCWSTR);
 DeleteFileWFunction g_delete_file_w = DeleteFileW;
+using CreateDirectoryWFunction = BOOL(WINAPI*)(LPCWSTR, LPSECURITY_ATTRIBUTES);
+CreateDirectoryWFunction g_create_directory_w = CreateDirectoryW;
+using RemoveDirectoryWFunction = BOOL(WINAPI*)(LPCWSTR);
+RemoveDirectoryWFunction g_remove_directory_w = RemoveDirectoryW;
 
 Access ClassifyAccess(const DWORD desired_access, const DWORD creation_disposition) noexcept {
     constexpr DWORD write_access = GENERIC_WRITE | FILE_WRITE_DATA | FILE_APPEND_DATA |
@@ -62,6 +66,26 @@ BOOL WINAPI DetouredDeleteFileW(const LPCWSTR filename) noexcept {
     return g_delete_file_w(filename);
 }
 
+BOOL WINAPI DetouredCreateDirectoryW(
+    const LPCWSTR path,
+    const LPSECURITY_ATTRIBUTES security_attributes) noexcept {
+    const auto* policy = g_policy.get();
+    if (policy == nullptr || policy->Decide(path, Access::kWrite) == Decision::kDeny) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return g_create_directory_w(path, security_attributes);
+}
+
+BOOL WINAPI DetouredRemoveDirectoryW(const LPCWSTR path) noexcept {
+    const auto* policy = g_policy.get();
+    if (policy == nullptr || policy->Decide(path, Access::kWrite) == Decision::kDeny) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return g_remove_directory_w(path);
+}
+
 }  // namespace
 
 HookInstallStatus InstallFileHooks(
@@ -85,6 +109,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_delete_file_w),
             reinterpret_cast<PVOID>(DetouredDeleteFileW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_create_directory_w),
+            reinterpret_cast<PVOID>(DetouredCreateDirectoryW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_remove_directory_w),
+            reinterpret_cast<PVOID>(DetouredRemoveDirectoryW)) != NO_ERROR ||
         DetourTransactionCommit() != NO_ERROR) {
         DetourTransactionAbort();
         return HookInstallStatus::kTransactionFailed;
