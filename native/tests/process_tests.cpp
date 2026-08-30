@@ -554,6 +554,21 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         }
         return 130;
     }
+    using NtCreateSectionFunction = NTSTATUS(NTAPI*)(
+        PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PLARGE_INTEGER, ULONG, ULONG, HANDLE);
+    const auto nt_create_section = reinterpret_cast<NtCreateSectionFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateSection"));
+    HANDLE denied_section = nullptr;
+    if (nt_create_section == nullptr ||
+        nt_create_section(
+            &denied_section, SECTION_MAP_READ | SECTION_MAP_WRITE, nullptr, nullptr,
+            PAGE_READWRITE, SEC_COMMIT, denied_mapping_file) != status_access_denied ||
+        denied_section != nullptr) {
+        if (denied_section != nullptr) {
+            CloseHandle(denied_section);
+        }
+        return 131;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1005,7 +1020,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            read_only_mapping_path.wstring(), 35);
+            read_only_mapping_path.wstring(), 35) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_mapping_path.wstring(), 36);
     DWORD exit_code = 0;
     CloseHandle(denied_disposition_handle);
     CloseHandle(denied_truncate_handle);
