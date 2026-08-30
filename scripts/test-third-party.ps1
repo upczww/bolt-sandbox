@@ -214,9 +214,10 @@ if ($phntProvenance.upstream -ne $expectedPhntUpstream -or
 }
 if ($phntProvenance.local_adaptation -ne
         'native/hook/process/native_process_abi.h' -or
-    @($phntProvenance.upstream_files).Count -ne 2 -or
+    @($phntProvenance.upstream_files).Count -ne 3 -or
     'ntrtl.h' -notin @($phntProvenance.upstream_files) -or
-    'ntmmapi.h' -notin @($phntProvenance.upstream_files)) {
+    'ntmmapi.h' -notin @($phntProvenance.upstream_files) -or
+    'ntpsapi.h' -notin @($phntProvenance.upstream_files)) {
     throw 'phnt native ABI adaptation boundary is invalid.'
 }
 
@@ -247,7 +248,8 @@ if (-not (Test-Path -LiteralPath $phntAdaptationPath -PathType Leaf)) {
 }
 $phntAdaptation = Get-Content -LiteralPath $phntAdaptationPath -Raw
 if (-not $phntAdaptation.Contains($expectedPhntRevision) -or
-    -not $phntAdaptation.Contains('RtlCreateUserProcess')) {
+    -not $phntAdaptation.Contains('RtlCreateUserProcess') -or
+    -not $phntAdaptation.Contains('NtCreateUserProcess')) {
     throw 'phnt local ABI adaptation does not identify its pinned source.'
 }
 if (-not $notice.Contains($expectedPhntRevision) -or

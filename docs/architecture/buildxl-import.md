@@ -358,8 +358,9 @@ returned process handle is cleared, and the event contains only process identity
 plus the fixed elevation operation. The reentrancy scope ends before ordinary
 Shell activation so its nested process creation remains detoured.
 
-Direct `RtlCreateUserProcess` is attached in the same all-or-nothing Detours
-transaction. Its native ABI comes from the pinned MIT-licensed phnt revision
+Direct `RtlCreateUserProcess` and `NtCreateUserProcess` are attached in the
+same all-or-nothing Detours transaction. Their native ABIs come from the pinned
+MIT-licensed phnt revision
 recorded in `native/third_party/phnt/provenance.json`; Bolt adapts only the
 function signature and output layouts instead of importing phnt's complete
 header graph. `Deny` clears the native process-information output and returns
@@ -369,9 +370,13 @@ natively suspended initial thread follows the existing BuildXL-derived payload,
 architecture selection, injection, Ready, and release sequence. Because this
 API promises a suspended initial thread, Bolt restores that state before
 returning it to the caller. Any confinement failure terminates the process,
-clears the output, and returns a failing NTSTATUS. Direct
-`NtCreateUserProcess` remains a separate lower-level activation slice and is not
-claimed by this adapter.
+clears the output, and returns a failing NTSTATUS. The lower-level
+`NtCreateUserProcess` adapter additionally forces the native suspended-thread
+flag during confinement, derives process and thread identity from the returned
+handles, and restores either the caller's running or suspended state after the
+same Ready handshake. Calls made by the Rtl adapter retain the existing
+thread-local disabled scope, so the nested syscall bypasses the lower hook and
+cannot inject or report twice.
 
 The next slices are:
 

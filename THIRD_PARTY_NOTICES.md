@@ -51,13 +51,14 @@ describe.
 ## phnt
 
 Bolt Sandbox adapts the minimum native ABI declarations required to intercept
-`RtlCreateUserProcess` from the phnt headers maintained by Winsider Seminars &
-Solutions. phnt is licensed under the MIT License.
+`RtlCreateUserProcess` and `NtCreateUserProcess` from the phnt headers
+maintained by Winsider Seminars & Solutions. phnt is licensed under the MIT
+License.
 
 - Source: https://github.com/winsiderss/phnt
 - Revision: `53fbbdc5b5d2b08761db1c7b26bfa8c820924356`
 - License: MIT
-- Upstream declarations: `ntrtl.h` and `ntmmapi.h`
+- Upstream declarations: `ntrtl.h`, `ntmmapi.h`, and `ntpsapi.h`
 - Provenance manifest: `native/third_party/phnt/provenance.json`
 - Modification boundary: only the required function signature and output
   structure layouts are adapted into

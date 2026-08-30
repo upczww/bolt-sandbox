@@ -36,12 +36,52 @@ struct RtlUserProcessInformation {
     SectionImageInformation image_information;
 };
 
+union PsCreateInfoData {
+    struct {
+        ULONG init_flags;
+        ACCESS_MASK additional_file_access;
+    } initial_state;
+    ULONG_PTR alignment;
+#if defined(_WIN64)
+    UCHAR storage[72];
+#else
+    UCHAR storage[64];
+#endif
+};
+
+struct PsCreateInfo {
+    SIZE_T size;
+    ULONG state;
+    PsCreateInfoData data;
+};
+
+struct PsAttribute {
+    ULONG_PTR attribute;
+    SIZE_T size;
+    union {
+        ULONG_PTR value;
+        PVOID value_ptr;
+    };
+    SIZE_T* return_length;
+};
+
+struct PsAttributeList {
+    SIZE_T total_length;
+    PsAttribute attributes[1];
+};
+
 #if defined(_WIN64)
 static_assert(sizeof(SectionImageInformation) == 64);
 static_assert(sizeof(RtlUserProcessInformation) == 104);
+static_assert(sizeof(PsCreateInfo) == 88);
+static_assert(sizeof(PsAttribute) == 32);
+static_assert(sizeof(PsAttributeList) == 40);
 #else
 static_assert(sizeof(SectionImageInformation) == 48);
 static_assert(sizeof(RtlUserProcessInformation) == 68);
+static_assert(sizeof(PsCreateInfo) == 72);
+static_assert(sizeof(PsAttribute) == 16);
+static_assert(sizeof(PsAttributeList) == 20);
 #endif
 
 using RtlCreateUserProcessFunction = NTSTATUS(NTAPI*)(
@@ -55,5 +95,18 @@ using RtlCreateUserProcessFunction = NTSTATUS(NTAPI*)(
     HANDLE,
     HANDLE,
     RtlUserProcessInformation*);
+
+using NtCreateUserProcessFunction = NTSTATUS(NTAPI*)(
+    PHANDLE,
+    PHANDLE,
+    ACCESS_MASK,
+    ACCESS_MASK,
+    POBJECT_ATTRIBUTES,
+    POBJECT_ATTRIBUTES,
+    ULONG,
+    ULONG,
+    PRTL_USER_PROCESS_PARAMETERS,
+    PsCreateInfo*,
+    PsAttributeList*);
 
 }  // namespace bolt::process::native

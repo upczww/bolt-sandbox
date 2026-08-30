@@ -41,6 +41,7 @@ decltype(&CreateProcessWithTokenW) g_create_process_with_token_w =
 decltype(&CreateProcessWithLogonW) g_create_process_with_logon_w =
     CreateProcessWithLogonW;
 native::RtlCreateUserProcessFunction g_rtl_create_user_process = nullptr;
+native::NtCreateUserProcessFunction g_nt_create_user_process = nullptr;
 ChildProcessPolicy g_child_process_policy = ChildProcessPolicy::kDeny;
 bool g_prepared = false;
 bool g_runtime_configured = false;
@@ -509,6 +510,17 @@ void ClearNativeProcessInformation(
     }
 }
 
+void ClearNativeProcessHandles(
+    const PHANDLE process_handle,
+    const PHANDLE thread_handle) noexcept {
+    if (process_handle != nullptr) {
+        *process_handle = nullptr;
+    }
+    if (thread_handle != nullptr) {
+        *thread_handle = nullptr;
+    }
+}
+
 NTSTATUS StatusFromWin32Error(const DWORD error) noexcept {
     constexpr NTSTATUS status_unsuccessful =
         static_cast<NTSTATUS>(0xC0000001UL);
@@ -635,6 +647,71 @@ NTSTATUS NTAPI DetouredRtlCreateUserProcess(
 
     const DWORD error = GetLastError();
     ClearNativeProcessInformation(process_information);
+    return StatusFromWin32Error(error);
+}
+
+NTSTATUS NTAPI DetouredNtCreateUserProcess(
+    const PHANDLE process_handle,
+    const PHANDLE thread_handle,
+    const ACCESS_MASK process_desired_access,
+    const ACCESS_MASK thread_desired_access,
+    const POBJECT_ATTRIBUTES process_object_attributes,
+    const POBJECT_ATTRIBUTES thread_object_attributes,
+    const ULONG process_flags,
+    const ULONG thread_flags,
+    const PRTL_USER_PROCESS_PARAMETERS process_parameters,
+    native::PsCreateInfo* const create_info,
+    native::PsAttributeList* const attribute_list) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_nt_create_user_process(
+            process_handle, thread_handle, process_desired_access,
+            thread_desired_access, process_object_attributes,
+            thread_object_attributes, process_flags, thread_flags,
+            process_parameters, create_info, attribute_list);
+    }
+
+    constexpr NTSTATUS status_access_denied =
+        static_cast<NTSTATUS>(0xC0000022UL);
+    if (g_child_process_policy == ChildProcessPolicy::kDeny ||
+        process_handle == nullptr || thread_handle == nullptr ||
+        !g_runtime_configured) {
+        ClearNativeProcessHandles(process_handle, thread_handle);
+        return status_access_denied;
+    }
+
+    constexpr ULONG thread_create_flags_create_suspended = 0x00000001;
+    const NTSTATUS create_status = g_nt_create_user_process(
+        process_handle, thread_handle, process_desired_access,
+        thread_desired_access, process_object_attributes,
+        thread_object_attributes, process_flags,
+        thread_flags | thread_create_flags_create_suspended,
+        process_parameters, create_info, attribute_list);
+    if (create_status < 0) {
+        return create_status;
+    }
+
+    const DWORD process_id = GetProcessId(*process_handle);
+    const DWORD thread_id = GetThreadId(*thread_handle);
+    PROCESS_INFORMATION inherited_process{
+        *process_handle, *thread_handle, process_id, thread_id};
+    constexpr ULONG process_create_flags_create_suspended = 0x00000200;
+    const DWORD caller_creation_flags =
+        ((thread_flags & thread_create_flags_create_suspended) != 0 ||
+         (process_flags & process_create_flags_create_suspended) != 0)
+            ? CREATE_SUSPENDED
+            : 0;
+    if (process_id != 0 && thread_id != 0 &&
+        CompleteInheritedCreation(caller_creation_flags, &inherited_process)) {
+        return create_status;
+    }
+
+    const DWORD error = GetLastError();
+    if (inherited_process.hProcess != nullptr ||
+        inherited_process.hThread != nullptr) {
+        AbortCreatedProcess(&inherited_process, error);
+    }
+    ClearNativeProcessHandles(process_handle, thread_handle);
     return StatusFromWin32Error(error);
 }
 
@@ -766,7 +843,11 @@ LONG AttachProcessHooks() noexcept {
     g_rtl_create_user_process =
         reinterpret_cast<native::RtlCreateUserProcessFunction>(
             GetProcAddress(ntdll, "RtlCreateUserProcess"));
-    if (g_rtl_create_user_process == nullptr) {
+    g_nt_create_user_process =
+        reinterpret_cast<native::NtCreateUserProcessFunction>(
+            GetProcAddress(ntdll, "NtCreateUserProcess"));
+    if (g_rtl_create_user_process == nullptr ||
+        g_nt_create_user_process == nullptr) {
         return ERROR_PROC_NOT_FOUND;
     }
     const LONG wide_status = DetourAttach(
@@ -798,6 +879,12 @@ LONG AttachProcessHooks() noexcept {
         reinterpret_cast<PVOID>(DetouredRtlCreateUserProcess));
     if (rtl_status != NO_ERROR) {
         return rtl_status;
+    }
+    const LONG nt_status = DetourAttach(
+        reinterpret_cast<PVOID*>(&g_nt_create_user_process),
+        reinterpret_cast<PVOID>(DetouredNtCreateUserProcess));
+    if (nt_status != NO_ERROR) {
+        return nt_status;
     }
     const LONG shell_status = DetourAttach(
         reinterpret_cast<PVOID*>(&g_shell_execute_ex_w),
