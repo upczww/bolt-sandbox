@@ -112,6 +112,84 @@ bool RunEventFrameTests() {
         return false;
     }
 
+    bolt::protocol::NetworkEndpoint ipv4_endpoint{};
+    ipv4_endpoint.family = bolt::protocol::NetworkAddressFamily::kIpv4;
+    ipv4_endpoint.address[0] = 127;
+    ipv4_endpoint.address[1] = 0;
+    ipv4_endpoint.address[2] = 0;
+    ipv4_endpoint.address[3] = 1;
+    ipv4_endpoint.port = 8'443;
+    std::array<std::uint8_t, bolt::protocol::kIpv4NetworkViolationFrameLength>
+        network_frame{};
+    std::array<std::uint8_t, bolt::protocol::kIpv4NetworkViolationFrameLength>
+        expected_network_frame = {
+            0x42, 0x4C, 0x54, 0x31, 0x01, 0x00, 0x04, 0x00,
+            0x0C, 0x00, 0x00, 0x00, 0x6A, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x04, 0x03, 0x02, 0x01, 0x01, 0x04, 0x7F, 0x00,
+            0x00, 0x01, 0xFB, 0x20,
+        };
+    bolt::protocol::RewriteFrameChecksum(
+        expected_network_frame.data(), expected_network_frame.size());
+    std::size_t network_length = 0;
+    if (bolt::protocol::EncodeNetworkViolationFrame(
+            0x01020304U, bolt::protocol::NetworkOperation::kConnect,
+            ipv4_endpoint, 106, network_frame.data(), network_frame.size(),
+            network_length) != bolt::protocol::FrameEncodeStatus::kSuccess ||
+        network_length != network_frame.size() ||
+        network_frame != expected_network_frame) {
+        return false;
+    }
+
+    bolt::protocol::NetworkEndpoint invalid_endpoint = ipv4_endpoint;
+    invalid_endpoint.family =
+        static_cast<bolt::protocol::NetworkAddressFamily>(0xFF);
+    if (bolt::protocol::EncodeNetworkViolationFrame(
+            1, bolt::protocol::NetworkOperation::kConnect, invalid_endpoint, 1,
+            network_frame.data(), network_frame.size(), network_length) !=
+            bolt::protocol::FrameEncodeStatus::kInvalidAddress ||
+        network_length != 0 ||
+        bolt::protocol::EncodeNetworkViolationFrame(
+            1, static_cast<bolt::protocol::NetworkOperation>(0xFF), ipv4_endpoint,
+            1, network_frame.data(), network_frame.size(), network_length) !=
+            bolt::protocol::FrameEncodeStatus::kInvalidOperation) {
+        return false;
+    }
+
+    constexpr std::array<std::uint8_t, 43> domain_network_payload = {
+        0x42, 0x4C, 0x54, 0x31, 0x01, 0x00, 0x04, 0x00,
+        0x13, 0x00, 0x00, 0x00, 0x6B, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x04, 0x03, 0x02, 0x01, 0x00, 0x00, 0x09, 0x00,
+        0x00, 0x00, 0x6C, 0x6F, 0x63, 0x61, 0x6C, 0x68,
+        0x6F, 0x73, 0x74,
+    };
+    auto expected_domain_network_frame = domain_network_payload;
+    bolt::protocol::RewriteFrameChecksum(
+        expected_domain_network_frame.data(),
+        expected_domain_network_frame.size());
+    std::array<std::uint8_t, domain_network_payload.size()>
+        domain_network_frame{};
+    std::size_t domain_network_length = 0;
+    if (bolt::protocol::DomainNetworkViolationFrameLength("localhost") !=
+            domain_network_frame.size() ||
+        bolt::protocol::EncodeDomainNetworkViolationFrame(
+            0x01020304U, bolt::protocol::NetworkOperation::kResolve,
+            "localhost", 107, domain_network_frame.data(),
+            domain_network_frame.size(), domain_network_length) !=
+            bolt::protocol::FrameEncodeStatus::kSuccess ||
+        domain_network_length != domain_network_frame.size() ||
+        domain_network_frame != expected_domain_network_frame ||
+        bolt::protocol::DomainNetworkViolationFrameLength("") != 0 ||
+        bolt::protocol::DomainNetworkViolationFrameLength("bad\nname") != 0 ||
+        bolt::protocol::EncodeDomainNetworkViolationFrame(
+            1, bolt::protocol::NetworkOperation::kResolve, "", 1,
+            domain_network_frame.data(), domain_network_frame.size(),
+            domain_network_length) !=
+            bolt::protocol::FrameEncodeStatus::kInvalidDomain) {
+        return false;
+    }
+
     std::wstring maximum_path(32'767, L'x');
     std::array<std::uint8_t, 1> too_small{};
     return bolt::protocol::FilesystemViolationFrameLength(maximum_path.c_str()) ==

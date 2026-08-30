@@ -12,6 +12,10 @@ bool RunRuntimePayloadTests() {
     expected.release_handle = 0x333;
     expected.descendant_ready_handle = 0x444;
     expected.handshake_nonce.fill(0xA5);
+    expected.dns_request_handle = 0x555;
+    expected.dns_response_handle = 0x666;
+    expected.dns_authentication_key.fill(0x5A);
+    expected.dns_maximum_frame_length = 1'024;
 
     const auto encoded = bolt::protocol::EncodeRuntimePayload(expected);
     bolt::protocol::RuntimePayload decoded{};

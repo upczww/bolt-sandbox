@@ -22,11 +22,25 @@ EventSinkStatus InitializeEventSink(HANDLE event_handle) noexcept;
 
 bool IsEventSinkHandle(HANDLE handle) noexcept;
 
+bool RegisterRuntimeIoHandles(
+    HANDLE dns_response_read_handle,
+    HANDLE dns_request_write_handle) noexcept;
+
+bool IsRuntimeIoHandle(HANDLE handle, bool write_access) noexcept;
+
 bool TryReportFilesystemViolation(
     protocol::FilesystemOperation operation,
     const wchar_t* path) noexcept;
 
 bool TryReportProcessViolation(protocol::ProcessOperation operation) noexcept;
+
+bool TryReportNetworkViolation(
+    protocol::NetworkOperation operation,
+    const protocol::NetworkEndpoint& endpoint) noexcept;
+
+bool TryReportDomainNetworkViolation(
+    protocol::NetworkOperation operation,
+    const char* ascii_domain) noexcept;
 
 bool WaitForEventSinkIdle(DWORD timeout_milliseconds) noexcept;
 

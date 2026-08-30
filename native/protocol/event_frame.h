@@ -10,6 +10,9 @@ inline constexpr std::size_t kEventHeaderLength = 24;
 inline constexpr std::size_t kReadyNonceLength = 16;
 inline constexpr std::size_t kReadyFrameLength = kEventHeaderLength + kReadyNonceLength;
 inline constexpr std::size_t kProcessViolationFrameLength = kEventHeaderLength + 5;
+inline constexpr std::size_t kIpv4NetworkViolationFrameLength = kEventHeaderLength + 12;
+inline constexpr std::size_t kIpv6NetworkViolationFrameLength = kEventHeaderLength + 24;
+inline constexpr std::size_t kMaximumEventDomainBytes = 253;
 inline constexpr std::size_t kMaximumEventPathCodeUnits = 32'767;
 
 enum class FilesystemOperation : std::uint8_t {
@@ -30,11 +33,30 @@ enum class ProcessOperation : std::uint8_t {
     kMitigationWeakening = 4,
 };
 
+enum class NetworkOperation : std::uint8_t {
+    kResolve = 0,
+    kConnect = 1,
+    kSend = 2,
+};
+
+enum class NetworkAddressFamily : std::uint8_t {
+    kIpv4 = 4,
+    kIpv6 = 6,
+};
+
+struct NetworkEndpoint {
+    NetworkAddressFamily family = NetworkAddressFamily::kIpv4;
+    std::array<std::uint8_t, 16> address{};
+    std::uint16_t port = 0;
+};
+
 enum class FrameEncodeStatus : std::uint8_t {
     kSuccess,
     kInvalidArgument,
     kInvalidOperation,
     kInvalidPath,
+    kInvalidAddress,
+    kInvalidDomain,
     kInsufficientBuffer,
 };
 
@@ -72,6 +94,26 @@ FrameEncodeStatus EncodeFilesystemViolationFrame(
 FrameEncodeStatus EncodeProcessViolationFrame(
     std::uint32_t process_id,
     ProcessOperation operation,
+    std::uint64_t sequence,
+    std::uint8_t* output,
+    std::size_t capacity,
+    std::size_t& written) noexcept;
+
+FrameEncodeStatus EncodeNetworkViolationFrame(
+    std::uint32_t process_id,
+    NetworkOperation operation,
+    const NetworkEndpoint& endpoint,
+    std::uint64_t sequence,
+    std::uint8_t* output,
+    std::size_t capacity,
+    std::size_t& written) noexcept;
+
+std::size_t DomainNetworkViolationFrameLength(const char* ascii_domain) noexcept;
+
+FrameEncodeStatus EncodeDomainNetworkViolationFrame(
+    std::uint32_t process_id,
+    NetworkOperation operation,
+    const char* ascii_domain,
     std::uint64_t sequence,
     std::uint8_t* output,
     std::size_t capacity,

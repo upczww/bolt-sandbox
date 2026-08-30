@@ -153,7 +153,11 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
     const std::size_t policy_length,
     const HANDLE event_handle,
     const HANDLE release_handle,
-    const std::array<std::uint8_t, 16>& nonce) noexcept {
+    const std::array<std::uint8_t, 16>& nonce,
+    const HANDLE dns_request_handle,
+    const HANDLE dns_response_handle,
+    const std::array<std::uint8_t, 32>* const dns_authentication_key,
+    const std::uint32_t dns_maximum_frame_length) noexcept {
     if (process_ == nullptr || !assigned_ || payload_installed_ || injected_ ||
         initialization_started_) {
         return ProcessStatus::kInvalidState;
@@ -164,6 +168,24 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
         if (handle == nullptr || handle == INVALID_HANDLE_VALUE ||
             !GetHandleInformation(handle, &flags) || (flags & HANDLE_FLAG_INHERIT) == 0) {
             return ProcessStatus::kInvalidRuntimePayload;
+        }
+    }
+    const bool dns_absent = dns_request_handle == nullptr &&
+                            dns_response_handle == nullptr &&
+                            dns_authentication_key == nullptr &&
+                            dns_maximum_frame_length == 0;
+    if (!dns_absent) {
+        if (dns_request_handle == nullptr || dns_response_handle == nullptr ||
+            dns_authentication_key == nullptr || dns_maximum_frame_length < 68) {
+            return ProcessStatus::kInvalidRuntimePayload;
+        }
+        for (const HANDLE handle : {dns_request_handle, dns_response_handle}) {
+            DWORD flags = 0;
+            if (handle == INVALID_HANDLE_VALUE ||
+                !GetHandleInformation(handle, &flags) ||
+                (flags & HANDLE_FLAG_INHERIT) == 0) {
+                return ProcessStatus::kInvalidRuntimePayload;
+            }
         }
     }
     if (policy_length > std::numeric_limits<std::uint32_t>::max()) {
@@ -196,6 +218,14 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
     payload.event_handle = reinterpret_cast<std::uintptr_t>(event_handle);
     payload.release_handle = reinterpret_cast<std::uintptr_t>(release_handle);
     payload.handshake_nonce = nonce;
+    if (!dns_absent) {
+        payload.dns_request_handle =
+            reinterpret_cast<std::uintptr_t>(dns_request_handle);
+        payload.dns_response_handle =
+            reinterpret_cast<std::uintptr_t>(dns_response_handle);
+        payload.dns_authentication_key = *dns_authentication_key;
+        payload.dns_maximum_frame_length = dns_maximum_frame_length;
+    }
     auto encoded = protocol::EncodeRuntimePayload(payload);
     protocol::RuntimePayload checked{};
     if (protocol::DecodeRuntimePayload(encoded.data(), encoded.size(), checked) !=

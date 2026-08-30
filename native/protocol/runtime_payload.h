@@ -8,7 +8,7 @@
 
 namespace bolt::protocol {
 
-inline constexpr std::size_t kRuntimePayloadLength = 64;
+inline constexpr std::size_t kRuntimePayloadLength = 120;
 inline constexpr GUID kRuntimePayloadGuid = {
     0x4f8a6d21, 0x91c7, 0x4bb7, {0xa6, 0x7e, 0x31, 0x57, 0x2b, 0xd9, 0x46, 0x10}};
 
@@ -23,13 +23,21 @@ struct RuntimePayload {
     // session Ready frame.
     std::uint64_t descendant_ready_handle = 0;
     std::array<std::uint8_t, 16> handshake_nonce{};
+    std::uint64_t dns_request_handle = 0;
+    std::uint64_t dns_response_handle = 0;
+    std::uint32_t dns_maximum_frame_length = 0;
+    std::array<std::uint8_t, 32> dns_authentication_key{};
 
     bool operator==(const RuntimePayload& other) const noexcept {
         return target_process_id == other.target_process_id &&
                policy_length == other.policy_length && policy_handle == other.policy_handle &&
                event_handle == other.event_handle && release_handle == other.release_handle &&
                descendant_ready_handle == other.descendant_ready_handle &&
-               handshake_nonce == other.handshake_nonce;
+               handshake_nonce == other.handshake_nonce &&
+               dns_request_handle == other.dns_request_handle &&
+               dns_response_handle == other.dns_response_handle &&
+               dns_maximum_frame_length == other.dns_maximum_frame_length &&
+               dns_authentication_key == other.dns_authentication_key;
     }
     bool operator!=(const RuntimePayload& other) const noexcept { return !(*this == other); }
 };
@@ -44,6 +52,7 @@ enum class RuntimePayloadStatus : std::uint8_t {
     kInvalidProcessId,
     kInvalidPolicyLength,
     kInvalidHandle,
+    kInvalidDnsProxy,
 };
 
 std::array<std::uint8_t, kRuntimePayloadLength> EncodeRuntimePayload(

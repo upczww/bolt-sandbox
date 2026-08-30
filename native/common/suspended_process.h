@@ -66,7 +66,11 @@ class SuspendedProcess final {
         std::size_t policy_length,
         HANDLE event_handle,
         HANDLE release_handle,
-        const std::array<std::uint8_t, 16>& nonce) noexcept;
+        const std::array<std::uint8_t, 16>& nonce,
+        HANDLE dns_request_handle = nullptr,
+        HANDLE dns_response_handle = nullptr,
+        const std::array<std::uint8_t, 32>* dns_authentication_key = nullptr,
+        std::uint32_t dns_maximum_frame_length = 0) noexcept;
     ProcessStatus Inject(std::string_view dll_path) noexcept;
     ProcessStatus BeginHookInitialization() noexcept;
     ProcessStatus ReleaseAfterReady() noexcept;

@@ -24,6 +24,11 @@ bool AppendU32(std::vector<std::uint8_t>& bytes, const std::size_t value) {
     return true;
 }
 
+void AppendU16(std::vector<std::uint8_t>& bytes, const std::uint16_t value) {
+    bytes.push_back(static_cast<std::uint8_t>(value));
+    bytes.push_back(static_cast<std::uint8_t>(value >> 8U));
+}
+
 bool AppendComponent(
     std::vector<std::uint8_t>& record,
     const std::uint8_t kind,
@@ -117,7 +122,9 @@ bool HashPayload(std::vector<std::uint8_t>& payload) {
 
 std::vector<std::uint8_t> SealPolicy(
     const std::vector<FilesystemRule>& filesystem_rules,
-    const ChildProcessPolicyKind child_process_policy) {
+    const ChildProcessPolicyKind child_process_policy,
+    const NetworkPolicyKind network_policy,
+    const NetworkAllowListRules& network_allow_list) {
     std::vector<std::uint8_t> body{
         static_cast<std::uint8_t>(child_process_policy)};
     if (!AppendU32(body, filesystem_rules.size())) {
@@ -128,7 +135,38 @@ std::vector<std::uint8_t> SealPolicy(
             return {};
         }
     }
-    body.push_back(0);
+    body.push_back(static_cast<std::uint8_t>(network_policy));
+    if (network_policy == NetworkPolicyKind::kAllowList) {
+        if (!AppendU32(body, network_allow_list.domains.size())) {
+            return {};
+        }
+        for (const auto& domain : network_allow_list.domains) {
+            body.push_back(domain.wildcard ? 1 : 0);
+            if (!AppendU32(body, domain.ascii_domain.size())) {
+                return {};
+            }
+            body.insert(
+                body.end(), domain.ascii_domain.begin(), domain.ascii_domain.end());
+        }
+        if (!AppendU32(body, network_allow_list.addresses.size())) {
+            return {};
+        }
+        for (const auto& address : network_allow_list.addresses) {
+            const std::size_t address_length = address.family == 4 ? 4 : 16;
+            body.push_back(address.family);
+            body.push_back(address.prefix_length);
+            body.insert(
+                body.end(), address.address.begin(),
+                address.address.begin() + address_length);
+        }
+        if (!AppendU32(body, network_allow_list.ports.size())) {
+            return {};
+        }
+        for (const auto& port : network_allow_list.ports) {
+            AppendU16(body, port.start);
+            AppendU16(body, port.end);
+        }
+    }
     if (!AppendU32(body, 0)) {
         return {};
     }

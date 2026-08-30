@@ -922,7 +922,7 @@ bool AuthorizeHandleIo(
     const HANDLE file,
     const Access access,
     const protocol::FilesystemOperation operation) noexcept {
-    if (access == Access::kWrite && hook::IsEventSinkHandle(file)) {
+    if (hook::IsRuntimeIoHandle(file, access == Access::kWrite)) {
         return true;
     }
     std::wstring source_path;

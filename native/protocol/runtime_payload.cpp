@@ -18,6 +18,10 @@ constexpr std::size_t kEventHandleOffset = 24;
 constexpr std::size_t kReleaseHandleOffset = 32;
 constexpr std::size_t kDescendantReadyHandleOffset = 40;
 constexpr std::size_t kNonceOffset = 48;
+constexpr std::size_t kDnsRequestHandleOffset = 64;
+constexpr std::size_t kDnsResponseHandleOffset = 72;
+constexpr std::size_t kDnsMaximumFrameOffset = 80;
+constexpr std::size_t kDnsKeyOffset = 88;
 constexpr std::size_t kMinimumPolicyLength = kPolicyEnvelopeLength;
 constexpr std::size_t kMaximumPolicyLength = kPolicyEnvelopeLength + kPolicyMaximumBodyLength;
 
@@ -89,6 +93,12 @@ std::array<std::uint8_t, kRuntimePayloadLength> EncodeRuntimePayload(
         payload.descendant_ready_handle);
     std::copy(payload.handshake_nonce.begin(), payload.handshake_nonce.end(),
               encoded.begin() + kNonceOffset);
+    WriteU64(encoded.data(), kDnsRequestHandleOffset, payload.dns_request_handle);
+    WriteU64(encoded.data(), kDnsResponseHandleOffset, payload.dns_response_handle);
+    WriteU32(encoded.data(), kDnsMaximumFrameOffset, payload.dns_maximum_frame_length);
+    std::copy(
+        payload.dns_authentication_key.begin(),
+        payload.dns_authentication_key.end(), encoded.begin() + kDnsKeyOffset);
     return encoded;
 }
 
@@ -120,8 +130,15 @@ RuntimePayloadStatus DecodeRuntimePayload(
     decoded.release_handle = ReadU64(encoded, kReleaseHandleOffset);
     decoded.descendant_ready_handle =
         ReadU64(encoded, kDescendantReadyHandleOffset);
-    std::copy(encoded + kNonceOffset, encoded + kRuntimePayloadLength,
+    std::copy(encoded + kNonceOffset, encoded + kNonceOffset + decoded.handshake_nonce.size(),
               decoded.handshake_nonce.begin());
+    decoded.dns_request_handle = ReadU64(encoded, kDnsRequestHandleOffset);
+    decoded.dns_response_handle = ReadU64(encoded, kDnsResponseHandleOffset);
+    decoded.dns_maximum_frame_length = ReadU32(encoded, kDnsMaximumFrameOffset);
+    std::copy(
+        encoded + kDnsKeyOffset,
+        encoded + kDnsKeyOffset + decoded.dns_authentication_key.size(),
+        decoded.dns_authentication_key.begin());
     if (decoded.target_process_id == 0) {
         return RuntimePayloadStatus::kInvalidProcessId;
     }
@@ -134,6 +151,20 @@ RuntimePayloadStatus DecodeRuntimePayload(
         (decoded.descendant_ready_handle != 0 &&
          !IsValidHandleValue(decoded.descendant_ready_handle))) {
         return RuntimePayloadStatus::kInvalidHandle;
+    }
+    const bool dns_key_zero = std::all_of(
+        decoded.dns_authentication_key.begin(), decoded.dns_authentication_key.end(),
+        [](const std::uint8_t byte) { return byte == 0; });
+    const bool dns_absent = decoded.dns_request_handle == 0 &&
+                            decoded.dns_response_handle == 0 &&
+                            decoded.dns_maximum_frame_length == 0 && dns_key_zero;
+    const bool dns_valid = IsValidHandleValue(decoded.dns_request_handle) &&
+                           IsValidHandleValue(decoded.dns_response_handle) &&
+                           decoded.dns_maximum_frame_length >= 68 &&
+                           decoded.dns_maximum_frame_length <= 1'048'576 &&
+                           !dns_key_zero;
+    if (!dns_absent && !dns_valid) {
+        return RuntimePayloadStatus::kInvalidDnsProxy;
     }
     output = decoded;
     return RuntimePayloadStatus::kSuccess;

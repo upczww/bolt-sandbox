@@ -131,6 +131,8 @@ target_include_directories(bolt-sandbox-buildxl-detoured-functions PRIVATE
 )
 
 add_library(bolt-sandbox-protocol STATIC
+    protocol/dns_proxy_startup.cpp
+    protocol/dns_proxy_protocol.cpp
     protocol/event_frame.cpp
     protocol/policy_payload.cpp
     protocol/runtime_payload.cpp
@@ -140,6 +142,7 @@ target_include_directories(bolt-sandbox-protocol PUBLIC ${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(bolt-sandbox-protocol PRIVATE bcrypt)
 
 add_library(bolt-sandbox-common STATIC
+    common/immutable_mapping.cpp
     common/execution_job.cpp
     common/immutable_policy_mapping.cpp
     common/private_pipe.cpp
@@ -155,6 +158,7 @@ add_library(bolt-sandbox-process STATIC
     hook/process/process_mitigations.cpp
     hook/process/process_hooks.cpp
 )
+
 bolt_native_warnings(bolt-sandbox-process)
 target_include_directories(bolt-sandbox-process PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(bolt-sandbox-process PRIVATE
@@ -162,6 +166,32 @@ target_link_libraries(bolt-sandbox-process PRIVATE
     bolt-sandbox-detours
     bolt-sandbox-protocol
     shell32
+)
+
+add_library(bolt-sandbox-network STATIC
+    hook/network/dns_binding_table.cpp
+    hook/network/dns_proxy_server.cpp
+    hook/network/dns_proxy_session.cpp
+    hook/network/dns_proxy_client.cpp
+    hook/network/dns_proxy_client_channel.cpp
+    hook/network/dns_proxy_process.cpp
+    hook/network/dns_proxy_handle_transport.cpp
+    hook/network/network_hooks.cpp
+    hook/network/network_policy.cpp
+    hook/network/system_dns_resolver.cpp
+    hook/network/winhttp_hooks.cpp
+    hook/network/wininet_hooks.cpp
+)
+bolt_native_warnings(bolt-sandbox-network)
+target_include_directories(bolt-sandbox-network PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(bolt-sandbox-network PRIVATE
+    bolt-sandbox-common
+    bolt-sandbox-detours
+    bolt-sandbox-protocol
+    dnsapi
+    winhttp
+    wininet
+    ws2_32
 )
 
 add_library(bolt-sandbox-filesystem STATIC
@@ -188,6 +218,16 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 8)
         launcher/main.cpp
     )
     bolt_native_warnings(bolt-sandbox-launcher)
+
+    add_executable(bolt-sandbox-dns-proxy
+        dns_proxy/main.cpp
+    )
+    bolt_native_warnings(bolt-sandbox-dns-proxy)
+    target_include_directories(bolt-sandbox-dns-proxy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(bolt-sandbox-dns-proxy PRIVATE
+        bolt-sandbox-network
+        bolt-sandbox-protocol
+    )
 endif()
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -203,6 +243,7 @@ bolt_native_warnings(bolt-sandbox-hook)
 target_include_directories(bolt-sandbox-hook PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(bolt-sandbox-hook PRIVATE bolt-sandbox-protocol bolt-sandbox-detours)
 target_link_libraries(bolt-sandbox-hook PRIVATE bolt-sandbox-filesystem)
+target_link_libraries(bolt-sandbox-hook PRIVATE bolt-sandbox-network)
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     set_target_properties(bolt-sandbox-hook PROPERTIES OUTPUT_NAME bolt-sandbox-x64)
 else()
@@ -217,9 +258,24 @@ add_executable(bolt-sandbox-native-tests
     tests/filesystem_race_tests.cpp
     tests/job_tests.cpp
     tests/named_pipe_tests.cpp
+    tests/network_policy_tests.cpp
+    tests/system_dns_resolver_tests.cpp
+    tests/network_hook_tests.cpp
+    tests/winhttp_test_client.cpp
+    tests/wininet_test_client.cpp
+    tests/dns_binding_tests.cpp
+    tests/dns_proxy_protocol_tests.cpp
+    tests/dns_proxy_server_tests.cpp
+    tests/dns_proxy_session_tests.cpp
+    tests/dns_proxy_process_tests.cpp
+    tests/dns_proxy_client_tests.cpp
+    tests/dns_proxy_client_channel_tests.cpp
+    tests/dns_proxy_handle_transport_tests.cpp
+    tests/dns_proxy_startup_tests.cpp
     tests/policy_payload_tests.cpp
     tests/policy_fixture.cpp
     tests/policy_mapping_tests.cpp
+    tests/immutable_mapping_tests.cpp
     tests/process_tests.cpp
     tests/protocol_tests.cpp
     tests/runtime_payload_tests.cpp
@@ -236,10 +292,18 @@ target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-buildxl)
 target_link_libraries(
     bolt-sandbox-native-tests PRIVATE
         bolt-sandbox-filesystem
+        bolt-sandbox-network
         advapi32
         bcrypt
+        dnsapi
         ole32
         shell32
+        winhttp
+        wininet
+        ws2_32
 )
 
 add_test(NAME native.protocol COMMAND bolt-sandbox-native-tests)
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    add_dependencies(bolt-sandbox-native-tests bolt-sandbox-dns-proxy)
+endif()

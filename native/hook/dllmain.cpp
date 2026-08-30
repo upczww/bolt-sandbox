@@ -4,6 +4,7 @@
 #include "protocol/version.h"
 #include "hook/filesystem/file_hooks.h"
 #include "hook/event_sink.h"
+#include "hook/network/network_hooks.h"
 #include "hook/process/process_hooks.h"
 #include "hook/process/process_mitigations.h"
 
@@ -72,10 +73,16 @@ bool InitializeRuntime(const HINSTANCE instance) noexcept {
     if (policy == nullptr) {
         return false;
     }
-    const auto hook_status =
+    const auto file_hook_status =
         bolt::filesystem::InstallFileHooks(policy, payload.policy_length);
+    const auto network_hook_status =
+        file_hook_status == bolt::filesystem::HookInstallStatus::kSuccess
+            ? bolt::network::InstallNetworkHooks(
+                  policy, payload.policy_length, payload)
+            : bolt::network::HookInstallStatus::kTransactionFailed;
     UnmapViewOfFile(policy);
-    if (hook_status != bolt::filesystem::HookInstallStatus::kSuccess) {
+    if (file_hook_status != bolt::filesystem::HookInstallStatus::kSuccess ||
+        network_hook_status != bolt::network::HookInstallStatus::kSuccess) {
         return false;
     }
     if (bolt::process::ApplyRequiredProcessMitigations() !=

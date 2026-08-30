@@ -15,6 +15,8 @@ constexpr std::size_t kMaximumFrameLength =
 enum class EventRecordKind : std::uint8_t {
     kFilesystem,
     kProcess,
+    kNetwork,
+    kNetworkDomain,
 };
 
 struct EventRecord {
@@ -23,6 +25,10 @@ struct EventRecord {
     protocol::FilesystemOperation operation = protocol::FilesystemOperation::kRead;
     protocol::ProcessOperation process_operation =
         protocol::ProcessOperation::kCreateWithToken;
+    protocol::NetworkOperation network_operation =
+        protocol::NetworkOperation::kConnect;
+    protocol::NetworkEndpoint network_endpoint{};
+    char domain[protocol::kMaximumEventDomainBytes + 1U]{};
     std::uint64_t sequence = 0;
     std::size_t path_length = 0;
     wchar_t path[protocol::kMaximumEventPathCodeUnits + 1U]{};
@@ -45,6 +51,8 @@ struct EventSinkState {
 };
 
 EventSinkState g_state;
+PVOID volatile g_dns_response_read_handle = nullptr;
+PVOID volatile g_dns_request_write_handle = nullptr;
 
 bool WriteExact(
     const HANDLE handle,
@@ -92,16 +100,34 @@ DWORD WINAPI EventWriterThread(LPVOID parameter) noexcept {
             LeaveCriticalSection(&g_state.lock);
 
             std::size_t frame_length = 0;
-            const auto encode_status =
-                queued->kind == EventRecordKind::kFilesystem
-                    ? protocol::EncodeFilesystemViolationFrame(
-                          queued->process_id, queued->operation, queued->path,
-                          queued->sequence, g_state.frame_buffer,
-                          kMaximumFrameLength, frame_length)
-                    : protocol::EncodeProcessViolationFrame(
-                          queued->process_id, queued->process_operation,
-                          queued->sequence, g_state.frame_buffer,
-                          kMaximumFrameLength, frame_length);
+            protocol::FrameEncodeStatus encode_status =
+                protocol::FrameEncodeStatus::kInvalidArgument;
+            switch (queued->kind) {
+                case EventRecordKind::kFilesystem:
+                    encode_status = protocol::EncodeFilesystemViolationFrame(
+                        queued->process_id, queued->operation, queued->path,
+                        queued->sequence, g_state.frame_buffer,
+                        kMaximumFrameLength, frame_length);
+                    break;
+                case EventRecordKind::kProcess:
+                    encode_status = protocol::EncodeProcessViolationFrame(
+                        queued->process_id, queued->process_operation,
+                        queued->sequence, g_state.frame_buffer,
+                        kMaximumFrameLength, frame_length);
+                    break;
+                case EventRecordKind::kNetwork:
+                    encode_status = protocol::EncodeNetworkViolationFrame(
+                        queued->process_id, queued->network_operation,
+                        queued->network_endpoint, queued->sequence,
+                        g_state.frame_buffer, kMaximumFrameLength, frame_length);
+                    break;
+                case EventRecordKind::kNetworkDomain:
+                    encode_status = protocol::EncodeDomainNetworkViolationFrame(
+                        queued->process_id, queued->network_operation,
+                        queued->domain, queued->sequence, g_state.frame_buffer,
+                        kMaximumFrameLength, frame_length);
+                    break;
+            }
             if (encode_status != protocol::FrameEncodeStatus::kSuccess ||
                 !WriteExact(g_state.event_handle, g_state.frame_buffer, frame_length)) {
                 FailWriter();
@@ -171,6 +197,45 @@ bool IsEventSinkHandle(const HANDLE handle) noexcept {
            handle == g_state.event_handle;
 }
 
+bool RegisterRuntimeIoHandles(
+    const HANDLE dns_response_read_handle,
+    const HANDLE dns_request_write_handle) noexcept {
+    DWORD flags = 0;
+    if (dns_response_read_handle == nullptr ||
+        dns_response_read_handle == INVALID_HANDLE_VALUE ||
+        dns_request_write_handle == nullptr ||
+        dns_request_write_handle == INVALID_HANDLE_VALUE ||
+        dns_response_read_handle == dns_request_write_handle ||
+        !GetHandleInformation(dns_response_read_handle, &flags) ||
+        !GetHandleInformation(dns_request_write_handle, &flags)) {
+        return false;
+    }
+    if (InterlockedCompareExchangePointer(
+            &g_dns_response_read_handle, dns_response_read_handle, nullptr) !=
+        nullptr) {
+        return false;
+    }
+    if (InterlockedCompareExchangePointer(
+            &g_dns_request_write_handle, dns_request_write_handle, nullptr) !=
+        nullptr) {
+        InterlockedExchangePointer(&g_dns_response_read_handle, nullptr);
+        return false;
+    }
+    return true;
+}
+
+bool IsRuntimeIoHandle(
+    const HANDLE handle,
+    const bool write_access) noexcept {
+    if (write_access) {
+        return IsEventSinkHandle(handle) ||
+               handle == InterlockedCompareExchangePointer(
+                             &g_dns_request_write_handle, nullptr, nullptr);
+    }
+    return handle == InterlockedCompareExchangePointer(
+                         &g_dns_response_read_handle, nullptr, nullptr);
+}
+
 bool TryReportFilesystemViolation(
     const protocol::FilesystemOperation operation,
     const wchar_t* path) noexcept {
@@ -218,6 +283,67 @@ bool TryReportProcessViolation(
     record.process_id = GetCurrentProcessId();
     record.process_operation = operation;
     record.sequence = g_state.next_sequence++;
+    record.path_length = 0;
+    record.path[0] = L'\0';
+    g_state.tail = (g_state.tail + 1U) % kQueueCapacity;
+    ++g_state.count;
+    ResetEvent(g_state.idle_event);
+    LeaveCriticalSection(&g_state.lock);
+    SetEvent(g_state.wake_event);
+    return true;
+}
+
+bool TryReportNetworkViolation(
+    const protocol::NetworkOperation operation,
+    const protocol::NetworkEndpoint& endpoint) noexcept {
+    if (InterlockedCompareExchange(&g_state.initialization_state, 1, 1) != 1 ||
+        InterlockedCompareExchange(&g_state.writer_failed, 0, 0) != 0) {
+        return false;
+    }
+    EnterCriticalSection(&g_state.lock);
+    if (g_state.count == kQueueCapacity) {
+        LeaveCriticalSection(&g_state.lock);
+        return false;
+    }
+    EventRecord& record = g_state.records[g_state.tail];
+    record.kind = EventRecordKind::kNetwork;
+    record.process_id = GetCurrentProcessId();
+    record.network_operation = operation;
+    record.network_endpoint = endpoint;
+    record.sequence = g_state.next_sequence++;
+    record.path_length = 0;
+    record.path[0] = L'\0';
+    g_state.tail = (g_state.tail + 1U) % kQueueCapacity;
+    ++g_state.count;
+    ResetEvent(g_state.idle_event);
+    LeaveCriticalSection(&g_state.lock);
+    SetEvent(g_state.wake_event);
+    return true;
+}
+
+bool TryReportDomainNetworkViolation(
+    const protocol::NetworkOperation operation,
+    const char* const ascii_domain) noexcept {
+    if (InterlockedCompareExchange(&g_state.initialization_state, 1, 1) != 1 ||
+        InterlockedCompareExchange(&g_state.writer_failed, 0, 0) != 0 ||
+        protocol::DomainNetworkViolationFrameLength(ascii_domain) == 0) {
+        return false;
+    }
+    std::size_t domain_length = 0;
+    while (ascii_domain[domain_length] != '\0') {
+        ++domain_length;
+    }
+    EnterCriticalSection(&g_state.lock);
+    if (g_state.count == kQueueCapacity) {
+        LeaveCriticalSection(&g_state.lock);
+        return false;
+    }
+    EventRecord& record = g_state.records[g_state.tail];
+    record.kind = EventRecordKind::kNetworkDomain;
+    record.process_id = GetCurrentProcessId();
+    record.network_operation = operation;
+    record.sequence = g_state.next_sequence++;
+    std::copy_n(ascii_domain, domain_length + 1U, record.domain);
     record.path_length = 0;
     record.path[0] = L'\0';
     g_state.tail = (g_state.tail + 1U) % kQueueCapacity;

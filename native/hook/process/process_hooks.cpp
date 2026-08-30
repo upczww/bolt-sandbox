@@ -361,6 +361,10 @@ bool InstallDescendantRuntime(
     child_payload.release_handle = reinterpret_cast<std::uintptr_t>(remote_release);
     child_payload.descendant_ready_handle =
         reinterpret_cast<std::uintptr_t>(remote_ready);
+    child_payload.dns_request_handle = 0;
+    child_payload.dns_response_handle = 0;
+    child_payload.dns_maximum_frame_length = 0;
+    child_payload.dns_authentication_key.fill(0);
     auto encoded = protocol::EncodeRuntimePayload(child_payload);
     if (!DetourCopyPayloadToProcess(
             process_information->hProcess, protocol::kRuntimePayloadGuid,

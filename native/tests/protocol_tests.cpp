@@ -1,7 +1,13 @@
 #include "protocol/version.h"
+#include "protocol/dns_proxy_startup.h"
+#include "common/immutable_policy_mapping.h"
+#include "common/immutable_mapping.h"
+#include "tests/policy_fixture.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <string>
 
@@ -28,6 +34,22 @@ bool RunBuildXlTreeTests();
 bool RunFilesystemPolicyTests();
 bool RunFilesystemRaceTests();
 bool RunShellFileOperationTests();
+bool RunNetworkPolicyTests();
+bool RunNetworkHookTests();
+bool RunDnsBindingTests();
+bool RunDnsProxyProtocolTests();
+bool RunDnsProxyServerTests();
+bool RunDnsProxySessionTests();
+bool RunDnsProxyHandleTransportTests();
+bool RunDnsProxyStartupTests();
+bool RunSystemDnsResolverTests();
+bool RunDnsProxyClientTests();
+bool RunDnsProxyClientChannelTests();
+bool RunImmutableMappingTests();
+bool RunDnsProxyProcessTests();
+bool RunNetworkAllowListTests();
+int RunNetworkAllowListChild(int argument_count, wchar_t** arguments);
+int RunNetworkHookChild(int argument_count, wchar_t** arguments);
 int RunProcessChild(int argument_count, wchar_t** arguments);
 int RunFilesystemRaceChild(int argument_count, wchar_t** arguments);
 int RunShellFileOperationChild(int argument_count, wchar_t** arguments);
@@ -36,6 +58,32 @@ int RunInheritedProcessLeaf(int argument_count, wchar_t** arguments);
 int RunCrossArchitectureProcessParent(int argument_count, wchar_t** arguments);
 
 namespace {
+
+bool write_exact(HANDLE handle, const std::uint8_t* bytes, std::size_t length) {
+    std::size_t offset = 0;
+    while (offset < length) {
+        DWORD written = 0;
+        if (!WriteFile(handle, bytes + offset, static_cast<DWORD>(length - offset),
+                       &written, nullptr) || written == 0) {
+            return false;
+        }
+        offset += written;
+    }
+    return true;
+}
+
+bool read_exact(HANDLE handle, std::uint8_t* bytes, std::size_t length) {
+    std::size_t offset = 0;
+    while (offset < length) {
+        DWORD read = 0;
+        if (!ReadFile(handle, bytes + offset, static_cast<DWORD>(length - offset),
+                      &read, nullptr) || read == 0) {
+            return false;
+        }
+        offset += read;
+    }
+    return true;
+}
 
 std::filesystem::path executable_directory() {
     std::wstring path(32'768, L'\0');
@@ -90,9 +138,158 @@ bool hook_exports_matching_protocol(const std::filesystem::path& directory) {
     return matches;
 }
 
+bool dns_proxy_rejects_missing_startup(const std::filesystem::path& directory) {
+#if defined(_WIN64)
+    const auto proxy = directory / L"bolt-sandbox-dns-proxy.exe";
+    std::wstring command_line = L"\"" + proxy.wstring() + L"\"";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(
+            proxy.c_str(), command_line.data(), nullptr, nullptr, FALSE, 0,
+            nullptr, nullptr, &startup, &process)) {
+        return false;
+    }
+    WaitForSingleObject(process.hProcess, 5'000);
+    DWORD exit_code = 0;
+    const bool passed = GetExitCodeProcess(process.hProcess, &exit_code) && exit_code != 0;
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return passed;
+#else
+    static_cast<void>(directory);
+    return true;
+#endif
+}
+
+bool dns_proxy_accepts_valid_startup(const std::filesystem::path& directory) {
+#if defined(_WIN64)
+    const auto proxy = directory / L"bolt-sandbox-dns-proxy.exe";
+    const bolt::tests::NetworkAllowListRules allow_list{
+        {{false, "localhost"}}, {}, {{443, 443}}};
+    const auto policy_bytes = bolt::tests::SealPolicy(
+        {}, bolt::tests::ChildProcessPolicyKind::kInherit,
+        bolt::tests::NetworkPolicyKind::kAllowList, allow_list);
+    bolt::common::ImmutablePolicyMapping policy;
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    HANDLE request_read = nullptr;
+    HANDLE request_write = nullptr;
+    HANDLE response_read = nullptr;
+    HANDLE response_write = nullptr;
+    if (policy_bytes.empty() ||
+        bolt::common::ImmutablePolicyMapping::Create(
+            policy_bytes.data(), policy_bytes.size(), policy) !=
+            bolt::common::PolicyMappingStatus::kSuccess ||
+        !SetHandleInformation(policy.handle(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) ||
+        !CreatePipe(&request_read, &request_write, &inheritable, 0) ||
+        !CreatePipe(&response_read, &response_write, &inheritable, 0) ||
+        !SetHandleInformation(request_write, HANDLE_FLAG_INHERIT, 0) ||
+        !SetHandleInformation(response_read, HANDLE_FLAG_INHERIT, 0)) {
+        return false;
+    }
+    bolt::protocol::DnsProxyStartup startup_payload{};
+    startup_payload.policy_length = static_cast<std::uint32_t>(policy.length());
+    startup_payload.policy_handle = reinterpret_cast<std::uintptr_t>(policy.handle());
+    startup_payload.read_handle = reinterpret_cast<std::uintptr_t>(request_read);
+    startup_payload.write_handle = reinterpret_cast<std::uintptr_t>(response_write);
+    startup_payload.maximum_frame_length = 1'024;
+    startup_payload.maximum_requests = 8;
+    startup_payload.session.nonce[0] = 1;
+    startup_payload.session.authentication_key[0] = 2;
+    auto encoded_startup = bolt::protocol::EncodeDnsProxyStartup(startup_payload);
+    bolt::common::ImmutableMapping startup_mapping;
+    if (bolt::common::ImmutableMapping::Create(
+            encoded_startup.data(), encoded_startup.size(), startup_mapping) !=
+        bolt::common::ImmutableMappingStatus::kSuccess) {
+        return false;
+    }
+    std::wstring command_line = L"\"" + proxy.wstring() + L"\"";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = startup_mapping.handle();
+    startup.hStdOutput = request_read;
+    startup.hStdError = response_write;
+    PROCESS_INFORMATION process{};
+    const bool created = CreateProcessW(
+        proxy.c_str(), command_line.data(), nullptr, nullptr, TRUE, 0, nullptr,
+        nullptr, &startup, &process) != FALSE;
+    CloseHandle(request_read);
+    CloseHandle(response_write);
+    std::vector<std::uint8_t> request;
+    const bool request_encoded = bolt::protocol::EncodeDnsProxyRequest(
+        startup_payload.session, 1, "localhost", 443, request) ==
+        bolt::protocol::DnsProxyStatus::kSuccess;
+    const std::uint32_t request_length = static_cast<std::uint32_t>(request.size());
+    const std::array<std::uint8_t, 4> request_prefix = {
+        static_cast<std::uint8_t>(request_length),
+        static_cast<std::uint8_t>(request_length >> 8U),
+        static_cast<std::uint8_t>(request_length >> 16U),
+        static_cast<std::uint8_t>(request_length >> 24U),
+    };
+    const bool request_written = created && request_encoded &&
+        write_exact(request_write, request_prefix.data(), request_prefix.size()) &&
+        write_exact(request_write, request.data(), request.size());
+    CloseHandle(request_write);
+    if (!created) {
+        std::fprintf(stderr, "dns proxy valid startup create failed: %lu\n",
+                     static_cast<unsigned long>(GetLastError()));
+        CloseHandle(response_read);
+        return false;
+    }
+    const DWORD wait = WaitForSingleObject(process.hProcess, 5'000);
+    DWORD exit_code = 0;
+    std::array<std::uint8_t, 4> response_prefix{};
+    const bool response_prefix_read =
+        read_exact(response_read, response_prefix.data(), response_prefix.size());
+    const std::size_t response_length =
+        static_cast<std::size_t>(response_prefix[0]) |
+        (static_cast<std::size_t>(response_prefix[1]) << 8U) |
+        (static_cast<std::size_t>(response_prefix[2]) << 16U) |
+        (static_cast<std::size_t>(response_prefix[3]) << 24U);
+    std::vector<std::uint8_t> response(response_length);
+    const bool response_body_read = response_length != 0 &&
+        read_exact(response_read, response.data(), response.size());
+    bolt::protocol::DnsProxyResponse decoded_response{};
+    const bool response_valid = response_body_read &&
+        bolt::protocol::DecodeDnsProxyResponse(
+            startup_payload.session, response.data(), response.size(), 1,
+            decoded_response) == bolt::protocol::DnsProxyStatus::kSuccess &&
+        decoded_response.result == bolt::protocol::DnsProxyResult::kSuccess &&
+        !decoded_response.addresses.empty();
+    const bool passed = request_written && response_prefix_read && response_valid &&
+                        wait == WAIT_OBJECT_0 &&
+                        GetExitCodeProcess(process.hProcess, &exit_code) &&
+                        exit_code == 0;
+    if (!passed) {
+        std::fprintf(
+            stderr, "dns proxy valid startup failed: wait=%lu exit=%lu\n",
+            static_cast<unsigned long>(wait),
+            static_cast<unsigned long>(exit_code));
+    }
+    CloseHandle(response_read);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return passed;
+#else
+    static_cast<void>(directory);
+    return true;
+#endif
+}
+
 }  // namespace
 
 int wmain(const int argument_count, wchar_t** arguments) {
+    if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--dns-proxy-entry-tests") {
+        const auto directory = executable_directory();
+        return dns_proxy_rejects_missing_startup(directory) &&
+                       dns_proxy_accepts_valid_startup(directory)
+                   ? 0
+                   : 1;
+    }
     if (argument_count == 2 &&
         std::wstring(arguments[1]) == L"--filesystem-race-tests") {
         return RunFilesystemRaceTests() ? 0 : 1;
@@ -100,6 +297,59 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count == 2 &&
         std::wstring(arguments[1]) == L"--shell-file-operation-tests") {
         return RunShellFileOperationTests() ? 0 : 1;
+    }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--network-policy-tests") {
+        return RunNetworkPolicyTests() ? 0 : 1;
+    }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--event-frame-tests") {
+        return RunEventFrameTests() ? 0 : 1;
+    }
+    if (argument_count >= 2 && std::wstring(arguments[1]) == L"--network-hook-child") {
+        return RunNetworkHookChild(argument_count, arguments);
+    }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--network-hook-tests") {
+        return RunNetworkHookTests() ? 0 : 1;
+    }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-binding-tests") {
+        return RunDnsBindingTests() ? 0 : 1;
+    }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-proxy-protocol-tests") {
+        return RunDnsProxyProtocolTests() ? 0 : 1;
+    }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-proxy-server-tests") {
+        return RunDnsProxyServerTests() ? 0 : 1;
+    }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-proxy-session-tests") {
+        return RunDnsProxySessionTests() ? 0 : 1;
+    }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-proxy-handle-tests") {
+        return RunDnsProxyHandleTransportTests() ? 0 : 1;
+    }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-proxy-startup-tests") {
+        return RunDnsProxyStartupTests() ? 0 : 1;
+    }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--system-dns-resolver-tests") {
+        return RunSystemDnsResolverTests() ? 0 : 1;
+    }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-proxy-client-tests") {
+        return RunDnsProxyClientTests() ? 0 : 1;
+    }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-proxy-channel-tests") {
+        return RunDnsProxyClientChannelTests() ? 0 : 1;
+    }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--immutable-mapping-tests") {
+        return RunImmutableMappingTests() ? 0 : 1;
+    }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-proxy-process-tests") {
+        return RunDnsProxyProcessTests() ? 0 : 1;
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--network-allow-list-child") {
+        return RunNetworkAllowListChild(argument_count, arguments);
+    }
+    if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--network-allow-list-tests") {
+        return RunNetworkAllowListTests() ? 0 : 1;
     }
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--job-child") {
         Sleep(INFINITE);
@@ -174,6 +424,48 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunFilesystemRaceTests()) {
         return 15;
+    }
+    if (!RunNetworkPolicyTests()) {
+        return 16;
+    }
+    if (!RunNetworkHookTests()) {
+        return 17;
+    }
+    if (!RunDnsBindingTests()) {
+        return 18;
+    }
+    if (!RunDnsProxyProtocolTests()) {
+        return 19;
+    }
+    if (!RunDnsProxyServerTests()) {
+        return 20;
+    }
+    if (!RunDnsProxySessionTests()) {
+        return 21;
+    }
+    if (!RunDnsProxyHandleTransportTests()) {
+        return 22;
+    }
+    if (!RunDnsProxyStartupTests()) {
+        return 23;
+    }
+    if (!RunSystemDnsResolverTests()) {
+        return 24;
+    }
+    if (!RunDnsProxyClientTests()) {
+        return 25;
+    }
+    if (!RunDnsProxyClientChannelTests()) {
+        return 26;
+    }
+    if (!RunImmutableMappingTests()) {
+        return 27;
+    }
+    if (!RunDnsProxyProcessTests()) {
+        return 28;
+    }
+    if (!RunNetworkAllowListTests()) {
+        return 29;
     }
     return 0;
 }

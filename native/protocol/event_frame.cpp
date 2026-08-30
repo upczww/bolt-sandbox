@@ -15,6 +15,7 @@ constexpr std::size_t kSequenceOffset = 12;
 constexpr std::size_t kChecksumOffset = 20;
 constexpr std::uint16_t kReadyKind = 1;
 constexpr std::uint16_t kFilesystemViolationKind = 2;
+constexpr std::uint16_t kNetworkViolationKind = 4;
 constexpr std::uint16_t kProcessViolationKind = 8;
 constexpr std::size_t kFilesystemProcessIdOffset = kEventHeaderLength;
 constexpr std::size_t kFilesystemOperationOffset = kFilesystemProcessIdOffset + 4;
@@ -23,6 +24,12 @@ constexpr std::size_t kFilesystemPathOffset = kFilesystemPathLengthOffset + 4;
 constexpr std::size_t kProcessViolationProcessIdOffset = kEventHeaderLength;
 constexpr std::size_t kProcessViolationOperationOffset =
     kProcessViolationProcessIdOffset + 4;
+constexpr std::size_t kNetworkProcessIdOffset = kEventHeaderLength;
+constexpr std::size_t kNetworkOperationOffset = kNetworkProcessIdOffset + 4;
+constexpr std::size_t kNetworkFamilyOffset = kNetworkOperationOffset + 1;
+constexpr std::size_t kNetworkAddressOffset = kNetworkFamilyOffset + 1;
+constexpr std::size_t kNetworkDomainLengthOffset = kNetworkFamilyOffset + 1;
+constexpr std::size_t kNetworkDomainOffset = kNetworkDomainLengthOffset + 4;
 
 void WriteU16(std::uint8_t* output, const std::size_t offset, const std::uint16_t value) noexcept {
     output[offset] = static_cast<std::uint8_t>(value);
@@ -224,6 +231,123 @@ FrameEncodeStatus EncodeProcessViolationFrame(
     output[kProcessViolationOperationOffset] = operation_value;
     RewriteFrameChecksum(output, kProcessViolationFrameLength);
     written = kProcessViolationFrameLength;
+    return FrameEncodeStatus::kSuccess;
+}
+
+FrameEncodeStatus EncodeNetworkViolationFrame(
+    const std::uint32_t process_id,
+    const NetworkOperation operation,
+    const NetworkEndpoint& endpoint,
+    const std::uint64_t sequence,
+    std::uint8_t* const output,
+    const std::size_t capacity,
+    std::size_t& written) noexcept {
+    written = 0;
+    if (output == nullptr) {
+        return FrameEncodeStatus::kInvalidArgument;
+    }
+    const auto operation_value = static_cast<std::uint8_t>(operation);
+    if (operation_value > static_cast<std::uint8_t>(NetworkOperation::kSend)) {
+        return FrameEncodeStatus::kInvalidOperation;
+    }
+
+    std::size_t address_length = 0;
+    std::size_t frame_length = 0;
+    switch (endpoint.family) {
+        case NetworkAddressFamily::kIpv4:
+            address_length = 4;
+            frame_length = kIpv4NetworkViolationFrameLength;
+            break;
+        case NetworkAddressFamily::kIpv6:
+            address_length = 16;
+            frame_length = kIpv6NetworkViolationFrameLength;
+            break;
+        default:
+            return FrameEncodeStatus::kInvalidAddress;
+    }
+    if (capacity < frame_length) {
+        return FrameEncodeStatus::kInsufficientBuffer;
+    }
+
+    std::fill_n(output, frame_length, std::uint8_t{0});
+    std::copy(kMagic.begin(), kMagic.end(), output);
+    WriteU16(output, kVersionOffset, kProtocolVersion);
+    WriteU16(output, kKindOffset, kNetworkViolationKind);
+    WriteU32(
+        output, kLengthOffset,
+        static_cast<std::uint32_t>(frame_length - kEventHeaderLength));
+    WriteU64(output, kSequenceOffset, sequence);
+    WriteU32(output, kNetworkProcessIdOffset, process_id);
+    output[kNetworkOperationOffset] = operation_value;
+    output[kNetworkFamilyOffset] = static_cast<std::uint8_t>(endpoint.family);
+    std::copy_n(endpoint.address.begin(), address_length, output + kNetworkAddressOffset);
+    WriteU16(output, kNetworkAddressOffset + address_length, endpoint.port);
+    RewriteFrameChecksum(output, frame_length);
+    written = frame_length;
+    return FrameEncodeStatus::kSuccess;
+}
+
+std::size_t DomainNetworkViolationFrameLength(const char* ascii_domain) noexcept {
+    if (ascii_domain == nullptr) {
+        return 0;
+    }
+    std::size_t length = 0;
+    while (length <= kMaximumEventDomainBytes && ascii_domain[length] != '\0') {
+        const auto byte = static_cast<unsigned char>(ascii_domain[length]);
+        if (byte < 0x21U || byte > 0x7eU) {
+            return 0;
+        }
+        ++length;
+    }
+    if (length == 0 || length > kMaximumEventDomainBytes) {
+        return 0;
+    }
+    return kNetworkDomainOffset + length;
+}
+
+FrameEncodeStatus EncodeDomainNetworkViolationFrame(
+    const std::uint32_t process_id,
+    const NetworkOperation operation,
+    const char* const ascii_domain,
+    const std::uint64_t sequence,
+    std::uint8_t* const output,
+    const std::size_t capacity,
+    std::size_t& written) noexcept {
+    written = 0;
+    if (output == nullptr) {
+        return FrameEncodeStatus::kInvalidArgument;
+    }
+    const auto operation_value = static_cast<std::uint8_t>(operation);
+    if (operation_value > static_cast<std::uint8_t>(NetworkOperation::kSend)) {
+        return FrameEncodeStatus::kInvalidOperation;
+    }
+    const std::size_t frame_length =
+        DomainNetworkViolationFrameLength(ascii_domain);
+    if (frame_length == 0) {
+        return FrameEncodeStatus::kInvalidDomain;
+    }
+    if (capacity < frame_length) {
+        return FrameEncodeStatus::kInsufficientBuffer;
+    }
+
+    const std::size_t domain_length = frame_length - kNetworkDomainOffset;
+    std::fill_n(output, frame_length, std::uint8_t{0});
+    std::copy(kMagic.begin(), kMagic.end(), output);
+    WriteU16(output, kVersionOffset, kProtocolVersion);
+    WriteU16(output, kKindOffset, kNetworkViolationKind);
+    WriteU32(
+        output, kLengthOffset,
+        static_cast<std::uint32_t>(frame_length - kEventHeaderLength));
+    WriteU64(output, kSequenceOffset, sequence);
+    WriteU32(output, kNetworkProcessIdOffset, process_id);
+    output[kNetworkOperationOffset] = operation_value;
+    output[kNetworkFamilyOffset] = 0;
+    WriteU32(
+        output, kNetworkDomainLengthOffset,
+        static_cast<std::uint32_t>(domain_length));
+    std::copy_n(ascii_domain, domain_length, output + kNetworkDomainOffset);
+    RewriteFrameChecksum(output, frame_length);
+    written = frame_length;
     return FrameEncodeStatus::kSuccess;
 }
 
