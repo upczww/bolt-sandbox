@@ -309,6 +309,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--event-frame-tests") {
         return RunEventFrameTests() ? 0 : 1;
     }
+    if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--runtime-payload-tests") {
+        return RunRuntimePayloadTests() ? 0 : 1;
+    }
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--network-hook-child") {
         return RunNetworkHookChild(argument_count, arguments);
     }

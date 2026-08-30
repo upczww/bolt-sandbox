@@ -8,7 +8,7 @@
 
 namespace bolt::protocol {
 
-inline constexpr std::size_t kRuntimePayloadLength = 120;
+inline constexpr std::size_t kRuntimePayloadLength = 128;
 inline constexpr GUID kRuntimePayloadGuid = {
     0x4f8a6d21, 0x91c7, 0x4bb7, {0xa6, 0x7e, 0x31, 0x57, 0x2b, 0xd9, 0x46, 0x10}};
 
@@ -27,6 +27,7 @@ struct RuntimePayload {
     std::uint64_t dns_response_handle = 0;
     std::uint32_t dns_maximum_frame_length = 0;
     std::array<std::uint8_t, 32> dns_authentication_key{};
+    std::uint16_t tcp_proxy_port = 0;
 
     bool operator==(const RuntimePayload& other) const noexcept {
         return target_process_id == other.target_process_id &&
@@ -37,7 +38,8 @@ struct RuntimePayload {
                dns_request_handle == other.dns_request_handle &&
                dns_response_handle == other.dns_response_handle &&
                dns_maximum_frame_length == other.dns_maximum_frame_length &&
-               dns_authentication_key == other.dns_authentication_key;
+               dns_authentication_key == other.dns_authentication_key &&
+               tcp_proxy_port == other.tcp_proxy_port;
     }
     bool operator!=(const RuntimePayload& other) const noexcept { return !(*this == other); }
 };

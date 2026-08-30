@@ -16,6 +16,9 @@ constexpr std::size_t kReadHandleOffset = 32;
 constexpr std::size_t kWriteHandleOffset = 40;
 constexpr std::size_t kNonceOffset = 48;
 constexpr std::size_t kKeyOffset = 64;
+constexpr std::size_t kTcpListenerHandleOffset = 96;
+constexpr std::size_t kTcpListenerPortOffset = 104;
+constexpr std::size_t kMaximumTcpConnectionsOffset = 108;
 
 void WriteU16(std::uint8_t* bytes, std::size_t offset, std::uint16_t value) noexcept {
     bytes[offset] = static_cast<std::uint8_t>(value);
@@ -57,9 +60,14 @@ DnsProxyStartupStatus Validate(const DnsProxyStartup& startup) noexcept {
     if (startup.policy_handle == 0 || startup.read_handle == 0 || startup.write_handle == 0) {
         return DnsProxyStartupStatus::kInvalidHandle;
     }
+    if (startup.tcp_listener_handle == 0 || startup.tcp_listener_port == 0) {
+        return DnsProxyStartupStatus::kInvalidHandle;
+    }
     if (startup.maximum_frame_length < kDnsProxyHeaderLength ||
         startup.maximum_frame_length > 1'048'576 || startup.maximum_requests == 0 ||
-        startup.maximum_requests > 4'096) {
+        startup.maximum_requests > 4'096 ||
+        startup.maximum_tcp_connections == 0 ||
+        startup.maximum_tcp_connections > 4'096) {
         return DnsProxyStartupStatus::kInvalidLimits;
     }
     const bool nonce_zero = std::all_of(
@@ -92,6 +100,14 @@ std::array<std::uint8_t, kDnsProxyStartupLength> EncodeDnsProxyStartup(
     WriteU64(encoded.data(), kWriteHandleOffset, startup.write_handle);
     std::copy(startup.session.nonce.begin(), startup.session.nonce.end(), encoded.begin() + kNonceOffset);
     std::copy(startup.session.authentication_key.begin(), startup.session.authentication_key.end(), encoded.begin() + kKeyOffset);
+    WriteU64(
+        encoded.data(), kTcpListenerHandleOffset,
+        startup.tcp_listener_handle);
+    WriteU16(
+        encoded.data(), kTcpListenerPortOffset, startup.tcp_listener_port);
+    WriteU32(
+        encoded.data(), kMaximumTcpConnectionsOffset,
+        startup.maximum_tcp_connections);
     return encoded;
 }
 
@@ -122,6 +138,10 @@ DnsProxyStartupStatus DecodeDnsProxyStartup(
     startup.write_handle = ReadU64(encoded, kWriteHandleOffset);
     std::copy_n(encoded + kNonceOffset, startup.session.nonce.size(), startup.session.nonce.begin());
     std::copy_n(encoded + kKeyOffset, startup.session.authentication_key.size(), startup.session.authentication_key.begin());
+    startup.tcp_listener_handle = ReadU64(encoded, kTcpListenerHandleOffset);
+    startup.tcp_listener_port = ReadU16(encoded, kTcpListenerPortOffset);
+    startup.maximum_tcp_connections =
+        ReadU32(encoded, kMaximumTcpConnectionsOffset);
     return Validate(startup);
 }
 
