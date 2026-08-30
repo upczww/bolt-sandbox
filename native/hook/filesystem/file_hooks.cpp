@@ -467,6 +467,41 @@ bool ConvertAnsiPath(const char* path, std::wstring& converted) noexcept {
     return true;
 }
 
+bool NativeCreateFilePath(
+    const wchar_t* path,
+    std::wstring& extended,
+    const wchar_t*& native_path) noexcept {
+    native_path = path;
+    if (path == nullptr) {
+        return true;
+    }
+    const std::size_t length = std::wcslen(path);
+    if (length < MAX_PATH || std::wcsncmp(path, L"\\\\?\\", 4) == 0 ||
+        std::wcsncmp(path, L"\\\\.\\", 4) == 0) {
+        return true;
+    }
+    const auto is_separator = [](const wchar_t value) {
+        return value == L'\\' || value == L'/';
+    };
+    try {
+        if (length >= 3 && path[1] == L':' && is_separator(path[2])) {
+            extended.assign(L"\\\\?\\");
+            extended.append(path);
+        } else if (length >= 2 && is_separator(path[0]) &&
+                   is_separator(path[1])) {
+            extended.assign(L"\\\\?\\UNC\\");
+            extended.append(path + 2);
+        } else {
+            return true;
+        }
+    } catch (...) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return false;
+    }
+    native_path = extended.c_str();
+    return true;
+}
+
 bool TryGetHandlePath(const HANDLE handle, std::wstring& path) noexcept {
     constexpr DWORD flags = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS;
     const DWORD required = GetFinalPathNameByHandleW(handle, nullptr, 0, flags);
@@ -2114,8 +2149,13 @@ HANDLE WINAPI DetouredCreateFileW(
     if (!AuthorizeCreateFile(filename, request, flags_and_attributes)) {
         return INVALID_HANDLE_VALUE;
     }
+    std::wstring extended_filename;
+    const wchar_t* native_filename = nullptr;
+    if (!NativeCreateFilePath(filename, extended_filename, native_filename)) {
+        return INVALID_HANDLE_VALUE;
+    }
     const HANDLE opened = g_create_file_w(
-        filename, desired_access, share_mode, security_attributes, creation_disposition,
+        native_filename, desired_access, share_mode, security_attributes, creation_disposition,
         flags_and_attributes, template_file);
     if (opened == INVALID_HANDLE_VALUE) {
         return opened;
@@ -2151,8 +2191,14 @@ HANDLE WINAPI DetouredCreateFileA(
             filename_wide.c_str(), request, flags_and_attributes)) {
         return INVALID_HANDLE_VALUE;
     }
+    std::wstring extended_filename;
+    const wchar_t* native_filename = nullptr;
+    if (!NativeCreateFilePath(
+            filename_wide.c_str(), extended_filename, native_filename)) {
+        return INVALID_HANDLE_VALUE;
+    }
     const HANDLE opened = g_create_file_w(
-        filename_wide.c_str(), desired_access, share_mode, security_attributes,
+        native_filename, desired_access, share_mode, security_attributes,
         creation_disposition, flags_and_attributes, template_file);
     if (opened == INVALID_HANDLE_VALUE) {
         return opened;
