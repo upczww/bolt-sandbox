@@ -2349,6 +2349,23 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         return 271;
     }
 
+    FILE_ALLOCATION_INFO denied_allocation_information{};
+    denied_allocation_information.AllocationSize.QuadPart = 1;
+    if (SetFileInformationByHandle(
+            denied_truncate_handle, FileAllocationInfo,
+            &denied_allocation_information, sizeof(denied_allocation_information)) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 272;
+    }
+    FILE_END_OF_FILE_INFO denied_end_of_file_information{};
+    denied_end_of_file_information.EndOfFile.QuadPart = 1;
+    if (SetFileInformationByHandle(
+            denied_truncate_handle, FileEndOfFileInfo,
+            &denied_end_of_file_information, sizeof(denied_end_of_file_information)) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 273;
+    }
+
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -3901,7 +3918,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_disposition_path.wstring(), 113);
+            denied_disposition_path.wstring(), 113) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_truncate_path.wstring(), 114) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_truncate_path.wstring(), 115);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =

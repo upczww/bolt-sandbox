@@ -146,7 +146,11 @@ conversion funnel into the same wide-character decision.
 Bolt also detours Win32 `SetEndOfFile` directly so an inherited or duplicated
 write handle cannot bypass path policy. The adapter resolves the handle's final
 identity, requires write access, reports denied truncation as `Write`, and only
-then invokes the real API. Bolt also attaches BuildXL's exact
+then invokes the real API. Win32
+`SetFileInformationByHandle(FileAllocationInfo/FileEndOfFileInfo)` is verified
+to converge on the same native interception seam for inherited denied handles;
+both calls return `ERROR_ACCESS_DENIED`, emit `Write`, and preserve file bytes.
+Bolt also attaches BuildXL's exact
 `ZwSetInformationFile_t` seam and applies the same check to allocation and
 end-of-file information classes. Its disposition and extended-disposition
 branches mirror the Win32 delete-flag split and report `Delete`. Direct NT
