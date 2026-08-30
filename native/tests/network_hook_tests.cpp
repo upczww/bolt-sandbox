@@ -198,6 +198,8 @@ int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
     closesocket(invalid_address_socket);
 
     const SOCKET connect_ex_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    const int connect_ex_socket_error =
+        connect_ex_socket == INVALID_SOCKET ? WSAGetLastError() : 0;
     sockaddr_in local_endpoint{};
     local_endpoint.sin_family = AF_INET;
     local_endpoint.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -222,11 +224,15 @@ int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
     OVERLAPPED overlapped{};
     overlapped.hEvent = completion_event;
     DWORD sent = 0;
+    const int connect_ex_bind_status =
+        connect_ex_socket == INVALID_SOCKET
+            ? SOCKET_ERROR
+            : bind(
+                  connect_ex_socket,
+                  reinterpret_cast<const sockaddr*>(&local_endpoint),
+                  sizeof(local_endpoint));
     const bool connect_ex_ready =
-        connect_ex_socket != INVALID_SOCKET &&
-        bind(
-            connect_ex_socket, reinterpret_cast<const sockaddr*>(&local_endpoint),
-            sizeof(local_endpoint)) == 0 &&
+        connect_ex_socket != INVALID_SOCKET && connect_ex_bind_status == 0 &&
         extension_status == 0 && extension_bytes == sizeof(connect_ex) &&
         connect_ex != nullptr && completion_event != nullptr;
     const BOOL connect_ex_result =
@@ -486,7 +492,46 @@ int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
         flush_events != nullptr && flush_events(5'000) != FALSE;
     WSACleanup();
     if (!connect_passed) {
-        return 202;
+        if (connect_result != SOCKET_ERROR || connect_error != WSAEACCES) {
+            return 250;
+        }
+        if (wsa_connect_result != SOCKET_ERROR ||
+            wsa_connect_error != WSAEACCES) {
+            return 251;
+        }
+        if (invalid_address_result != SOCKET_ERROR ||
+            invalid_address_error != WSAEACCES) {
+            return 252;
+        }
+        if (!connect_ex_ready) {
+            if (connect_ex_socket == INVALID_SOCKET) {
+                return 20'000 + connect_ex_socket_error;
+            }
+            if (connect_ex_bind_status != 0) {
+                return 261;
+            }
+            if (extension_status != 0) {
+                return 262;
+            }
+            if (extension_bytes != sizeof(connect_ex)) {
+                return 263;
+            }
+            if (connect_ex == nullptr) {
+                return 264;
+            }
+            return completion_event == nullptr ? 265 : 253;
+        }
+        if (connect_ex_result != FALSE || connect_ex_error != WSAEACCES) {
+            return 254;
+        }
+        if (!connect_ex_not_completed) {
+            return 255;
+        }
+        if (short_extension_status != SOCKET_ERROR ||
+            short_extension_error != WSAEFAULT) {
+            return 256;
+        }
+        return 257;
     }
     if (!address_resolution_passed) {
         return 203;

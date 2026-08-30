@@ -1152,9 +1152,19 @@ bool AuthorizeAttributeMutation(const wchar_t* path) noexcept {
 bool AuthorizeOpenedFileHandle(
     const HANDLE file,
     const ClassifiedAccess& request) noexcept {
+    if (file == nullptr || file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    SetLastError(ERROR_SUCCESS);
+    const DWORD file_type = GetFileType(file);
+    if (file_type == FILE_TYPE_PIPE || file_type == FILE_TYPE_CHAR) {
+        return true;
+    }
+    if (file_type != FILE_TYPE_DISK) {
+        return false;
+    }
     std::wstring final_path;
-    if (file == nullptr || file == INVALID_HANDLE_VALUE ||
-        !TryGetHandlePath(file, final_path)) {
+    if (!TryGetHandlePath(file, final_path)) {
         return false;
     }
     const auto* policy = g_policy.get();
