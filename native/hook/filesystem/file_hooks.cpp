@@ -665,6 +665,63 @@ bool AuthorizeShellDelete(const char* paths) noexcept {
     return true;
 }
 
+bool AuthorizeShellTransfer(
+    const wchar_t* sources,
+    const wchar_t* destinations,
+    const bool move,
+    const bool multiple_destinations) noexcept {
+    if (sources == nullptr || destinations == nullptr) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    const wchar_t* destination = destinations;
+    for (const wchar_t* source = sources; *source != L'\0';
+         source += std::wcslen(source) + 1) {
+        if (*destination == L'\0' ||
+            !(move ? AuthorizeMove(source, destination)
+                   : AuthorizeCopy(source, destination))) {
+            SetLastError(ERROR_ACCESS_DENIED);
+            return false;
+        }
+        if (multiple_destinations) {
+            destination += std::wcslen(destination) + 1;
+        }
+    }
+    return true;
+}
+
+bool AuthorizeShellTransfer(
+    const char* sources,
+    const char* destinations,
+    const bool move,
+    const bool multiple_destinations) noexcept {
+    if (sources == nullptr || destinations == nullptr) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    const char* destination = destinations;
+    for (const char* source = sources; *source != '\0';
+         source += std::strlen(source) + 1) {
+        if (*destination == '\0') {
+            SetLastError(ERROR_ACCESS_DENIED);
+            return false;
+        }
+        std::wstring source_wide;
+        std::wstring destination_wide;
+        if (!ConvertAnsiPath(source, source_wide) ||
+            !ConvertAnsiPath(destination, destination_wide) ||
+            !(move ? AuthorizeMove(source_wide.c_str(), destination_wide.c_str())
+                   : AuthorizeCopy(source_wide.c_str(), destination_wide.c_str()))) {
+            SetLastError(ERROR_ACCESS_DENIED);
+            return false;
+        }
+        if (multiple_destinations) {
+            destination += std::strlen(destination) + 1;
+        }
+    }
+    return true;
+}
+
 HANDLE WINAPI DetouredFindFirstFileW(
     const LPCWSTR path,
     const LPWIN32_FIND_DATAW find_data) noexcept {
@@ -1894,11 +1951,19 @@ HRESULT WINAPI DetouredCopyFile2(
 int WINAPI DetouredSHFileOperationW(
     const LPSHFILEOPSTRUCTW operation) noexcept {
     DetouredScope scope;
-    if (scope.Detoured_IsDisabled() || operation == nullptr ||
-        operation->wFunc != FO_DELETE) {
+    if (scope.Detoured_IsDisabled() || operation == nullptr) {
         return g_sh_file_operation_w(operation);
     }
-    if (!AuthorizeShellDelete(operation->pFrom)) {
+    bool authorized = true;
+    if (operation->wFunc == FO_DELETE) {
+        authorized = AuthorizeShellDelete(operation->pFrom);
+    } else if (operation->wFunc == FO_COPY || operation->wFunc == FO_MOVE ||
+               operation->wFunc == FO_RENAME) {
+        authorized = AuthorizeShellTransfer(
+            operation->pFrom, operation->pTo, operation->wFunc != FO_COPY,
+            (operation->fFlags & FOF_MULTIDESTFILES) != 0);
+    }
+    if (!authorized) {
         operation->fAnyOperationsAborted = TRUE;
         SetLastError(ERROR_ACCESS_DENIED);
         return ERROR_ACCESS_DENIED;
@@ -1909,11 +1974,19 @@ int WINAPI DetouredSHFileOperationW(
 int WINAPI DetouredSHFileOperationA(
     const LPSHFILEOPSTRUCTA operation) noexcept {
     DetouredScope scope;
-    if (scope.Detoured_IsDisabled() || operation == nullptr ||
-        operation->wFunc != FO_DELETE) {
+    if (scope.Detoured_IsDisabled() || operation == nullptr) {
         return g_sh_file_operation_a(operation);
     }
-    if (!AuthorizeShellDelete(operation->pFrom)) {
+    bool authorized = true;
+    if (operation->wFunc == FO_DELETE) {
+        authorized = AuthorizeShellDelete(operation->pFrom);
+    } else if (operation->wFunc == FO_COPY || operation->wFunc == FO_MOVE ||
+               operation->wFunc == FO_RENAME) {
+        authorized = AuthorizeShellTransfer(
+            operation->pFrom, operation->pTo, operation->wFunc != FO_COPY,
+            (operation->fFlags & FOF_MULTIDESTFILES) != 0);
+    }
+    if (!authorized) {
         operation->fAnyOperationsAborted = TRUE;
         SetLastError(ERROR_ACCESS_DENIED);
         return ERROR_ACCESS_DENIED;
