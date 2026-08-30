@@ -1033,7 +1033,8 @@ bool RunNetworkAllowListTests() {
         process.InstallRuntimePayload(
             policy.handle(), policy.length(), event_client, release, nonce,
             dns_proxy->request_write_handle(), dns_proxy->response_read_handle(),
-            &dns_key, 1'024, dns_proxy->tcp_proxy_port()) ==
+            &dns_key, 1'024, dns_proxy->tcp_proxy_port(),
+            dns_proxy->tcp_proxy_ipv6_port()) ==
             bolt::common::ProcessStatus::kSuccess &&
         process.Inject(hook_path.string()) == bolt::common::ProcessStatus::kSuccess &&
         process.BeginHookInitialization() == bolt::common::ProcessStatus::kSuccess;
