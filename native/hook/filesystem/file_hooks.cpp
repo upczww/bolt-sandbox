@@ -703,7 +703,24 @@ bool AuthorizeAttributeMutation(const wchar_t* path) noexcept {
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
     }
-    InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, path), false);
+    std::wstring resolved_path;
+    if (!ResolveFinalPathForPolicy(
+            EvaluatedPath(evaluation, path), g_create_file_w, resolved_path)) {
+        ReportDenied(
+            protocol::FilesystemOperation::kWrite, EvaluatedPath(evaluation, path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    const auto final_evaluation =
+        policy->Evaluate(resolved_path.c_str(), Access::kWrite);
+    if (final_evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            protocol::FilesystemOperation::kWrite,
+            EvaluatedPath(final_evaluation, resolved_path.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    InvalidateResolvedPathForMutation(resolved_path.c_str(), false);
     return true;
 }
 

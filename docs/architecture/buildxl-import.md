@@ -210,7 +210,9 @@ resolution path.
 Attribute mutation through `SetFileAttributesW/A` is a Bolt-owned Win32 seam
 because the vendored BuildXL layer has no dedicated wrapper. Both variants
 require write access, report denied changes as `Write`, and invalidate the path
-cache before an allowed native call.
+cache before an allowed native call. The shared mutation seam rechecks the
+fully resolved target, so security descriptor and EFS operations using the
+same seam also cannot cross an intermediate junction.
 
 Security descriptor mutation through `SetFileSecurityW/A` uses the same
 Bolt-owned write seam because the vendored BuildXL layer has no dedicated
