@@ -62,6 +62,14 @@ bool RunDnsBindingTests() {
         authorized_domain[0] != '\0') {
         return false;
     }
+    if (!table->HasAuthorizedDomain(
+            session_one, 10, "api.example", 149) ||
+        table->HasAuthorizedDomain(
+            session_two, 10, "api.example", 149) ||
+        table->HasAuthorizedDomain(
+            session_one, 10, "api.example", 150)) {
+        return false;
+    }
     std::unique_ptr<bolt::network::DnsBindingTable> wildcard_table;
     bolt::network::DnsBindingTable::Create(1, wildcard_table);
     const auto wildcard_port = MakeKey(
