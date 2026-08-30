@@ -221,6 +221,7 @@ pub enum SandboxEvent {
     NetworkViolation(NetworkViolation),
     RecoveryArtifactCreated(RecoveryArtifact),
     ChildInjectionFailed(ChildInjectionFailure),
+    ProcessViolation(ProcessViolation),
     ProcessExited(ProcessExit),
 }
 ```
@@ -494,9 +495,12 @@ first occurrence; duplicates of retained entries continue incrementing their
 saturating duplicate counters. Non-violation lifecycle events bypass this
 aggregator.
 
-Event protocol version 1 reserves frame kinds 1 through 7 for `Ready`,
+Event protocol version 1 reserves frame kinds 1 through 8 for `Ready`,
 filesystem violation, registry violation, network violation, recovery artifact,
-child-injection failure, and process exit, respectively. Filesystem and recovery
+child-injection failure, process exit, and process violation, respectively.
+Process-violation payloads contain only process identity and a fixed operation
+discriminant; usernames, credentials, executable paths, and command lines are
+never serialized. Filesystem and recovery
 paths use length-prefixed UTF-16 so Windows paths are not lossily converted;
 network sockets use binary IPv4/IPv6 addresses and ports rather than formatted
 strings. Event paths are limited to 32,767 UTF-16 code units and UTF-8 text

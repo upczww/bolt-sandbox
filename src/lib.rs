@@ -11,7 +11,8 @@ pub use error::{InvalidRequestReason, RequestField, SandboxError};
 pub use event::{
     ChildInjectionFailure, ChildInjectionFailureReason, FilesystemOperation, FilesystemViolation,
     NetworkOperation, NetworkTarget, NetworkViolation, ProcessExit, ProcessExitReason,
-    RecoveryArtifact, RegistryOperation, RegistryViolation, SandboxEvent,
+    ProcessOperation, ProcessViolation, RecoveryArtifact, RegistryOperation, RegistryViolation,
+    SandboxEvent,
 };
 pub use policy::{
     ChildProcessPolicy, FilesystemPolicy, IpCidr, NetworkAllowList, NetworkPolicy, PortRange,

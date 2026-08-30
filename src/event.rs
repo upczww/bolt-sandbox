@@ -9,6 +9,7 @@ pub enum SandboxEvent {
     NetworkViolation(NetworkViolation),
     RecoveryArtifactCreated(RecoveryArtifact),
     ChildInjectionFailed(ChildInjectionFailure),
+    ProcessViolation(ProcessViolation),
     ProcessExited(ProcessExit),
 }
 
@@ -94,6 +95,19 @@ pub enum ChildInjectionFailureReason {
     PolicyUnavailable,
     InjectionFailed,
     HandshakeFailed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProcessViolation {
+    pub process_id: u32,
+    pub operation: ProcessOperation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum ProcessOperation {
+    CreateWithToken,
+    CreateWithLogon,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

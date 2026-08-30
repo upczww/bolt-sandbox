@@ -26,6 +26,8 @@ bool TryReportFilesystemViolation(
     protocol::FilesystemOperation operation,
     const wchar_t* path) noexcept;
 
+bool TryReportProcessViolation(protocol::ProcessOperation operation) noexcept;
+
 bool WaitForEventSinkIdle(DWORD timeout_milliseconds) noexcept;
 
 }  // namespace bolt::hook

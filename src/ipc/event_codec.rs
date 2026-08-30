@@ -9,7 +9,8 @@ use super::framing::{self, Frame, FrameKind, ProtocolError};
 use crate::{
     ChildInjectionFailure, ChildInjectionFailureReason, FilesystemOperation, FilesystemViolation,
     NetworkOperation, NetworkTarget, NetworkViolation, ProcessExit, ProcessExitReason,
-    RecoveryArtifact, RegistryOperation, RegistryViolation, SandboxEvent,
+    ProcessOperation, ProcessViolation, RecoveryArtifact, RegistryOperation, RegistryViolation,
+    SandboxEvent,
 };
 
 const PROCESS_EXIT_PAYLOAD_LENGTH: usize = 10;
@@ -65,6 +66,10 @@ pub(crate) fn encode_event(event: &SandboxEvent, sequence: u64) -> Result<Vec<u8
             FrameKind::ChildInjectionFailed,
             encode_child_injection_failure(failure),
         ),
+        SandboxEvent::ProcessViolation(violation) => (
+            FrameKind::ProcessViolation,
+            encode_process_violation(violation),
+        ),
         SandboxEvent::ProcessExited(process_exit) => {
             let mut payload = vec![0; PROCESS_EXIT_PAYLOAD_LENGTH];
             payload[..4].copy_from_slice(&process_exit.process_id.to_le_bytes());
@@ -96,6 +101,7 @@ pub(super) fn decode_event(encoded: &[u8]) -> Result<SequencedEvent, ProtocolErr
         FrameKind::NetworkViolation => decode_network_violation(&frame.payload)?,
         FrameKind::RecoveryArtifactCreated => decode_recovery_artifact(&frame.payload)?,
         FrameKind::ChildInjectionFailed => decode_child_injection_failure(&frame.payload)?,
+        FrameKind::ProcessViolation => decode_process_violation(&frame.payload)?,
         FrameKind::ProcessExited => decode_process_exit(&frame.payload)?,
     };
 
@@ -249,6 +255,25 @@ fn decode_child_injection_failure(payload: &[u8]) -> Result<SandboxEvent, Protoc
     }))
 }
 
+fn encode_process_violation(violation: &ProcessViolation) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(5);
+    push_u32(&mut payload, violation.process_id);
+    payload.push(violation.operation.wire_value());
+    payload
+}
+
+fn decode_process_violation(payload: &[u8]) -> Result<SandboxEvent, ProtocolError> {
+    let mut reader = PayloadReader::new(payload);
+    let process_id = reader.read_u32()?;
+    let operation =
+        ProcessOperation::from_wire(reader.read_u8()?).ok_or(ProtocolError::InvalidPayload)?;
+    reader.finish()?;
+    Ok(SandboxEvent::ProcessViolation(ProcessViolation {
+        process_id,
+        operation,
+    }))
+}
+
 fn decode_process_exit(payload: &[u8]) -> Result<SandboxEvent, ProtocolError> {
     if payload.len() != PROCESS_EXIT_PAYLOAD_LENGTH {
         return Err(ProtocolError::InvalidPayload);
@@ -355,6 +380,11 @@ wire_enum!(
     ChildInjectionFailureReason::PolicyUnavailable => 1,
     ChildInjectionFailureReason::InjectionFailed => 2,
     ChildInjectionFailureReason::HandshakeFailed => 3,
+);
+wire_enum!(
+    ProcessOperation,
+    ProcessOperation::CreateWithToken => 0,
+    ProcessOperation::CreateWithLogon => 1,
 );
 
 fn push_u32(payload: &mut Vec<u8>, value: u32) {
@@ -474,8 +504,8 @@ mod tests {
     use crate::{
         ChildInjectionFailure, ChildInjectionFailureReason, FilesystemOperation,
         FilesystemViolation, NetworkOperation, NetworkTarget, NetworkViolation, ProcessExit,
-        ProcessExitReason, ProcessOperation, ProcessViolation, RecoveryArtifact,
-        RegistryOperation, RegistryViolation, SandboxEvent,
+        ProcessExitReason, ProcessOperation, ProcessViolation, RecoveryArtifact, RegistryOperation,
+        RegistryViolation, SandboxEvent,
         ipc::framing::{self, ProtocolError},
     };
 
@@ -635,6 +665,32 @@ mod tests {
         let mut encoded = encode_event(&event, 1).expect("event must encode");
         encoded[framing::HEADER_LENGTH + PROCESS_EXIT_CODE_OFFSET] = 1;
         framing::rewrite_checksum(&mut encoded);
+
+        assert_eq!(decode_event(&encoded), Err(ProtocolError::InvalidPayload));
+    }
+
+    #[test]
+    fn proc_027_unknown_process_operation_is_rejected() {
+        let event = SandboxEvent::ProcessViolation(ProcessViolation {
+            process_id: 99,
+            operation: ProcessOperation::CreateWithToken,
+        });
+        let mut encoded = encode_event(&event, 1).expect("event must encode");
+        encoded[framing::HEADER_LENGTH + 4] = u8::MAX;
+        framing::rewrite_checksum(&mut encoded);
+
+        assert_eq!(decode_event(&encoded), Err(ProtocolError::InvalidPayload));
+    }
+
+    #[test]
+    fn proc_027_process_violation_with_trailing_data_is_rejected() {
+        let encoded = framing::encode(&framing::Frame {
+            version: framing::PROTOCOL_VERSION,
+            kind: framing::FrameKind::ProcessViolation,
+            sequence: 1,
+            payload: vec![0; 6],
+        })
+        .expect("structurally valid frame must encode");
 
         assert_eq!(decode_event(&encoded), Err(ProtocolError::InvalidPayload));
     }

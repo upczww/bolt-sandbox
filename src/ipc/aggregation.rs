@@ -76,6 +76,7 @@ const fn is_violation(event: &SandboxEvent) -> bool {
         SandboxEvent::FilesystemViolation(_)
             | SandboxEvent::RegistryViolation(_)
             | SandboxEvent::NetworkViolation(_)
+            | SandboxEvent::ProcessViolation(_)
     )
 }
 
@@ -84,7 +85,9 @@ mod tests {
     use std::{num::NonZeroUsize, path::PathBuf};
 
     use super::*;
-    use crate::{FilesystemOperation, FilesystemViolation, SandboxEvent};
+    use crate::{
+        FilesystemOperation, FilesystemViolation, ProcessOperation, ProcessViolation, SandboxEvent,
+    };
 
     fn violation(process_id: u32, operation: FilesystemOperation, path: &str) -> SandboxEvent {
         SandboxEvent::FilesystemViolation(FilesystemViolation {
@@ -119,19 +122,27 @@ mod tests {
 
     #[test]
     fn evt_005_process_operation_and_resource_are_part_of_the_aggregate_key() {
-        let mut aggregator = ViolationAggregator::new(NonZeroUsize::new(4).expect("nonzero"));
+        let mut aggregator = ViolationAggregator::new(NonZeroUsize::new(6).expect("nonzero"));
         let events = [
             violation(1, FilesystemOperation::Write, r"C:\same.txt"),
             violation(2, FilesystemOperation::Write, r"C:\same.txt"),
             violation(1, FilesystemOperation::Read, r"C:\same.txt"),
             violation(1, FilesystemOperation::Write, r"C:\other.txt"),
+            SandboxEvent::ProcessViolation(ProcessViolation {
+                process_id: 1,
+                operation: ProcessOperation::CreateWithToken,
+            }),
+            SandboxEvent::ProcessViolation(ProcessViolation {
+                process_id: 1,
+                operation: ProcessOperation::CreateWithLogon,
+            }),
         ];
 
         for event in events {
             assert_eq!(aggregator.observe(event), Ok(AggregationDisposition::Added));
         }
 
-        assert_eq!(aggregator.entries().len(), 4);
+        assert_eq!(aggregator.entries().len(), 6);
     }
 
     #[test]

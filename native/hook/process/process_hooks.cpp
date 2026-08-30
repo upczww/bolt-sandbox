@@ -1,4 +1,5 @@
 #include "hook/process/process_hooks.h"
+#include "hook/event_sink.h"
 
 #include "protocol/policy_payload.h"
 #include "protocol/runtime_payload.h"
@@ -30,6 +31,10 @@ enum class ProcessArchitecture : std::uint8_t {
 
 CreateProcessW_t g_create_process_w = CreateProcessW;
 CreateProcessA_t g_create_process_a = CreateProcessA;
+decltype(&CreateProcessWithTokenW) g_create_process_with_token_w =
+    CreateProcessWithTokenW;
+decltype(&CreateProcessWithLogonW) g_create_process_with_logon_w =
+    CreateProcessWithLogonW;
 ChildProcessPolicy g_child_process_policy = ChildProcessPolicy::kDeny;
 bool g_prepared = false;
 bool g_runtime_configured = false;
@@ -491,6 +496,52 @@ BOOL WINAPI DetouredCreateProcessA(
     return CompleteInheritedCreation(creation_flags, process_information) ? TRUE : FALSE;
 }
 
+BOOL WINAPI DetouredCreateProcessWithTokenW(
+    const HANDLE token,
+    const DWORD logon_flags,
+    const LPCWSTR application_name,
+    const LPWSTR command_line,
+    const DWORD creation_flags,
+    const LPVOID environment,
+    const LPCWSTR current_directory,
+    const LPSTARTUPINFOW startup_information,
+    const LPPROCESS_INFORMATION process_information) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_process_with_token_w(
+            token, logon_flags, application_name, command_line, creation_flags,
+            environment, current_directory, startup_information,
+            process_information);
+    }
+    hook::TryReportProcessViolation(
+        protocol::ProcessOperation::kCreateWithToken);
+    return DenyChildCreation(process_information);
+}
+
+BOOL WINAPI DetouredCreateProcessWithLogonW(
+    const LPCWSTR username,
+    const LPCWSTR domain,
+    const LPCWSTR password,
+    const DWORD logon_flags,
+    const LPCWSTR application_name,
+    const LPWSTR command_line,
+    const DWORD creation_flags,
+    const LPVOID environment,
+    const LPCWSTR current_directory,
+    const LPSTARTUPINFOW startup_information,
+    const LPPROCESS_INFORMATION process_information) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_process_with_logon_w(
+            username, domain, password, logon_flags, application_name,
+            command_line, creation_flags, environment, current_directory,
+            startup_information, process_information);
+    }
+    hook::TryReportProcessViolation(
+        protocol::ProcessOperation::kCreateWithLogon);
+    return DenyChildCreation(process_information);
+}
+
 }  // namespace
 
 bool ConfigureProcessRuntime(
@@ -547,9 +598,21 @@ LONG AttachProcessHooks() noexcept {
     if (wide_status != NO_ERROR) {
         return wide_status;
     }
-    return DetourAttach(
+    const LONG ansi_status = DetourAttach(
         reinterpret_cast<PVOID*>(&g_create_process_a),
         reinterpret_cast<PVOID>(DetouredCreateProcessA));
+    if (ansi_status != NO_ERROR) {
+        return ansi_status;
+    }
+    const LONG token_status = DetourAttach(
+        reinterpret_cast<PVOID*>(&g_create_process_with_token_w),
+        reinterpret_cast<PVOID>(DetouredCreateProcessWithTokenW));
+    if (token_status != NO_ERROR) {
+        return token_status;
+    }
+    return DetourAttach(
+        reinterpret_cast<PVOID*>(&g_create_process_with_logon_w),
+        reinterpret_cast<PVOID>(DetouredCreateProcessWithLogonW));
 }
 
 }  // namespace bolt::process

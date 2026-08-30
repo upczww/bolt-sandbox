@@ -92,6 +92,26 @@ bool RunEventFrameTests() {
         return false;
     }
 
+    std::array<std::uint8_t, process_golden.size()> invalid_process_frame{};
+    std::size_t invalid_process_length = 1;
+    if (bolt::protocol::EncodeProcessViolationFrame(
+            1, static_cast<bolt::protocol::ProcessOperation>(0xFF), 1,
+            invalid_process_frame.data(), invalid_process_frame.size(),
+            invalid_process_length) !=
+            bolt::protocol::FrameEncodeStatus::kInvalidOperation ||
+        invalid_process_length != 0 ||
+        bolt::protocol::EncodeProcessViolationFrame(
+            1, bolt::protocol::ProcessOperation::kCreateWithToken, 1, nullptr,
+            invalid_process_frame.size(), invalid_process_length) !=
+            bolt::protocol::FrameEncodeStatus::kInvalidArgument ||
+        bolt::protocol::EncodeProcessViolationFrame(
+            1, bolt::protocol::ProcessOperation::kCreateWithToken, 1,
+            invalid_process_frame.data(), invalid_process_frame.size() - 1,
+            invalid_process_length) !=
+            bolt::protocol::FrameEncodeStatus::kInsufficientBuffer) {
+        return false;
+    }
+
     std::wstring maximum_path(32'767, L'x');
     std::array<std::uint8_t, 1> too_small{};
     return bolt::protocol::FilesystemViolationFrameLength(maximum_path.c_str()) ==

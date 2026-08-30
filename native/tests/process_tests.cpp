@@ -206,6 +206,23 @@ bool ReadFilesystemViolation(
            written == expected.size() && actual == expected;
 }
 
+bool ReadProcessViolation(
+    const HANDLE event_pipe,
+    const std::uint32_t process_id,
+    const bolt::protocol::ProcessOperation operation,
+    const std::uint64_t sequence) {
+    std::array<std::uint8_t, bolt::protocol::kProcessViolationFrameLength> actual{};
+    if (!ReadExact(event_pipe, actual.data(), actual.size())) {
+        return false;
+    }
+    std::array<std::uint8_t, bolt::protocol::kProcessViolationFrameLength> expected{};
+    std::size_t written = 0;
+    return bolt::protocol::EncodeProcessViolationFrame(
+               process_id, operation, sequence, expected.data(), expected.size(),
+               written) == bolt::protocol::FrameEncodeStatus::kSuccess &&
+           written == expected.size() && actual == expected;
+}
+
 volatile LONG g_io_completion_calls = 0;
 
 void CALLBACK IoCompletionProbe(
@@ -2602,7 +2619,13 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kMetadata,
-            denied_mapping_path.wstring(), 104);
+            denied_mapping_path.wstring(), 104) &&
+        ReadProcessViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::ProcessOperation::kCreateWithToken, 105) &&
+        ReadProcessViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::ProcessOperation::kCreateWithLogon, 106);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =

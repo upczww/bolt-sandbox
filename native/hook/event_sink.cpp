@@ -12,9 +12,17 @@ constexpr std::size_t kQueueCapacity = 64;
 constexpr std::size_t kMaximumFrameLength =
     protocol::kEventHeaderLength + 9U + protocol::kMaximumEventPathCodeUnits * 2U;
 
+enum class EventRecordKind : std::uint8_t {
+    kFilesystem,
+    kProcess,
+};
+
 struct EventRecord {
+    EventRecordKind kind = EventRecordKind::kFilesystem;
     std::uint32_t process_id = 0;
     protocol::FilesystemOperation operation = protocol::FilesystemOperation::kRead;
+    protocol::ProcessOperation process_operation =
+        protocol::ProcessOperation::kCreateWithToken;
     std::uint64_t sequence = 0;
     std::size_t path_length = 0;
     wchar_t path[protocol::kMaximumEventPathCodeUnits + 1U]{};
@@ -84,10 +92,17 @@ DWORD WINAPI EventWriterThread(LPVOID parameter) noexcept {
             LeaveCriticalSection(&g_state.lock);
 
             std::size_t frame_length = 0;
-            if (protocol::EncodeFilesystemViolationFrame(
-                    queued->process_id, queued->operation, queued->path, queued->sequence,
-                    g_state.frame_buffer, kMaximumFrameLength, frame_length) !=
-                    protocol::FrameEncodeStatus::kSuccess ||
+            const auto encode_status =
+                queued->kind == EventRecordKind::kFilesystem
+                    ? protocol::EncodeFilesystemViolationFrame(
+                          queued->process_id, queued->operation, queued->path,
+                          queued->sequence, g_state.frame_buffer,
+                          kMaximumFrameLength, frame_length)
+                    : protocol::EncodeProcessViolationFrame(
+                          queued->process_id, queued->process_operation,
+                          queued->sequence, g_state.frame_buffer,
+                          kMaximumFrameLength, frame_length);
+            if (encode_status != protocol::FrameEncodeStatus::kSuccess ||
                 !WriteExact(g_state.event_handle, g_state.frame_buffer, frame_length)) {
                 FailWriter();
                 return 1;
@@ -173,11 +188,38 @@ bool TryReportFilesystemViolation(
         return false;
     }
     EventRecord& record = g_state.records[g_state.tail];
+    record.kind = EventRecordKind::kFilesystem;
     record.process_id = GetCurrentProcessId();
     record.operation = operation;
     record.sequence = g_state.next_sequence++;
     record.path_length = path_length;
     std::copy_n(path, path_length + 1U, record.path);
+    g_state.tail = (g_state.tail + 1U) % kQueueCapacity;
+    ++g_state.count;
+    ResetEvent(g_state.idle_event);
+    LeaveCriticalSection(&g_state.lock);
+    SetEvent(g_state.wake_event);
+    return true;
+}
+
+bool TryReportProcessViolation(
+    const protocol::ProcessOperation operation) noexcept {
+    if (InterlockedCompareExchange(&g_state.initialization_state, 1, 1) != 1 ||
+        InterlockedCompareExchange(&g_state.writer_failed, 0, 0) != 0) {
+        return false;
+    }
+    EnterCriticalSection(&g_state.lock);
+    if (g_state.count == kQueueCapacity) {
+        LeaveCriticalSection(&g_state.lock);
+        return false;
+    }
+    EventRecord& record = g_state.records[g_state.tail];
+    record.kind = EventRecordKind::kProcess;
+    record.process_id = GetCurrentProcessId();
+    record.process_operation = operation;
+    record.sequence = g_state.next_sequence++;
+    record.path_length = 0;
+    record.path[0] = L'\0';
     g_state.tail = (g_state.tail + 1U) % kQueueCapacity;
     ++g_state.count;
     ResetEvent(g_state.idle_event);

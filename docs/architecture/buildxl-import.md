@@ -334,6 +334,14 @@ the untrusted target environment and gives the helper a minimal, non-secret
 `SystemRoot`/`WINDIR` environment. This provides both x64-to-x86 and
 x86-to-x64 injection without importing BuildXL's C# `ProcessTreeContext` host.
 
+The initial token-boundary slice attaches Bolt-owned
+`CreateProcessWithTokenW` and `CreateProcessWithLogonW` seams in the same
+transaction. Both are denied before Windows validates token or credential
+inputs, clear `PROCESS_INFORMATION`, and enqueue a fixed process-operation
+violation. The event contains no token, username, credential, application, or
+command-line data. Calls made inside a disabled `DetouredScope` retain their
+real API path for trusted hook implementation details.
+
 The next slices are:
 
 1. Activate access classification and handle overlay behind `PolicyView`.

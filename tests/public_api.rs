@@ -10,8 +10,8 @@ use bolt_sandbox::{
     ChildInjectionFailure, ChildInjectionFailureReason, ChildProcessPolicy, FilesystemOperation,
     FilesystemPolicy, FilesystemViolation, IpCidr, MAX_TIMEOUT, MIN_TIMEOUT, NetworkAllowList,
     NetworkPolicy, NetworkTarget, NetworkViolation, PortRange, ProcessExit, ProcessExitReason,
-    ProcessOperation, ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField,
-    SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest,
+    ProcessOperation, ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField, SandboxError,
+    SandboxEvent, SandboxPolicy, SandboxRequest,
 };
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {

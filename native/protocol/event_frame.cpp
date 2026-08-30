@@ -15,10 +15,14 @@ constexpr std::size_t kSequenceOffset = 12;
 constexpr std::size_t kChecksumOffset = 20;
 constexpr std::uint16_t kReadyKind = 1;
 constexpr std::uint16_t kFilesystemViolationKind = 2;
+constexpr std::uint16_t kProcessViolationKind = 8;
 constexpr std::size_t kFilesystemProcessIdOffset = kEventHeaderLength;
 constexpr std::size_t kFilesystemOperationOffset = kFilesystemProcessIdOffset + 4;
 constexpr std::size_t kFilesystemPathLengthOffset = kFilesystemOperationOffset + 1;
 constexpr std::size_t kFilesystemPathOffset = kFilesystemPathLengthOffset + 4;
+constexpr std::size_t kProcessViolationProcessIdOffset = kEventHeaderLength;
+constexpr std::size_t kProcessViolationOperationOffset =
+    kProcessViolationProcessIdOffset + 4;
 
 void WriteU16(std::uint8_t* output, const std::size_t offset, const std::uint16_t value) noexcept {
     output[offset] = static_cast<std::uint8_t>(value);
@@ -188,6 +192,38 @@ FrameEncodeStatus EncodeFilesystemViolationFrame(
     }
     RewriteFrameChecksum(output, frame_length);
     written = frame_length;
+    return FrameEncodeStatus::kSuccess;
+}
+
+FrameEncodeStatus EncodeProcessViolationFrame(
+    const std::uint32_t process_id,
+    const ProcessOperation operation,
+    const std::uint64_t sequence,
+    std::uint8_t* const output,
+    const std::size_t capacity,
+    std::size_t& written) noexcept {
+    written = 0;
+    if (output == nullptr) {
+        return FrameEncodeStatus::kInvalidArgument;
+    }
+    const auto operation_value = static_cast<std::uint8_t>(operation);
+    if (operation_value >
+        static_cast<std::uint8_t>(ProcessOperation::kCreateWithLogon)) {
+        return FrameEncodeStatus::kInvalidOperation;
+    }
+    if (capacity < kProcessViolationFrameLength) {
+        return FrameEncodeStatus::kInsufficientBuffer;
+    }
+    std::fill_n(output, kProcessViolationFrameLength, std::uint8_t{0});
+    std::copy(kMagic.begin(), kMagic.end(), output);
+    WriteU16(output, kVersionOffset, kProtocolVersion);
+    WriteU16(output, kKindOffset, kProcessViolationKind);
+    WriteU32(output, kLengthOffset, 5);
+    WriteU64(output, kSequenceOffset, sequence);
+    WriteU32(output, kProcessViolationProcessIdOffset, process_id);
+    output[kProcessViolationOperationOffset] = operation_value;
+    RewriteFrameChecksum(output, kProcessViolationFrameLength);
+    written = kProcessViolationFrameLength;
     return FrameEncodeStatus::kSuccess;
 }
 

@@ -9,6 +9,7 @@ namespace bolt::protocol {
 inline constexpr std::size_t kEventHeaderLength = 24;
 inline constexpr std::size_t kReadyNonceLength = 16;
 inline constexpr std::size_t kReadyFrameLength = kEventHeaderLength + kReadyNonceLength;
+inline constexpr std::size_t kProcessViolationFrameLength = kEventHeaderLength + 5;
 inline constexpr std::size_t kMaximumEventPathCodeUnits = 32'767;
 
 enum class FilesystemOperation : std::uint8_t {
@@ -19,6 +20,11 @@ enum class FilesystemOperation : std::uint8_t {
     kDelete = 4,
     kRename = 5,
     kEnumerate = 6,
+};
+
+enum class ProcessOperation : std::uint8_t {
+    kCreateWithToken = 0,
+    kCreateWithLogon = 1,
 };
 
 enum class FrameEncodeStatus : std::uint8_t {
@@ -55,6 +61,14 @@ FrameEncodeStatus EncodeFilesystemViolationFrame(
     std::uint32_t process_id,
     FilesystemOperation operation,
     const wchar_t* path,
+    std::uint64_t sequence,
+    std::uint8_t* output,
+    std::size_t capacity,
+    std::size_t& written) noexcept;
+
+FrameEncodeStatus EncodeProcessViolationFrame(
+    std::uint32_t process_id,
+    ProcessOperation operation,
     std::uint64_t sequence,
     std::uint8_t* output,
     std::size_t capacity,

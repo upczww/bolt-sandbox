@@ -66,7 +66,8 @@ impl EventChannelDriver {
             | SandboxEvent::RegistryViolation(_)
             | SandboxEvent::NetworkViolation(_)
             | SandboxEvent::RecoveryArtifactCreated(_)
-            | SandboxEvent::ChildInjectionFailed(_) => LifecycleAction::None,
+            | SandboxEvent::ChildInjectionFailed(_)
+            | SandboxEvent::ProcessViolation(_) => LifecycleAction::None,
         };
         Ok(RoutedEvent {
             event,
