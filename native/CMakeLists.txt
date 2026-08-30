@@ -209,6 +209,7 @@ target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-protocol)
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-common)
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-detours)
 target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-buildxl)
-target_link_libraries(bolt-sandbox-native-tests PRIVATE bolt-sandbox-filesystem bcrypt)
+target_link_libraries(
+    bolt-sandbox-native-tests PRIVATE bolt-sandbox-filesystem advapi32 bcrypt)
 
 add_test(NAME native.protocol COMMAND bolt-sandbox-native-tests)

@@ -70,6 +70,22 @@ std::string ReadFixture(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>{stream}, std::istreambuf_iterator<char>{}};
 }
 
+bool ReadSecurityDescriptor(
+    const std::filesystem::path& path,
+    std::vector<std::uint8_t>& descriptor) {
+    DWORD required = 0;
+    if (GetFileSecurityW(
+            path.c_str(), DACL_SECURITY_INFORMATION, nullptr, 0, &required) ||
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER || required == 0) {
+        return false;
+    }
+    descriptor.resize(required);
+    return GetFileSecurityW(
+               path.c_str(), DACL_SECURITY_INFORMATION,
+               reinterpret_cast<PSECURITY_DESCRIPTOR>(descriptor.data()), required,
+               &required) != FALSE;
+}
+
 bool CreateJunction(
     const std::filesystem::path& junction,
     const std::filesystem::path& target) {
@@ -676,6 +692,24 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
             sizeof(basic_information), file_basic_information) != status_access_denied) {
         return 146;
     }
+    SECURITY_DESCRIPTOR security_descriptor{};
+    if (!InitializeSecurityDescriptor(
+            &security_descriptor, SECURITY_DESCRIPTOR_REVISION) ||
+        !SetSecurityDescriptorDacl(
+            &security_descriptor, TRUE, nullptr, FALSE)) {
+        return 147;
+    }
+    if (SetFileSecurityW(
+            arguments[6], DACL_SECURITY_INFORMATION, &security_descriptor) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 148;
+    }
+    if (SetFileSecurityA(
+            ansi_denied_metadata.c_str(), DACL_SECURITY_INFORMATION,
+            &security_descriptor) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 149;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -829,6 +863,11 @@ bool RunProcessTests() {
     CloseHandle(delete_fixture);
     const DWORD denied_delete_attributes = GetFileAttributesW(denied_delete_path.c_str());
     if (denied_delete_attributes == INVALID_FILE_ATTRIBUTES) {
+        return false;
+    }
+    std::vector<std::uint8_t> denied_delete_security_before;
+    if (!ReadSecurityDescriptor(
+            denied_delete_path, denied_delete_security_before)) {
         return false;
     }
     const HANDLE move_fixture = CreateFileW(
@@ -1217,7 +1256,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_mapping_path.wstring(), 51);
+            denied_mapping_path.wstring(), 51) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_delete_path.wstring(), 52) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_delete_path.wstring(), 53);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
@@ -1227,6 +1274,11 @@ bool RunProcessTests() {
         CompareFileTime(
             &denied_mapping_write_time_before,
             &denied_mapping_write_time_after) == 0;
+    std::vector<std::uint8_t> denied_delete_security_after;
+    const bool denied_delete_security_unchanged =
+        ReadSecurityDescriptor(
+            denied_delete_path, denied_delete_security_after) &&
+        denied_delete_security_after == denied_delete_security_before;
     CloseHandle(denied_disposition_handle);
     CloseHandle(denied_truncate_handle);
     CloseHandle(denied_mapping_handle);
@@ -1240,6 +1292,7 @@ bool RunProcessTests() {
                             std::filesystem::exists(denied_delete_path) &&
                             GetFileAttributesW(denied_delete_path.c_str()) ==
                                 denied_delete_attributes &&
+                            denied_delete_security_unchanged &&
                             !std::filesystem::exists(denied_create_directory) &&
                             std::filesystem::is_directory(denied_remove_directory) &&
                             std::filesystem::exists(denied_move_source) &&
