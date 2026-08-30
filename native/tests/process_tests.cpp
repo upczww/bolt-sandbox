@@ -181,7 +181,7 @@ bool ReadFilesystemViolation(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 22) {
+    if (argument_count != 24) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -343,6 +343,29 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 114;
     }
+    const HANDLE rename_handle = CreateFileW(
+        arguments[22], DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (rename_handle == INVALID_HANDLE_VALUE) {
+        return 115;
+    }
+    const std::size_t rename_name_bytes = std::wcslen(arguments[23]) * sizeof(wchar_t);
+    std::vector<std::uint8_t> rename_buffer(
+        offsetof(FILE_RENAME_INFO, FileName) + rename_name_bytes);
+    auto* rename_info = reinterpret_cast<FILE_RENAME_INFO*>(rename_buffer.data());
+    rename_info->ReplaceIfExists = FALSE;
+    rename_info->RootDirectory = nullptr;
+    rename_info->FileNameLength = static_cast<DWORD>(rename_name_bytes);
+    std::memcpy(rename_info->FileName, arguments[23], rename_name_bytes);
+    if (SetFileInformationByHandle(
+            rename_handle, FileRenameInfo, rename_info,
+            static_cast<DWORD>(rename_buffer.size())) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        CloseHandle(rename_handle);
+        return 116;
+    }
+    CloseHandle(rename_handle);
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -389,6 +412,10 @@ bool RunProcessTests() {
         denied_junction_target / L"move-target.txt";
     const std::filesystem::path allowed_replace_target =
         allowed_root / L"replace-target.txt";
+    const std::filesystem::path allowed_handle_rename_source =
+        allowed_root / L"handle-rename-source.txt";
+    const std::filesystem::path denied_handle_rename_destination =
+        denied_root / L"handle-rename-destination.txt";
     if (!std::filesystem::create_directories(denied_junction_target, filesystem_error) ||
         filesystem_error) {
         return false;
@@ -447,6 +474,8 @@ bool RunProcessTests() {
     DeleteFileW(missing_copy_source.c_str());
     DeleteFileW(missing_copy_destination.c_str());
     DeleteFileW(allowed_replace_target.c_str());
+    DeleteFileW(allowed_handle_rename_source.c_str());
+    DeleteFileW(denied_handle_rename_destination.c_str());
     const HANDLE delete_fixture = CreateFileW(
         denied_delete_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -475,6 +504,10 @@ bool RunProcessTests() {
     constexpr std::string_view replace_target_nonce = "replace-target";
     if (!WriteFixture(denied_copy_source, replacement_nonce) ||
         !WriteFixture(allowed_replace_target, replace_target_nonce)) {
+        return false;
+    }
+    constexpr std::string_view handle_rename_nonce = "handle-rename-source";
+    if (!WriteFixture(allowed_handle_rename_source, handle_rename_nonce)) {
         return false;
     }
     constexpr std::string_view copy_nonce = "bolt-copy-nonce";
@@ -515,7 +548,9 @@ bool RunProcessTests() {
                                       alias_copy_destination.wstring() + L"\" \"" +
                                       allowed_alias_move_source.wstring() + L"\" \"" +
                                       alias_move_destination.wstring() + L"\" \"" +
-                                      allowed_replace_target.wstring() + L"\"";
+                                      allowed_replace_target.wstring() + L"\" \"" +
+                                      allowed_handle_rename_source.wstring() + L"\" \"" +
+                                      denied_handle_rename_destination.wstring() + L"\"";
     const HANDLE inherited[] = {allowed, policy.handle(), event_client, release};
     bolt::common::ProcessLaunchOptions options{
         executable,
@@ -649,7 +684,11 @@ bool RunProcessTests() {
             bolt::protocol::FilesystemOperation::kRename, denied_copy_source.wstring(), 24) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRename, denied_copy_source.wstring(), 25);
+            bolt::protocol::FilesystemOperation::kRename, denied_copy_source.wstring(), 25) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRename,
+            denied_handle_rename_destination.wstring(), 26);
     DWORD exit_code = 0;
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
@@ -672,7 +711,9 @@ bool RunProcessTests() {
                             ReadFixture(denied_alias_target) == protected_nonce &&
                             ReadFixture(allowed_alias_move_source) == move_nonce &&
                             !std::filesystem::exists(denied_alias_move_target) &&
-                            ReadFixture(allowed_replace_target) == replace_target_nonce;
+                            ReadFixture(allowed_replace_target) == replace_target_nonce &&
+                            ReadFixture(allowed_handle_rename_source) == handle_rename_nonce &&
+                            !std::filesystem::exists(denied_handle_rename_destination);
     CloseHandle(allowed);
     CloseHandle(denied);
     if (event_client != INVALID_HANDLE_VALUE) {
@@ -688,6 +729,7 @@ bool RunProcessTests() {
     DeleteFileW(allowed_copy_destination.c_str());
     DeleteFileW(allowed_alias_move_source.c_str());
     DeleteFileW(allowed_replace_target.c_str());
+    DeleteFileW(allowed_handle_rename_source.c_str());
     std::filesystem::remove_all(test_root, filesystem_error);
     if (!exact_exit) {
         return false;
