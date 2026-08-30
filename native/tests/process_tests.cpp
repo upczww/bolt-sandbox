@@ -2622,6 +2622,19 @@ int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
     if (!HasRequiredProcessMitigations()) {
         return 245;
     }
+    const auto initialize_runtime = reinterpret_cast<std::uint32_t (*)()>(
+        GetProcAddress(hook, "BoltSandboxInitializeRuntime"));
+    const auto installed_hook_count = reinterpret_cast<std::uint32_t (*)()>(
+        GetProcAddress(hook, "BoltSandboxInstalledFilesystemHookCount"));
+    constexpr std::uint32_t already_initialized = 1;
+    const std::uint32_t hook_count_before =
+        installed_hook_count == nullptr ? 0 : installed_hook_count();
+    if (initialize_runtime == nullptr || installed_hook_count == nullptr ||
+        initialize_runtime() != already_initialized ||
+        installed_hook_count() != hook_count_before || hook_count_before != 75 ||
+        !initialized()) {
+        return 311;
+    }
     BOOL remains_in_job = FALSE;
     if (!IsProcessInJob(GetCurrentProcess(), nullptr, &remains_in_job) ||
         !remains_in_job) {
