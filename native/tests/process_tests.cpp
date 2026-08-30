@@ -981,6 +981,28 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 173;
     }
+    const HANDLE alias_write_w = CreateFileW(
+        arguments[18], GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (alias_write_w != INVALID_HANDLE_VALUE ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        if (alias_write_w != INVALID_HANDLE_VALUE) {
+            CloseHandle(alias_write_w);
+        }
+        return 174;
+    }
+    const HANDLE alias_write_a = CreateFileA(
+        ansi_alias_delete.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (alias_write_a != INVALID_HANDLE_VALUE ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        if (alias_write_a != INVALID_HANDLE_VALUE) {
+            CloseHandle(alias_write_a);
+        }
+        return 175;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1648,7 +1670,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kDelete,
-            denied_alias_target.wstring(), 75);
+            denied_alias_target.wstring(), 75) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_alias_target.wstring(), 76) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_alias_target.wstring(), 77);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
