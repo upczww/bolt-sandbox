@@ -28,6 +28,28 @@ namespace {
 
 constexpr std::size_t kWriteIterations = 32;
 
+struct ThreadpoolIoContext {
+    HANDLE completed = nullptr;
+    volatile LONG result = ERROR_IO_PENDING;
+    volatile LONG bytes = 0;
+};
+
+VOID CALLBACK ThreadpoolIoCallback(
+    PTP_CALLBACK_INSTANCE instance,
+    PVOID context,
+    PVOID overlapped,
+    ULONG io_result,
+    ULONG_PTR bytes_transferred,
+    PTP_IO io) {
+    static_cast<void>(instance);
+    static_cast<void>(overlapped);
+    static_cast<void>(io);
+    auto* state = static_cast<ThreadpoolIoContext*>(context);
+    InterlockedExchange(&state->result, static_cast<LONG>(io_result));
+    InterlockedExchange(&state->bytes, static_cast<LONG>(bytes_transferred));
+    SetEvent(state->completed);
+}
+
 std::wstring CurrentExecutable() {
     std::wstring path(32'768, L'\0');
     const DWORD length = GetModuleFileNameW(
@@ -348,7 +370,8 @@ class RaceProcess final {
         const std::filesystem::path& first_path,
         const std::filesystem::path& second_path,
         const HANDLE start,
-        const std::uint64_t ordinal) {
+        const std::uint64_t ordinal,
+        const HANDLE extra_handle = nullptr) {
         const auto policy_payload = bolt::tests::SealPolicy(
             filesystem_rules, bolt::tests::ChildProcessPolicyKind::kDeny);
         constexpr std::array<std::uint8_t, 16> nonce = {
@@ -384,12 +407,15 @@ class RaceProcess final {
             L"\"" + executable + L"\" --filesystem-race-child " +
             std::wstring(mode) + L" \"" + first_path.wstring() + L"\" \"" +
             second_path.wstring() + L"\" " + HandleText(start) + L" " +
-            HandleText(ready_);
-        const HANDLE inherited[] = {
+            HandleText(ready_) + L" " + HandleText(extra_handle);
+        std::vector<HANDLE> inherited = {
             policy_.handle(), event_client, release_, start, ready_};
+        if (extra_handle != nullptr) {
+            inherited.push_back(extra_handle);
+        }
         const bolt::common::ProcessLaunchOptions options{
-            executable, command_line, L"", nullptr, inherited,
-            std::size(inherited), 0};
+            executable, command_line, L"", nullptr, inherited.data(),
+            inherited.size(), 0};
         const bool initialized =
             bolt::common::ExecutionJob::Create(job_) ==
                 bolt::common::JobStatus::kSuccess &&
@@ -1027,12 +1053,71 @@ bool RunReparseFailureTest(
     return passed;
 }
 
+bool RunAsyncIoAndMappingTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const std::filesystem::path& test_root,
+    std::uint64_t& ordinal) {
+    const auto allowed = test_root / L"async-allowed";
+    const auto denied = test_root / L"async-denied";
+    const auto allowed_file = allowed / L"io.txt";
+    const auto denied_file = denied / L"io.txt";
+    std::error_code error;
+    if (!std::filesystem::create_directories(allowed, error) || error ||
+        !std::filesystem::create_directories(denied, error) || error ||
+        !WriteFixture(allowed_file, "allowed-io") ||
+        !WriteFixture(denied_file, "denied-io")) {
+        return false;
+    }
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE denied_handle = CreateFileW(
+        denied_file.c_str(), GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &inheritable,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    if (denied_handle == INVALID_HANDLE_VALUE || start == nullptr) {
+        if (denied_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(denied_handle);
+        }
+        if (start != nullptr) {
+            CloseHandle(start);
+        }
+        return false;
+    }
+    const std::vector<bolt::tests::FilesystemRule> rules = {
+        {bolt::tests::FilesystemRuleKind::kReadOnly,
+         std::filesystem::path(executable).root_path()},
+        {bolt::tests::FilesystemRuleKind::kReadWrite, allowed},
+        {bolt::tests::FilesystemRuleKind::kDeny, denied},
+    };
+    RaceProcess process;
+    const bool started = process.Start(
+        executable, hook_path, rules, L"async-io-mapping", test_root, {}, start,
+        ordinal++, denied_handle);
+    const bool released =
+        started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
+    const bool exited = released && process.WaitForExit();
+    const bool passed =
+        exited && ReadFixture(allowed_file) == "allowed-io" &&
+        ReadFixture(denied_file) == "denied-io";
+    CloseHandle(denied_handle);
+    CloseHandle(start);
+    if (!passed) {
+        std::fprintf(
+            stderr, "async I/O and mapping failed: exit=%lu\n",
+            static_cast<unsigned long>(process.exit_code()));
+    }
+    return passed;
+}
+
 }  // namespace
 
 int RunFilesystemRaceChild(
     const int argument_count,
     wchar_t** arguments) {
-    if (argument_count != 7) {
+    if (argument_count != 8) {
         return 290;
     }
     const std::wstring_view mode(arguments[2]);
@@ -1455,6 +1540,211 @@ int RunFilesystemRaceChild(
             malformed_result || malformed_error != ERROR_ACCESS_DENIED) {
             return 336;
         }
+    } else if (mode == L"async-io-mapping") {
+        const std::filesystem::path root(arguments[3]);
+        const auto allowed = root / L"async-allowed";
+        const auto allowed_file = allowed / L"io.txt";
+        const auto denied_handle = reinterpret_cast<HANDLE>(
+            _wcstoui64(arguments[7], nullptr, 10));
+
+        const HANDLE directory = CreateFileW(
+            allowed.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+            nullptr);
+        const HANDLE notification_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        std::array<std::uint8_t, 1'024> notifications{};
+        OVERLAPPED notification_overlapped{};
+        notification_overlapped.hEvent = notification_event;
+        if (directory == INVALID_HANDLE_VALUE || notification_event == nullptr ||
+            !ReadDirectoryChangesW(
+                directory, notifications.data(),
+                static_cast<DWORD>(notifications.size()), FALSE,
+                FILE_NOTIFY_CHANGE_FILE_NAME, nullptr, &notification_overlapped,
+                nullptr) ||
+            !CancelIoEx(directory, &notification_overlapped) ||
+            WaitForSingleObject(notification_event, 5'000) != WAIT_OBJECT_0) {
+            if (directory != INVALID_HANDLE_VALUE) {
+                CloseHandle(directory);
+            }
+            if (notification_event != nullptr) {
+                CloseHandle(notification_event);
+            }
+            return 338;
+        }
+        DWORD notification_bytes = 0;
+        SetLastError(ERROR_SUCCESS);
+        const BOOL notification_result = GetOverlappedResult(
+            directory, &notification_overlapped, &notification_bytes, FALSE);
+        const DWORD notification_error = GetLastError();
+        CloseHandle(notification_event);
+        CloseHandle(directory);
+        if (notification_result || notification_error != ERROR_OPERATION_ABORTED) {
+            return 339;
+        }
+
+        const HANDLE iocp_file = CreateFileW(
+            allowed_file.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
+        const HANDLE iocp = iocp_file == INVALID_HANDLE_VALUE
+                                ? nullptr
+                                : CreateIoCompletionPort(iocp_file, nullptr, 0xA11U, 0);
+        std::array<char, 10> iocp_buffer{};
+        OVERLAPPED iocp_overlapped{};
+        DWORD immediate_bytes = 0;
+        const BOOL iocp_read = iocp_file == INVALID_HANDLE_VALUE
+                                   ? FALSE
+                                   : ReadFile(
+                                         iocp_file, iocp_buffer.data(),
+                                         static_cast<DWORD>(iocp_buffer.size()),
+                                         &immediate_bytes, &iocp_overlapped);
+        const DWORD iocp_read_error = GetLastError();
+        DWORD completed_bytes = 0;
+        ULONG_PTR completion_key = 0;
+        LPOVERLAPPED completed_overlapped = nullptr;
+        const BOOL completed =
+            iocp != nullptr &&
+            GetQueuedCompletionStatus(
+                iocp, &completed_bytes, &completion_key, &completed_overlapped,
+                5'000);
+        if (iocp != nullptr) {
+            CloseHandle(iocp);
+        }
+        if (iocp_file != INVALID_HANDLE_VALUE) {
+            CloseHandle(iocp_file);
+        }
+        if ((!iocp_read && iocp_read_error != ERROR_IO_PENDING) || !completed ||
+            completed_bytes != iocp_buffer.size() || completion_key != 0xA11U ||
+            completed_overlapped != &iocp_overlapped ||
+            std::string_view(iocp_buffer.data(), iocp_buffer.size()) != "allowed-io") {
+            return 340;
+        }
+
+        const HANDLE denied_iocp = CreateIoCompletionPort(
+            denied_handle, nullptr, 0xD31U, 0);
+        std::array<char, 4> denied_buffer{};
+        OVERLAPPED denied_overlapped{};
+        DWORD denied_bytes = 123;
+        SetLastError(ERROR_SUCCESS);
+        const BOOL denied_read = ReadFile(
+            denied_handle, denied_buffer.data(),
+            static_cast<DWORD>(denied_buffer.size()), &denied_bytes,
+            &denied_overlapped);
+        const DWORD denied_error = GetLastError();
+        completed_bytes = 0;
+        completion_key = 0;
+        completed_overlapped = nullptr;
+        SetLastError(ERROR_SUCCESS);
+        const BOOL denied_completion = denied_iocp != nullptr &&
+            GetQueuedCompletionStatus(
+                denied_iocp, &completed_bytes, &completion_key,
+                &completed_overlapped, 0);
+        const DWORD denied_completion_error = GetLastError();
+        if (denied_iocp != nullptr) {
+            CloseHandle(denied_iocp);
+        }
+        if (denied_read || denied_error != ERROR_ACCESS_DENIED || denied_bytes != 0 ||
+            denied_completion || denied_completion_error != WAIT_TIMEOUT ||
+            completed_overlapped != nullptr) {
+            return 341;
+        }
+
+        const HANDLE threadpool_file = CreateFileW(
+            allowed_file.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
+        ThreadpoolIoContext threadpool_context{};
+        threadpool_context.completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        PTP_IO threadpool_io = threadpool_file == INVALID_HANDLE_VALUE
+                                   ? nullptr
+                                   : CreateThreadpoolIo(
+                                         threadpool_file, ThreadpoolIoCallback,
+                                         &threadpool_context, nullptr);
+        std::array<char, 10> threadpool_buffer{};
+        OVERLAPPED threadpool_overlapped{};
+        if (threadpool_io == nullptr || threadpool_context.completed == nullptr) {
+            return 342;
+        }
+        StartThreadpoolIo(threadpool_io);
+        const BOOL threadpool_read = ReadFile(
+            threadpool_file, threadpool_buffer.data(),
+            static_cast<DWORD>(threadpool_buffer.size()), nullptr,
+            &threadpool_overlapped);
+        const DWORD threadpool_error = GetLastError();
+        if (!threadpool_read && threadpool_error != ERROR_IO_PENDING) {
+            CancelThreadpoolIo(threadpool_io);
+            CloseThreadpoolIo(threadpool_io);
+            CloseHandle(threadpool_context.completed);
+            CloseHandle(threadpool_file);
+            return 343;
+        }
+        const bool threadpool_completed =
+            WaitForSingleObject(threadpool_context.completed, 5'000) == WAIT_OBJECT_0;
+        WaitForThreadpoolIoCallbacks(threadpool_io, FALSE);
+        CloseThreadpoolIo(threadpool_io);
+        CloseHandle(threadpool_context.completed);
+        CloseHandle(threadpool_file);
+        if (!threadpool_completed || threadpool_context.result != ERROR_SUCCESS ||
+            threadpool_context.bytes != threadpool_buffer.size() ||
+            std::string_view(threadpool_buffer.data(), threadpool_buffer.size()) !=
+                "allowed-io") {
+            return 344;
+        }
+
+        const HANDLE mapping_file = CreateFileW(
+            allowed_file.c_str(), GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        const HANDLE copy_mapping = mapping_file == INVALID_HANDLE_VALUE
+                                        ? nullptr
+                                        : CreateFileMappingW(
+                                              mapping_file, nullptr, PAGE_WRITECOPY,
+                                              0, 0, nullptr);
+        void* copy_view = copy_mapping == nullptr
+                              ? nullptr
+                              : MapViewOfFile(copy_mapping, FILE_MAP_COPY, 0, 0, 0);
+        if (copy_view == nullptr) {
+            return 345;
+        }
+        static_cast<char*>(copy_view)[0] = 'X';
+        const bool copy_flushed = FlushViewOfFile(copy_view, 1) != FALSE;
+        UnmapViewOfFile(copy_view);
+        CloseHandle(copy_mapping);
+        CloseHandle(mapping_file);
+        if (!copy_flushed || ReadFixture(allowed_file) != "allowed-io") {
+            return 346;
+        }
+
+        const std::wstring current_executable = CurrentExecutable();
+        const HANDLE image_file = CreateFileW(
+            current_executable.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        const HANDLE image_mapping = image_file == INVALID_HANDLE_VALUE
+                                         ? nullptr
+                                         : CreateFileMappingW(
+                                               image_file, nullptr,
+                                               PAGE_READONLY | SEC_IMAGE, 0, 0,
+                                               nullptr);
+        if (image_file == INVALID_HANDLE_VALUE) {
+            return 347;
+        }
+        if (image_mapping == nullptr) {
+            CloseHandle(image_file);
+            return 348;
+        }
+        void* image_view = image_mapping == nullptr
+                               ? nullptr
+                               : MapViewOfFile(image_mapping, FILE_MAP_READ, 0, 0, 0);
+        if (image_view == nullptr) {
+            CloseHandle(image_mapping);
+            CloseHandle(image_file);
+            return 349;
+        }
+        UnmapViewOfFile(image_view);
+        CloseHandle(image_mapping);
+        CloseHandle(image_file);
     } else {
         return 298;
     }
@@ -1498,7 +1788,8 @@ bool RunFilesystemRaceTests() {
         RunPathFormsTest(executable, hook_path, test_root, ordinal) &&
         RunExistingSymlinkTest(executable, hook_path, ordinal) &&
         RunJunctionSwapTest(executable, hook_path, test_root, ordinal) &&
-        RunReparseFailureTest(executable, hook_path, test_root, ordinal);
+        RunReparseFailureTest(executable, hook_path, test_root, ordinal) &&
+        RunAsyncIoAndMappingTest(executable, hook_path, test_root, ordinal);
     std::filesystem::remove_all(test_root, error);
     if (!passed) {
         std::fprintf(stderr, "filesystem race fixture failed\n");
