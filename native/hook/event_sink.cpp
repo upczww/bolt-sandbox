@@ -159,9 +159,10 @@ bool TryReportFilesystemViolation(
         return false;
     }
     const std::size_t path_length = BoundedPathLength(path);
-    if (path_length == 0 || !TryEnterCriticalSection(&g_state.lock)) {
+    if (path_length == 0) {
         return false;
     }
+    EnterCriticalSection(&g_state.lock);
     if (g_state.count == kQueueCapacity) {
         LeaveCriticalSection(&g_state.lock);
         return false;
