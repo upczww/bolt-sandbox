@@ -28,6 +28,7 @@ enum class ProcessOperation : std::uint8_t {
     kElevation = 2,
     kBreakaway = 3,
     kMitigationWeakening = 4,
+    kExternalDelegation = 5,
 };
 
 enum class FrameEncodeStatus : std::uint8_t {

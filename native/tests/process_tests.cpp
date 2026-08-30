@@ -3720,6 +3720,8 @@ bool RunInheritedProcessTest(
         static_cast<bolt::protocol::ProcessOperation>(3);
     constexpr auto mitigation_weakening_operation =
         static_cast<bolt::protocol::ProcessOperation>(4);
+    constexpr auto external_delegation_operation =
+        static_cast<bolt::protocol::ProcessOperation>(5);
     bool breakaway_event_ok = true;
     if (parent_arguments.empty()) {
         for (std::uint64_t sequence = 1; sequence <= 7; ++sequence) {
@@ -3738,11 +3740,20 @@ bool RunInheritedProcessTest(
          ReadProcessViolation(
              event_pipe.handle(), parent_process_id,
              mitigation_weakening_operation, 9));
+    const bool external_delegation_events_ok =
+        !parent_arguments.empty() ||
+        (ReadProcessViolation(
+             event_pipe.handle(), parent_process_id,
+             external_delegation_operation, 10) &&
+         ReadProcessViolation(
+             event_pipe.handle(), parent_process_id,
+             external_delegation_operation, 11));
     DWORD exit_code = 0;
     const bool passed = ready_ok && parent_exit_descendant_ok &&
                         compatibility_event_ok &&
                         breakaway_event_ok &&
                         mitigation_weakening_events_ok &&
+                        external_delegation_events_ok &&
                         process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                         exit_code == 0;
     if (!passed) {
