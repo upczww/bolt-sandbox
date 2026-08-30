@@ -1543,15 +1543,25 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         OBJ_CASE_INSENSITIVE, nullptr, nullptr};
     IO_STATUS_BLOCK nt_create_status{};
     HANDLE nt_created_file = nullptr;
-    if (nt_create_file == nullptr ||
-        nt_create_file(
-            &nt_created_file, FILE_GENERIC_WRITE | SYNCHRONIZE,
-            &nt_create_attributes, &nt_create_status, nullptr,
-            FILE_ATTRIBUTE_NORMAL,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            FILE_CREATE, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
-            nullptr, 0) != status_access_denied ||
-        nt_created_file != nullptr) {
+    constexpr DWORD native_last_error_sentinel = ERROR_INVALID_DATA;
+    SetLastError(native_last_error_sentinel);
+    const NTSTATUS nt_create_result =
+        nt_create_file == nullptr
+            ? status_access_denied
+            : nt_create_file(
+                  &nt_created_file, FILE_GENERIC_WRITE | SYNCHRONIZE,
+                  &nt_create_attributes, &nt_create_status, nullptr,
+                  FILE_ATTRIBUTE_NORMAL,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  FILE_CREATE,
+                  FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+                  nullptr, 0);
+    const DWORD nt_create_last_error = GetLastError();
+    if (nt_create_file == nullptr || nt_create_result != status_access_denied ||
+        nt_created_file != nullptr ||
+        nt_create_status.Status != status_access_denied ||
+        nt_create_status.Information != 0 ||
+        nt_create_last_error != native_last_error_sentinel) {
         if (nt_created_file != nullptr) {
             CloseHandle(nt_created_file);
         }
@@ -1567,14 +1577,21 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         OBJ_CASE_INSENSITIVE, nullptr, nullptr};
     IO_STATUS_BLOCK nt_open_status{};
     HANDLE nt_opened_file = nullptr;
-    if (nt_open_file == nullptr ||
-        nt_open_file(
-            &nt_opened_file, FILE_GENERIC_READ | SYNCHRONIZE,
-            &nt_open_attributes, &nt_open_status,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT) !=
-            status_access_denied ||
-        nt_opened_file != nullptr) {
+    SetLastError(native_last_error_sentinel);
+    const NTSTATUS nt_open_result =
+        nt_open_file == nullptr
+            ? status_access_denied
+            : nt_open_file(
+                  &nt_opened_file, FILE_GENERIC_READ | SYNCHRONIZE,
+                  &nt_open_attributes, &nt_open_status,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT);
+    const DWORD nt_open_last_error = GetLastError();
+    if (nt_open_file == nullptr || nt_open_result != status_access_denied ||
+        nt_opened_file != nullptr ||
+        nt_open_status.Status != status_access_denied ||
+        nt_open_status.Information != 0 ||
+        nt_open_last_error != native_last_error_sentinel) {
         if (nt_opened_file != nullptr) {
             CloseHandle(nt_opened_file);
         }
@@ -1592,13 +1609,18 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         &nt_relative_name, OBJ_CASE_INSENSITIVE, nullptr, nullptr};
     IO_STATUS_BLOCK nt_relative_status{};
     HANDLE nt_relative_file = nullptr;
-    if (nt_open_file(
-            &nt_relative_file, FILE_GENERIC_READ | SYNCHRONIZE,
-            &nt_relative_attributes, &nt_relative_status,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT) !=
-            status_access_denied ||
-        nt_relative_file != nullptr) {
+    SetLastError(native_last_error_sentinel);
+    const NTSTATUS nt_relative_result = nt_open_file(
+        &nt_relative_file, FILE_GENERIC_READ | SYNCHRONIZE,
+        &nt_relative_attributes, &nt_relative_status,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT);
+    const DWORD nt_relative_last_error = GetLastError();
+    if (nt_relative_result != status_access_denied ||
+        nt_relative_file != nullptr ||
+        nt_relative_status.Status != status_access_denied ||
+        nt_relative_status.Information != 0 ||
+        nt_relative_last_error != native_last_error_sentinel) {
         if (nt_relative_file != nullptr) {
             CloseHandle(nt_relative_file);
         }
