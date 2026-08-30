@@ -810,13 +810,19 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     LARGE_INTEGER direct_end_of_file{};
     direct_end_of_file.QuadPart = 2;
     constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+    constexpr DWORD native_last_error_sentinel = ERROR_INVALID_DATA;
     constexpr FILE_INFORMATION_CLASS file_end_of_file_information =
         static_cast<FILE_INFORMATION_CLASS>(20);
+    SetLastError(native_last_error_sentinel);
+    const NTSTATUS direct_end_of_file_result =
+        zw_set_information_file == nullptr
+            ? status_access_denied
+            : zw_set_information_file(
+                  denied_truncate_handle, &io_status, &direct_end_of_file,
+                  sizeof(direct_end_of_file), file_end_of_file_information);
     if (zw_set_information_file == nullptr ||
-        zw_set_information_file(
-            denied_truncate_handle, &io_status, &direct_end_of_file,
-            sizeof(direct_end_of_file), file_end_of_file_information) !=
-            status_access_denied) {
+        direct_end_of_file_result != status_access_denied ||
+        GetLastError() != native_last_error_sentinel) {
         return 122;
     }
     constexpr FILE_INFORMATION_CLASS file_disposition_information =
@@ -942,11 +948,17 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     const auto nt_create_section = reinterpret_cast<NtCreateSectionFunction>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateSection"));
     HANDLE denied_section = nullptr;
+    SetLastError(native_last_error_sentinel);
+    const NTSTATUS denied_section_result =
+        nt_create_section == nullptr
+            ? status_access_denied
+            : nt_create_section(
+                  &denied_section, SECTION_MAP_READ | SECTION_MAP_WRITE, nullptr,
+                  nullptr, PAGE_READWRITE, SEC_COMMIT, denied_mapping_file);
     if (nt_create_section == nullptr ||
-        nt_create_section(
-            &denied_section, SECTION_MAP_READ | SECTION_MAP_WRITE, nullptr, nullptr,
-            PAGE_READWRITE, SEC_COMMIT, denied_mapping_file) != status_access_denied ||
-        denied_section != nullptr) {
+        denied_section_result != status_access_denied ||
+        denied_section != nullptr ||
+        GetLastError() != native_last_error_sentinel) {
         if (denied_section != nullptr) {
             CloseHandle(denied_section);
         }
@@ -1124,11 +1136,16 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         reinterpret_cast<NtQueryInformationFileFunction>(GetProcAddress(
             GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationFile"));
     NtFileBasicInformation queried_basic_information{};
+    SetLastError(native_last_error_sentinel);
+    const NTSTATUS query_information_result =
+        nt_query_information_file == nullptr
+            ? status_access_denied
+            : nt_query_information_file(
+                  denied_mapping_file, &io_status, &queried_basic_information,
+                  sizeof(queried_basic_information), file_basic_information);
     if (nt_query_information_file == nullptr ||
-        nt_query_information_file(
-            denied_mapping_file, &io_status, &queried_basic_information,
-            sizeof(queried_basic_information), file_basic_information) !=
-            status_access_denied) {
+        query_information_result != status_access_denied ||
+        GetLastError() != native_last_error_sentinel) {
         return 159;
     }
     using NtQueryAttributesFileFunction = NTSTATUS(NTAPI*)(
@@ -1150,10 +1167,15 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     nt_metadata_attributes.ObjectName = &nt_metadata_name;
     nt_metadata_attributes.Attributes = OBJ_CASE_INSENSITIVE;
     NtFileBasicInformation nt_path_basic_information{};
+    SetLastError(native_last_error_sentinel);
+    const NTSTATUS query_attributes_result =
+        nt_query_attributes_file == nullptr
+            ? status_access_denied
+            : nt_query_attributes_file(
+                  &nt_metadata_attributes, &nt_path_basic_information);
     if (nt_query_attributes_file == nullptr ||
-        nt_query_attributes_file(
-            &nt_metadata_attributes, &nt_path_basic_information) !=
-            status_access_denied) {
+        query_attributes_result != status_access_denied ||
+        GetLastError() != native_last_error_sentinel) {
         return 160;
     }
     struct NtFileNetworkOpenInformation {
@@ -1166,10 +1188,15 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         ULONG file_attributes;
     };
     NtFileNetworkOpenInformation nt_path_full_information{};
+    SetLastError(native_last_error_sentinel);
+    const NTSTATUS query_full_attributes_result =
+        nt_query_full_attributes_file == nullptr
+            ? status_access_denied
+            : nt_query_full_attributes_file(
+                  &nt_metadata_attributes, &nt_path_full_information);
     if (nt_query_full_attributes_file == nullptr ||
-        nt_query_full_attributes_file(
-            &nt_metadata_attributes, &nt_path_full_information) !=
-            status_access_denied) {
+        query_full_attributes_result != status_access_denied ||
+        GetLastError() != native_last_error_sentinel) {
         return 161;
     }
     using NtQueryDirectoryFileFunction = NTSTATUS(NTAPI*)(
@@ -1189,23 +1216,33 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     std::array<std::uint8_t, 1'024> directory_information{};
     constexpr FILE_INFORMATION_CLASS file_directory_information =
         static_cast<FILE_INFORMATION_CLASS>(1);
+    SetLastError(native_last_error_sentinel);
+    const NTSTATUS query_directory_result =
+        nt_query_directory_file == nullptr
+            ? status_access_denied
+            : nt_query_directory_file(
+                  denied_directory_handle, nullptr, nullptr, nullptr, &io_status,
+                  directory_information.data(),
+                  static_cast<ULONG>(directory_information.size()),
+                  file_directory_information, FALSE, nullptr, TRUE);
     if (nt_query_directory_file == nullptr ||
-        nt_query_directory_file(
-            denied_directory_handle, nullptr, nullptr, nullptr, &io_status,
-            directory_information.data(),
-            static_cast<ULONG>(directory_information.size()),
-            file_directory_information, FALSE, nullptr, TRUE) !=
-            status_access_denied) {
+        query_directory_result != status_access_denied ||
+        GetLastError() != native_last_error_sentinel) {
         return 162;
     }
     constexpr ULONG restart_scan = 0x01;
+    SetLastError(native_last_error_sentinel);
+    const NTSTATUS query_directory_ex_result =
+        nt_query_directory_file_ex == nullptr
+            ? status_access_denied
+            : nt_query_directory_file_ex(
+                  denied_directory_handle, nullptr, nullptr, nullptr, &io_status,
+                  directory_information.data(),
+                  static_cast<ULONG>(directory_information.size()),
+                  file_directory_information, restart_scan, nullptr);
     if (nt_query_directory_file_ex == nullptr ||
-        nt_query_directory_file_ex(
-            denied_directory_handle, nullptr, nullptr, nullptr, &io_status,
-            directory_information.data(),
-            static_cast<ULONG>(directory_information.size()),
-            file_directory_information, restart_scan, nullptr) !=
-            status_access_denied) {
+        query_directory_ex_result != status_access_denied ||
+        GetLastError() != native_last_error_sentinel) {
         return 163;
     }
     constexpr DWORD allow_unprivileged_create = 0x2;
@@ -1370,26 +1407,36 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     std::array<char, 4> denied_nt_read_buffer = {'y', 'y', 'y', 'y'};
     io_status.Status = 0;
     io_status.Information = 123;
-    if (nt_read_file == nullptr ||
-        nt_read_file(
-            denied_mapping_file, nullptr, nullptr, nullptr, &io_status,
-            denied_nt_read_buffer.data(),
-            static_cast<ULONG>(denied_nt_read_buffer.size()), nullptr, nullptr) !=
-            status_access_denied ||
+    SetLastError(native_last_error_sentinel);
+    const NTSTATUS nt_read_result =
+        nt_read_file == nullptr
+            ? status_access_denied
+            : nt_read_file(
+                  denied_mapping_file, nullptr, nullptr, nullptr, &io_status,
+                  denied_nt_read_buffer.data(),
+                  static_cast<ULONG>(denied_nt_read_buffer.size()), nullptr,
+                  nullptr);
+    if (nt_read_file == nullptr || nt_read_result != status_access_denied ||
         io_status.Status != status_access_denied || io_status.Information != 0 ||
+        GetLastError() != native_last_error_sentinel ||
         denied_nt_read_buffer != std::array<char, 4>{'y', 'y', 'y', 'y'}) {
         return 181;
     }
     io_status.Status = 0;
     io_status.Information = 123;
     std::array<char, 4> denied_nt_write_buffer = forbidden_write;
-    if (nt_write_file == nullptr ||
-        nt_write_file(
-            denied_mapping_file, nullptr, nullptr, nullptr, &io_status,
-            denied_nt_write_buffer.data(),
-            static_cast<ULONG>(denied_nt_write_buffer.size()), nullptr, nullptr) !=
-            status_access_denied ||
-        io_status.Status != status_access_denied || io_status.Information != 0) {
+    SetLastError(native_last_error_sentinel);
+    const NTSTATUS nt_write_result =
+        nt_write_file == nullptr
+            ? status_access_denied
+            : nt_write_file(
+                  denied_mapping_file, nullptr, nullptr, nullptr, &io_status,
+                  denied_nt_write_buffer.data(),
+                  static_cast<ULONG>(denied_nt_write_buffer.size()), nullptr,
+                  nullptr);
+    if (nt_write_file == nullptr || nt_write_result != status_access_denied ||
+        io_status.Status != status_access_denied || io_status.Information != 0 ||
+        GetLastError() != native_last_error_sentinel) {
         return 182;
     }
     const auto denied_overlapped_file =
@@ -1543,7 +1590,6 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         OBJ_CASE_INSENSITIVE, nullptr, nullptr};
     IO_STATUS_BLOCK nt_create_status{};
     HANDLE nt_created_file = nullptr;
-    constexpr DWORD native_last_error_sentinel = ERROR_INVALID_DATA;
     SetLastError(native_last_error_sentinel);
     const NTSTATUS nt_create_result =
         nt_create_file == nullptr
@@ -1684,6 +1730,7 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     nt_notification_buffer.fill(0x5A);
     const auto nt_notification_buffer_before = nt_notification_buffer;
     IO_STATUS_BLOCK nt_notification_status{};
+    SetLastError(native_last_error_sentinel);
     NTSTATUS nt_notification_result = nt_notify_change_directory_file(
         notification_directory, nt_notification_event, nullptr, nullptr,
         &nt_notification_status, nt_notification_buffer.data(),
@@ -1697,6 +1744,7 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         nt_notification_result == status_access_denied &&
         nt_notification_status.Status == status_access_denied &&
         nt_notification_status.Information == 0 &&
+        GetLastError() == native_last_error_sentinel &&
         nt_notification_buffer == nt_notification_buffer_before &&
         WaitForSingleObject(nt_notification_event, 0) == WAIT_TIMEOUT;
     if (!nt_notification_denied) {
@@ -1704,6 +1752,7 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         return 204;
     }
     nt_notification_status = {};
+    SetLastError(native_last_error_sentinel);
     nt_notification_result = nt_notify_change_directory_file_ex(
         notification_directory, nt_notification_event, nullptr, nullptr,
         &nt_notification_status, nt_notification_buffer.data(),
@@ -1717,6 +1766,7 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         nt_notification_result == status_access_denied &&
         nt_notification_status.Status == status_access_denied &&
         nt_notification_status.Information == 0 &&
+        GetLastError() == native_last_error_sentinel &&
         nt_notification_buffer == nt_notification_buffer_before &&
         WaitForSingleObject(nt_notification_event, 0) == WAIT_TIMEOUT;
     CloseHandle(nt_notification_event);
@@ -1986,6 +2036,7 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
             GetProcAddress(mapping_ntdll, "NtUnmapViewOfSection"));
     PVOID direct_denied_base = nullptr;
     SIZE_T direct_denied_size = 0;
+    SetLastError(native_last_error_sentinel);
     const NTSTATUS direct_denied_status =
         nt_map_view_of_section == nullptr
             ? static_cast<NTSTATUS>(0xC0000002UL)
@@ -1995,7 +2046,8 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
                   0, PAGE_READWRITE);
     const bool inherited_native_denied =
         direct_denied_status == status_access_denied &&
-        direct_denied_base == nullptr && direct_denied_size == 0;
+        direct_denied_base == nullptr && direct_denied_size == 0 &&
+        GetLastError() == native_last_error_sentinel;
     if (direct_denied_base != nullptr && nt_unmap_view_of_section != nullptr) {
         nt_unmap_view_of_section(GetCurrentProcess(), direct_denied_base);
     }
