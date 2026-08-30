@@ -2,6 +2,7 @@
 #include "PathTree.h"
 #include "CanonicalizedPath.h"
 #include "FilesCheckedForAccess.h"
+#include "ResolvedPathCache.h"
 
 #include <memory>
 #include <string>
@@ -104,6 +105,47 @@ bool RunBuildXlTreeTests() {
     const std::wstring default_stream = L"C:\\Root\\file.txt::$DATA";
     if (!IsPathToNamedStream(named_stream.c_str(), named_stream.size()) ||
         IsPathToNamedStream(default_stream.c_str(), default_stream.size())) {
+        return false;
+    }
+
+    ResolvedPathCache cache;
+    if (!cache.InsertResolvingCheckResult(L"C:\\Root\\Link\\", true)) {
+        return false;
+    }
+    const auto resolving = cache.GetResolvingCheckResult(L"c:\\root\\link");
+    if (!resolving.Found || !resolving.Value) {
+        return false;
+    }
+
+    std::wstring target = L"C:\\Resolved\\Target";
+    if (!cache.InsertResolvedPathWithType(L"\\\\?\\C:\\Root\\Link", target, 0xA000000CU)) {
+        return false;
+    }
+    const auto target_lookup = cache.GetResolvedPathAndType(L"C:\\ROOT\\LINK");
+    if (!target_lookup.Found || target_lookup.Value.first != target ||
+        target_lookup.Value.second != 0xA000000CU) {
+        return false;
+    }
+
+    auto insertion_order = std::make_shared<std::vector<std::wstring>>(
+        std::initializer_list<std::wstring>{L"C:\\Root\\Middle"});
+    auto resolved_paths =
+        std::make_shared<std::map<std::wstring, ResolvedPathType, CaseInsensitiveStringLessThan>>();
+    resolved_paths->emplace(L"C:\\Root\\Middle", ResolvedPathType::Intermediate);
+    resolved_paths->emplace(L"C:\\Resolved\\Target", ResolvedPathType::FullyResolved);
+    if (!cache.InsertResolvedPaths(
+            L"C:\\Root\\Alias", false, insertion_order, resolved_paths) ||
+        !cache.GetResolvedPaths(L"c:\\root\\alias", false).Found) {
+        return false;
+    }
+    cache.Invalidate(L"C:\\ROOT\\MIDDLE", false);
+    if (cache.GetResolvedPaths(L"C:\\Root\\Alias", false).Found) {
+        return false;
+    }
+
+    cache.InsertResolvingCheckResult(L"C:\\Tree\\Child\\Leaf", true);
+    cache.Invalidate(L"C:\\Tree", true);
+    if (cache.GetResolvingCheckResult(L"C:\\Tree\\Child\\Leaf").Found) {
         return false;
     }
 
