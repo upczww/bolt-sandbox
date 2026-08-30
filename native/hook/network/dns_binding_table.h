@@ -55,6 +55,17 @@ class DnsBindingTable final {
         std::uint16_t port,
         std::uint64_t now) const noexcept;
 
+    [[nodiscard]] bool FindAuthorizedDomain(
+        const std::array<std::uint8_t, 16>& session_id,
+        std::uint32_t process_id,
+        AddressFamily family,
+        const std::uint8_t* address,
+        std::size_t address_length,
+        std::uint16_t port,
+        std::uint64_t now,
+        char* output,
+        std::size_t output_capacity) const noexcept;
+
     [[nodiscard]] std::size_t ActiveCount(std::uint64_t now) const noexcept;
 
   private:

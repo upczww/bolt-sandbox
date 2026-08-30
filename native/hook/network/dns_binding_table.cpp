@@ -239,6 +239,71 @@ bool DnsBindingTable::IsEndpointAuthorized(
     return false;
 }
 
+bool ClearDomainOutput(char* const output) noexcept {
+    __try {
+        output[0] = '\0';
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool CopyDomainOutput(
+    const char* const domain,
+    const std::size_t length,
+    char* const output) noexcept {
+    __try {
+        std::copy_n(domain, length, output);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool DnsBindingTable::FindAuthorizedDomain(
+    const std::array<std::uint8_t, 16>& session_id,
+    const std::uint32_t process_id,
+    const AddressFamily family,
+    const std::uint8_t* const address,
+    const std::size_t address_length,
+    const std::uint16_t port,
+    const std::uint64_t now,
+    char* const output,
+    const std::size_t output_capacity) const noexcept {
+    if (output == nullptr || output_capacity == 0) {
+        return false;
+    }
+    if (!ClearDomainOutput(output)) {
+        return false;
+    }
+    const std::size_t expected_length = family == AddressFamily::kIpv4
+                                            ? 4
+                                            : family == AddressFamily::kIpv6 ? 16 : 0;
+    if (implementation_ == nullptr || process_id == 0 || port == 0 ||
+        address == nullptr || address_length != expected_length) {
+        return false;
+    }
+    SharedLock guard(implementation_->lock);
+    for (std::size_t index = 0; index < implementation_->capacity; ++index) {
+        const Entry& entry = implementation_->entries[index];
+        if (!entry.occupied || entry.expires_at <= now ||
+            entry.session_id != session_id || entry.process_id != process_id ||
+            entry.family != family ||
+            (entry.port != 0 && entry.port != port) ||
+            !std::equal(
+                entry.address.begin(), entry.address.begin() + address_length,
+                address)) {
+            continue;
+        }
+        const std::size_t domain_length = std::strlen(entry.domain);
+        if (domain_length + 1U > output_capacity) {
+            return false;
+        }
+        return CopyDomainOutput(entry.domain, domain_length + 1U, output);
+    }
+    return false;
+}
+
 std::size_t DnsBindingTable::ActiveCount(const std::uint64_t now) const noexcept {
     if (implementation_ == nullptr) {
         return 0;
