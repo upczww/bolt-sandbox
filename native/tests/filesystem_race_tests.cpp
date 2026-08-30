@@ -967,6 +967,66 @@ bool RunJunctionSwapTest(
     return passed;
 }
 
+bool RunReparseFailureTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const std::filesystem::path& test_root,
+    std::uint64_t& ordinal) {
+    const auto root = test_root / L"reparse-failures";
+    const auto real_target = root / L"real-target";
+    const auto loop_a = root / L"loop-a";
+    const auto loop_b = root / L"loop-b";
+    const auto malformed_holder = root / L"malformed-holder";
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+    error.clear();
+    if (!std::filesystem::create_directories(real_target, error) || error ||
+        !std::filesystem::create_directories(loop_b, error) || error ||
+        !std::filesystem::create_directories(malformed_holder, error) || error ||
+        !WriteFixture(real_target / L"payload.txt", "payload") ||
+        !CreateJunction(loop_a, loop_b) || !RemoveDirectoryW(loop_b.c_str()) ||
+        !CreateJunction(loop_b, loop_a)) {
+        return false;
+    }
+    std::filesystem::path next = real_target;
+    for (std::size_t index = 300; index-- > 0;) {
+        const auto link = root / (L"depth-" + std::to_wstring(index));
+        if (!CreateJunction(link, next)) {
+            return false;
+        }
+        next = link;
+    }
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const std::vector<bolt::tests::FilesystemRule> rules = {
+        {bolt::tests::FilesystemRuleKind::kReadWrite, root},
+    };
+    RaceProcess process;
+    const bool started =
+        start != nullptr &&
+        process.Start(
+            executable, hook_path, rules, L"reparse-failures", root, {}, start,
+            ordinal++);
+    const bool released =
+        started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
+    const bool exited = released && process.WaitForExit();
+    const bool passed =
+        exited &&
+        (GetFileAttributesW(malformed_holder.c_str()) &
+         FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+    if (start != nullptr) {
+        CloseHandle(start);
+    }
+    if (!passed) {
+        std::fprintf(
+            stderr, "reparse failure test failed: exit=%lu\n",
+            static_cast<unsigned long>(process.exit_code()));
+    }
+    return passed;
+}
+
 }  // namespace
 
 int RunFilesystemRaceChild(
@@ -1342,6 +1402,59 @@ int RunFilesystemRaceChild(
         if (swapped_error != ERROR_ACCESS_DENIED) {
             return 333;
         }
+    } else if (mode == L"reparse-failures") {
+        const std::filesystem::path root(arguments[3]);
+        const auto fails_closed = [](const std::filesystem::path& path) {
+            SetLastError(ERROR_SUCCESS);
+            const HANDLE file = CreateFileW(
+                path.c_str(), GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            const DWORD error = GetLastError();
+            if (file != INVALID_HANDLE_VALUE) {
+                CloseHandle(file);
+                return false;
+            }
+            return error != ERROR_SUCCESS;
+        };
+        if (!fails_closed(root / L"loop-a" / L"payload.txt")) {
+            return 334;
+        }
+        if (!fails_closed(root / L"depth-0" / L"payload.txt")) {
+            return 337;
+        }
+        const auto holder = root / L"malformed-holder";
+        const HANDLE directory = CreateFileW(
+            holder.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (directory == INVALID_HANDLE_VALUE) {
+            return 335;
+        }
+        std::array<std::uint8_t, 32> unsupported{};
+        *reinterpret_cast<ULONG*>(unsupported.data()) = 0xA00000FFU;
+        std::array<std::uint8_t, 32> malformed{};
+        *reinterpret_cast<ULONG*>(malformed.data()) = IO_REPARSE_TAG_MOUNT_POINT;
+        *reinterpret_cast<USHORT*>(malformed.data() + 4) = 24;
+        *reinterpret_cast<USHORT*>(malformed.data() + 8) = 30;
+        *reinterpret_cast<USHORT*>(malformed.data() + 10) = 20;
+        DWORD returned = 0;
+        SetLastError(ERROR_SUCCESS);
+        const BOOL unsupported_result = DeviceIoControl(
+            directory, FSCTL_SET_REPARSE_POINT, unsupported.data(),
+            static_cast<DWORD>(unsupported.size()), nullptr, 0, &returned,
+            nullptr);
+        const DWORD unsupported_error = GetLastError();
+        SetLastError(ERROR_SUCCESS);
+        const BOOL malformed_result = DeviceIoControl(
+            directory, FSCTL_SET_REPARSE_POINT, malformed.data(),
+            static_cast<DWORD>(malformed.size()), nullptr, 0, &returned,
+            nullptr);
+        const DWORD malformed_error = GetLastError();
+        CloseHandle(directory);
+        if (unsupported_result || unsupported_error != ERROR_ACCESS_DENIED ||
+            malformed_result || malformed_error != ERROR_ACCESS_DENIED) {
+            return 336;
+        }
     } else {
         return 298;
     }
@@ -1384,7 +1497,8 @@ bool RunFilesystemRaceTests() {
             executable, hook_path, test_root, ordinal) &&
         RunPathFormsTest(executable, hook_path, test_root, ordinal) &&
         RunExistingSymlinkTest(executable, hook_path, ordinal) &&
-        RunJunctionSwapTest(executable, hook_path, test_root, ordinal);
+        RunJunctionSwapTest(executable, hook_path, test_root, ordinal) &&
+        RunReparseFailureTest(executable, hook_path, test_root, ordinal);
     std::filesystem::remove_all(test_root, error);
     if (!passed) {
         std::fprintf(stderr, "filesystem race fixture failed\n");
