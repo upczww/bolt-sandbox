@@ -1107,6 +1107,15 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     if (InterlockedCompareExchange(&g_io_completion_calls, 0, 0) != 0) {
         return 185;
     }
+    if (GetFileAttributesW(arguments[18]) != INVALID_FILE_ATTRIBUTES ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 186;
+    }
+    if (GetFileAttributesA(ansi_alias_delete.c_str()) !=
+            INVALID_FILE_ATTRIBUTES ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 187;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1819,7 +1828,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_mapping_path.wstring(), 83);
+            denied_mapping_path.wstring(), 83) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_alias_target.wstring(), 84) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_alias_target.wstring(), 85);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
