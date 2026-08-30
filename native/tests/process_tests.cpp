@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -14,9 +15,11 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
@@ -2885,6 +2888,52 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
             0, nullptr, nullptr, &nested_startup, &nested_process) ||
         !WaitForSuccessfulChild(nested_process)) {
         return 292;
+    }
+    constexpr std::size_t churn_threads = 8;
+    constexpr std::size_t churn_children_per_thread = 4;
+    std::atomic_bool churn_succeeded{true};
+    std::mutex churn_ids_mutex;
+    std::vector<DWORD> churn_process_ids;
+    churn_process_ids.reserve(churn_threads * churn_children_per_thread);
+    std::vector<std::thread> churn_workers;
+    churn_workers.reserve(churn_threads);
+    for (std::size_t thread_index = 0; thread_index < churn_threads;
+         ++thread_index) {
+        churn_workers.emplace_back([&] {
+            for (std::size_t child_index = 0;
+                 child_index < churn_children_per_thread; ++child_index) {
+                std::wstring command =
+                    L"\"" + executable + L"\" --inherit-leaf " +
+                    arguments[2];
+                STARTUPINFOW startup{};
+                startup.cb = sizeof(startup);
+                PROCESS_INFORMATION child{};
+                if (!CreateProcessW(
+                        executable.c_str(), command.data(), nullptr, nullptr,
+                        FALSE, 0, nullptr, nullptr, &startup, &child)) {
+                    churn_succeeded.store(false, std::memory_order_relaxed);
+                    continue;
+                }
+                {
+                    const std::scoped_lock lock(churn_ids_mutex);
+                    churn_process_ids.push_back(child.dwProcessId);
+                }
+                if (!WaitForSuccessfulChild(child)) {
+                    churn_succeeded.store(false, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+    for (auto& worker : churn_workers) {
+        worker.join();
+    }
+    std::sort(churn_process_ids.begin(), churn_process_ids.end());
+    if (!churn_succeeded.load(std::memory_order_relaxed) ||
+        churn_process_ids.size() != churn_threads * churn_children_per_thread ||
+        std::adjacent_find(
+            churn_process_ids.begin(), churn_process_ids.end()) !=
+            churn_process_ids.end()) {
+        return 300;
     }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
