@@ -60,6 +60,15 @@ CreateFileMappingAFunction g_create_file_mapping_a = CreateFileMappingA;
 using NtCreateSectionFunction = NTSTATUS(NTAPI*)(
     PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PLARGE_INTEGER, ULONG, ULONG, HANDLE);
 NtCreateSectionFunction g_nt_create_section = nullptr;
+using NtMapViewOfSectionFunction = NTSTATUS(NTAPI*)(
+    HANDLE, HANDLE, PVOID*, ULONG_PTR, SIZE_T, PLARGE_INTEGER, PSIZE_T, ULONG, ULONG, ULONG);
+NtMapViewOfSectionFunction g_nt_map_view_of_section = nullptr;
+using NtUnmapViewOfSectionFunction = NTSTATUS(NTAPI*)(HANDLE, PVOID);
+NtUnmapViewOfSectionFunction g_nt_unmap_view_of_section = nullptr;
+using NtQuerySectionFunction = NTSTATUS(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+NtQuerySectionFunction g_nt_query_section = nullptr;
+using GetMappedFileNameWFunction = DWORD(WINAPI*)(HANDLE, LPVOID, LPWSTR, DWORD);
+GetMappedFileNameWFunction g_get_mapped_file_name_w = nullptr;
 DeviceIoControl_t g_device_io_control = DeviceIoControl;
 FindFirstFileW_t g_find_first_file_w = FindFirstFileW;
 FindFirstFileA_t g_find_first_file_a = FindFirstFileA;
@@ -464,6 +473,159 @@ bool AuthorizeFileMapping(const HANDLE file, const DWORD protection) noexcept {
         return false;
     }
     return true;
+}
+
+bool HasCaseInsensitivePrefix(
+    const std::wstring& value,
+    const wchar_t* prefix,
+    const std::size_t prefix_length) noexcept {
+    return value.size() >= prefix_length &&
+           CompareStringOrdinal(
+               value.data(), static_cast<int>(prefix_length), prefix,
+               static_cast<int>(prefix_length), TRUE) == CSTR_EQUAL;
+}
+
+bool TryConvertDevicePathToDosPath(
+    const std::wstring& device_path,
+    std::wstring& dos_path) noexcept {
+    constexpr wchar_t nt_dos_prefix[] = L"\\??\\";
+    if (HasCaseInsensitivePrefix(device_path, nt_dos_prefix, 4)) {
+        try {
+            dos_path.assign(device_path, 4, std::wstring::npos);
+        } catch (...) {
+            return false;
+        }
+        return true;
+    }
+
+    constexpr wchar_t mup_prefix[] = L"\\Device\\Mup\\";
+    if (HasCaseInsensitivePrefix(device_path, mup_prefix, 12)) {
+        try {
+            dos_path.assign(L"\\\\");
+            dos_path.append(device_path, 12, std::wstring::npos);
+        } catch (...) {
+            return false;
+        }
+        return true;
+    }
+
+    const DWORD drive_chars = GetLogicalDriveStringsW(0, nullptr);
+    if (drive_chars == 0) {
+        return false;
+    }
+    std::wstring drives;
+    std::wstring target;
+    try {
+        drives.assign(static_cast<std::size_t>(drive_chars) + 1, L'\0');
+        target.assign(32768, L'\0');
+    } catch (...) {
+        return false;
+    }
+    if (GetLogicalDriveStringsW(drive_chars, drives.data()) == 0) {
+        return false;
+    }
+
+    for (const wchar_t* drive = drives.c_str(); *drive != L'\0';
+         drive += std::wcslen(drive) + 1) {
+        if (std::wcslen(drive) < 2) {
+            continue;
+        }
+        const wchar_t drive_name[] = {drive[0], L':', L'\0'};
+        const DWORD target_length =
+            QueryDosDeviceW(drive_name, target.data(), static_cast<DWORD>(target.size()));
+        if (target_length == 0) {
+            continue;
+        }
+        const std::size_t prefix_length = std::wcslen(target.c_str());
+        if (!HasCaseInsensitivePrefix(device_path, target.c_str(), prefix_length) ||
+            (device_path.size() > prefix_length && device_path[prefix_length] != L'\\')) {
+            continue;
+        }
+        try {
+            dos_path.assign(drive_name);
+            dos_path.append(device_path, prefix_length, std::wstring::npos);
+        } catch (...) {
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool TryGetSectionPath(const HANDLE section, std::wstring& path) noexcept {
+    struct SectionBasicInformation {
+        PVOID base_address;
+        ULONG allocation_attributes;
+        LARGE_INTEGER maximum_size;
+    };
+    constexpr ULONG section_basic_information = 0;
+    constexpr ULONG file_backed_attributes = SEC_FILE | SEC_IMAGE;
+    constexpr NTSTATUS status_success = 0;
+    SectionBasicInformation information{};
+    if (g_nt_query_section(
+            section, section_basic_information, &information, sizeof(information), nullptr) !=
+        status_success) {
+        return false;
+    }
+    if ((information.allocation_attributes & file_backed_attributes) == 0) {
+        path.clear();
+        return true;
+    }
+
+    PVOID probe_base = nullptr;
+    LARGE_INTEGER probe_offset{};
+    SIZE_T probe_size = 1;
+    constexpr ULONG view_unmap = 2;
+    if (g_nt_map_view_of_section(
+            section, GetCurrentProcess(), &probe_base, 0, 0, &probe_offset, &probe_size,
+            view_unmap, 0, PAGE_READONLY) != status_success) {
+        return false;
+    }
+
+    std::wstring device_path;
+    bool resolved = false;
+    try {
+        device_path.assign(32768, L'\0');
+        const DWORD length = g_get_mapped_file_name_w(
+            GetCurrentProcess(), probe_base, device_path.data(),
+            static_cast<DWORD>(device_path.size()));
+        if (length != 0 && length < device_path.size()) {
+            device_path.resize(length);
+            resolved = TryConvertDevicePathToDosPath(device_path, path);
+        }
+    } catch (...) {
+        resolved = false;
+    }
+    if (g_nt_unmap_view_of_section(GetCurrentProcess(), probe_base) != status_success) {
+        return false;
+    }
+    return resolved;
+}
+
+bool AuthorizeSectionMapping(const HANDLE section, const ULONG protection) noexcept {
+    std::wstring source_path;
+    if (!TryGetSectionPath(section, source_path)) {
+        return false;
+    }
+    if (source_path.empty()) {
+        return true;
+    }
+    const ULONG base_protection = protection & 0xffU;
+    const bool writes_file = base_protection == PAGE_READWRITE ||
+                             base_protection == PAGE_EXECUTE_READWRITE;
+    const Access access = writes_file ? Access::kWrite : Access::kRead;
+    const auto* policy = g_policy.get();
+    const auto evaluation = policy == nullptr
+                                ? PolicyEvaluation{}
+                                : policy->Evaluate(source_path.c_str(), access);
+    if (evaluation.decision != Decision::kDeny) {
+        return true;
+    }
+    ReportDenied(
+        writes_file ? protocol::FilesystemOperation::kWrite
+                    : protocol::FilesystemOperation::kRead,
+        EvaluatedPath(evaluation, source_path.c_str()));
+    return false;
 }
 
 bool ReadReparseTarget(
@@ -2181,6 +2343,38 @@ NTSTATUS NTAPI DetouredNtCreateSection(
         allocation_attributes, file);
 }
 
+NTSTATUS NTAPI DetouredNtMapViewOfSection(
+    const HANDLE section,
+    const HANDLE process,
+    PVOID* const base_address,
+    const ULONG_PTR zero_bits,
+    const SIZE_T commit_size,
+    const PLARGE_INTEGER section_offset,
+    const PSIZE_T view_size,
+    const ULONG inherit_disposition,
+    const ULONG allocation_type,
+    const ULONG protection) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_nt_map_view_of_section(
+            section, process, base_address, zero_bits, commit_size, section_offset, view_size,
+            inherit_disposition, allocation_type, protection);
+    }
+    if (!AuthorizeSectionMapping(section, protection)) {
+        if (base_address != nullptr) {
+            *base_address = nullptr;
+        }
+        if (view_size != nullptr) {
+            *view_size = 0;
+        }
+        constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+        return status_access_denied;
+    }
+    return g_nt_map_view_of_section(
+        section, process, base_address, zero_bits, commit_size, section_offset, view_size,
+        inherit_disposition, allocation_type, protection);
+}
+
 BOOL WINAPI DetouredDeviceIoControl(
     const HANDLE device,
     const DWORD control_code,
@@ -2677,6 +2871,14 @@ HookInstallStatus InstallFileHooks(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "ZwSetInformationFile"));
     g_nt_create_section = reinterpret_cast<NtCreateSectionFunction>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateSection"));
+    g_nt_map_view_of_section = reinterpret_cast<NtMapViewOfSectionFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtMapViewOfSection"));
+    g_nt_unmap_view_of_section = reinterpret_cast<NtUnmapViewOfSectionFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtUnmapViewOfSection"));
+    g_nt_query_section = reinterpret_cast<NtQuerySectionFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySection"));
+    g_get_mapped_file_name_w = reinterpret_cast<GetMappedFileNameWFunction>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "K32GetMappedFileNameW"));
     g_nt_query_information_file = reinterpret_cast<NtQueryInformationFileFunction>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationFile"));
     g_nt_query_attributes_file = reinterpret_cast<NtQueryAttributesFileFunction>(
@@ -2702,6 +2904,8 @@ HookInstallStatus InstallFileHooks(
         reinterpret_cast<NtNotifyChangeDirectoryFileExFunction>(GetProcAddress(
             GetModuleHandleW(L"ntdll.dll"), "NtNotifyChangeDirectoryFileEx"));
     if (g_zw_set_information_file == nullptr || g_nt_create_section == nullptr ||
+        g_nt_map_view_of_section == nullptr || g_nt_unmap_view_of_section == nullptr ||
+        g_nt_query_section == nullptr || g_get_mapped_file_name_w == nullptr ||
         g_nt_query_information_file == nullptr || g_nt_query_attributes_file == nullptr ||
         g_nt_query_full_attributes_file == nullptr || g_nt_query_directory_file == nullptr ||
         g_nt_query_directory_file_ex == nullptr || g_nt_read_file == nullptr ||
@@ -2880,6 +3084,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_nt_create_section),
             reinterpret_cast<PVOID>(DetouredNtCreateSection)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_map_view_of_section),
+            reinterpret_cast<PVOID>(DetouredNtMapViewOfSection)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_device_io_control),
             reinterpret_cast<PVOID>(DetouredDeviceIoControl)) != NO_ERROR ||

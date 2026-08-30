@@ -163,6 +163,17 @@ mappings. The same classifier is attached directly to `NtCreateSection` for
 native callers. Anonymous page-file mappings and sections retain native
 behavior.
 
+Creation-time checks are insufficient when a child inherits a section that was
+created before hook installation. Bolt therefore also intercepts
+`NtMapViewOfSection`, which covers Win32 `MapViewOfFile*` and direct native
+callers. For a file-backed section, the adapter creates a private one-page probe
+view through the original NT trampoline, resolves the mapped device identity to
+a DOS or UNC path, unmaps the probe, and evaluates the requested view protection
+before creating the caller's view. Read/write denials are reported against the
+resolved backing file and return `STATUS_ACCESS_DENIED` with cleared outputs.
+Section-query, probe, and path-conversion failures deny the mapping; anonymous
+page-file sections bypass file policy and retain native behavior.
+
 `CreateHardLinkW/A` use BuildXL's exact function types and the shared
 source-read/destination-write authorization path. Both identities are resolved
 before Windows is called, preventing an allowed junction from placing a new
