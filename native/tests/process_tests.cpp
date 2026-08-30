@@ -21,6 +21,7 @@
 #include <windows.h>
 #include <winioctl.h>
 #include <winternl.h>
+#include <shellapi.h>
 
 namespace {
 
@@ -898,6 +899,28 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 165;
     }
+    std::wstring shell_delete_w(arguments[6]);
+    shell_delete_w.push_back(L'\0');
+    shell_delete_w.push_back(L'\0');
+    SHFILEOPSTRUCTW shell_operation_w{};
+    shell_operation_w.wFunc = FO_DELETE;
+    shell_operation_w.pFrom = shell_delete_w.c_str();
+    shell_operation_w.fFlags =
+        FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+    if (SHFileOperationW(&shell_operation_w) != ERROR_ACCESS_DENIED) {
+        return 166;
+    }
+    std::string shell_delete_a = ansi_denied_metadata;
+    shell_delete_a.push_back('\0');
+    shell_delete_a.push_back('\0');
+    SHFILEOPSTRUCTA shell_operation_a{};
+    shell_operation_a.wFunc = FO_DELETE;
+    shell_operation_a.pFrom = shell_delete_a.c_str();
+    shell_operation_a.fFlags =
+        FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+    if (SHFileOperationA(&shell_operation_a) != ERROR_ACCESS_DENIED) {
+        return 167;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1533,7 +1556,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
-            denied_junction_target.wstring(), 67);
+            denied_junction_target.wstring(), 67) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kDelete,
+            denied_delete_path.wstring(), 68) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kDelete,
+            denied_delete_path.wstring(), 69);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
