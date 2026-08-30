@@ -398,6 +398,11 @@ Recovery is not a substitute for policy enforcement.
 - Terminate the child when mandatory injection fails.
 - Emit a structured failure event containing no sensitive command data.
 
+Every intercepted process-creation family rejects an explicit Job breakaway
+request before image resolution or child creation, clears caller-visible
+process outputs, and emits a typed `Breakaway` process violation. Direct
+`NtCreateUserProcess` breakaway flags follow the same rule.
+
 The initial release supports x64 and x86 on x64 Windows. ARM64 and ARM64EC are a
 separate compatibility milestone.
 

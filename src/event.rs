@@ -109,6 +109,7 @@ pub enum ProcessOperation {
     CreateWithToken,
     CreateWithLogon,
     Elevation,
+    Breakaway,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

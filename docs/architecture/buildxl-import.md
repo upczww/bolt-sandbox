@@ -386,6 +386,12 @@ before user code. Because descendants execute the same hook initialization,
 the profile is inherited semantically even where Windows does not inherit an
 individual mitigation bit automatically.
 
+Bolt also rejects Win32 and native process-creation breakaway flags at the hook
+boundary. The request never reaches image resolution, caller-visible process
+outputs are cleared, and the authenticated event channel records a typed
+`Breakaway` process violation. This deliberately strengthens BuildXL's
+build-oriented flag adaptation into Bolt's fail-closed lifecycle policy.
+
 The next slices are:
 
 1. Activate access classification and handle overlay behind `PolicyView`.

@@ -386,6 +386,7 @@ wire_enum!(
     ProcessOperation::CreateWithToken => 0,
     ProcessOperation::CreateWithLogon => 1,
     ProcessOperation::Elevation => 2,
+    ProcessOperation::Breakaway => 3,
 );
 
 fn push_u32(payload: &mut Vec<u8>, value: u32) {

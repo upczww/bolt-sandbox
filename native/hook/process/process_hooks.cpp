@@ -437,6 +437,17 @@ bool CompleteInheritedCreation(
     return false;
 }
 
+bool DenyRequestedBreakaway(
+    const DWORD creation_flags,
+    const LPPROCESS_INFORMATION process_information) noexcept {
+    if ((creation_flags & CREATE_BREAKAWAY_FROM_JOB) == 0) {
+        return false;
+    }
+    hook::TryReportProcessViolation(protocol::ProcessOperation::kBreakaway);
+    DenyChildCreation(process_information);
+    return true;
+}
+
 BOOL WINAPI DetouredCreateProcessW(
     const LPCWSTR application_name,
     const LPWSTR command_line,
@@ -454,6 +465,9 @@ BOOL WINAPI DetouredCreateProcessW(
             application_name, command_line, process_attributes,
             thread_attributes, inherit_handles, creation_flags, environment,
             current_directory, startup_information, process_information);
+    }
+    if (DenyRequestedBreakaway(creation_flags, process_information)) {
+        return FALSE;
     }
     if (g_child_process_policy == ChildProcessPolicy::kDeny) {
         return DenyChildCreation(process_information);
@@ -487,6 +501,9 @@ BOOL WINAPI DetouredCreateProcessA(
             application_name, command_line, process_attributes,
             thread_attributes, inherit_handles, creation_flags, environment,
             current_directory, startup_information, process_information);
+    }
+    if (DenyRequestedBreakaway(creation_flags, process_information)) {
+        return FALSE;
     }
     if (g_child_process_policy == ChildProcessPolicy::kDeny) {
         return DenyChildCreation(process_information);
@@ -551,6 +568,9 @@ BOOL WINAPI DetouredCreateProcessAsUserW(
             thread_attributes, inherit_handles, creation_flags, environment,
             current_directory, startup_information, process_information);
     }
+    if (DenyRequestedBreakaway(creation_flags, process_information)) {
+        return FALSE;
+    }
     if (g_child_process_policy == ChildProcessPolicy::kDeny ||
         process_information == nullptr || !g_runtime_configured) {
         return DenyChildCreation(process_information);
@@ -583,6 +603,9 @@ BOOL WINAPI DetouredCreateProcessAsUserA(
             token, application_name, command_line, process_attributes,
             thread_attributes, inherit_handles, creation_flags, environment,
             current_directory, startup_information, process_information);
+    }
+    if (DenyRequestedBreakaway(creation_flags, process_information)) {
+        return FALSE;
     }
     if (g_child_process_policy == ChildProcessPolicy::kDeny ||
         process_information == nullptr || !g_runtime_configured) {
@@ -673,6 +696,12 @@ NTSTATUS NTAPI DetouredNtCreateUserProcess(
 
     constexpr NTSTATUS status_access_denied =
         static_cast<NTSTATUS>(0xC0000022UL);
+    constexpr ULONG process_create_flags_breakaway = 0x00000001;
+    if ((process_flags & process_create_flags_breakaway) != 0) {
+        hook::TryReportProcessViolation(protocol::ProcessOperation::kBreakaway);
+        ClearNativeProcessHandles(process_handle, thread_handle);
+        return status_access_denied;
+    }
     if (g_child_process_policy == ChildProcessPolicy::kDeny ||
         process_handle == nullptr || thread_handle == nullptr ||
         !g_runtime_configured) {
@@ -732,6 +761,9 @@ BOOL WINAPI DetouredCreateProcessWithTokenW(
             environment, current_directory, startup_information,
             process_information);
     }
+    if (DenyRequestedBreakaway(creation_flags, process_information)) {
+        return FALSE;
+    }
     hook::TryReportProcessViolation(
         protocol::ProcessOperation::kCreateWithToken);
     return DenyChildCreation(process_information);
@@ -755,6 +787,9 @@ BOOL WINAPI DetouredCreateProcessWithLogonW(
             username, domain, password, logon_flags, application_name,
             command_line, creation_flags, environment, current_directory,
             startup_information, process_information);
+    }
+    if (DenyRequestedBreakaway(creation_flags, process_information)) {
+        return FALSE;
     }
     hook::TryReportProcessViolation(
         protocol::ProcessOperation::kCreateWithLogon);
