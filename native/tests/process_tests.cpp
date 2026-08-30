@@ -60,6 +60,38 @@ std::string AnsiPath(const wchar_t* path) {
     return converted;
 }
 
+HANDLE CreateRestrictedPrimaryToken() {
+    HANDLE process_token = nullptr;
+    if (!OpenProcessToken(
+            GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY,
+            &process_token)) {
+        return nullptr;
+    }
+    HANDLE restricted_token = nullptr;
+    const BOOL created = CreateRestrictedToken(
+        process_token, DISABLE_MAX_PRIVILEGE, 0, nullptr, 0, nullptr, 0, nullptr,
+        &restricted_token);
+    CloseHandle(process_token);
+    return created ? restricted_token : nullptr;
+}
+
+bool WaitForSuccessfulChild(PROCESS_INFORMATION& process) {
+    const DWORD wait = WaitForSingleObject(process.hProcess, 5'000);
+    DWORD exit_code = 0;
+    const bool succeeded =
+        wait == WAIT_OBJECT_0 &&
+        GetExitCodeProcess(process.hProcess, &exit_code) != FALSE &&
+        exit_code == 0;
+    if (wait != WAIT_OBJECT_0) {
+        TerminateProcess(process.hProcess, 238);
+        WaitForSingleObject(process.hProcess, 5'000);
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    process = {};
+    return succeeded;
+}
+
 bool WriteFixture(const std::filesystem::path& path, const std::string_view content) {
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     stream.write(content.data(), static_cast<std::streamsize>(content.size()));
@@ -1500,6 +1532,46 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         descendant_process_a.dwThreadId != 0) {
         return 212;
     }
+    PROCESS_INFORMATION as_user_process{};
+    std::wstring as_user_command = descendant_command;
+    const BOOL as_user_created = CreateProcessAsUserW(
+        nullptr, descendant_executable.c_str(), as_user_command.data(), nullptr,
+        nullptr, FALSE, 0, nullptr, nullptr, &descendant_startup,
+        &as_user_process);
+    const DWORD as_user_error = GetLastError();
+    if (as_user_created || as_user_error != ERROR_ACCESS_DENIED ||
+        as_user_process.hProcess != nullptr ||
+        as_user_process.hThread != nullptr || as_user_process.dwProcessId != 0 ||
+        as_user_process.dwThreadId != 0) {
+        if (as_user_created) {
+            TerminateProcess(as_user_process.hProcess, 215);
+            WaitForSingleObject(as_user_process.hProcess, 5'000);
+            CloseHandle(as_user_process.hThread);
+            CloseHandle(as_user_process.hProcess);
+        }
+        return 215;
+    }
+    std::vector<char> as_user_command_a(
+        descendant_command_a_source.begin(), descendant_command_a_source.end());
+    as_user_command_a.push_back('\0');
+    PROCESS_INFORMATION as_user_process_a{};
+    const BOOL as_user_created_a = CreateProcessAsUserA(
+        nullptr, descendant_executable_a.c_str(), as_user_command_a.data(), nullptr,
+        nullptr, FALSE, 0, nullptr, nullptr, &descendant_startup_a,
+        &as_user_process_a);
+    const DWORD as_user_error_a = GetLastError();
+    if (as_user_created_a || as_user_error_a != ERROR_ACCESS_DENIED ||
+        as_user_process_a.hProcess != nullptr ||
+        as_user_process_a.hThread != nullptr ||
+        as_user_process_a.dwProcessId != 0 || as_user_process_a.dwThreadId != 0) {
+        if (as_user_created_a) {
+            TerminateProcess(as_user_process_a.hProcess, 216);
+            WaitForSingleObject(as_user_process_a.hProcess, 5'000);
+            CloseHandle(as_user_process_a.hThread);
+            CloseHandle(as_user_process_a.hProcess);
+        }
+        return 216;
+    }
     std::wstring token_command = descendant_command;
     PROCESS_INFORMATION token_process{};
     const BOOL token_created = CreateProcessWithTokenW(
@@ -1620,6 +1692,44 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
     if (!stayed_suspended || !entered_after_resume || !suspended_exited ||
         suspended_exit_code != 0) {
         return 229;
+    }
+
+    const HANDLE restricted_token = CreateRestrictedPrimaryToken();
+    if (restricted_token == nullptr) {
+        return 236;
+    }
+    std::wstring as_user_wide_command =
+        L"\"" + executable + L"\" --inherit-leaf " + arguments[2];
+    STARTUPINFOW as_user_wide_startup{};
+    as_user_wide_startup.cb = sizeof(as_user_wide_startup);
+    PROCESS_INFORMATION as_user_wide_process{};
+    const BOOL as_user_wide_created = CreateProcessAsUserW(
+        restricted_token, executable.c_str(), as_user_wide_command.data(), nullptr,
+        nullptr, FALSE, 0, nullptr, nullptr, &as_user_wide_startup,
+        &as_user_wide_process);
+    if (!as_user_wide_created || !WaitForSuccessfulChild(as_user_wide_process)) {
+        CloseHandle(restricted_token);
+        return 237;
+    }
+
+    const std::string as_user_executable_a = AnsiPath(executable.c_str());
+    const std::string as_user_command_source_a =
+        AnsiPath(as_user_wide_command.c_str());
+    std::vector<char> as_user_command_a(
+        as_user_command_source_a.begin(), as_user_command_source_a.end());
+    as_user_command_a.push_back('\0');
+    STARTUPINFOA as_user_startup_a{};
+    as_user_startup_a.cb = sizeof(as_user_startup_a);
+    PROCESS_INFORMATION as_user_process_a{};
+    const BOOL as_user_created_a =
+        !as_user_executable_a.empty() && !as_user_command_source_a.empty() &&
+        CreateProcessAsUserA(
+            restricted_token, as_user_executable_a.c_str(),
+            as_user_command_a.data(), nullptr, nullptr, FALSE, 0, nullptr,
+            nullptr, &as_user_startup_a, &as_user_process_a);
+    CloseHandle(restricted_token);
+    if (!as_user_created_a || !WaitForSuccessfulChild(as_user_process_a)) {
+        return 238;
     }
 
     const std::wstring wide_command_line =
