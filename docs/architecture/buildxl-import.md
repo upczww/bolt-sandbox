@@ -342,6 +342,14 @@ violation. The event contains no token, username, credential, application, or
 command-line data. Calls made inside a disabled `DetouredScope` retain their
 real API path for trusted hook implementation details.
 
+`CreateProcessAsUserW/A` now reuse BuildXL's exact function declarations and
+suspended child-injection ordering. A caller-supplied non-elevated primary token
+is preserved, while Bolt adds `CREATE_SUSPENDED`, installs the inherited runtime,
+waits for descendant readiness, and then restores the caller's suspension
+semantics. Under `Deny`, both entry points fail before token validation and
+clear `PROCESS_INFORMATION`; ordinary Windows token or privilege failures under
+`Inherit` are returned unchanged when no process was created.
+
 The next slices are:
 
 1. Activate access classification and handle overlay behind `PolicyView`.

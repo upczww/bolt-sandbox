@@ -31,6 +31,8 @@ enum class ProcessArchitecture : std::uint8_t {
 
 CreateProcessW_t g_create_process_w = CreateProcessW;
 CreateProcessA_t g_create_process_a = CreateProcessA;
+CreateProcessAsUserW_t g_create_process_as_user_w = CreateProcessAsUserW;
+CreateProcessAsUserA_t g_create_process_as_user_a = CreateProcessAsUserA;
 decltype(&CreateProcessWithTokenW) g_create_process_with_token_w =
     CreateProcessWithTokenW;
 decltype(&CreateProcessWithLogonW) g_create_process_with_logon_w =
@@ -496,6 +498,72 @@ BOOL WINAPI DetouredCreateProcessA(
     return CompleteInheritedCreation(creation_flags, process_information) ? TRUE : FALSE;
 }
 
+BOOL WINAPI DetouredCreateProcessAsUserW(
+    const HANDLE token,
+    const LPCWSTR application_name,
+    const LPWSTR command_line,
+    const LPSECURITY_ATTRIBUTES process_attributes,
+    const LPSECURITY_ATTRIBUTES thread_attributes,
+    const BOOL inherit_handles,
+    const DWORD creation_flags,
+    const LPVOID environment,
+    const LPCWSTR current_directory,
+    const LPSTARTUPINFOW startup_information,
+    const LPPROCESS_INFORMATION process_information) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_process_as_user_w(
+            token, application_name, command_line, process_attributes,
+            thread_attributes, inherit_handles, creation_flags, environment,
+            current_directory, startup_information, process_information);
+    }
+    if (g_child_process_policy == ChildProcessPolicy::kDeny ||
+        process_information == nullptr || !g_runtime_configured) {
+        return DenyChildCreation(process_information);
+    }
+    if (!g_create_process_as_user_w(
+            token, application_name, command_line, process_attributes,
+            thread_attributes, inherit_handles, creation_flags | CREATE_SUSPENDED,
+            environment, current_directory, startup_information,
+            process_information)) {
+        return FALSE;
+    }
+    return CompleteInheritedCreation(creation_flags, process_information) ? TRUE : FALSE;
+}
+
+BOOL WINAPI DetouredCreateProcessAsUserA(
+    const HANDLE token,
+    const LPCSTR application_name,
+    const LPSTR command_line,
+    const LPSECURITY_ATTRIBUTES process_attributes,
+    const LPSECURITY_ATTRIBUTES thread_attributes,
+    const BOOL inherit_handles,
+    const DWORD creation_flags,
+    const LPVOID environment,
+    const LPCSTR current_directory,
+    const LPSTARTUPINFOA startup_information,
+    const LPPROCESS_INFORMATION process_information) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_process_as_user_a(
+            token, application_name, command_line, process_attributes,
+            thread_attributes, inherit_handles, creation_flags, environment,
+            current_directory, startup_information, process_information);
+    }
+    if (g_child_process_policy == ChildProcessPolicy::kDeny ||
+        process_information == nullptr || !g_runtime_configured) {
+        return DenyChildCreation(process_information);
+    }
+    if (!g_create_process_as_user_a(
+            token, application_name, command_line, process_attributes,
+            thread_attributes, inherit_handles, creation_flags | CREATE_SUSPENDED,
+            environment, current_directory, startup_information,
+            process_information)) {
+        return FALSE;
+    }
+    return CompleteInheritedCreation(creation_flags, process_information) ? TRUE : FALSE;
+}
+
 BOOL WINAPI DetouredCreateProcessWithTokenW(
     const HANDLE token,
     const DWORD logon_flags,
@@ -603,6 +671,18 @@ LONG AttachProcessHooks() noexcept {
         reinterpret_cast<PVOID>(DetouredCreateProcessA));
     if (ansi_status != NO_ERROR) {
         return ansi_status;
+    }
+    const LONG as_user_wide_status = DetourAttach(
+        reinterpret_cast<PVOID*>(&g_create_process_as_user_w),
+        reinterpret_cast<PVOID>(DetouredCreateProcessAsUserW));
+    if (as_user_wide_status != NO_ERROR) {
+        return as_user_wide_status;
+    }
+    const LONG as_user_ansi_status = DetourAttach(
+        reinterpret_cast<PVOID*>(&g_create_process_as_user_a),
+        reinterpret_cast<PVOID>(DetouredCreateProcessAsUserA));
+    if (as_user_ansi_status != NO_ERROR) {
+        return as_user_ansi_status;
     }
     const LONG token_status = DetourAttach(
         reinterpret_cast<PVOID*>(&g_create_process_with_token_w),
