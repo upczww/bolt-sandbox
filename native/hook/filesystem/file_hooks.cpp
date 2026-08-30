@@ -41,6 +41,7 @@ MoveFileTransactedW_t g_move_file_transacted_w = MoveFileTransactedW;
 MoveFileTransactedA_t g_move_file_transacted_a = MoveFileTransactedA;
 ReplaceFileW_t g_replace_file_w = ReplaceFileW;
 ReplaceFileA_t g_replace_file_a = ReplaceFileA;
+SetFileInformationByHandle_t g_set_file_information_by_handle = SetFileInformationByHandle;
 using CreateHardLinkWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRIBUTES);
 CreateHardLinkWFunction g_create_hard_link_w = CreateHardLinkW;
 CopyFileW_t g_copy_file_w = CopyFileW;
@@ -272,6 +273,28 @@ bool ConvertAnsiPath(const char* path, std::wstring& converted) noexcept {
         return false;
     }
     converted.pop_back();
+    return true;
+}
+
+bool TryGetHandlePath(const HANDLE handle, std::wstring& path) noexcept {
+    constexpr DWORD flags = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS;
+    const DWORD required = GetFinalPathNameByHandleW(handle, nullptr, 0, flags);
+    if (required == 0) {
+        return false;
+    }
+    try {
+        path.assign(required, L'\0');
+    } catch (...) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return false;
+    }
+    const DWORD written =
+        GetFinalPathNameByHandleW(handle, path.data(), static_cast<DWORD>(path.size()), flags);
+    if (written == 0 || written >= path.size()) {
+        path.clear();
+        return false;
+    }
+    path.resize(written);
     return true;
 }
 
@@ -550,6 +573,54 @@ BOOL WINAPI DetouredReplaceFileA(
         backup_path == nullptr ? nullptr : backup_wide.c_str(), flags, exclude, reserved);
 }
 
+BOOL WINAPI DetouredSetFileInformationByHandle(
+    const HANDLE file,
+    const FILE_INFO_BY_HANDLE_CLASS information_class,
+    const LPVOID information,
+    const DWORD information_size) noexcept {
+    if (information_class != FileRenameInfo) {
+        return g_set_file_information_by_handle(
+            file, information_class, information, information_size);
+    }
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_set_file_information_by_handle(
+            file, information_class, information, information_size);
+    }
+
+    constexpr std::size_t header_size = offsetof(FILE_RENAME_INFO, FileName);
+    if (information == nullptr || information_size < header_size) {
+        return g_set_file_information_by_handle(
+            file, information_class, information, information_size);
+    }
+    const auto* rename = static_cast<const FILE_RENAME_INFO*>(information);
+    if (rename->RootDirectory != nullptr || rename->FileNameLength == 0 ||
+        rename->FileNameLength % sizeof(wchar_t) != 0 ||
+        rename->FileNameLength > information_size - header_size) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+
+    std::wstring source_path;
+    std::wstring destination_path;
+    if (!TryGetHandlePath(file, source_path)) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    try {
+        destination_path.assign(
+            rename->FileName, rename->FileNameLength / sizeof(wchar_t));
+    } catch (...) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return FALSE;
+    }
+    if (!AuthorizeMove(source_path.c_str(), destination_path.c_str())) {
+        return FALSE;
+    }
+    return g_set_file_information_by_handle(
+        file, information_class, information, information_size);
+}
+
 // Mirrors BuildXL's two-sided hard-link check: reading the existing object and
 // writing the new directory entry are separate policy decisions.
 BOOL WINAPI DetouredCreateHardLinkW(
@@ -776,6 +847,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_replace_file_a),
             reinterpret_cast<PVOID>(DetouredReplaceFileA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_set_file_information_by_handle),
+            reinterpret_cast<PVOID>(DetouredSetFileInformationByHandle)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_hard_link_w),
             reinterpret_cast<PVOID>(DetouredCreateHardLinkW)) != NO_ERROR ||

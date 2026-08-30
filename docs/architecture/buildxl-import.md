@@ -88,6 +88,13 @@ scope pattern but supplies the architecture-required fail-closed adapter:
 `ReplaceFileW/A` validate the consumed replacement source, replaced target,
 and optional backup as independent write identities before invoking Windows.
 
+The first handle-mutation adapter covers
+`SetFileInformationByHandle(FileRenameInfo)`. Following BuildXL's flow, it
+obtains the source's final path from the handle, decodes the length-delimited
+destination, and applies the same two-sided write authorization as path-based
+moves. Unsupported or malformed rename identities fail closed; unrelated file
+information classes retain native Windows behavior.
+
 For textually allowed copy, move, and replace operation paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,
 appends any absent suffix, then evaluates the fully resolved source and
