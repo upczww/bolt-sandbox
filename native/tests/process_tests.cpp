@@ -1116,6 +1116,14 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 187;
     }
+    if (SetFileAttributesW(arguments[18], FILE_ATTRIBUTE_HIDDEN) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 188;
+    }
+    if (SetFileAttributesA(ansi_alias_delete.c_str(), FILE_ATTRIBUTE_HIDDEN) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 189;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1415,6 +1423,11 @@ bool RunProcessTests() {
     constexpr std::string_view protected_nonce = "protected-target";
     if (!WriteFixture(denied_alias_target, protected_nonce) ||
         !CreateJunction(allowed_junction, denied_junction_target)) {
+        return false;
+    }
+    const DWORD denied_alias_attributes_before =
+        GetFileAttributesW(denied_alias_target.c_str());
+    if (denied_alias_attributes_before == INVALID_FILE_ATTRIBUTES) {
         return false;
     }
     constexpr std::string_view move_nonce = "move-source";
@@ -1836,7 +1849,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kMetadata,
-            denied_alias_target.wstring(), 85);
+            denied_alias_target.wstring(), 85) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_alias_target.wstring(), 86) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_alias_target.wstring(), 87);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
@@ -1884,6 +1905,8 @@ bool RunProcessTests() {
                             !std::filesystem::exists(missing_copy_source) &&
                             !std::filesystem::exists(missing_copy_destination) &&
                             ReadFixture(denied_alias_target) == protected_nonce &&
+                            GetFileAttributesW(denied_alias_target.c_str()) ==
+                                denied_alias_attributes_before &&
                             ReadFixture(allowed_alias_move_source) == move_nonce &&
                             !std::filesystem::exists(denied_alias_move_target) &&
                             ReadFixture(allowed_replace_target) == replace_target_nonce &&
