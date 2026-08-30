@@ -1455,6 +1455,7 @@ NTSTATUS NTAPI DetouredNtQueryInformationFile(
     const PVOID information,
     const ULONG information_size,
     const FILE_INFORMATION_CLASS information_class) noexcept {
+    const Win32LastErrorGuard last_error_guard;
     DetouredScope scope;
     if (scope.Detoured_IsDisabled()) {
         return g_nt_query_information_file(
@@ -1475,6 +1476,7 @@ NTSTATUS NTAPI DetouredNtQueryInformationFile(
 NTSTATUS NTAPI DetouredNtQueryAttributesFile(
     const POBJECT_ATTRIBUTES object_attributes,
     const PVOID information) noexcept {
+    const Win32LastErrorGuard last_error_guard;
     DetouredScope scope;
     if (scope.Detoured_IsDisabled()) {
         return g_nt_query_attributes_file(object_attributes, information);
@@ -1491,6 +1493,7 @@ NTSTATUS NTAPI DetouredNtQueryAttributesFile(
 NTSTATUS NTAPI DetouredNtQueryFullAttributesFile(
     const POBJECT_ATTRIBUTES object_attributes,
     const PVOID information) noexcept {
+    const Win32LastErrorGuard last_error_guard;
     DetouredScope scope;
     if (scope.Detoured_IsDisabled()) {
         return g_nt_query_full_attributes_file(object_attributes, information);
@@ -1516,6 +1519,7 @@ NTSTATUS NTAPI DetouredNtQueryDirectoryFile(
     const BOOLEAN return_single_entry,
     const PUNICODE_STRING name,
     const BOOLEAN restart_scan) noexcept {
+    const Win32LastErrorGuard last_error_guard;
     DetouredScope scope;
     if (scope.Detoured_IsDisabled()) {
         return g_nt_query_directory_file(
@@ -1548,6 +1552,7 @@ NTSTATUS NTAPI DetouredNtQueryDirectoryFileEx(
     const FILE_INFORMATION_CLASS information_class,
     const ULONG query_flags,
     const PUNICODE_STRING name) noexcept {
+    const Win32LastErrorGuard last_error_guard;
     DetouredScope scope;
     if (scope.Detoured_IsDisabled()) {
         return g_nt_query_directory_file_ex(
@@ -1613,6 +1618,7 @@ NTSTATUS NTAPI DetouredNtNotifyChangeDirectoryFile(
     const ULONG buffer_size,
     const ULONG completion_filter,
     const BOOLEAN watch_tree) noexcept {
+    const Win32LastErrorGuard last_error_guard;
     DetouredScope scope;
     if (scope.Detoured_IsDisabled()) {
         return g_nt_notify_change_directory_file(
@@ -1638,6 +1644,7 @@ NTSTATUS NTAPI DetouredNtNotifyChangeDirectoryFileEx(
     const ULONG completion_filter,
     const BOOLEAN watch_tree,
     const ULONG information_class) noexcept {
+    const Win32LastErrorGuard last_error_guard;
     DetouredScope scope;
     if (scope.Detoured_IsDisabled()) {
         return g_nt_notify_change_directory_file_ex(
@@ -1889,6 +1896,7 @@ NTSTATUS NTAPI DetouredNtReadFile(
     const ULONG bytes_to_read,
     const PLARGE_INTEGER byte_offset,
     const PULONG key) noexcept {
+    const Win32LastErrorGuard last_error_guard;
     DetouredScope scope;
     if (scope.Detoured_IsDisabled()) {
         return g_nt_read_file(
@@ -1919,6 +1927,7 @@ NTSTATUS NTAPI DetouredNtWriteFile(
     const ULONG bytes_to_write,
     const PLARGE_INTEGER byte_offset,
     const PULONG key) noexcept {
+    const Win32LastErrorGuard last_error_guard;
     DetouredScope scope;
     if (scope.Detoured_IsDisabled()) {
         return g_nt_write_file(
@@ -2394,6 +2403,7 @@ NTSTATUS NTAPI DetouredNtCreateSection(
     const ULONG protection,
     const ULONG allocation_attributes,
     const HANDLE file) noexcept {
+    const Win32LastErrorGuard last_error_guard;
     DetouredScope scope;
     if (scope.Detoured_IsDisabled() || file == nullptr || file == INVALID_HANDLE_VALUE) {
         return g_nt_create_section(
@@ -2423,6 +2433,7 @@ NTSTATUS NTAPI DetouredNtMapViewOfSection(
     const ULONG inherit_disposition,
     const ULONG allocation_type,
     const ULONG protection) noexcept {
+    const Win32LastErrorGuard last_error_guard;
     DetouredScope scope;
     if (scope.Detoured_IsDisabled()) {
         return g_nt_map_view_of_section(
@@ -2532,6 +2543,7 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
     const PVOID information,
     const ULONG information_size,
     const FILE_INFORMATION_CLASS information_class) noexcept {
+    const Win32LastErrorGuard last_error_guard;
     constexpr FILE_INFORMATION_CLASS file_allocation_information =
         static_cast<FILE_INFORMATION_CLASS>(19);
     constexpr FILE_INFORMATION_CLASS file_end_of_file_information =
