@@ -86,6 +86,14 @@ bool ReadSecurityDescriptor(
                &required) != FALSE;
 }
 
+bool ReadCompressionState(const HANDLE file, USHORT& state) {
+    DWORD bytes_returned = 0;
+    return DeviceIoControl(
+               file, FSCTL_GET_COMPRESSION, nullptr, 0, &state, sizeof(state),
+               &bytes_returned, nullptr) != FALSE &&
+           bytes_returned == sizeof(state);
+}
+
 bool CreateJunction(
     const std::filesystem::path& junction,
     const std::filesystem::path& target) {
@@ -710,6 +718,22 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 149;
     }
+    USHORT compression_before = 0;
+    if (!ReadCompressionState(denied_mapping_file, compression_before)) {
+        return 150;
+    }
+    USHORT forbidden_compression =
+        compression_before == COMPRESSION_FORMAT_NONE
+            ? COMPRESSION_FORMAT_DEFAULT
+            : COMPRESSION_FORMAT_NONE;
+    DWORD compression_bytes = 0;
+    if (DeviceIoControl(
+            denied_mapping_file, FSCTL_SET_COMPRESSION,
+            &forbidden_compression, sizeof(forbidden_compression), nullptr, 0,
+            &compression_bytes, nullptr) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 151;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -943,6 +967,14 @@ bool RunProcessTests() {
     if (!GetFileTime(
             denied_mapping_handle, nullptr, nullptr,
             &denied_mapping_write_time_before)) {
+        CloseHandle(denied_disposition_handle);
+        CloseHandle(denied_truncate_handle);
+        CloseHandle(denied_mapping_handle);
+        return false;
+    }
+    USHORT denied_mapping_compression_before = 0;
+    if (!ReadCompressionState(
+            denied_mapping_handle, denied_mapping_compression_before)) {
         CloseHandle(denied_disposition_handle);
         CloseHandle(denied_truncate_handle);
         CloseHandle(denied_mapping_handle);
@@ -1264,7 +1296,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_delete_path.wstring(), 53);
+            denied_delete_path.wstring(), 53) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_mapping_path.wstring(), 54);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
@@ -1274,6 +1310,11 @@ bool RunProcessTests() {
         CompareFileTime(
             &denied_mapping_write_time_before,
             &denied_mapping_write_time_after) == 0;
+    USHORT denied_mapping_compression_after = 0;
+    const bool denied_mapping_compression_unchanged =
+        ReadCompressionState(
+            denied_mapping_handle, denied_mapping_compression_after) &&
+        denied_mapping_compression_after == denied_mapping_compression_before;
     std::vector<std::uint8_t> denied_delete_security_after;
     const bool denied_delete_security_unchanged =
         ReadSecurityDescriptor(
@@ -1317,6 +1358,7 @@ bool RunProcessTests() {
                             ReadFixture(allowed_mapping_path) == "Xapping-content" &&
                             ReadFixture(denied_mapping_path) == mapping_nonce &&
                             denied_mapping_time_unchanged &&
+                            denied_mapping_compression_unchanged &&
                             ReadFixture(read_only_mapping_path) == read_only_mapping_nonce &&
                             !std::filesystem::exists(denied_hardlink_escape_target) &&
                             !std::filesystem::exists(forbidden_junction);
