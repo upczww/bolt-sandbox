@@ -177,7 +177,14 @@ page-file sections bypass file policy and retain native behavior.
 `CreateHardLinkW/A` use BuildXL's exact function types and the shared
 source-read/destination-write authorization path. Both identities are resolved
 before Windows is called, preventing an allowed junction from placing a new
-hard-link directory entry in a denied target.
+hard-link directory entry in a denied target. Direct
+`ZwSetInformationFile(FileLinkInformation)` and `FileLinkInformationEx` reuse
+BuildXL's structure layouts and destination decoding, including optional root
+directory handles. Bolt strengthens the upstream destination-only check by
+resolving the source handle and applying the same two-sided decision, so an
+inherited denied handle cannot create a readable alias under an allowed root.
+Malformed or unresolvable link information fails closed with native status
+outputs cleared.
 
 `CreateSymbolicLinkW/A` retain BuildXL's exact signatures and ANSI-to-Unicode
 funnel. Bolt preserves BuildXL's write check for the link location and adds the
@@ -263,8 +270,8 @@ Path-based `NtQueryAttributesFile` and `NtQueryFullAttributesFile` calls decode
 the length-delimited absolute `OBJECT_ATTRIBUTES` name and pass the DOS/UNC
 identity through the same metadata seam. Denials return
 `STATUS_ACCESS_DENIED` before the native call. Root-directory-relative names
-remain fail-closed until their dedicated FS-052 identity tests activate that
-resolution path.
+resolve the directory handle's final DOS identity and append the bounded
+relative object name through the same shared native-open path parser.
 
 Attribute mutation through `SetFileAttributesW/A` is a Bolt-owned Win32 seam
 because the vendored BuildXL layer has no dedicated wrapper. Both variants

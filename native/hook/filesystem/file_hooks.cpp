@@ -915,6 +915,74 @@ bool TryGetObjectAttributesPath(
     return !path.empty();
 }
 
+struct NtFileLinkInformation {
+    BOOLEAN replace_if_exists;
+    HANDLE root_directory;
+    ULONG file_name_length;
+    WCHAR file_name[1];
+};
+
+struct NtFileLinkInformationEx {
+    ULONG flags;
+    HANDLE root_directory;
+    ULONG file_name_length;
+    WCHAR file_name[1];
+};
+
+bool TryGetLinkDestination(
+    const PVOID information,
+    const ULONG information_size,
+    const bool extended,
+    std::wstring& destination) noexcept {
+    const std::size_t header_size = extended
+                                        ? offsetof(NtFileLinkInformationEx, file_name)
+                                        : offsetof(NtFileLinkInformation, file_name);
+    if (information == nullptr || information_size < header_size) {
+        return false;
+    }
+
+    const auto* standard = static_cast<const NtFileLinkInformation*>(information);
+    const auto* extended_information =
+        static_cast<const NtFileLinkInformationEx*>(information);
+    const ULONG name_length = extended ? extended_information->file_name_length
+                                       : standard->file_name_length;
+    const HANDLE root_directory = extended ? extended_information->root_directory
+                                           : standard->root_directory;
+    const WCHAR* const name = extended ? extended_information->file_name
+                                       : standard->file_name;
+    if (name_length == 0 || name_length % sizeof(wchar_t) != 0 ||
+        name_length > information_size - header_size || name_length > 0xffffU) {
+        return false;
+    }
+
+    UNICODE_STRING object_name{};
+    object_name.Length = static_cast<USHORT>(name_length);
+    object_name.MaximumLength = object_name.Length;
+    object_name.Buffer = const_cast<PWCH>(name);
+    OBJECT_ATTRIBUTES object_attributes{};
+    object_attributes.Length = sizeof(object_attributes);
+    object_attributes.RootDirectory = root_directory;
+    object_attributes.ObjectName = &object_name;
+    object_attributes.Attributes = OBJ_CASE_INSENSITIVE;
+    return TryGetObjectAttributesPath(&object_attributes, destination);
+}
+
+bool AuthorizeHandleHardLink(
+    const HANDLE source,
+    const PVOID information,
+    const ULONG information_size,
+    const bool extended) noexcept {
+    std::wstring source_path;
+    std::wstring destination_path;
+    if (!TryGetHandlePath(source, source_path) ||
+        !TryGetLinkDestination(
+            information, information_size, extended, destination_path)) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    return AuthorizeCopy(source_path.c_str(), destination_path.c_str());
+}
+
 DWORD MapNtCreateDisposition(const ULONG disposition) noexcept {
     switch (disposition) {
         case FILE_SUPERSEDE:
@@ -2477,6 +2545,10 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
         static_cast<FILE_INFORMATION_CLASS>(65);
     constexpr FILE_INFORMATION_CLASS file_basic_information =
         static_cast<FILE_INFORMATION_CLASS>(4);
+    constexpr FILE_INFORMATION_CLASS file_link_information =
+        static_cast<FILE_INFORMATION_CLASS>(11);
+    constexpr FILE_INFORMATION_CLASS file_link_information_ex =
+        static_cast<FILE_INFORMATION_CLASS>(72);
     const bool is_truncation = information_class == file_allocation_information ||
                                information_class == file_end_of_file_information;
     const bool is_disposition = information_class == file_disposition_information ||
@@ -2484,7 +2556,9 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
     const bool is_rename = information_class == file_rename_information ||
                            information_class == file_rename_information_ex;
     const bool is_basic = information_class == file_basic_information;
-    if (!is_truncation && !is_disposition && !is_rename && !is_basic) {
+    const bool is_link = information_class == file_link_information ||
+                         information_class == file_link_information_ex;
+    if (!is_truncation && !is_disposition && !is_rename && !is_basic && !is_link) {
         return g_zw_set_information_file(
             file, io_status, information, information_size, information_class);
     }
@@ -2519,6 +2593,19 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
     }
 
     constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+    if (is_link) {
+        const bool extended = information_class == file_link_information_ex;
+        if (!AuthorizeHandleHardLink(
+                file, information, information_size, extended)) {
+            if (io_status != nullptr) {
+                io_status->Status = status_access_denied;
+                io_status->Information = 0;
+            }
+            return status_access_denied;
+        }
+        return g_zw_set_information_file(
+            file, io_status, information, information_size, information_class);
+    }
     if (is_rename) {
         struct NtFileRenameInformation {
             BOOLEAN replace_or_flags;
