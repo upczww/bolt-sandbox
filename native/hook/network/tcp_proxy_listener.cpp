@@ -1,8 +1,11 @@
 #include "hook/network/tcp_proxy_listener.h"
 
 #include "hook/network/tcp_proxy_connection.h"
+#include "hook/network/tcp_relay.h"
 
 #include <limits>
+#include <thread>
+#include <vector>
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -21,11 +24,19 @@ TcpProxyListenerStatus RunTcpProxyListener(
         maximum_connections > 4'096) {
         return TcpProxyListenerStatus::kInvalidArgument;
     }
+    std::vector<std::thread> workers;
+    try {
+        workers.reserve(maximum_connections);
+    } catch (...) {
+        return TcpProxyListenerStatus::kInvalidArgument;
+    }
     std::uint64_t sequence = 1;
     std::size_t completed = 0;
+    TcpProxyListenerStatus result = TcpProxyListenerStatus::kLimitReached;
     while (completed < maximum_connections) {
         if (stop_requested.load(std::memory_order_acquire)) {
-            return TcpProxyListenerStatus::kStopped;
+            result = TcpProxyListenerStatus::kStopped;
+            break;
         }
         fd_set readable{};
         FD_ZERO(&readable);
@@ -42,19 +53,22 @@ TcpProxyListenerStatus RunTcpProxyListener(
             if (error == WSAEINTR) {
                 continue;
             }
-            return TcpProxyListenerStatus::kAcceptFailed;
+            result = TcpProxyListenerStatus::kAcceptFailed;
+            break;
         }
         const SOCKET client = accept(listener, nullptr, nullptr);
         if (client == INVALID_SOCKET) {
             const int error = WSAGetLastError();
             if (error == WSAENOTSOCK || error == WSAEINVAL ||
                 error == WSAESHUTDOWN) {
-                return TcpProxyListenerStatus::kStopped;
+                result = TcpProxyListenerStatus::kStopped;
+                break;
             }
             if (error == WSAEINTR) {
                 continue;
             }
-            return TcpProxyListenerStatus::kAcceptFailed;
+            result = TcpProxyListenerStatus::kAcceptFailed;
+            break;
         }
         SetHandleInformation(
             reinterpret_cast<HANDLE>(client), HANDLE_FLAG_INHERIT, 0);
@@ -63,19 +77,40 @@ TcpProxyListenerStatus RunTcpProxyListener(
             client, SOL_SOCKET, SO_RCVTIMEO,
             reinterpret_cast<const char*>(&handshake_timeout),
             sizeof(handshake_timeout));
-        const auto status = RunTcpProxyConnection(
-            client, session, policy, bindings, sequence, GetTickCount64());
-        closesocket(client);
-        if (status == TcpProxyConnectionStatus::kRelayed ||
-            status == TcpProxyConnectionStatus::kRejected) {
+        SOCKET upstream = INVALID_SOCKET;
+        const auto status = PrepareTcpProxyConnection(
+            client, session, policy, bindings, sequence, GetTickCount64(),
+            upstream);
+        if (status == TcpProxyHandshakeStatus::kReady) {
+            try {
+                workers.emplace_back([client, upstream] {
+                    RelayTcpSockets(client, upstream);
+                    closesocket(upstream);
+                    closesocket(client);
+                });
+            } catch (...) {
+                closesocket(upstream);
+                closesocket(client);
+                result = TcpProxyListenerStatus::kAcceptFailed;
+                break;
+            }
+        } else {
+            closesocket(client);
+        }
+        if (status == TcpProxyHandshakeStatus::kReady ||
+            status == TcpProxyHandshakeStatus::kRejected) {
             ++completed;
             if (sequence == std::numeric_limits<std::uint64_t>::max()) {
-                return TcpProxyListenerStatus::kLimitReached;
+                result = TcpProxyListenerStatus::kLimitReached;
+                break;
             }
             ++sequence;
         }
     }
-    return TcpProxyListenerStatus::kLimitReached;
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    return result;
 }
 
 }  // namespace bolt::network

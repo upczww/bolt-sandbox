@@ -75,19 +75,21 @@ std::array<std::uint8_t, kLengthPrefixSize> LengthPrefix(
 
 }  // namespace
 
-TcpProxyConnectionStatus RunTcpProxyConnection(
+TcpProxyHandshakeStatus PrepareTcpProxyConnection(
     const SOCKET client,
     const protocol::DnsProxySession& session,
     const NetworkPolicy& policy,
     const DnsBindingTable& bindings,
     const std::uint64_t expected_sequence,
-    const std::uint64_t now) noexcept {
+    const std::uint64_t now,
+    SOCKET& upstream) noexcept {
+    upstream = INVALID_SOCKET;
     if (client == INVALID_SOCKET || expected_sequence == 0) {
-        return TcpProxyConnectionStatus::kInvalidSocket;
+        return TcpProxyHandshakeStatus::kInvalidSocket;
     }
     std::array<std::uint8_t, kLengthPrefixSize> request_prefix{};
     if (!ReadExact(client, request_prefix.data(), request_prefix.size())) {
-        return TcpProxyConnectionStatus::kReadFailed;
+        return TcpProxyHandshakeStatus::kReadFailed;
     }
     const std::size_t request_length = ReadU32(request_prefix);
     const std::size_t minimum_length =
@@ -95,12 +97,12 @@ TcpProxyConnectionStatus RunTcpProxyConnection(
     const std::size_t maximum_length =
         minimum_length + protocol::kTcpProxyMaximumDomainLength;
     if (request_length < minimum_length || request_length > maximum_length) {
-        return TcpProxyConnectionStatus::kInvalidFrameLength;
+        return TcpProxyHandshakeStatus::kInvalidFrameLength;
     }
     try {
         std::vector<std::uint8_t> request(request_length);
         if (!ReadExact(client, request.data(), request.size())) {
-            return TcpProxyConnectionStatus::kReadFailed;
+            return TcpProxyHandshakeStatus::kReadFailed;
         }
         SystemTcpConnector connector;
         std::vector<std::uint8_t> response;
@@ -109,17 +111,17 @@ TcpProxyConnectionStatus RunTcpProxyConnection(
                 request.size(), now, connector, response) !=
                 protocol::TcpProxyStatus::kSuccess ||
             response.empty()) {
-            return TcpProxyConnectionStatus::kProtocolFailed;
+            return TcpProxyHandshakeStatus::kProtocolFailed;
         }
         const auto response_prefix = LengthPrefix(response.size());
         if (!WriteExact(
                 client, response_prefix.data(), response_prefix.size()) ||
             !WriteExact(client, response.data(), response.size())) {
-            return TcpProxyConnectionStatus::kWriteFailed;
+            return TcpProxyHandshakeStatus::kWriteFailed;
         }
-        const SOCKET upstream = connector.ReleaseSocket();
+        upstream = connector.ReleaseSocket();
         if (upstream == INVALID_SOCKET) {
-            return TcpProxyConnectionStatus::kRejected;
+            return TcpProxyHandshakeStatus::kRejected;
         }
         constexpr DWORD no_timeout = 0;
         if (setsockopt(
@@ -127,18 +129,53 @@ TcpProxyConnectionStatus RunTcpProxyConnection(
                 reinterpret_cast<const char*>(&no_timeout),
                 sizeof(no_timeout)) == SOCKET_ERROR) {
             closesocket(upstream);
-            return TcpProxyConnectionStatus::kRelayFailed;
+            upstream = INVALID_SOCKET;
+            return TcpProxyHandshakeStatus::kWriteFailed;
         }
-        const auto relay_status = RelayTcpSockets(client, upstream);
-        closesocket(upstream);
-        return relay_status == TcpRelayStatus::kCompleted
-                   ? TcpProxyConnectionStatus::kRelayed
-                   : TcpProxyConnectionStatus::kRelayFailed;
+        return TcpProxyHandshakeStatus::kReady;
     } catch (const std::bad_alloc&) {
-        return TcpProxyConnectionStatus::kAllocationFailed;
+        return TcpProxyHandshakeStatus::kAllocationFailed;
     } catch (...) {
-        return TcpProxyConnectionStatus::kProtocolFailed;
+        return TcpProxyHandshakeStatus::kProtocolFailed;
     }
+}
+
+TcpProxyConnectionStatus RunTcpProxyConnection(
+    const SOCKET client,
+    const protocol::DnsProxySession& session,
+    const NetworkPolicy& policy,
+    const DnsBindingTable& bindings,
+    const std::uint64_t expected_sequence,
+    const std::uint64_t now) noexcept {
+    SOCKET upstream = INVALID_SOCKET;
+    const auto handshake = PrepareTcpProxyConnection(
+        client, session, policy, bindings, expected_sequence, now, upstream);
+    if (handshake == TcpProxyHandshakeStatus::kRejected) {
+        return TcpProxyConnectionStatus::kRejected;
+    }
+    if (handshake != TcpProxyHandshakeStatus::kReady) {
+        switch (handshake) {
+            case TcpProxyHandshakeStatus::kInvalidSocket:
+                return TcpProxyConnectionStatus::kInvalidSocket;
+            case TcpProxyHandshakeStatus::kReadFailed:
+                return TcpProxyConnectionStatus::kReadFailed;
+            case TcpProxyHandshakeStatus::kInvalidFrameLength:
+                return TcpProxyConnectionStatus::kInvalidFrameLength;
+            case TcpProxyHandshakeStatus::kAllocationFailed:
+                return TcpProxyConnectionStatus::kAllocationFailed;
+            case TcpProxyHandshakeStatus::kWriteFailed:
+                return TcpProxyConnectionStatus::kWriteFailed;
+            case TcpProxyHandshakeStatus::kProtocolFailed:
+            case TcpProxyHandshakeStatus::kReady:
+            case TcpProxyHandshakeStatus::kRejected:
+                return TcpProxyConnectionStatus::kProtocolFailed;
+        }
+    }
+    const auto relay_status = RelayTcpSockets(client, upstream);
+    closesocket(upstream);
+    return relay_status == TcpRelayStatus::kCompleted
+               ? TcpProxyConnectionStatus::kRelayed
+               : TcpProxyConnectionStatus::kRelayFailed;
 }
 
 }  // namespace bolt::network

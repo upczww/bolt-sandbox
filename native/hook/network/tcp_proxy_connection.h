@@ -23,6 +23,26 @@ enum class TcpProxyConnectionStatus : std::uint8_t {
     kRelayFailed,
 };
 
+enum class TcpProxyHandshakeStatus : std::uint8_t {
+    kReady,
+    kRejected,
+    kInvalidSocket,
+    kReadFailed,
+    kInvalidFrameLength,
+    kAllocationFailed,
+    kProtocolFailed,
+    kWriteFailed,
+};
+
+TcpProxyHandshakeStatus PrepareTcpProxyConnection(
+    SOCKET client,
+    const protocol::DnsProxySession& session,
+    const NetworkPolicy& policy,
+    const DnsBindingTable& bindings,
+    std::uint64_t expected_sequence,
+    std::uint64_t now,
+    SOCKET& upstream) noexcept;
+
 TcpProxyConnectionStatus RunTcpProxyConnection(
     SOCKET client,
     const protocol::DnsProxySession& session,
