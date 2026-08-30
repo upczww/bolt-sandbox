@@ -1450,6 +1450,39 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         descendant_process.dwThreadId != 0) {
         return 210;
     }
+    const std::string descendant_executable_a =
+        AnsiPath(descendant_executable.c_str());
+    const std::string descendant_command_a_source =
+        AnsiPath(descendant_command.c_str());
+    std::vector<char> descendant_command_a(
+        descendant_command_a_source.begin(), descendant_command_a_source.end());
+    descendant_command_a.push_back('\0');
+    STARTUPINFOA descendant_startup_a{};
+    descendant_startup_a.cb = sizeof(descendant_startup_a);
+    PROCESS_INFORMATION descendant_process_a{};
+    if (descendant_executable_a.empty() ||
+        descendant_command_a_source.empty()) {
+        return 211;
+    }
+    const BOOL descendant_created_a = CreateProcessA(
+        descendant_executable_a.c_str(), descendant_command_a.data(), nullptr,
+        nullptr, FALSE, 0, nullptr, nullptr, &descendant_startup_a,
+        &descendant_process_a);
+    const DWORD descendant_error_a = GetLastError();
+    if (descendant_created_a) {
+        TerminateProcess(descendant_process_a.hProcess, 211);
+        WaitForSingleObject(descendant_process_a.hProcess, 5'000);
+        CloseHandle(descendant_process_a.hThread);
+        CloseHandle(descendant_process_a.hProcess);
+        return 211;
+    }
+    if (descendant_error_a != ERROR_ACCESS_DENIED ||
+        descendant_process_a.hProcess != nullptr ||
+        descendant_process_a.hThread != nullptr ||
+        descendant_process_a.dwProcessId != 0 ||
+        descendant_process_a.dwThreadId != 0) {
+        return 212;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
