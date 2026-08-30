@@ -651,6 +651,14 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 144;
     }
+    FILETIME forbidden_write_time{};
+    forbidden_write_time.dwHighDateTime = 1;
+    forbidden_write_time.dwLowDateTime = 2;
+    if (SetFileTime(
+            denied_mapping_file, nullptr, nullptr, &forbidden_write_time) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 145;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -873,6 +881,15 @@ bool RunProcessTests() {
     if (denied_mapping_handle == INVALID_HANDLE_VALUE) {
         CloseHandle(denied_disposition_handle);
         CloseHandle(denied_truncate_handle);
+        return false;
+    }
+    FILETIME denied_mapping_write_time_before{};
+    if (!GetFileTime(
+            denied_mapping_handle, nullptr, nullptr,
+            &denied_mapping_write_time_before)) {
+        CloseHandle(denied_disposition_handle);
+        CloseHandle(denied_truncate_handle);
+        CloseHandle(denied_mapping_handle);
         return false;
     }
     constexpr std::string_view read_only_mapping_nonce = "read-only-content";
@@ -1175,8 +1192,20 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_delete_path.wstring(), 49);
+            denied_delete_path.wstring(), 49) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_mapping_path.wstring(), 50);
     DWORD exit_code = 0;
+    FILETIME denied_mapping_write_time_after{};
+    const bool denied_mapping_time_unchanged =
+        GetFileTime(
+            denied_mapping_handle, nullptr, nullptr,
+            &denied_mapping_write_time_after) &&
+        CompareFileTime(
+            &denied_mapping_write_time_before,
+            &denied_mapping_write_time_after) == 0;
     CloseHandle(denied_disposition_handle);
     CloseHandle(denied_truncate_handle);
     CloseHandle(denied_mapping_handle);
@@ -1213,6 +1242,7 @@ bool RunProcessTests() {
                             ReadFixture(denied_truncate_path) == truncate_nonce &&
                             ReadFixture(allowed_mapping_path) == "Xapping-content" &&
                             ReadFixture(denied_mapping_path) == mapping_nonce &&
+                            denied_mapping_time_unchanged &&
                             ReadFixture(read_only_mapping_path) == read_only_mapping_nonce &&
                             !std::filesystem::exists(denied_hardlink_escape_target) &&
                             !std::filesystem::exists(forbidden_junction);
