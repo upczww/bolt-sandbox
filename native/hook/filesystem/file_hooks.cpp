@@ -1114,6 +1114,26 @@ bool AuthorizeAttributeMutation(const wchar_t* path) noexcept {
     return true;
 }
 
+bool AuthorizeOpenedFileHandle(
+    const HANDLE file,
+    const ClassifiedAccess& request) noexcept {
+    std::wstring final_path;
+    if (file == nullptr || file == INVALID_HANDLE_VALUE ||
+        !TryGetHandlePath(file, final_path)) {
+        return false;
+    }
+    const auto* policy = g_policy.get();
+    const auto evaluation = policy == nullptr
+                                ? PolicyEvaluation{}
+                                : policy->Evaluate(final_path.c_str(), request.access);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            request.operation, EvaluatedPath(evaluation, final_path.c_str()));
+        return false;
+    }
+    return true;
+}
+
 bool AuthorizeDeletion(
     const wchar_t* path,
     const bool invalidate_descendants = false) noexcept {
@@ -1223,10 +1243,22 @@ NTSTATUS NTAPI DetouredNtCreateFile(
             create_options)) {
         return DenyNativeFileOpen(file, io_status);
     }
-    return g_nt_create_file(
+    const NTSTATUS result = g_nt_create_file(
         file, desired_access, object_attributes, io_status, allocation_size,
         file_attributes, share_access, create_disposition, create_options,
         ea_buffer, ea_length);
+    if (result >= 0 && file != nullptr && *file != nullptr) {
+        auto request = ClassifyCreateFileRequest(
+            desired_access, MapNtCreateDisposition(create_disposition));
+        if ((create_options & FILE_DELETE_ON_CLOSE) != 0) {
+            request = {Access::kWrite, protocol::FilesystemOperation::kDelete};
+        }
+        if (!AuthorizeOpenedFileHandle(*file, request)) {
+            CloseHandle(*file);
+            return DenyNativeFileOpen(file, io_status);
+        }
+    }
+    return result;
 }
 
 NTSTATUS NTAPI DetouredNtOpenFile(
@@ -1247,9 +1279,20 @@ NTSTATUS NTAPI DetouredNtOpenFile(
             desired_access, object_attributes, FILE_OPEN, open_options)) {
         return DenyNativeFileOpen(file, io_status);
     }
-    return g_nt_open_file(
+    const NTSTATUS result = g_nt_open_file(
         file, desired_access, object_attributes, io_status, share_access,
         open_options);
+    if (result >= 0 && file != nullptr && *file != nullptr) {
+        auto request = ClassifyCreateFileRequest(desired_access, OPEN_EXISTING);
+        if ((open_options & FILE_DELETE_ON_CLOSE) != 0) {
+            request = {Access::kWrite, protocol::FilesystemOperation::kDelete};
+        }
+        if (!AuthorizeOpenedFileHandle(*file, request)) {
+            CloseHandle(*file);
+            return DenyNativeFileOpen(file, io_status);
+        }
+    }
+    return result;
 }
 
 bool AuthorizeShellDelete(const wchar_t* paths) noexcept {
@@ -2071,9 +2114,20 @@ HANDLE WINAPI DetouredCreateFileW(
     if (!AuthorizeCreateFile(filename, request, flags_and_attributes)) {
         return INVALID_HANDLE_VALUE;
     }
-    return g_create_file_w(
+    const HANDLE opened = g_create_file_w(
         filename, desired_access, share_mode, security_attributes, creation_disposition,
         flags_and_attributes, template_file);
+    if (opened == INVALID_HANDLE_VALUE) {
+        return opened;
+    }
+    const DWORD native_error = GetLastError();
+    if (!AuthorizeOpenedFileHandle(opened, request)) {
+        CloseHandle(opened);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return INVALID_HANDLE_VALUE;
+    }
+    SetLastError(native_error);
+    return opened;
 }
 
 HANDLE WINAPI DetouredCreateFileA(
@@ -2097,9 +2151,20 @@ HANDLE WINAPI DetouredCreateFileA(
             filename_wide.c_str(), request, flags_and_attributes)) {
         return INVALID_HANDLE_VALUE;
     }
-    return g_create_file_w(
+    const HANDLE opened = g_create_file_w(
         filename_wide.c_str(), desired_access, share_mode, security_attributes,
         creation_disposition, flags_and_attributes, template_file);
+    if (opened == INVALID_HANDLE_VALUE) {
+        return opened;
+    }
+    const DWORD native_error = GetLastError();
+    if (!AuthorizeOpenedFileHandle(opened, request)) {
+        CloseHandle(opened);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return INVALID_HANDLE_VALUE;
+    }
+    SetLastError(native_error);
+    return opened;
 }
 
 // BuildXL classifies DeleteFileW as a write and preserves the last reparse
