@@ -3301,15 +3301,14 @@ bool RunInheritedProcessTest(
     const std::filesystem::path& hook_path,
     const wchar_t* hook_name,
     const std::wstring& pipe_name,
-    const std::wstring& parent_arguments = {}) {
+    const std::wstring& parent_arguments = {},
+    const std::uint8_t nonce_byte = 0x5A) {
     const auto policy_payload = bolt::tests::SealPolicy({
         {bolt::tests::FilesystemRuleKind::kReadOnly,
          std::filesystem::path(executable).root_path()},
     }, bolt::tests::ChildProcessPolicyKind::kInherit);
-    constexpr std::array<std::uint8_t, 16> nonce = {
-        0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A,
-        0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A,
-    };
+    std::array<std::uint8_t, 16> nonce{};
+    nonce.fill(nonce_byte);
     SECURITY_ATTRIBUTES inheritable{};
     inheritable.nLength = sizeof(inheritable);
     inheritable.bInheritHandle = TRUE;
@@ -4514,6 +4513,26 @@ bool RunProcessTests() {
 
     event_pipe.Close();
     if (!RunInheritedProcessTest(executable, hook_path, hook_name, pipe_name)) {
+        return false;
+    }
+
+    std::array<bool, 2> concurrent_session_results{};
+    std::array<std::thread, 2> concurrent_sessions = {
+        std::thread([&] {
+            concurrent_session_results[0] = RunInheritedProcessTest(
+                executable, hook_path, hook_name,
+                PipeName(GetCurrentProcessId() ^ 0x5100'0001U), {}, 0x61);
+        }),
+        std::thread([&] {
+            concurrent_session_results[1] = RunInheritedProcessTest(
+                executable, hook_path, hook_name,
+                PipeName(GetCurrentProcessId() ^ 0x5100'0002U), {}, 0x62);
+        }),
+    };
+    for (auto& session : concurrent_sessions) {
+        session.join();
+    }
+    if (!concurrent_session_results[0] || !concurrent_session_results[1]) {
         return false;
     }
 
