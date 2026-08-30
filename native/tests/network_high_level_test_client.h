@@ -26,5 +26,13 @@ HighLevelConnectResult TryWinInetConnectA(
 
 std::uint32_t TryWinHttpGet(const wchar_t* server, std::uint16_t port) noexcept;
 std::uint32_t TryWinInetGetW(const wchar_t* server, std::uint16_t port) noexcept;
+std::uint32_t TryWinHttpGetViaProxy(
+    const wchar_t* server,
+    std::uint16_t target_port,
+    std::uint16_t proxy_port) noexcept;
+std::uint32_t TryWinInetGetViaProxyW(
+    const wchar_t* server,
+    std::uint16_t target_port,
+    std::uint16_t proxy_port) noexcept;
 
 }  // namespace bolt::tests
