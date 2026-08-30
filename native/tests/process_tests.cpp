@@ -805,6 +805,47 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
             status_access_denied) {
         return 159;
     }
+    using NtQueryAttributesFileFunction = NTSTATUS(NTAPI*)(
+        POBJECT_ATTRIBUTES, PVOID);
+    const auto nt_query_attributes_file =
+        reinterpret_cast<NtQueryAttributesFileFunction>(GetProcAddress(
+            GetModuleHandleW(L"ntdll.dll"), "NtQueryAttributesFile"));
+    const auto nt_query_full_attributes_file =
+        reinterpret_cast<NtQueryAttributesFileFunction>(GetProcAddress(
+            GetModuleHandleW(L"ntdll.dll"), "NtQueryFullAttributesFile"));
+    std::wstring nt_metadata_path = L"\\??\\" + std::wstring(arguments[6]);
+    UNICODE_STRING nt_metadata_name{};
+    nt_metadata_name.Length =
+        static_cast<USHORT>(nt_metadata_path.size() * sizeof(wchar_t));
+    nt_metadata_name.MaximumLength = nt_metadata_name.Length;
+    nt_metadata_name.Buffer = nt_metadata_path.data();
+    OBJECT_ATTRIBUTES nt_metadata_attributes{};
+    nt_metadata_attributes.Length = sizeof(nt_metadata_attributes);
+    nt_metadata_attributes.ObjectName = &nt_metadata_name;
+    nt_metadata_attributes.Attributes = OBJ_CASE_INSENSITIVE;
+    NtFileBasicInformation nt_path_basic_information{};
+    if (nt_query_attributes_file == nullptr ||
+        nt_query_attributes_file(
+            &nt_metadata_attributes, &nt_path_basic_information) !=
+            status_access_denied) {
+        return 160;
+    }
+    struct NtFileNetworkOpenInformation {
+        LARGE_INTEGER creation_time;
+        LARGE_INTEGER last_access_time;
+        LARGE_INTEGER last_write_time;
+        LARGE_INTEGER change_time;
+        LARGE_INTEGER allocation_size;
+        LARGE_INTEGER end_of_file;
+        ULONG file_attributes;
+    };
+    NtFileNetworkOpenInformation nt_path_full_information{};
+    if (nt_query_full_attributes_file == nullptr ||
+        nt_query_full_attributes_file(
+            &nt_metadata_attributes, &nt_path_full_information) !=
+            status_access_denied) {
+        return 161;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1403,7 +1444,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kMetadata,
-            denied_mapping_path.wstring(), 61);
+            denied_mapping_path.wstring(), 61) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_delete_path.wstring(), 62) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_delete_path.wstring(), 63);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
