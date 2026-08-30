@@ -129,6 +129,11 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 90;
     }
+    const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
+        GetProcAddress(hook, "BoltSandboxFlushEvents"));
+    if (flush_events == nullptr || !flush_events(5'000)) {
+        return 91;
+    }
     return 0;
 }
 
