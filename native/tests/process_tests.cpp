@@ -531,7 +531,7 @@ void CALLBACK IoCompletionProbe(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 39) {
+    if (argument_count != 41) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -1922,6 +1922,65 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         }
         return 217;
     }
+
+    const auto inherited_allowed_section = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[39], nullptr, 10));
+    const auto inherited_denied_section = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[40], nullptr, 10));
+    const void* inherited_allowed_view = MapViewOfFile(
+        inherited_allowed_section, FILE_MAP_READ, 0, 0, 0);
+    if (inherited_allowed_view == nullptr ||
+        std::memcmp(
+            inherited_allowed_view, "Xapping-content",
+            sizeof("Xapping-content") - 1) != 0) {
+        if (inherited_allowed_view != nullptr) {
+            UnmapViewOfFile(inherited_allowed_view);
+        }
+        return 257;
+    }
+    UnmapViewOfFile(inherited_allowed_view);
+
+    SetLastError(ERROR_SUCCESS);
+    void* inherited_denied_view = MapViewOfFile(
+        inherited_denied_section, FILE_MAP_READ, 0, 0, 0);
+    const DWORD inherited_denied_error = GetLastError();
+    const bool inherited_high_level_denied =
+        inherited_denied_view == nullptr &&
+        inherited_denied_error == ERROR_ACCESS_DENIED;
+    if (inherited_denied_view != nullptr) {
+        UnmapViewOfFile(inherited_denied_view);
+    }
+
+    using NtMapViewOfSectionFunction = NTSTATUS(NTAPI*)(
+        HANDLE, HANDLE, PVOID*, ULONG_PTR, SIZE_T, PLARGE_INTEGER, PSIZE_T,
+        ULONG, ULONG, ULONG);
+    using NtUnmapViewOfSectionFunction = NTSTATUS(NTAPI*)(HANDLE, PVOID);
+    const HMODULE mapping_ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto nt_map_view_of_section =
+        reinterpret_cast<NtMapViewOfSectionFunction>(
+            GetProcAddress(mapping_ntdll, "NtMapViewOfSection"));
+    const auto nt_unmap_view_of_section =
+        reinterpret_cast<NtUnmapViewOfSectionFunction>(
+            GetProcAddress(mapping_ntdll, "NtUnmapViewOfSection"));
+    PVOID direct_denied_base = nullptr;
+    SIZE_T direct_denied_size = 0;
+    const NTSTATUS direct_denied_status =
+        nt_map_view_of_section == nullptr
+            ? static_cast<NTSTATUS>(0xC0000002UL)
+            : nt_map_view_of_section(
+                  inherited_denied_section, GetCurrentProcess(),
+                  &direct_denied_base, 0, 0, nullptr, &direct_denied_size, 2,
+                  0, PAGE_READWRITE);
+    const bool inherited_native_denied =
+        direct_denied_status == status_access_denied &&
+        direct_denied_base == nullptr && direct_denied_size == 0;
+    if (direct_denied_base != nullptr && nt_unmap_view_of_section != nullptr) {
+        nt_unmap_view_of_section(GetCurrentProcess(), direct_denied_base);
+    }
+    if (!inherited_high_level_denied || !inherited_native_denied) {
+        return 258;
+    }
+
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -2772,6 +2831,32 @@ bool RunProcessTests() {
         CloseHandle(denied_truncate_handle);
         return false;
     }
+    const HANDLE allowed_section_file = CreateFileW(
+        allowed_mapping_path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &inheritable,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    const HANDLE inherited_allowed_section =
+        allowed_section_file == INVALID_HANDLE_VALUE
+            ? nullptr
+            : CreateFileMappingW(
+                  allowed_section_file, &inheritable, PAGE_READONLY, 0, 0,
+                  nullptr);
+    if (allowed_section_file != INVALID_HANDLE_VALUE) {
+        CloseHandle(allowed_section_file);
+    }
+    const HANDLE inherited_denied_section = CreateFileMappingW(
+        denied_mapping_handle, &inheritable, PAGE_READWRITE, 0, 0, nullptr);
+    if (inherited_allowed_section == nullptr ||
+        inherited_denied_section == nullptr) {
+        if (inherited_allowed_section != nullptr) {
+            CloseHandle(inherited_allowed_section);
+        }
+        if (inherited_denied_section != nullptr) {
+            CloseHandle(inherited_denied_section);
+        }
+        CloseHandle(denied_mapping_handle);
+        return false;
+    }
     FILETIME denied_mapping_write_time_before{};
     if (!GetFileTime(
             denied_mapping_handle, nullptr, nullptr,
@@ -2917,18 +3002,26 @@ bool RunProcessTests() {
                                       denied_event_name + L"\" " +
                                       HandleText(denied_directory_handle) + L" " +
                                       HandleText(denied_overlapped_handle) + L" " +
-                                      std::to_wstring(denied_file_id);
+                                      std::to_wstring(denied_file_id) + L" " +
+                                      HandleText(inherited_allowed_section) + L" " +
+                                      HandleText(inherited_denied_section);
     const HANDLE inherited[] = {
         allowed, policy.handle(), event_client, release, denied_disposition_handle,
         denied_truncate_handle, denied_mapping_handle, read_only_mapping_handle,
         denied_directory_handle, denied_overlapped_handle};
+    const HANDLE section_inherited[] = {
+        inherited_allowed_section, inherited_denied_section};
+    std::vector<HANDLE> inherited_handles(std::begin(inherited), std::end(inherited));
+    inherited_handles.insert(
+        inherited_handles.end(), std::begin(section_inherited),
+        std::end(section_inherited));
     bolt::common::ProcessLaunchOptions options{
         executable,
         command_line,
         L"",
         nullptr,
-        inherited,
-        std::size(inherited),
+        inherited_handles.data(),
+        inherited_handles.size(),
         0,
     };
     bolt::common::SuspendedProcess process;
@@ -3379,7 +3472,15 @@ bool RunProcessTests() {
             bolt::protocol::ProcessOperation::kCreateWithLogon, 106) &&
         ReadProcessViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::ProcessOperation::kElevation, 107);
+            bolt::protocol::ProcessOperation::kElevation, 107) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_mapping_path.wstring(), 108) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_mapping_path.wstring(), 109);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
@@ -3405,6 +3506,8 @@ bool RunProcessTests() {
     CloseHandle(read_only_mapping_handle);
     CloseHandle(denied_directory_handle);
     CloseHandle(denied_overlapped_handle);
+    CloseHandle(inherited_allowed_section);
+    CloseHandle(inherited_denied_section);
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
                             exit_code == 0 &&
