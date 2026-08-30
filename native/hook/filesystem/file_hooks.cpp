@@ -1168,13 +1168,16 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
         static_cast<FILE_INFORMATION_CLASS>(10);
     constexpr FILE_INFORMATION_CLASS file_rename_information_ex =
         static_cast<FILE_INFORMATION_CLASS>(65);
+    constexpr FILE_INFORMATION_CLASS file_basic_information =
+        static_cast<FILE_INFORMATION_CLASS>(4);
     const bool is_truncation = information_class == file_allocation_information ||
                                information_class == file_end_of_file_information;
     const bool is_disposition = information_class == file_disposition_information ||
                                 information_class == file_disposition_information_ex;
     const bool is_rename = information_class == file_rename_information ||
                            information_class == file_rename_information_ex;
-    if (!is_truncation && !is_disposition && !is_rename) {
+    const bool is_basic = information_class == file_basic_information;
+    if (!is_truncation && !is_disposition && !is_rename && !is_basic) {
         return g_zw_set_information_file(
             file, io_status, information, information_size, information_class);
     }

@@ -149,6 +149,10 @@ resolve the handle's final identity and require write access, while an all-null
 call retains native behavior. Denied updates report `Write` and leave every
 timestamp unchanged.
 
+The direct `ZwSetInformationFile` classifier also covers
+`FileBasicInformation`, closing native timestamp/attribute mutation bypasses
+with the same final-handle write decision and native NT denial result.
+
 For textually allowed copy, move, and replace operation paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,
 appends any absent suffix, then evaluates the fully resolved source and
