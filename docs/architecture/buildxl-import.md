@@ -198,6 +198,13 @@ vendored revision. Both resolve the directory handle's final identity and
 return `STATUS_ACCESS_DENIED` with zero result information before synchronous
 or asynchronous enumeration can expose an entry.
 
+Direct native opens reuse BuildXL's exact `NtCreateFile_t` and `NtOpenFile_t`
+signatures. Bolt maps the six NT create dispositions to the existing access
+classifier, treats delete-on-close as deletion, preserves open-reparse-point
+leaf semantics, and routes absolute object paths through the same final-target
+policy decision as `CreateFileW/A`. Denial returns `STATUS_ACCESS_DENIED`,
+clears the output handle and completion information, and never calls ntdll.
+
 Metadata probing through `GetFileAttributesW/A` and
 `GetFileAttributesExW/A` shares one metadata-policy decision. Denied targets
 return the native failure sentinel, preserve `ERROR_ACCESS_DENIED`, and cannot

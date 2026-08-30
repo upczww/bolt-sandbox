@@ -126,6 +126,8 @@ using NtReadWriteFileFunction = NTSTATUS(NTAPI*)(
     PLARGE_INTEGER, PULONG);
 NtReadWriteFileFunction g_nt_read_file = nullptr;
 NtReadWriteFileFunction g_nt_write_file = nullptr;
+NtCreateFile_t g_nt_create_file = nullptr;
+NtOpenFile_t g_nt_open_file = nullptr;
 
 void ReportDenied(
     const protocol::FilesystemOperation operation,
@@ -716,6 +718,64 @@ bool TryGetObjectAttributesPath(
     return !path.empty();
 }
 
+DWORD MapNtCreateDisposition(const ULONG disposition) noexcept {
+    switch (disposition) {
+        case FILE_SUPERSEDE:
+        case FILE_OVERWRITE_IF:
+            return CREATE_ALWAYS;
+        case FILE_OPEN:
+            return OPEN_EXISTING;
+        case FILE_CREATE:
+            return CREATE_NEW;
+        case FILE_OPEN_IF:
+            return OPEN_ALWAYS;
+        case FILE_OVERWRITE:
+            return TRUNCATE_EXISTING;
+        default:
+            return 0;
+    }
+}
+
+bool AuthorizeCreateFile(
+    const wchar_t* path,
+    const ClassifiedAccess& request,
+    DWORD flags_and_attributes) noexcept;
+
+bool AuthorizeNativeFileOpen(
+    const ACCESS_MASK desired_access,
+    const POBJECT_ATTRIBUTES object_attributes,
+    const ULONG create_disposition,
+    const ULONG create_options) noexcept {
+    std::wstring path;
+    if (!TryGetObjectAttributesPath(object_attributes, path)) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    auto request = ClassifyCreateFileRequest(
+        desired_access, MapNtCreateDisposition(create_disposition));
+    if ((create_options & FILE_DELETE_ON_CLOSE) != 0) {
+        request = {Access::kWrite, protocol::FilesystemOperation::kDelete};
+    }
+    const DWORD flags = (create_options & FILE_OPEN_REPARSE_POINT) != 0
+                            ? FILE_FLAG_OPEN_REPARSE_POINT
+                            : 0;
+    return AuthorizeCreateFile(path.c_str(), request, flags);
+}
+
+NTSTATUS DenyNativeFileOpen(
+    const PHANDLE file,
+    const PIO_STATUS_BLOCK io_status) noexcept {
+    constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+    if (file != nullptr) {
+        *file = nullptr;
+    }
+    if (io_status != nullptr) {
+        io_status->Status = status_access_denied;
+        io_status->Information = 0;
+    }
+    return status_access_denied;
+}
+
 bool AuthorizeAttributeMutation(const wchar_t* path) noexcept {
     const auto* policy = g_policy.get();
     const auto evaluation =
@@ -829,6 +889,58 @@ bool AuthorizeCreateFile(
         InvalidateResolvedPathForMutation(resolved_path.c_str(), false);
     }
     return true;
+}
+
+NTSTATUS NTAPI DetouredNtCreateFile(
+    const PHANDLE file,
+    const ACCESS_MASK desired_access,
+    const POBJECT_ATTRIBUTES object_attributes,
+    const PIO_STATUS_BLOCK io_status,
+    const PLARGE_INTEGER allocation_size,
+    const ULONG file_attributes,
+    const ULONG share_access,
+    const ULONG create_disposition,
+    const ULONG create_options,
+    const PVOID ea_buffer,
+    const ULONG ea_length) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_nt_create_file(
+            file, desired_access, object_attributes, io_status, allocation_size,
+            file_attributes, share_access, create_disposition, create_options,
+            ea_buffer, ea_length);
+    }
+    if (!AuthorizeNativeFileOpen(
+            desired_access, object_attributes, create_disposition,
+            create_options)) {
+        return DenyNativeFileOpen(file, io_status);
+    }
+    return g_nt_create_file(
+        file, desired_access, object_attributes, io_status, allocation_size,
+        file_attributes, share_access, create_disposition, create_options,
+        ea_buffer, ea_length);
+}
+
+NTSTATUS NTAPI DetouredNtOpenFile(
+    const PHANDLE file,
+    const ACCESS_MASK desired_access,
+    const POBJECT_ATTRIBUTES object_attributes,
+    const PIO_STATUS_BLOCK io_status,
+    const ULONG share_access,
+    const ULONG open_options) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_nt_open_file(
+            file, desired_access, object_attributes, io_status, share_access,
+            open_options);
+    }
+    if (!AuthorizeNativeFileOpen(
+            desired_access, object_attributes, FILE_OPEN, open_options)) {
+        return DenyNativeFileOpen(file, io_status);
+    }
+    return g_nt_open_file(
+        file, desired_access, object_attributes, io_status, share_access,
+        open_options);
 }
 
 bool AuthorizeShellDelete(const wchar_t* paths) noexcept {
@@ -2408,11 +2520,16 @@ HookInstallStatus InstallFileHooks(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtReadFile"));
     g_nt_write_file = reinterpret_cast<NtReadWriteFileFunction>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtWriteFile"));
+    g_nt_create_file = reinterpret_cast<NtCreateFile_t>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
+    g_nt_open_file = reinterpret_cast<NtOpenFile_t>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtOpenFile"));
     if (g_zw_set_information_file == nullptr || g_nt_create_section == nullptr ||
         g_nt_query_information_file == nullptr || g_nt_query_attributes_file == nullptr ||
         g_nt_query_full_attributes_file == nullptr || g_nt_query_directory_file == nullptr ||
         g_nt_query_directory_file_ex == nullptr || g_nt_read_file == nullptr ||
-        g_nt_write_file == nullptr) {
+        g_nt_write_file == nullptr || g_nt_create_file == nullptr ||
+        g_nt_open_file == nullptr) {
         return HookInstallStatus::kTransactionFailed;
     }
     if (DetourTransactionBegin() != NO_ERROR) {
@@ -2503,6 +2620,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_nt_write_file),
             reinterpret_cast<PVOID>(DetouredNtWriteFile)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_create_file),
+            reinterpret_cast<PVOID>(DetouredNtCreateFile)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_open_file),
+            reinterpret_cast<PVOID>(DetouredNtOpenFile)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_file_w),
             reinterpret_cast<PVOID>(DetouredCreateFileW)) != NO_ERROR ||
