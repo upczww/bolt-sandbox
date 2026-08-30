@@ -212,6 +212,105 @@ bool ServeHttpOnce(
     return received > 0 && offset == static_cast<int>(sizeof(response) - 1);
 }
 
+bool CreateDualLoopbackListeners(
+    SOCKET& ipv4_listener,
+    SOCKET& ipv6_listener,
+    std::uint16_t& port) {
+    ipv4_listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    ipv6_listener = INVALID_SOCKET;
+    port = 0;
+    sockaddr_in ipv4{};
+    ipv4.sin_family = AF_INET;
+    ipv4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int ipv4_length = sizeof(ipv4);
+    if (ipv4_listener == INVALID_SOCKET ||
+        bind(
+            ipv4_listener, reinterpret_cast<const sockaddr*>(&ipv4),
+            sizeof(ipv4)) != 0 ||
+        listen(ipv4_listener, 2) != 0 ||
+        getsockname(
+            ipv4_listener, reinterpret_cast<sockaddr*>(&ipv4),
+            &ipv4_length) != 0) {
+        if (ipv4_listener != INVALID_SOCKET) {
+            closesocket(ipv4_listener);
+        }
+        return false;
+    }
+    port = ntohs(ipv4.sin_port);
+    ipv6_listener = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in6 ipv6{};
+    ipv6.sin6_family = AF_INET6;
+    ipv6.sin6_addr = in6addr_loopback;
+    ipv6.sin6_port = htons(port);
+    constexpr DWORD ipv6_only = 1;
+    if (ipv6_listener == INVALID_SOCKET ||
+        setsockopt(
+            ipv6_listener, IPPROTO_IPV6, IPV6_V6ONLY,
+            reinterpret_cast<const char*>(&ipv6_only), sizeof(ipv6_only)) != 0 ||
+        bind(
+            ipv6_listener, reinterpret_cast<const sockaddr*>(&ipv6),
+            sizeof(ipv6)) != 0 ||
+        listen(ipv6_listener, 2) != 0) {
+        closesocket(ipv4_listener);
+        if (ipv6_listener != INVALID_SOCKET) {
+            closesocket(ipv6_listener);
+        }
+        return false;
+    }
+    return true;
+}
+
+SOCKET AcceptEitherWithTimeout(
+    const SOCKET ipv4_listener,
+    const SOCKET ipv6_listener,
+    const long timeout_milliseconds) {
+    fd_set readable{};
+    FD_ZERO(&readable);
+    FD_SET(ipv4_listener, &readable);
+    FD_SET(ipv6_listener, &readable);
+    timeval timeout{};
+    timeout.tv_sec = timeout_milliseconds / 1'000;
+    timeout.tv_usec = (timeout_milliseconds % 1'000) * 1'000;
+    if (select(0, &readable, nullptr, nullptr, &timeout) <= 0) {
+        return INVALID_SOCKET;
+    }
+    return FD_ISSET(ipv4_listener, &readable)
+               ? accept(ipv4_listener, nullptr, nullptr)
+               : accept(ipv6_listener, nullptr, nullptr);
+}
+
+bool ServeHttpRedirectOnce(
+    const SOCKET ipv4_listener,
+    const SOCKET ipv6_listener,
+    const char* const domain,
+    const std::uint16_t port) {
+    const SOCKET accepted =
+        AcceptEitherWithTimeout(ipv4_listener, ipv6_listener, 3'000);
+    if (accepted == INVALID_SOCKET) {
+        return false;
+    }
+    std::array<char, 4'096> request{};
+    const int received =
+        recv(accepted, request.data(), static_cast<int>(request.size()), 0);
+    const std::string response =
+        "HTTP/1.1 302 Found\r\nLocation: http://" + std::string(domain) +
+        ":" + std::to_string(port) +
+        "/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    int offset = 0;
+    while (received > 0 && offset < static_cast<int>(response.size())) {
+        const int sent = send(
+            accepted, response.data() + offset,
+            static_cast<int>(response.size()) - offset, 0);
+        if (sent <= 0) {
+            break;
+        }
+        offset += sent;
+    }
+    shutdown(accepted, SD_BOTH);
+    closesocket(accepted);
+    return received > 0 && offset == static_cast<int>(response.size());
+}
+
 }  // namespace
 
 int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
@@ -766,7 +865,7 @@ bool RunNetworkHookTests() {
 }
 
 int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 6) {
+    if (argument_count != 8) {
         return 210;
     }
     WSADATA winsock{};
@@ -960,6 +1059,14 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
         bolt::tests::TryWinHttpGet(arguments[2], http_port);
     const std::uint32_t win_inet_stage =
         bolt::tests::TryWinInetGetW(arguments[2], http_port);
+    const std::uint32_t win_http_redirect_stage =
+        bolt::tests::TryWinHttpGet(
+            arguments[2],
+            static_cast<std::uint16_t>(_wtoi(arguments[5])));
+    const std::uint32_t win_inet_denied_redirect_stage =
+        bolt::tests::TryWinInetGetW(
+            arguments[2],
+            static_cast<std::uint16_t>(_wtoi(arguments[5])));
 
     sockaddr_in wrong_port{};
     if (results != nullptr && results->ai_addrlen >= sizeof(wrong_port)) {
@@ -1047,6 +1154,12 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
     }
     if (win_inet_stage != 0) {
         return 420 + static_cast<int>(win_inet_stage);
+    }
+    if (win_http_redirect_stage != 0) {
+        return 440 + static_cast<int>(win_http_redirect_stage);
+    }
+    if (win_inet_denied_redirect_stage == 0) {
+        return 460;
     }
     if (closed_peer_status != SOCKET_ERROR ||
         closed_peer_error != WSAENOTSOCK) {
@@ -1181,6 +1294,36 @@ bool RunNetworkAllowListTests() {
         WSACleanup();
         return false;
     }
+    SOCKET redirect_listener = INVALID_SOCKET;
+    SOCKET redirect_ipv6_listener = INVALID_SOCKET;
+    std::uint16_t redirect_port = 0;
+    SOCKET denied_redirect_listener = INVALID_SOCKET;
+    SOCKET denied_redirect_ipv6_listener = INVALID_SOCKET;
+    std::uint16_t denied_redirect_port = 0;
+    if (!CreateDualLoopbackListeners(
+            redirect_listener, redirect_ipv6_listener, redirect_port) ||
+        !CreateDualLoopbackListeners(
+            denied_redirect_listener, denied_redirect_ipv6_listener,
+            denied_redirect_port)) {
+        closesocket(listener);
+        closesocket(ipv6_listener);
+        closesocket(http_listener);
+        closesocket(http_ipv6_listener);
+        if (redirect_listener != INVALID_SOCKET) {
+            closesocket(redirect_listener);
+        }
+        if (redirect_ipv6_listener != INVALID_SOCKET) {
+            closesocket(redirect_ipv6_listener);
+        }
+        if (denied_redirect_listener != INVALID_SOCKET) {
+            closesocket(denied_redirect_listener);
+        }
+        if (denied_redirect_ipv6_listener != INVALID_SOCKET) {
+            closesocket(denied_redirect_ipv6_listener);
+        }
+        WSACleanup();
+        return false;
+    }
     const std::string allowed_domain = "localhost";
     const std::wstring allowed_domain_w = L"localhost";
     const std::wstring executable = CurrentExecutable();
@@ -1191,7 +1334,8 @@ bool RunNetworkAllowListTests() {
     loopback.address[3] = 1;
     const bolt::tests::NetworkAllowListRules allow_list{
         {{false, allowed_domain}}, {loopback},
-        {{port, port}, {ipv6_port, ipv6_port}, {http_port, http_port}}};
+        {{port, port}, {ipv6_port, ipv6_port}, {http_port, http_port},
+         {redirect_port, redirect_port}}};
     const auto payload = bolt::tests::SealPolicy(
         {{bolt::tests::FilesystemRuleKind::kReadWrite,
           std::filesystem::path(executable).root_path()}},
@@ -1205,9 +1349,15 @@ bool RunNetworkAllowListTests() {
             bolt::network::Decision::kAllow ||
         checked_policy->DecidePort(port) != bolt::network::Decision::kAllow) {
         std::fprintf(stderr, "allow-list fixture policy mismatch at port %u\n", port);
+        closesocket(listener);
         closesocket(ipv6_listener);
         closesocket(http_listener);
         closesocket(http_ipv6_listener);
+        closesocket(redirect_listener);
+        closesocket(redirect_ipv6_listener);
+        closesocket(denied_redirect_listener);
+        closesocket(denied_redirect_ipv6_listener);
+        WSACleanup();
         return false;
     }
     constexpr std::array<std::uint8_t, 16> nonce = {0x6A};
@@ -1229,6 +1379,10 @@ bool RunNetworkAllowListTests() {
         closesocket(ipv6_listener);
         closesocket(http_listener);
         closesocket(http_ipv6_listener);
+        closesocket(redirect_listener);
+        closesocket(redirect_ipv6_listener);
+        closesocket(denied_redirect_listener);
+        closesocket(denied_redirect_ipv6_listener);
         WSACleanup();
         return false;
     }
@@ -1241,6 +1395,10 @@ bool RunNetworkAllowListTests() {
         closesocket(ipv6_listener);
         closesocket(http_listener);
         closesocket(http_ipv6_listener);
+        closesocket(redirect_listener);
+        closesocket(redirect_ipv6_listener);
+        closesocket(denied_redirect_listener);
+        closesocket(denied_redirect_ipv6_listener);
         WSACleanup();
         return false;
     }
@@ -1268,13 +1426,25 @@ bool RunNetworkAllowListTests() {
         !SetHandleInformation(
             dns_proxy->response_read_handle(), HANDLE_FLAG_INHERIT,
             HANDLE_FLAG_INHERIT)) {
+        closesocket(listener);
+        closesocket(ipv6_listener);
+        closesocket(http_listener);
+        closesocket(http_ipv6_listener);
+        closesocket(redirect_listener);
+        closesocket(redirect_ipv6_listener);
+        closesocket(denied_redirect_listener);
+        closesocket(denied_redirect_ipv6_listener);
+        CloseHandle(release);
+        event_pipe.Close();
+        WSACleanup();
         return false;
     }
     const auto hook_path = std::filesystem::path(executable).parent_path() / hook_name;
     const std::wstring command_line = L"\"" + executable +
         L"\" --network-allow-list-child " + allowed_domain_w + L" " +
         std::to_wstring(port) + L" " + std::to_wstring(ipv6_port) + L" " +
-        std::to_wstring(http_port);
+        std::to_wstring(http_port) + L" " + std::to_wstring(redirect_port) +
+        L" " + std::to_wstring(denied_redirect_port);
     const HANDLE inherited[] = {
         policy.handle(), event_client, release,
         dns_proxy->request_write_handle(), dns_proxy->response_read_handle()};
@@ -1326,6 +1496,22 @@ bool RunNetworkAllowListTests() {
         ready_ok && ServeHttpOnce(http_listener, http_ipv6_listener);
     const bool win_inet_served =
         ready_ok && ServeHttpOnce(http_listener, http_ipv6_listener);
+    const bool redirect_source_served = ready_ok && ServeHttpRedirectOnce(
+        http_listener, http_ipv6_listener, allowed_domain.c_str(),
+        redirect_port);
+    const bool redirect_target_served = ready_ok &&
+        ServeHttpOnce(redirect_listener, redirect_ipv6_listener);
+    const bool denied_redirect_source_served = ready_ok &&
+        ServeHttpRedirectOnce(
+            http_listener, http_ipv6_listener, allowed_domain.c_str(),
+            denied_redirect_port);
+    const SOCKET denied_redirect_connection = ready_ok
+        ? AcceptEitherWithTimeout(
+              denied_redirect_listener, denied_redirect_ipv6_listener, 1'000)
+        : INVALID_SOCKET;
+    if (denied_redirect_connection != INVALID_SOCKET) {
+        closesocket(denied_redirect_connection);
+    }
     const bool waited =
         process.Wait(5'000) == bolt::common::ProcessStatus::kSuccess;
     dns_proxy->CloseClientHandles();
@@ -1337,11 +1523,18 @@ bool RunNetworkAllowListTests() {
         ipv6_accepted != INVALID_SOCKET && proxy_waited &&
         connect_ex_accepted != INVALID_SOCKET &&
         win_http_served && win_inet_served &&
+        redirect_source_served && redirect_target_served &&
+        denied_redirect_source_served &&
+        denied_redirect_connection == INVALID_SOCKET &&
         exit_status == bolt::common::ProcessStatus::kSuccess && exit_code == 0;
     closesocket(listener);
     closesocket(ipv6_listener);
     closesocket(http_listener);
     closesocket(http_ipv6_listener);
+    closesocket(redirect_listener);
+    closesocket(redirect_ipv6_listener);
+    closesocket(denied_redirect_listener);
+    closesocket(denied_redirect_ipv6_listener);
     CloseHandle(release);
     event_pipe.Close();
     WSACleanup();
