@@ -116,6 +116,11 @@ extern "C" __declspec(dllexport) BOOL BoltSandboxRuntimeInitialized() noexcept {
     return InterlockedCompareExchange(&g_runtime_initialized, 1, 1) == 1;
 }
 
+extern "C" __declspec(dllexport) std::uint32_t
+BoltSandboxInstalledFilesystemHookCount() noexcept {
+    return bolt::filesystem::InstalledFileHookCount();
+}
+
 extern "C" __declspec(dllexport) BOOL BoltSandboxFlushEvents(
     const DWORD timeout_milliseconds) noexcept {
     return bolt::hook::WaitForEventSinkIdle(timeout_milliseconds) ? TRUE : FALSE;

@@ -110,6 +110,16 @@ if ($attachmentDifference.Count -ne 0) {
     throw "Filesystem hook manifest differs from InstallFileHooks:`n$($details -join "`n")"
 }
 
+$requiredHookCount = @(
+    $hooks | Where-Object { $_.availability -eq 'required' }
+).Count
+$countMatch = [regex]::Match(
+    $source, 'kRequiredFilesystemHookCount\s*=\s*(\d+)')
+if (-not $countMatch.Success -or
+    [int]$countMatch.Groups[1].Value -ne $requiredHookCount) {
+    throw "Runtime required hook count does not match manifest count $requiredHookCount."
+}
+
 $coverage = Get-Content -Raw -LiteralPath $coveragePath
 $filesystemStart = $coverage.IndexOf('## Filesystem')
 $filesystemEnd = $coverage.IndexOf('## Process creation and control')

@@ -28,6 +28,8 @@ namespace bolt::filesystem {
 namespace {
 
 std::unique_ptr<FilesystemPolicy> g_policy;
+constexpr LONG kRequiredFilesystemHookCount = 70;
+volatile LONG g_installed_file_hook_count = 0;
 
 CreateFileW_t g_create_file_w = CreateFileW;
 CreateFileA_t g_create_file_a = CreateFileA;
@@ -3213,7 +3215,15 @@ HookInstallStatus InstallFileHooks(
         return HookInstallStatus::kTransactionFailed;
     }
     g_policy = std::move(policy);
+    InterlockedExchange(
+        &g_installed_file_hook_count,
+        kRequiredFilesystemHookCount + (g_copy_file_2 != nullptr ? 1 : 0));
     return HookInstallStatus::kSuccess;
+}
+
+std::uint32_t InstalledFileHookCount() noexcept {
+    return static_cast<std::uint32_t>(InterlockedCompareExchange(
+        &g_installed_file_hook_count, 0, 0));
 }
 
 }  // namespace bolt::filesystem

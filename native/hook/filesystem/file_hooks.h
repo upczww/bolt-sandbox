@@ -15,4 +15,6 @@ HookInstallStatus InstallFileHooks(
     const std::uint8_t* policy_payload,
     std::size_t policy_length) noexcept;
 
+std::uint32_t InstalledFileHookCount() noexcept;
+
 }  // namespace bolt::filesystem
