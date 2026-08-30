@@ -1291,6 +1291,38 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         }
         return 200;
     }
+    std::array<std::uint8_t, 1'024> notification_buffer{};
+    notification_buffer.fill(0xA5);
+    const auto notification_buffer_before = notification_buffer;
+    DWORD notification_bytes = 0xA5A5A5A5;
+    const HANDLE notification_event =
+        CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (notification_event == nullptr) {
+        return 201;
+    }
+    OVERLAPPED notification_overlapped{};
+    notification_overlapped.hEvent = notification_event;
+    const HANDLE notification_directory =
+        reinterpret_cast<HANDLE>(_wcstoui64(arguments[36], nullptr, 10));
+    const BOOL notification_result = ReadDirectoryChangesW(
+        notification_directory, notification_buffer.data(),
+        static_cast<DWORD>(notification_buffer.size()), FALSE,
+        FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME,
+        &notification_bytes, &notification_overlapped, nullptr);
+    const DWORD notification_error = GetLastError();
+    if (notification_result) {
+        CancelIoEx(notification_directory, &notification_overlapped);
+        WaitForSingleObject(notification_event, 5'000);
+    }
+    const bool notification_denied =
+        !notification_result && notification_error == ERROR_ACCESS_DENIED &&
+        notification_bytes == 0 &&
+        notification_buffer == notification_buffer_before &&
+        WaitForSingleObject(notification_event, 0) == WAIT_TIMEOUT;
+    CloseHandle(notification_event);
+    if (!notification_denied) {
+        return 202;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1573,7 +1605,8 @@ bool RunProcessTests() {
     const HANDLE denied_directory_handle = CreateFileW(
         denied_root.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &inheritable,
-        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+        nullptr);
     if (denied_directory_handle == INVALID_HANDLE_VALUE) {
         CloseHandle(denied_disposition_handle);
         CloseHandle(denied_truncate_handle);
@@ -2087,7 +2120,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kRead,
-            denied_delete_path.wstring(), 98);
+            denied_delete_path.wstring(), 98) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_root.wstring(), 99);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
