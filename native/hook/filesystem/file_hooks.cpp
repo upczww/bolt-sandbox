@@ -23,6 +23,8 @@ using CreateDirectoryWFunction = BOOL(WINAPI*)(LPCWSTR, LPSECURITY_ATTRIBUTES);
 CreateDirectoryWFunction g_create_directory_w = CreateDirectoryW;
 using RemoveDirectoryWFunction = BOOL(WINAPI*)(LPCWSTR);
 RemoveDirectoryWFunction g_remove_directory_w = RemoveDirectoryW;
+using MoveFileExWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, DWORD);
+MoveFileExWFunction g_move_file_ex_w = MoveFileExW;
 
 Access ClassifyAccess(const DWORD desired_access, const DWORD creation_disposition) noexcept {
     constexpr DWORD write_access = GENERIC_WRITE | FILE_WRITE_DATA | FILE_APPEND_DATA |
@@ -86,6 +88,22 @@ BOOL WINAPI DetouredRemoveDirectoryW(const LPCWSTR path) noexcept {
     return g_remove_directory_w(path);
 }
 
+// BuildXL requires write access to both sides of a move: the source is
+// effectively deleted and the destination is created or replaced.
+BOOL WINAPI DetouredMoveFileExW(
+    const LPCWSTR existing_path,
+    const LPCWSTR new_path,
+    const DWORD flags) noexcept {
+    const auto* policy = g_policy.get();
+    if (policy == nullptr ||
+        policy->Decide(existing_path, Access::kWrite) == Decision::kDeny ||
+        (new_path != nullptr && policy->Decide(new_path, Access::kWrite) == Decision::kDeny)) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return g_move_file_ex_w(existing_path, new_path, flags);
+}
+
 }  // namespace
 
 HookInstallStatus InstallFileHooks(
@@ -115,6 +133,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_remove_directory_w),
             reinterpret_cast<PVOID>(DetouredRemoveDirectoryW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_move_file_ex_w),
+            reinterpret_cast<PVOID>(DetouredMoveFileExW)) != NO_ERROR ||
         DetourTransactionCommit() != NO_ERROR) {
         DetourTransactionAbort();
         return HookInstallStatus::kTransactionFailed;
