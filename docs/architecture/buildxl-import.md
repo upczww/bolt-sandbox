@@ -89,11 +89,14 @@ scope pattern but supplies the architecture-required fail-closed adapter:
 and optional backup as independent write identities before invoking Windows.
 
 The first handle-mutation adapter covers
-`SetFileInformationByHandle(FileRenameInfo)`. Following BuildXL's flow, it
+`SetFileInformationByHandle` rename and disposition classes. Following BuildXL's flow, it
 obtains the source's final path from the handle, decodes the length-delimited
 destination, and applies the same two-sided write authorization as path-based
-moves. Unsupported or malformed rename identities fail closed; unrelated file
-information classes retain native Windows behavior.
+moves. `FileDispositionInfo` and `FileDispositionInfoEx` requests carrying a
+delete flag require write access to that final source identity; requests that
+clear disposition pass through unchanged. Unsupported or malformed mutation
+identities fail closed, while unrelated file information classes retain native
+Windows behavior.
 
 For textually allowed copy, move, and replace operation paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,

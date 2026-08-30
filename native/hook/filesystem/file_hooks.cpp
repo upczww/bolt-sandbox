@@ -578,12 +578,59 @@ BOOL WINAPI DetouredSetFileInformationByHandle(
     const FILE_INFO_BY_HANDLE_CLASS information_class,
     const LPVOID information,
     const DWORD information_size) noexcept {
-    if (information_class != FileRenameInfo) {
+    const bool is_rename = information_class == FileRenameInfo;
+    const bool is_disposition = information_class == FileDispositionInfo ||
+                                information_class == FileDispositionInfoEx;
+    if (!is_rename && !is_disposition) {
         return g_set_file_information_by_handle(
             file, information_class, information, information_size);
     }
     DetouredScope scope;
     if (scope.Detoured_IsDisabled()) {
+        return g_set_file_information_by_handle(
+            file, information_class, information, information_size);
+    }
+
+    if (is_disposition) {
+        bool requests_delete = false;
+        if (information_class == FileDispositionInfo) {
+            if (information == nullptr || information_size < sizeof(FILE_DISPOSITION_INFO)) {
+                return g_set_file_information_by_handle(
+                    file, information_class, information, information_size);
+            }
+            requests_delete =
+                static_cast<const FILE_DISPOSITION_INFO*>(information)->DeleteFile != FALSE;
+        } else {
+            if (information == nullptr || information_size < sizeof(FILE_DISPOSITION_INFO_EX)) {
+                return g_set_file_information_by_handle(
+                    file, information_class, information, information_size);
+            }
+            requests_delete =
+                (static_cast<const FILE_DISPOSITION_INFO_EX*>(information)->Flags &
+                 FILE_DISPOSITION_FLAG_DELETE) != 0;
+        }
+        if (!requests_delete) {
+            return g_set_file_information_by_handle(
+                file, information_class, information, information_size);
+        }
+
+        std::wstring source_path;
+        if (!TryGetHandlePath(file, source_path)) {
+            SetLastError(ERROR_ACCESS_DENIED);
+            return FALSE;
+        }
+        const auto* policy = g_policy.get();
+        const auto evaluation = policy == nullptr
+                                    ? PolicyEvaluation{}
+                                    : policy->Evaluate(source_path.c_str(), Access::kWrite);
+        if (evaluation.decision == Decision::kDeny) {
+            ReportDenied(
+                protocol::FilesystemOperation::kDelete,
+                EvaluatedPath(evaluation, source_path.c_str()));
+            SetLastError(ERROR_ACCESS_DENIED);
+            return FALSE;
+        }
+        InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, source_path.c_str()), false);
         return g_set_file_information_by_handle(
             file, information_class, information, information_size);
     }
