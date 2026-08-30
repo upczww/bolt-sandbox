@@ -86,6 +86,21 @@ target_include_directories(bolt-sandbox-buildxl PRIVATE
 )
 target_link_libraries(bolt-sandbox-buildxl PRIVATE pathcch)
 
+# Compile the complete upstream interception translation unit as an immutable
+# compatibility contract. It is intentionally not linked into Bolt until its
+# BuildXL policy/report seams have been replaced by PolicyView and EventSink.
+add_library(bolt-sandbox-buildxl-detoured-functions OBJECT
+    ${BUILDXL_DETOURS_SERVICES_DIR}/DetouredFunctions.cpp
+)
+bolt_native_warnings(bolt-sandbox-buildxl-detoured-functions)
+target_compile_definitions(
+    bolt-sandbox-buildxl-detoured-functions PRIVATE _DO_NOT_EXPORT
+)
+target_include_directories(bolt-sandbox-buildxl-detoured-functions PRIVATE
+    ${BUILDXL_DETOURS_SERVICES_DIR}
+    ${DETOURS_SOURCE_DIR}
+)
+
 add_library(bolt-sandbox-protocol STATIC
     protocol/event_frame.cpp
     protocol/policy_payload.cpp
