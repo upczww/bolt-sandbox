@@ -176,6 +176,14 @@ std::string ReadFixture(const std::filesystem::path& path) {
         std::istreambuf_iterator<char>());
 }
 
+std::filesystem::path BoundaryLongPath(const std::filesystem::path& root) {
+    std::filesystem::path path = root;
+    for (std::size_t index = 0; index < 12; ++index) {
+        path /= L"long-segment-0123456789";
+    }
+    return path / L"boundary.txt";
+}
+
 bool ReadExact(
     const HANDLE handle,
     std::uint8_t* bytes,
@@ -841,6 +849,13 @@ bool RunPathFormsTest(
         !WriteFixture(denied / L"base.txt", "denied")) {
         return false;
     }
+    const auto boundary_long_path = BoundaryLongPath(allowed);
+    const std::wstring extended_long_parent =
+        L"\\\\?\\" + boundary_long_path.parent_path().wstring();
+    if (!std::filesystem::create_directories(extended_long_parent, error) || error ||
+        !WriteFixture(L"\\\\?\\" + boundary_long_path.wstring(), "long")) {
+        return false;
+    }
     SECURITY_ATTRIBUTES inheritable{};
     inheritable.nLength = sizeof(inheritable);
     inheritable.bInheritHandle = TRUE;
@@ -849,18 +864,12 @@ bool RunPathFormsTest(
         {bolt::tests::FilesystemRuleKind::kReadWrite, allowed},
         {bolt::tests::FilesystemRuleKind::kDeny, denied},
     };
-    std::array<wchar_t, 64> volume_name{};
-    if (!GetVolumeNameForVolumeMountPointW(
-            allowed.root_path().c_str(), volume_name.data(),
-            static_cast<DWORD>(volume_name.size()))) {
-        return false;
-    }
     RaceProcess process;
     const bool started =
         start != nullptr &&
         process.Start(
-            executable, hook_path, rules, L"path-forms", test_root,
-            std::filesystem::path(volume_name.data()), start, ordinal++);
+            executable, hook_path, rules, L"path-forms", test_root, {}, start,
+            ordinal++);
     const bool released =
         started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
     const bool exited = released && process.WaitForExit();
@@ -869,6 +878,7 @@ bool RunPathFormsTest(
         ReadFixture(allowed / L"base.txt:stream") == "stream" &&
         ReadFixture(allowed / L"unicode-\u00e9.txt") == "composed" &&
         ReadFixture(allowed / L"unicode-e\u0301.txt") == "decomposed" &&
+        ReadFixture(L"\\\\?\\" + boundary_long_path.wstring()) == "long" &&
         !std::filesystem::exists(allowed / L"delete-on-close.tmp") &&
         ReadFixture(denied / L"base.txt") == "denied";
     if (start != nullptr) {
@@ -1358,15 +1368,13 @@ int RunFilesystemRaceChild(
         if (!can_read(allowed_extended.c_str())) {
             return 317;
         }
-        const std::wstring relative_to_volume =
-            (allowed / L"relative.txt").wstring().substr(
-                allowed.root_path().wstring().size());
-        const std::wstring volume_alias =
-            std::wstring(arguments[4]) + relative_to_volume;
-        const std::wstring local_device_alias =
-            L"\\\\.\\" + (allowed / L"relative.txt").wstring();
-        if (!can_read(volume_alias.c_str()) ||
-            !can_read(local_device_alias.c_str())) {
+        const auto boundary_long_path = BoundaryLongPath(allowed);
+        const std::wstring extended_boundary =
+            L"\\\\?\\" + boundary_long_path.wstring();
+        if (!can_read(boundary_long_path.c_str())) {
+            return 350;
+        }
+        if (!can_read(extended_boundary.c_str())) {
             return 351;
         }
         const std::wstring denied_extended =
