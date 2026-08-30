@@ -921,6 +921,58 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     if (SHFileOperationA(&shell_operation_a) != ERROR_ACCESS_DENIED) {
         return 167;
     }
+    std::wstring shell_copy_source_w(arguments[12]);
+    shell_copy_source_w.append(2, L'\0');
+    std::wstring shell_copy_destination_w(arguments[13]);
+    shell_copy_destination_w.append(2, L'\0');
+    shell_operation_w = {};
+    shell_operation_w.wFunc = FO_COPY;
+    shell_operation_w.pFrom = shell_copy_source_w.c_str();
+    shell_operation_w.pTo = shell_copy_destination_w.c_str();
+    shell_operation_w.fFlags =
+        FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+    if (SHFileOperationW(&shell_operation_w) != ERROR_ACCESS_DENIED) {
+        return 168;
+    }
+    std::string shell_copy_source_a = ansi_copy_source;
+    shell_copy_source_a.append(2, '\0');
+    std::string shell_copy_destination_a = ansi_copy_destination;
+    shell_copy_destination_a.append(2, '\0');
+    shell_operation_a = {};
+    shell_operation_a.wFunc = FO_COPY;
+    shell_operation_a.pFrom = shell_copy_source_a.c_str();
+    shell_operation_a.pTo = shell_copy_destination_a.c_str();
+    shell_operation_a.fFlags =
+        FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+    if (SHFileOperationA(&shell_operation_a) != ERROR_ACCESS_DENIED) {
+        return 169;
+    }
+    std::wstring shell_move_source_w(arguments[9]);
+    shell_move_source_w.append(2, L'\0');
+    std::wstring shell_move_destination_w(arguments[10]);
+    shell_move_destination_w.append(2, L'\0');
+    shell_operation_w = {};
+    shell_operation_w.wFunc = FO_MOVE;
+    shell_operation_w.pFrom = shell_move_source_w.c_str();
+    shell_operation_w.pTo = shell_move_destination_w.c_str();
+    shell_operation_w.fFlags =
+        FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+    if (SHFileOperationW(&shell_operation_w) != ERROR_ACCESS_DENIED) {
+        return 170;
+    }
+    std::string shell_move_source_a = ansi_move_source;
+    shell_move_source_a.append(2, '\0');
+    std::string shell_move_destination_a = ansi_move_destination;
+    shell_move_destination_a.append(2, '\0');
+    shell_operation_a = {};
+    shell_operation_a.wFunc = FO_MOVE;
+    shell_operation_a.pFrom = shell_move_source_a.c_str();
+    shell_operation_a.pTo = shell_move_destination_a.c_str();
+    shell_operation_a.fFlags =
+        FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+    if (SHFileOperationA(&shell_operation_a) != ERROR_ACCESS_DENIED) {
+        return 171;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1564,7 +1616,23 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kDelete,
-            denied_delete_path.wstring(), 69);
+            denied_delete_path.wstring(), 69) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_copy_source.wstring(), 70) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_copy_source.wstring(), 71) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRename,
+            denied_move_source.wstring(), 72) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRename,
+            denied_move_source.wstring(), 73);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
