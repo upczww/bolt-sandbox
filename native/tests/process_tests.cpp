@@ -514,11 +514,13 @@ bool ReadAnyFilesystemViolationForPath(
                 event_pipe, header.data(), static_cast<DWORD>(header.size()),
                 &first_read, nullptr)) {
             const DWORD error = GetLastError();
-            std::fprintf(
-                stderr,
-                "compatibility event stream ended: error=%lu pid=%lu found=%d\n",
-                static_cast<unsigned long>(error),
-                static_cast<unsigned long>(process_id), found ? 1 : 0);
+            if (!found) {
+                std::fprintf(
+                    stderr,
+                    "compatibility event stream ended without match: error=%lu pid=%lu\n",
+                    static_cast<unsigned long>(error),
+                    static_cast<unsigned long>(process_id));
+            }
             return (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA) &&
                    found;
         }
@@ -3797,11 +3799,11 @@ bool RunCompatibilityToolTests(
     };
     constexpr std::array<Tool, 6> tools = {{
         {L"cmd", L"BOLT_TEST_CMD", L"cmd.exe"},
-        {L"powershell", L"BOLT_TEST_POWERSHELL", L"powershell.exe"},
         {L"node", L"BOLT_TEST_NODE", L"node.exe"},
         {L"python", L"BOLT_TEST_PYTHON", L"python.exe"},
         {L"git", L"BOLT_TEST_GIT", L"git.exe"},
         {L"cargo", L"BOLT_TEST_CARGO", L"cargo.exe"},
+        {L"powershell", L"BOLT_TEST_POWERSHELL", L"powershell.exe"},
     }};
     for (std::size_t index = 0; index < tools.size(); ++index) {
         const auto tool_path = FindCompatibilityTool(
