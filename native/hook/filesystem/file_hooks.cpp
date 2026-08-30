@@ -129,6 +129,11 @@ NtReadWriteFileFunction g_nt_read_file = nullptr;
 NtReadWriteFileFunction g_nt_write_file = nullptr;
 NtCreateFile_t g_nt_create_file = nullptr;
 NtOpenFile_t g_nt_open_file = nullptr;
+using ReadDirectoryChangesWFunction = BOOL(WINAPI*)(
+    HANDLE, LPVOID, DWORD, BOOL, DWORD, LPDWORD, LPOVERLAPPED,
+    LPOVERLAPPED_COMPLETION_ROUTINE);
+ReadDirectoryChangesWFunction g_read_directory_changes_w =
+    ReadDirectoryChangesW;
 
 void ReportDenied(
     const protocol::FilesystemOperation operation,
@@ -1302,6 +1307,32 @@ NTSTATUS NTAPI DetouredNtQueryDirectoryFileEx(
         io_status->Information = 0;
     }
     return status_access_denied;
+}
+
+BOOL WINAPI DetouredReadDirectoryChangesW(
+    const HANDLE directory,
+    const LPVOID buffer,
+    const DWORD buffer_size,
+    const BOOL watch_subtree,
+    const DWORD notify_filter,
+    const LPDWORD bytes_returned,
+    const LPOVERLAPPED overlapped,
+    const LPOVERLAPPED_COMPLETION_ROUTINE completion_routine) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_read_directory_changes_w(
+            directory, buffer, buffer_size, watch_subtree, notify_filter,
+            bytes_returned, overlapped, completion_routine);
+    }
+    if (!AuthorizeHandleEnumeration(directory)) {
+        if (bytes_returned != nullptr) {
+            *bytes_returned = 0;
+        }
+        return FALSE;
+    }
+    return g_read_directory_changes_w(
+        directory, buffer, buffer_size, watch_subtree, notify_filter,
+        bytes_returned, overlapped, completion_routine);
 }
 
 BOOL WINAPI DetouredSetFileAttributesW(
@@ -2600,6 +2631,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_nt_query_directory_file_ex),
             reinterpret_cast<PVOID>(DetouredNtQueryDirectoryFileEx)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_read_directory_changes_w),
+            reinterpret_cast<PVOID>(DetouredReadDirectoryChangesW)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_set_file_attributes_w),
             reinterpret_cast<PVOID>(DetouredSetFileAttributesW)) != NO_ERROR ||

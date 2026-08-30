@@ -198,6 +198,13 @@ vendored revision. Both resolve the directory handle's final identity and
 return `STATUS_ACCESS_DENIED` with zero result information before synchronous
 or asynchronous enumeration can expose an entry.
 
+`ReadDirectoryChangesW` is a Bolt-owned narrow seam because the vendored
+BuildXL layer has no dedicated wrapper. It authorizes the directory handle's
+final identity as enumeration before submitting synchronous, overlapped, or
+completion-routine notification work. A denied watch returns
+`ERROR_ACCESS_DENIED`, zeros only the documented byte count, leaves the caller
+buffer and overlapped state untouched, and cannot schedule a completion.
+
 Direct native opens reuse BuildXL's exact `NtCreateFile_t` and `NtOpenFile_t`
 signatures. Bolt maps the six NT create dispositions to the existing access
 classifier, treats delete-on-close as deletion, preserves open-reparse-point
