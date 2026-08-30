@@ -1003,6 +1003,34 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         }
         return 175;
     }
+    LARGE_INTEGER file_start{};
+    if (!SetFilePointerEx(
+            denied_mapping_file, file_start, nullptr, FILE_BEGIN)) {
+        return 176;
+    }
+    std::array<char, 4> denied_read_buffer = {'x', 'x', 'x', 'x'};
+    DWORD denied_read_bytes = 123;
+    if (ReadFile(
+            denied_mapping_file, denied_read_buffer.data(),
+            static_cast<DWORD>(denied_read_buffer.size()), &denied_read_bytes,
+            nullptr) ||
+        GetLastError() != ERROR_ACCESS_DENIED || denied_read_bytes != 0 ||
+        denied_read_buffer != std::array<char, 4>{'x', 'x', 'x', 'x'}) {
+        return 177;
+    }
+    if (!SetFilePointerEx(
+            denied_mapping_file, file_start, nullptr, FILE_BEGIN)) {
+        return 178;
+    }
+    constexpr std::array<char, 4> forbidden_write = {'N', 'O', 'P', 'E'};
+    DWORD denied_write_bytes = 123;
+    if (WriteFile(
+            denied_mapping_file, forbidden_write.data(),
+            static_cast<DWORD>(forbidden_write.size()), &denied_write_bytes,
+            nullptr) ||
+        GetLastError() != ERROR_ACCESS_DENIED || denied_write_bytes != 0) {
+        return 179;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1678,7 +1706,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_alias_target.wstring(), 77);
+            denied_alias_target.wstring(), 77) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_mapping_path.wstring(), 78) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_mapping_path.wstring(), 79);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
