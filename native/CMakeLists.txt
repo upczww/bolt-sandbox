@@ -265,6 +265,7 @@ add_executable(bolt-sandbox-native-tests
     tests/wininet_test_client.cpp
     tests/dns_binding_tests.cpp
     tests/dns_proxy_protocol_tests.cpp
+    tests/tcp_proxy_protocol_tests.cpp
     tests/dns_proxy_server_tests.cpp
     tests/dns_proxy_session_tests.cpp
     tests/dns_proxy_process_tests.cpp

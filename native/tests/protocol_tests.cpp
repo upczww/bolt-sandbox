@@ -38,6 +38,7 @@ bool RunNetworkPolicyTests();
 bool RunNetworkHookTests();
 bool RunDnsBindingTests();
 bool RunDnsProxyProtocolTests();
+bool RunTcpProxyProtocolTests();
 bool RunDnsProxyServerTests();
 bool RunDnsProxySessionTests();
 bool RunDnsProxyHandleTransportTests();
@@ -316,6 +317,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-proxy-protocol-tests") {
         return RunDnsProxyProtocolTests() ? 0 : 1;
     }
+    if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--tcp-proxy-protocol-tests") {
+        return RunTcpProxyProtocolTests() ? 0 : 1;
+    }
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-proxy-server-tests") {
         return RunDnsProxyServerTests() ? 0 : 1;
     }
@@ -466,6 +471,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunNetworkAllowListTests()) {
         return 29;
+    }
+    if (!RunTcpProxyProtocolTests()) {
+        return 30;
     }
     return 0;
 }
