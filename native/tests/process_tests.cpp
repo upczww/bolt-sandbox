@@ -1491,6 +1491,136 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     return 0;
 }
 
+int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
+    if (argument_count != 3) {
+        return 220;
+    }
+    const HMODULE hook = GetModuleHandleW(arguments[2]);
+    const auto initialized = hook == nullptr
+                                 ? nullptr
+                                 : reinterpret_cast<BOOL (*)()>(GetProcAddress(
+                                       hook, "BoltSandboxRuntimeInitialized"));
+    return initialized != nullptr && initialized() ? 0 : 221;
+}
+
+int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
+    if (argument_count != 3) {
+        return 222;
+    }
+    const HMODULE hook = GetModuleHandleW(arguments[2]);
+    const auto initialized = hook == nullptr
+                                 ? nullptr
+                                 : reinterpret_cast<BOOL (*)()>(GetProcAddress(
+                                       hook, "BoltSandboxRuntimeInitialized"));
+    if (initialized == nullptr || !initialized()) {
+        return 223;
+    }
+
+    const std::wstring executable = CurrentExecutable();
+    std::wstring command_line =
+        L"\"" + executable + L"\" --inherit-leaf " + arguments[2];
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(
+            executable.c_str(), command_line.data(), nullptr, nullptr, FALSE, 0,
+            nullptr, nullptr, &startup, &process)) {
+        return 224;
+    }
+    const DWORD wait = WaitForSingleObject(process.hProcess, 5'000);
+    DWORD exit_code = 0;
+    const bool exited = wait == WAIT_OBJECT_0 &&
+                        GetExitCodeProcess(process.hProcess, &exit_code) != FALSE;
+    if (!exited) {
+        TerminateProcess(process.hProcess, 225);
+        WaitForSingleObject(process.hProcess, 5'000);
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return exited && exit_code == 0 ? 0 : 225;
+}
+
+namespace {
+
+bool RunInheritedProcessTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const wchar_t* hook_name,
+    const std::wstring& pipe_name) {
+    const auto policy_payload = bolt::tests::SealPolicy({
+        {bolt::tests::FilesystemRuleKind::kReadOnly,
+         std::filesystem::path(executable).root_path()},
+    }, bolt::tests::ChildProcessPolicyKind::kInherit);
+    constexpr std::array<std::uint8_t, 16> nonce = {
+        0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A,
+        0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A,
+    };
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE release = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    bolt::common::ImmutablePolicyMapping policy;
+    bolt::common::PrivatePipe event_pipe;
+    if (release == nullptr ||
+        bolt::common::ImmutablePolicyMapping::Create(
+            policy_payload.data(), policy_payload.size(), policy) !=
+            bolt::common::PolicyMappingStatus::kSuccess ||
+        bolt::common::PrivatePipe::Create(pipe_name, event_pipe) !=
+            bolt::common::PipeStatus::kSuccess) {
+        if (release != nullptr) {
+            CloseHandle(release);
+        }
+        return false;
+    }
+    HANDLE event_client = CreateFileW(
+        pipe_name.c_str(), FILE_WRITE_DATA, 0, &inheritable, OPEN_EXISTING, 0,
+        nullptr);
+    if (event_client == INVALID_HANDLE_VALUE ||
+        event_pipe.Accept() != bolt::common::PipeStatus::kSuccess) {
+        CloseHandle(release);
+        return false;
+    }
+
+    const std::wstring command_line =
+        L"\"" + executable + L"\" --inherit-parent " + hook_name;
+    const HANDLE inherited[] = {policy.handle(), event_client, release};
+    const bolt::common::ProcessLaunchOptions options{
+        executable, command_line, L"", nullptr, inherited, std::size(inherited), 0};
+    bolt::common::SuspendedProcess process;
+    bolt::common::ExecutionJob job;
+    const bool initialized =
+        bolt::common::ExecutionJob::Create(job) == bolt::common::JobStatus::kSuccess &&
+        bolt::common::SuspendedProcess::Create(options, process) ==
+            bolt::common::ProcessStatus::kSuccess &&
+        process.AssignTo(job) == bolt::common::ProcessStatus::kSuccess &&
+        process.InstallRuntimePayload(
+            policy.handle(), policy.length(), event_client, release, nonce) ==
+            bolt::common::ProcessStatus::kSuccess &&
+        process.Inject(hook_path.string()) == bolt::common::ProcessStatus::kSuccess &&
+        process.BeginHookInitialization() == bolt::common::ProcessStatus::kSuccess;
+    CloseHandle(event_client);
+    std::array<std::uint8_t, bolt::protocol::kReadyFrameLength> ready{};
+    DWORD bytes_read = 0;
+    const bool ready_ok = initialized &&
+                          ReadFile(
+                              event_pipe.handle(), ready.data(),
+                              static_cast<DWORD>(ready.size()), &bytes_read, nullptr) != FALSE &&
+                          bytes_read == ready.size() &&
+                          bolt::protocol::ValidateReadyFrame(
+                              ready.data(), ready.size(), nonce) ==
+                              bolt::protocol::ReadyFrameStatus::kSuccess &&
+                          process.ReleaseAfterReady() == bolt::common::ProcessStatus::kSuccess &&
+                          process.Wait(10'000) == bolt::common::ProcessStatus::kSuccess;
+    DWORD exit_code = 0;
+    const bool passed = ready_ok &&
+                        process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
+                        exit_code == 0;
+    CloseHandle(release);
+    return passed;
+}
+
+}  // namespace
+
 bool RunProcessTests() {
     const std::wstring unique_suffix = std::to_wstring(GetCurrentProcessId());
     const std::filesystem::path test_root =
@@ -2425,6 +2555,11 @@ bool RunProcessTests() {
     DeleteFileW(read_only_mapping_path.c_str());
     std::filesystem::remove_all(test_root, filesystem_error);
     if (!exact_exit) {
+        return false;
+    }
+
+    event_pipe.Close();
+    if (!RunInheritedProcessTest(executable, hook_path, hook_name, pipe_name)) {
         return false;
     }
 
