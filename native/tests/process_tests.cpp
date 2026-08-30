@@ -222,6 +222,48 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 89;
     }
+    if (MoveFileW(arguments[9], arguments[10]) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 105;
+    }
+    const std::string ansi_move_source = AnsiPath(arguments[9]);
+    const std::string ansi_move_destination = AnsiPath(arguments[10]);
+    if (ansi_move_source.empty() || ansi_move_destination.empty()) {
+        return 106;
+    }
+    if (MoveFileA(ansi_move_source.c_str(), ansi_move_destination.c_str()) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 107;
+    }
+    if (MoveFileExA(
+            ansi_move_source.c_str(), ansi_move_destination.c_str(),
+            MOVEFILE_REPLACE_EXISTING) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 108;
+    }
+    if (MoveFileWithProgressW(
+            arguments[9], arguments[10], nullptr, nullptr, MOVEFILE_REPLACE_EXISTING) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 109;
+    }
+    if (MoveFileWithProgressA(
+            ansi_move_source.c_str(), ansi_move_destination.c_str(), nullptr, nullptr,
+            MOVEFILE_REPLACE_EXISTING) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 110;
+    }
+    if (MoveFileTransactedW(
+            arguments[9], arguments[10], nullptr, nullptr, MOVEFILE_REPLACE_EXISTING,
+            INVALID_HANDLE_VALUE) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 111;
+    }
+    if (MoveFileTransactedA(
+            ansi_move_source.c_str(), ansi_move_destination.c_str(), nullptr, nullptr,
+            MOVEFILE_REPLACE_EXISTING, INVALID_HANDLE_VALUE) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 112;
+    }
     if (CreateHardLinkW(arguments[11], arguments[9], nullptr) ||
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 90;
@@ -526,39 +568,60 @@ bool RunProcessTests() {
             bolt::protocol::FilesystemOperation::kRename, denied_move_source.wstring(), 5) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead, denied_move_source.wstring(), 6) &&
+            bolt::protocol::FilesystemOperation::kRename, denied_move_source.wstring(), 6) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 7) &&
+            bolt::protocol::FilesystemOperation::kRename, denied_move_source.wstring(), 7) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 8) &&
+            bolt::protocol::FilesystemOperation::kRename, denied_move_source.wstring(), 8) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 9) &&
+            bolt::protocol::FilesystemOperation::kRename, denied_move_source.wstring(), 9) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 10) &&
+            bolt::protocol::FilesystemOperation::kRename, denied_move_source.wstring(), 10) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 11) &&
+            bolt::protocol::FilesystemOperation::kRename, denied_move_source.wstring(), 11) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 12) &&
+            bolt::protocol::FilesystemOperation::kRename, denied_move_source.wstring(), 12) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 13) &&
+            bolt::protocol::FilesystemOperation::kRead, denied_move_source.wstring(), 13) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 14) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 15) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 16) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 17) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 18) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 19) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 20) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
-            denied_copy_destination.wstring(), 14) &&
+            denied_copy_destination.wstring(), 21) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kCreate, denied_alias_target.wstring(), 15) &&
+            bolt::protocol::FilesystemOperation::kCreate, denied_alias_target.wstring(), 22) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kRename,
-            denied_alias_move_target.wstring(), 16);
+            denied_alias_move_target.wstring(), 23);
     DWORD exit_code = 0;
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
