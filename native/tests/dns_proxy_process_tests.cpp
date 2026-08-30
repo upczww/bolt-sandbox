@@ -121,8 +121,9 @@ bool RunDnsProxyProcessTests() {
     std::unique_ptr<bolt::network::DnsProxyProcess> process;
     if (bolt::network::DnsProxyProcess::Start(
             proxy, policy.data(), policy.size(), session, 1'024, 8, process) !=
-            bolt::network::DnsProxyProcessStatus::kSuccess ||
-        process == nullptr || process->tcp_proxy_port() == 0) {
+        bolt::network::DnsProxyProcessStatus::kSuccess ||
+        process == nullptr || process->tcp_proxy_port() == 0 ||
+        process->tcp_proxy_ipv6_port() == 0) {
         closesocket(upstream_listener);
         WSACleanup();
         return false;
