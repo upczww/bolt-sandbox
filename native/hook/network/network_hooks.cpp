@@ -19,6 +19,7 @@
 #include "protocol/runtime_payload.h"
 
 #include <cstring>
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <memory>
@@ -68,6 +69,16 @@ std::uint64_t g_tcp_proxy_ipv6_next_sequence = 1;
 bool g_tcp_proxy_closed = false;
 bool g_tcp_proxy_ipv6_closed = false;
 SRWLOCK g_tcp_proxy_lock = SRWLOCK_INIT;
+SRWLOCK g_high_level_dns_lock = SRWLOCK_INIT;
+
+struct HighLevelDnsEntry {
+    bool occupied = false;
+    char domain[protocol::kDnsProxyMaximumDomainLength + 1U]{};
+    std::uint64_t expires_at = 0;
+};
+
+constexpr std::size_t kHighLevelDnsCapacity = 64;
+std::array<HighLevelDnsEntry, kHighLevelDnsCapacity> g_high_level_dns{};
 
 class TcpProxyLock final {
   public:
@@ -75,6 +86,30 @@ class TcpProxyLock final {
     ~TcpProxyLock() noexcept { ReleaseSRWLockExclusive(&g_tcp_proxy_lock); }
     TcpProxyLock(const TcpProxyLock&) = delete;
     TcpProxyLock& operator=(const TcpProxyLock&) = delete;
+};
+
+class HighLevelDnsSharedLock final {
+  public:
+    HighLevelDnsSharedLock() noexcept {
+        AcquireSRWLockShared(&g_high_level_dns_lock);
+    }
+    ~HighLevelDnsSharedLock() noexcept {
+        ReleaseSRWLockShared(&g_high_level_dns_lock);
+    }
+    HighLevelDnsSharedLock(const HighLevelDnsSharedLock&) = delete;
+    HighLevelDnsSharedLock& operator=(const HighLevelDnsSharedLock&) = delete;
+};
+
+class HighLevelDnsExclusiveLock final {
+  public:
+    HighLevelDnsExclusiveLock() noexcept {
+        AcquireSRWLockExclusive(&g_high_level_dns_lock);
+    }
+    ~HighLevelDnsExclusiveLock() noexcept {
+        ReleaseSRWLockExclusive(&g_high_level_dns_lock);
+    }
+    HighLevelDnsExclusiveLock(const HighLevelDnsExclusiveLock&) = delete;
+    HighLevelDnsExclusiveLock& operator=(const HighLevelDnsExclusiveLock&) = delete;
 };
 
 HANDLE HandleFromWire(const std::uint64_t value) noexcept {
@@ -161,7 +196,7 @@ bool CopyAsciiDomain(
 bool ParsePort(const char* service, std::uint16_t& port) noexcept {
     port = 0;
     if (service == nullptr) {
-        return false;
+        return true;
     }
     __try {
         unsigned int value = 0;
@@ -187,7 +222,7 @@ bool ParsePort(const char* service, std::uint16_t& port) noexcept {
 bool ParsePort(const wchar_t* service, std::uint16_t& port) noexcept {
     port = 0;
     if (service == nullptr) {
-        return false;
+        return true;
     }
     __try {
         unsigned int value = 0;
@@ -548,6 +583,64 @@ bool ReadEndpoint(
     return false;
 }
 
+bool RegisterHighLevelDnsDomain(
+    const char* const domain,
+    const std::vector<protocol::DnsProxyAddress>& addresses,
+    const std::uint64_t now) noexcept {
+    if (domain == nullptr || addresses.empty()) {
+        return false;
+    }
+    std::uint32_t minimum_ttl = addresses.front().ttl_seconds;
+    for (const auto& address : addresses) {
+        minimum_ttl = std::min(minimum_ttl, address.ttl_seconds);
+    }
+    const std::size_t domain_length = std::strlen(domain);
+    if (minimum_ttl == 0 || domain_length == 0 ||
+        domain_length > protocol::kDnsProxyMaximumDomainLength) {
+        return false;
+    }
+    const std::uint64_t expires_at =
+        now + static_cast<std::uint64_t>(minimum_ttl) * 1'000U;
+    HighLevelDnsExclusiveLock guard;
+    HighLevelDnsEntry* available = nullptr;
+    for (auto& entry : g_high_level_dns) {
+        if (entry.occupied && entry.expires_at <= now) {
+            entry = {};
+        }
+        if (entry.occupied && std::strcmp(entry.domain, domain) == 0) {
+            entry.expires_at = expires_at;
+            return true;
+        }
+        if (!entry.occupied && available == nullptr) {
+            available = &entry;
+        }
+    }
+    if (available == nullptr) {
+        return false;
+    }
+    available->occupied = true;
+    std::copy_n(domain, domain_length + 1U, available->domain);
+    available->expires_at = expires_at;
+    return true;
+}
+
+template <typename Character>
+bool HasHighLevelDnsDomain(const Character* domain) noexcept {
+    std::array<char, protocol::kMaximumEventDomainBytes + 1U> ascii_domain{};
+    if (!CopyAsciiDomain(domain, ascii_domain)) {
+        return false;
+    }
+    const std::uint64_t now = GetTickCount64();
+    HighLevelDnsSharedLock guard;
+    for (const auto& entry : g_high_level_dns) {
+        if (entry.occupied && entry.expires_at > now &&
+            std::strcmp(entry.domain, ascii_domain.data()) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool WriteTransferredBytes(
     const LPDWORD output,
     const DWORD value) noexcept {
@@ -899,6 +992,10 @@ INT WSAAPI DetouredGetAddrInfoA(
     const ADDRINFOA* hints,
     PADDRINFOA* results) noexcept {
     const auto* policy = g_policy.get();
+    if (policy != nullptr && policy->mode() == Mode::kAllowList &&
+        HasHighLevelDnsDomain(node_name)) {
+        return g_get_addr_info_a(node_name, service_name, hints, results);
+    }
     if ((policy != nullptr && policy->mode() == Mode::kUnrestricted) ||
         node_name == nullptr) {
         return g_get_addr_info_a(node_name, service_name, hints, results);
@@ -957,6 +1054,10 @@ INT WSAAPI DetouredGetAddrInfoW(
     const ADDRINFOW* hints,
     PADDRINFOW* results) noexcept {
     const auto* policy = g_policy.get();
+    if (policy != nullptr && policy->mode() == Mode::kAllowList &&
+        HasHighLevelDnsDomain(node_name)) {
+        return g_get_addr_info_w(node_name, service_name, hints, results);
+    }
     if ((policy != nullptr && policy->mode() == Mode::kUnrestricted) ||
         node_name == nullptr) {
         return g_get_addr_info_w(node_name, service_name, hints, results);
@@ -1111,6 +1212,12 @@ INT WSAAPI DetouredGetAddrInfoExW(
     LPLOOKUPSERVICE_COMPLETION_ROUTINE completion_routine,
     LPHANDLE lookup_handle) noexcept {
     const auto* policy = g_policy.get();
+    if (policy != nullptr && policy->mode() == Mode::kAllowList &&
+        HasHighLevelDnsDomain(node_name)) {
+        return g_get_addr_info_ex_w(
+            node_name, service_name, name_space, provider, hints, results,
+            timeout, overlapped, completion_routine, lookup_handle);
+    }
     if ((policy != nullptr && policy->mode() == Mode::kUnrestricted) ||
         node_name == nullptr) {
         return g_get_addr_info_ex_w(
@@ -1155,6 +1262,12 @@ INT WSAAPI DetouredGetAddrInfoExA(
     LPLOOKUPSERVICE_COMPLETION_ROUTINE completion_routine,
     LPHANDLE lookup_handle) noexcept {
     const auto* policy = g_policy.get();
+    if (policy != nullptr && policy->mode() == Mode::kAllowList &&
+        HasHighLevelDnsDomain(node_name)) {
+        return g_get_addr_info_ex_a(
+            node_name, service_name, name_space, provider, hints, results,
+            timeout, overlapped, completion_routine, lookup_handle);
+    }
     if ((policy != nullptr && policy->mode() == Mode::kUnrestricted) ||
         node_name == nullptr) {
         return g_get_addr_info_ex_a(
@@ -1211,6 +1324,10 @@ DNS_STATUS WINAPI DetouredDnsQueryA(
         name == nullptr) {
         return g_dns_query_a(name, type, options, extra, results, reserved);
     }
+    if (policy->mode() == Mode::kAllowList &&
+        HasHighLevelDnsDomain(name)) {
+        return g_dns_query_a(name, type, options, extra, results, reserved);
+    }
     if (policy != nullptr && policy->mode() == Mode::kAllowList) {
         const DNS_STATUS status = ResolveDnsQueryViaProxy(name, type, results);
         if (status != ERROR_ACCESS_DENIED) {
@@ -1236,6 +1353,10 @@ DNS_STATUS WINAPI DetouredDnsQueryUtf8(
         name == nullptr) {
         return g_dns_query_utf8(name, type, options, extra, results, reserved);
     }
+    if (policy->mode() == Mode::kAllowList &&
+        HasHighLevelDnsDomain(name)) {
+        return g_dns_query_utf8(name, type, options, extra, results, reserved);
+    }
     if (policy != nullptr && policy->mode() == Mode::kAllowList) {
         const DNS_STATUS status = ResolveDnsQueryViaProxy(name, type, results);
         if (status != ERROR_ACCESS_DENIED) {
@@ -1259,6 +1380,10 @@ DNS_STATUS WINAPI DetouredDnsQueryW(
     const auto* policy = g_policy.get();
     if ((policy != nullptr && policy->mode() == Mode::kUnrestricted) ||
         name == nullptr) {
+        return g_dns_query_w(name, type, options, extra, results, reserved);
+    }
+    if (policy->mode() == Mode::kAllowList &&
+        HasHighLevelDnsDomain(name)) {
         return g_dns_query_w(name, type, options, extra, results, reserved);
     }
     if (policy != nullptr && policy->mode() == Mode::kAllowList) {
@@ -1288,6 +1413,10 @@ DNS_STATUS WINAPI DetouredDnsQueryEx(
     PDNS_QUERY_CANCEL cancel) noexcept {
     const auto* policy = g_policy.get();
     if (policy != nullptr && policy->mode() == Mode::kUnrestricted) {
+        return g_dns_query_ex(request, results, cancel);
+    }
+    if (policy != nullptr && policy->mode() == Mode::kAllowList &&
+        HasHighLevelDnsDomain(ReadDnsQueryName(request))) {
         return g_dns_query_ex(request, results, cancel);
     }
     if (policy != nullptr && policy->mode() == Mode::kAllowList &&
@@ -1389,13 +1518,35 @@ int WSAAPI DetouredCloseSocket(const SOCKET socket) noexcept {
 
 }  // namespace
 
-bool DenyHighLevelConnection(const char* server) noexcept {
+bool DenyHighLevelConnection(
+    const char* const server,
+    const std::uint16_t port) noexcept {
     const auto* policy = g_policy.get();
     if (policy != nullptr && policy->mode() == Mode::kUnrestricted) {
         return false;
     }
     std::array<char, protocol::kMaximumEventDomainBytes + 1U> domain{};
-    if (CopyAsciiDomain(server, domain)) {
+    const bool valid_domain = CopyAsciiDomain(server, domain);
+    if (policy != nullptr && policy->mode() == Mode::kAllowList &&
+        valid_domain && port != 0 && g_dns_channel != nullptr &&
+        policy->DecideDomain(domain.data()) == Decision::kAllow &&
+        policy->DecidePort(port) == Decision::kAllow) {
+        const std::uint64_t now = GetTickCount64();
+        std::vector<protocol::DnsProxyAddress> addresses;
+        const auto status = g_dns_channel->Resolve(
+            domain.data(), 0, now, &addresses);
+        if (status == DnsProxyChannelStatus::kSuccess &&
+            RegisterHighLevelDnsDomain(
+                domain.data(), addresses, now)) {
+            SetLastError(ERROR_SUCCESS);
+            return false;
+        }
+        if (status != DnsProxyChannelStatus::kDenied) {
+            SetLastError(ERROR_NETWORK_UNREACHABLE);
+            return true;
+        }
+    }
+    if (valid_domain) {
         hook::TryReportDomainNetworkViolation(
             protocol::NetworkOperation::kConnect, domain.data());
     }
@@ -1403,13 +1554,35 @@ bool DenyHighLevelConnection(const char* server) noexcept {
     return true;
 }
 
-bool DenyHighLevelConnection(const wchar_t* server) noexcept {
+bool DenyHighLevelConnection(
+    const wchar_t* const server,
+    const std::uint16_t port) noexcept {
     const auto* policy = g_policy.get();
     if (policy != nullptr && policy->mode() == Mode::kUnrestricted) {
         return false;
     }
     std::array<char, protocol::kMaximumEventDomainBytes + 1U> domain{};
-    if (CopyAsciiDomain(server, domain)) {
+    const bool valid_domain = CopyAsciiDomain(server, domain);
+    if (policy != nullptr && policy->mode() == Mode::kAllowList &&
+        valid_domain && port != 0 && g_dns_channel != nullptr &&
+        policy->DecideDomain(domain.data()) == Decision::kAllow &&
+        policy->DecidePort(port) == Decision::kAllow) {
+        const std::uint64_t now = GetTickCount64();
+        std::vector<protocol::DnsProxyAddress> addresses;
+        const auto status = g_dns_channel->Resolve(
+            domain.data(), 0, now, &addresses);
+        if (status == DnsProxyChannelStatus::kSuccess &&
+            RegisterHighLevelDnsDomain(
+                domain.data(), addresses, now)) {
+            SetLastError(ERROR_SUCCESS);
+            return false;
+        }
+        if (status != DnsProxyChannelStatus::kDenied) {
+            SetLastError(ERROR_NETWORK_UNREACHABLE);
+            return true;
+        }
+    }
+    if (valid_domain) {
         hook::TryReportDomainNetworkViolation(
             protocol::NetworkOperation::kConnect, domain.data());
     }

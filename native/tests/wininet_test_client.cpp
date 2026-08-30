@@ -30,7 +30,7 @@ HighLevelConnectResult TryWinInetConnectA(
     return {connection == nullptr, error};
 }
 
-bool TryWinInetGetW(
+std::uint32_t TryWinInetGetW(
     const wchar_t* const server,
     const std::uint16_t port) noexcept {
     const HINTERNET session = InternetOpenW(
@@ -67,7 +67,19 @@ bool TryWinInetGetW(
     if (session != nullptr) {
         InternetCloseHandle(session);
     }
-    return read;
+    if (session == nullptr) {
+        return 1;
+    }
+    if (connection == nullptr) {
+        return 2;
+    }
+    if (request == nullptr) {
+        return 3;
+    }
+    if (!sent) {
+        return 4;
+    }
+    return read ? 0U : 5U;
 }
 
 }  // namespace bolt::tests

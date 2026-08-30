@@ -833,6 +833,7 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
             &ipv6_peer_length) == 0 && ipv6_peer.sin6_family == AF_INET6 &&
         ntohs(ipv6_peer.sin6_port) ==
             static_cast<std::uint16_t>(_wtoi(arguments[4]));
+    closesocket(ipv6_socket);
     ADDRINFOW wide_hints{};
     wide_hints.ai_family = AF_INET;
     wide_hints.ai_socktype = SOCK_STREAM;
@@ -949,11 +950,15 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
             &connect_ex_peer_length) == 0 &&
         ntohs(connect_ex_peer.sin_port) ==
             static_cast<std::uint16_t>(_wtoi(arguments[3]));
+    closesocket(allowed_connect_ex_socket);
+    if (connect_ex_event != nullptr) {
+        CloseHandle(connect_ex_event);
+    }
     const auto http_port =
         static_cast<std::uint16_t>(_wtoi(arguments[5]));
-    const bool win_http_allowed =
+    const std::uint32_t win_http_stage =
         bolt::tests::TryWinHttpGet(arguments[2], http_port);
-    const bool win_inet_allowed =
+    const std::uint32_t win_inet_stage =
         bolt::tests::TryWinInetGetW(arguments[2], http_port);
 
     sockaddr_in wrong_port{};
@@ -1015,11 +1020,6 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
         CloseHandle(dns_ex_event);
     }
     closesocket(denied_socket);
-    closesocket(ipv6_socket);
-    closesocket(allowed_connect_ex_socket);
-    if (connect_ex_event != nullptr) {
-        CloseHandle(connect_ex_event);
-    }
     closesocket(allowed_udp);
     WSACleanup();
     if (resolve_status != 0) {
@@ -1041,8 +1041,11 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
         !connect_ex_peer_is_original) {
         return 237;
     }
-    if (!win_http_allowed || !win_inet_allowed) {
-        return 238;
+    if (win_http_stage != 0) {
+        return 400 + static_cast<int>(win_http_stage);
+    }
+    if (win_inet_stage != 0) {
+        return 420 + static_cast<int>(win_inet_stage);
     }
     if (closed_peer_status != SOCKET_ERROR ||
         closed_peer_error != WSAENOTSOCK) {
@@ -1326,13 +1329,14 @@ bool RunNetworkAllowListTests() {
         process.Wait(5'000) == bolt::common::ProcessStatus::kSuccess;
     dns_proxy->CloseClientHandles();
     DWORD exit_code = 0;
+    const auto exit_status = process.ExitCode(exit_code);
     const bool proxy_waited =
         dns_proxy->Wait(5'000) == bolt::network::DnsProxyProcessStatus::kSuccess;
     const bool passed = ready_ok && waited && accepted != INVALID_SOCKET &&
         ipv6_accepted != INVALID_SOCKET && proxy_waited &&
         connect_ex_accepted != INVALID_SOCKET &&
         win_http_served && win_inet_served &&
-        process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess && exit_code == 0;
+        exit_status == bolt::common::ProcessStatus::kSuccess && exit_code == 0;
     closesocket(listener);
     closesocket(ipv6_listener);
     closesocket(http_listener);
@@ -1343,9 +1347,11 @@ bool RunNetworkAllowListTests() {
     if (!passed) {
         std::fprintf(
             stderr,
-            "allow-list fixture failed: port=%u ready=%d waited=%d proxy=%d exit=%lu\n",
+            "allow-list fixture failed: port=%u ready=%d waited=%d proxy=%d "
+            "http=%d inet=%d exit=%lu\n",
             port,
             ready_ok ? 1 : 0, waited ? 1 : 0, proxy_waited ? 1 : 0,
+            win_http_served ? 1 : 0, win_inet_served ? 1 : 0,
             static_cast<unsigned long>(exit_code));
     }
     return passed;

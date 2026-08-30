@@ -24,7 +24,7 @@ HINTERNET WINAPI DetouredInternetConnectA(
     const DWORD service,
     const DWORD flags,
     const DWORD_PTR context) noexcept {
-    if (DenyHighLevelConnection(server)) {
+    if (DenyHighLevelConnection(server, port)) {
         return nullptr;
     }
     return g_internet_connect_a(
@@ -40,7 +40,7 @@ HINTERNET WINAPI DetouredInternetConnectW(
     const DWORD service,
     const DWORD flags,
     const DWORD_PTR context) noexcept {
-    if (DenyHighLevelConnection(server)) {
+    if (DenyHighLevelConnection(server, port)) {
         return nullptr;
     }
     return g_internet_connect_w(

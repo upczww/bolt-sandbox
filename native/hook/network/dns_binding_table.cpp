@@ -304,6 +304,32 @@ bool DnsBindingTable::FindAuthorizedDomain(
     return false;
 }
 
+bool DnsBindingTable::HasAuthorizedDomain(
+    const std::array<std::uint8_t, 16>& session_id,
+    const std::uint32_t process_id,
+    const char* const ascii_domain,
+    const std::uint64_t now) const noexcept {
+    std::size_t domain_length = 0;
+    const bool session_is_zero = std::all_of(
+        session_id.begin(), session_id.end(),
+        [](const std::uint8_t byte) { return byte == 0; });
+    if (implementation_ == nullptr || session_is_zero || process_id == 0 ||
+        !ReadDomainLength(ascii_domain, domain_length)) {
+        return false;
+    }
+    SharedLock guard(implementation_->lock);
+    for (std::size_t index = 0; index < implementation_->capacity; ++index) {
+        const Entry& entry = implementation_->entries[index];
+        if (entry.occupied && entry.expires_at > now &&
+            entry.session_id == session_id && entry.process_id == process_id &&
+            entry.port == 0 &&
+            std::strcmp(entry.domain, ascii_domain) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::size_t DnsBindingTable::ActiveCount(const std::uint64_t now) const noexcept {
     if (implementation_ == nullptr) {
         return 0;

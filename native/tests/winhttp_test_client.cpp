@@ -4,6 +4,7 @@
 
 namespace bolt::tests {
 
+
 HighLevelConnectResult TryWinHttpConnect(
     const wchar_t* server,
     const std::uint16_t port) noexcept {
@@ -16,12 +17,13 @@ HighLevelConnectResult TryWinHttpConnect(
     return {connection == nullptr, error};
 }
 
-bool TryWinHttpGet(
+std::uint32_t TryWinHttpGet(
     const wchar_t* const server,
     const std::uint16_t port) noexcept {
     const HINTERNET session = WinHttpOpen(
         L"bolt-sandbox-network-test/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    const DWORD open_error = session == nullptr ? GetLastError() : ERROR_SUCCESS;
     const HINTERNET connection =
         session == nullptr ? nullptr : WinHttpConnect(session, server, port, 0);
     const HINTERNET request = connection == nullptr
@@ -49,7 +51,22 @@ bool TryWinHttpGet(
     if (session != nullptr) {
         WinHttpCloseHandle(session);
     }
-    return read;
+    if (session == nullptr) {
+        return 100U + open_error;
+    }
+    if (connection == nullptr) {
+        return 2;
+    }
+    if (request == nullptr) {
+        return 3;
+    }
+    if (!sent) {
+        return 4;
+    }
+    if (!received) {
+        return 5;
+    }
+    return read ? 0U : 6U;
 }
 
 }  // namespace bolt::tests

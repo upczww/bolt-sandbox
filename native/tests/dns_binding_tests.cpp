@@ -62,7 +62,7 @@ bool RunDnsBindingTests() {
         authorized_domain[0] != '\0') {
         return false;
     }
-    if (!table->HasAuthorizedDomain(
+    if (table->HasAuthorizedDomain(
             session_one, 10, "api.example", 149) ||
         table->HasAuthorizedDomain(
             session_two, 10, "api.example", 149) ||
@@ -76,6 +76,8 @@ bool RunDnsBindingTests() {
         session_one, 10, "api.example", address_one, 0);
     if (wildcard_table->Upsert(wildcard_port, 100, 50) !=
             bolt::network::BindingStatus::kSuccess ||
+        !wildcard_table->HasAuthorizedDomain(
+            session_one, 10, "api.example", 120) ||
         !wildcard_table->IsEndpointAuthorized(
             session_one, 10, bolt::network::AddressFamily::kIpv4,
             address_one.data(), address_one.size(), 8'443, 120)) {

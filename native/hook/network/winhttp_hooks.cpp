@@ -18,7 +18,7 @@ HINTERNET WINAPI DetouredWinHttpConnect(
     const LPCWSTR server,
     const INTERNET_PORT port,
     const DWORD reserved) noexcept {
-    if (DenyHighLevelConnection(server)) {
+    if (DenyHighLevelConnection(server, port)) {
         return nullptr;
     }
     return g_win_http_connect(session, server, port, reserved);
