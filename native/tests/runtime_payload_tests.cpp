@@ -10,6 +10,7 @@ bool RunRuntimePayloadTests() {
     expected.policy_handle = 0x111;
     expected.event_handle = 0x222;
     expected.release_handle = 0x333;
+    expected.descendant_ready_handle = 0x444;
     expected.handshake_nonce.fill(0xA5);
 
     const auto encoded = bolt::protocol::EncodeRuntimePayload(expected);
@@ -25,6 +26,27 @@ bool RunRuntimePayloadTests() {
     if (bolt::protocol::DecodeRuntimePayload(
             invalid_magic.data(), invalid_magic.size(), decoded) !=
         bolt::protocol::RuntimePayloadStatus::kInvalidMagic) {
+        return false;
+    }
+
+    auto invalid_descendant_ready_handle = encoded;
+    for (std::size_t index = 40; index < 48; ++index) {
+        invalid_descendant_ready_handle[index] = 0xFF;
+    }
+    if (bolt::protocol::DecodeRuntimePayload(
+            invalid_descendant_ready_handle.data(),
+            invalid_descendant_ready_handle.size(), decoded) !=
+        bolt::protocol::RuntimePayloadStatus::kInvalidHandle) {
+        return false;
+    }
+
+    expected.descendant_ready_handle = 0;
+    const auto initial_process_payload =
+        bolt::protocol::EncodeRuntimePayload(expected);
+    if (bolt::protocol::DecodeRuntimePayload(
+            initial_process_payload.data(), initial_process_payload.size(), decoded) !=
+            bolt::protocol::RuntimePayloadStatus::kSuccess ||
+        decoded != expected) {
         return false;
     }
     return bolt::protocol::DecodeRuntimePayload(encoded.data(), encoded.size() - 1, decoded) ==
