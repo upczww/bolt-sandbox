@@ -1136,6 +1136,61 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 191;
     }
+    const std::filesystem::path alias_wildcard =
+        std::filesystem::path(arguments[18]).parent_path() / L"*";
+    const std::string ansi_alias_wildcard = AnsiPath(alias_wildcard.c_str());
+    WIN32_FIND_DATAW alias_find_data_w{};
+    alias_find_data_w.dwFileAttributes = 0xA5A5A5A5;
+    const WIN32_FIND_DATAW alias_find_data_w_before = alias_find_data_w;
+    find = FindFirstFileW(alias_wildcard.c_str(), &alias_find_data_w);
+    if (find != INVALID_HANDLE_VALUE || GetLastError() != ERROR_ACCESS_DENIED ||
+        std::memcmp(
+            &alias_find_data_w, &alias_find_data_w_before,
+            sizeof(alias_find_data_w)) != 0) {
+        if (find != INVALID_HANDLE_VALUE) {
+            FindClose(find);
+        }
+        return 192;
+    }
+    WIN32_FIND_DATAA alias_find_data_a{};
+    alias_find_data_a.dwFileAttributes = 0xA5A5A5A5;
+    const WIN32_FIND_DATAA alias_find_data_a_before = alias_find_data_a;
+    find = ansi_alias_wildcard.empty()
+               ? INVALID_HANDLE_VALUE
+               : FindFirstFileA(ansi_alias_wildcard.c_str(), &alias_find_data_a);
+    if (find != INVALID_HANDLE_VALUE || GetLastError() != ERROR_ACCESS_DENIED ||
+        std::memcmp(
+            &alias_find_data_a, &alias_find_data_a_before,
+            sizeof(alias_find_data_a)) != 0) {
+        if (find != INVALID_HANDLE_VALUE) {
+            FindClose(find);
+        }
+        return 193;
+    }
+    find = FindFirstFileExW(
+        alias_wildcard.c_str(), FindExInfoBasic, &alias_find_data_w,
+        FindExSearchNameMatch, nullptr, 0);
+    if (find != INVALID_HANDLE_VALUE || GetLastError() != ERROR_ACCESS_DENIED ||
+        std::memcmp(
+            &alias_find_data_w, &alias_find_data_w_before,
+            sizeof(alias_find_data_w)) != 0) {
+        if (find != INVALID_HANDLE_VALUE) {
+            FindClose(find);
+        }
+        return 194;
+    }
+    find = FindFirstFileExA(
+        ansi_alias_wildcard.c_str(), FindExInfoBasic, &alias_find_data_a,
+        FindExSearchNameMatch, nullptr, 0);
+    if (find != INVALID_HANDLE_VALUE || GetLastError() != ERROR_ACCESS_DENIED ||
+        std::memcmp(
+            &alias_find_data_a, &alias_find_data_a_before,
+            sizeof(alias_find_data_a)) != 0) {
+        if (find != INVALID_HANDLE_VALUE) {
+            FindClose(find);
+        }
+        return 195;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1183,6 +1238,7 @@ bool RunProcessTests() {
         denied_junction_target / L"created-directory";
     const std::filesystem::path denied_alias_removed_directory =
         denied_junction_target / L"removable-directory";
+    const std::filesystem::path denied_alias_wildcard = denied_junction_target / L"*";
     const std::filesystem::path allowed_alias_move_source = allowed_root / L"move-source.txt";
     const std::filesystem::path alias_move_destination = allowed_junction / L"move-target.txt";
     const std::filesystem::path denied_alias_move_target =
@@ -1886,7 +1942,23 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kDelete,
-            denied_alias_removed_directory.wstring(), 89);
+            denied_alias_removed_directory.wstring(), 89) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_alias_wildcard.wstring(), 90) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_alias_wildcard.wstring(), 91) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_alias_wildcard.wstring(), 92) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_alias_wildcard.wstring(), 93);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
