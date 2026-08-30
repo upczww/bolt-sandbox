@@ -37,6 +37,8 @@ CopyFileW_t g_copy_file_w = CopyFileW;
 CopyFileExW_t g_copy_file_ex_w = CopyFileExW;
 CopyFileA_t g_copy_file_a = CopyFileA;
 CopyFileExA_t g_copy_file_ex_a = CopyFileExA;
+CopyFileTransactedW_t g_copy_file_transacted_w = CopyFileTransactedW;
+CopyFileTransactedA_t g_copy_file_transacted_a = CopyFileTransactedA;
 using CopyFile2Function = HRESULT(WINAPI*)(
     PCWSTR, PCWSTR, const COPYFILE2_EXTENDED_PARAMETERS*);
 CopyFile2Function g_copy_file_2 = nullptr;
@@ -288,6 +290,41 @@ HRESULT WINAPI DetouredCopyFile2(
     return g_copy_file_2(existing_path, new_path, extended_parameters);
 }
 
+BOOL WINAPI DetouredCopyFileTransactedW(
+    const LPCWSTR existing_path,
+    const LPCWSTR new_path,
+    const LPPROGRESS_ROUTINE progress_routine,
+    const LPVOID data,
+    const LPBOOL cancel,
+    const DWORD copy_flags,
+    const HANDLE transaction) noexcept {
+    if (!AuthorizeCopy(existing_path, new_path)) {
+        return FALSE;
+    }
+    return g_copy_file_transacted_w(
+        existing_path, new_path, progress_routine, data, cancel, copy_flags, transaction);
+}
+
+BOOL WINAPI DetouredCopyFileTransactedA(
+    const LPCSTR existing_path,
+    const LPCSTR new_path,
+    const LPPROGRESS_ROUTINE progress_routine,
+    const LPVOID data,
+    const LPBOOL cancel,
+    const DWORD copy_flags,
+    const HANDLE transaction) noexcept {
+    std::wstring existing_wide;
+    std::wstring new_wide;
+    if (!ConvertAnsiPath(existing_path, existing_wide) ||
+        !ConvertAnsiPath(new_path, new_wide) ||
+        !AuthorizeCopy(existing_wide.c_str(), new_wide.c_str())) {
+        return FALSE;
+    }
+    return g_copy_file_transacted_w(
+        existing_wide.c_str(), new_wide.c_str(), progress_routine, data, cancel, copy_flags,
+        transaction);
+}
+
 }  // namespace
 
 HookInstallStatus InstallFileHooks(
@@ -337,6 +374,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_copy_file_ex_a),
             reinterpret_cast<PVOID>(DetouredCopyFileExA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_copy_file_transacted_w),
+            reinterpret_cast<PVOID>(DetouredCopyFileTransactedW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_copy_file_transacted_a),
+            reinterpret_cast<PVOID>(DetouredCopyFileTransactedA)) != NO_ERROR ||
         (g_copy_file_2 != nullptr &&
          DetourAttach(
              reinterpret_cast<PVOID*>(&g_copy_file_2),
