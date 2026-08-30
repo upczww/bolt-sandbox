@@ -134,6 +134,11 @@ Directory enumeration begins with BuildXL's `FindFirstFileW/A` and
 authorization decision and report denied searches as `Enumerate` before any
 search handle or directory entry can be returned.
 
+Metadata probing through `GetFileAttributesW/A` and
+`GetFileAttributesExW/A` shares one metadata-policy decision. Denied targets
+return the native failure sentinel, preserve `ERROR_ACCESS_DENIED`, and cannot
+leak existence, type, size, or timestamps through the output structure.
+
 For textually allowed copy, move, and replace operation paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,
 appends any absent suffix, then evaluates the fully resolved source and
