@@ -17,6 +17,7 @@ bool RunRuntimePayloadTests() {
     expected.dns_authentication_key.fill(0x5A);
     expected.dns_maximum_frame_length = 1'024;
     expected.tcp_proxy_port = 32'123;
+    expected.tcp_proxy_ipv6_port = 32'124;
 
     const auto encoded = bolt::protocol::EncodeRuntimePayload(expected);
     bolt::protocol::RuntimePayload decoded{};
@@ -60,6 +61,16 @@ bool RunRuntimePayloadTests() {
         bolt::protocol::EncodeRuntimePayload(incomplete_proxy);
     if (bolt::protocol::DecodeRuntimePayload(
             incomplete_proxy_bytes.data(), incomplete_proxy_bytes.size(),
+            decoded) !=
+        bolt::protocol::RuntimePayloadStatus::kInvalidDnsProxy) {
+        return false;
+    }
+    incomplete_proxy = expected;
+    incomplete_proxy.tcp_proxy_ipv6_port = 0;
+    const auto incomplete_ipv6_bytes =
+        bolt::protocol::EncodeRuntimePayload(incomplete_proxy);
+    if (bolt::protocol::DecodeRuntimePayload(
+            incomplete_ipv6_bytes.data(), incomplete_ipv6_bytes.size(),
             decoded) !=
         bolt::protocol::RuntimePayloadStatus::kInvalidDnsProxy) {
         return false;

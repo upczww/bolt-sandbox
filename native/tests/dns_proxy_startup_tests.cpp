@@ -10,6 +10,8 @@ bool RunDnsProxyStartupTests() {
     startup.maximum_requests = 64;
     startup.tcp_listener_handle = 13;
     startup.tcp_listener_port = 32'123;
+    startup.tcp_ipv6_listener_handle = 14;
+    startup.tcp_ipv6_listener_port = 32'124;
     startup.maximum_tcp_connections = 64;
     startup.session.nonce[0] = 1;
     startup.session.authentication_key[0] = 2;
@@ -38,6 +40,12 @@ bool RunDnsProxyStartupTests() {
     }
     startup.maximum_frame_length = 1'024;
     startup.tcp_listener_port = 0;
+    if (bolt::protocol::EncodeDnsProxyStartup(startup) !=
+        std::array<std::uint8_t, bolt::protocol::kDnsProxyStartupLength>{}) {
+        return false;
+    }
+    startup.tcp_listener_port = 32'123;
+    startup.tcp_ipv6_listener_handle = 0;
     return bolt::protocol::EncodeDnsProxyStartup(startup) ==
            std::array<std::uint8_t, bolt::protocol::kDnsProxyStartupLength>{};
 }
