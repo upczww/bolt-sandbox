@@ -456,6 +456,54 @@ bool DenyRequestedBreakaway(
     return true;
 }
 
+bool IsDeniedBrokerName(const wchar_t* const application_name) noexcept {
+    if (application_name == nullptr || *application_name == L'\0') {
+        return false;
+    }
+    const wchar_t* name = application_name;
+    for (const wchar_t* cursor = application_name; *cursor != L'\0'; ++cursor) {
+        if (*cursor == L'\\' || *cursor == L'/') {
+            name = cursor + 1;
+        }
+    }
+    for (const wchar_t* denied : {
+             L"schtasks.exe", L"sc.exe", L"wmic.exe", L"at.exe"}) {
+        if (CompareStringOrdinal(name, -1, denied, -1, TRUE) == CSTR_EQUAL) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsDeniedBrokerName(const char* const application_name) noexcept {
+    if (application_name == nullptr || *application_name == '\0') {
+        return false;
+    }
+    const char* name = application_name;
+    for (const char* cursor = application_name; *cursor != '\0'; ++cursor) {
+        if (*cursor == '\\' || *cursor == '/') {
+            name = cursor + 1;
+        }
+    }
+    return _stricmp(name, "schtasks.exe") == 0 ||
+           _stricmp(name, "sc.exe") == 0 ||
+           _stricmp(name, "wmic.exe") == 0 ||
+           _stricmp(name, "at.exe") == 0;
+}
+
+template <typename Character>
+bool DenyRequestedDelegation(
+    const Character* const application_name,
+    const LPPROCESS_INFORMATION process_information) noexcept {
+    if (!IsDeniedBrokerName(application_name)) {
+        return false;
+    }
+    hook::TryReportProcessViolation(
+        protocol::ProcessOperation::kExternalDelegation);
+    DenyChildCreation(process_information);
+    return true;
+}
+
 bool ReadMitigationFlags(
     const PVOID buffer,
     const SIZE_T length,
@@ -523,6 +571,9 @@ BOOL WINAPI DetouredCreateProcessW(
             thread_attributes, inherit_handles, creation_flags, environment,
             current_directory, startup_information, process_information);
     }
+    if (DenyRequestedDelegation(application_name, process_information)) {
+        return FALSE;
+    }
     if (DenyRequestedBreakaway(creation_flags, process_information)) {
         return FALSE;
     }
@@ -558,6 +609,9 @@ BOOL WINAPI DetouredCreateProcessA(
             application_name, command_line, process_attributes,
             thread_attributes, inherit_handles, creation_flags, environment,
             current_directory, startup_information, process_information);
+    }
+    if (DenyRequestedDelegation(application_name, process_information)) {
+        return FALSE;
     }
     if (DenyRequestedBreakaway(creation_flags, process_information)) {
         return FALSE;
@@ -625,6 +679,9 @@ BOOL WINAPI DetouredCreateProcessAsUserW(
             thread_attributes, inherit_handles, creation_flags, environment,
             current_directory, startup_information, process_information);
     }
+    if (DenyRequestedDelegation(application_name, process_information)) {
+        return FALSE;
+    }
     if (DenyRequestedBreakaway(creation_flags, process_information)) {
         return FALSE;
     }
@@ -660,6 +717,9 @@ BOOL WINAPI DetouredCreateProcessAsUserA(
             token, application_name, command_line, process_attributes,
             thread_attributes, inherit_handles, creation_flags, environment,
             current_directory, startup_information, process_information);
+    }
+    if (DenyRequestedDelegation(application_name, process_information)) {
+        return FALSE;
     }
     if (DenyRequestedBreakaway(creation_flags, process_information)) {
         return FALSE;

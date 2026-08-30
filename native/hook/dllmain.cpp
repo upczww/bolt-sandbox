@@ -21,7 +21,19 @@ extern "C" __declspec(dllexport) std::uint16_t BoltSandboxProtocolVersion() noex
 
 namespace {
 
-volatile LONG g_runtime_initialized = 0;
+constexpr LONG kRuntimeUninitialized = 0;
+constexpr LONG kRuntimeInitializing = 1;
+constexpr LONG kRuntimeInitialized = 2;
+constexpr LONG kRuntimeFailed = 3;
+
+enum class RuntimeInitializationStatus : std::uint32_t {
+    kSuccess = 0,
+    kAlreadyInitialized = 1,
+    kFailed = 2,
+};
+
+volatile LONG g_runtime_state = kRuntimeUninitialized;
+HINSTANCE g_runtime_instance = nullptr;
 
 HANDLE HandleFromWire(const std::uint64_t value) noexcept {
     return reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(value));
@@ -43,7 +55,19 @@ bool WriteExact(
     return true;
 }
 
-bool InitializeRuntime(const HINSTANCE instance) noexcept {
+RuntimeInitializationStatus InitializeRuntime(const HINSTANCE instance) noexcept {
+    const LONG prior = InterlockedCompareExchange(
+        &g_runtime_state, kRuntimeInitializing, kRuntimeUninitialized);
+    if (prior == kRuntimeInitialized) {
+        return RuntimeInitializationStatus::kAlreadyInitialized;
+    }
+    if (prior != kRuntimeUninitialized) {
+        return RuntimeInitializationStatus::kFailed;
+    }
+    const auto failed = [] {
+        InterlockedExchange(&g_runtime_state, kRuntimeFailed);
+        return RuntimeInitializationStatus::kFailed;
+    };
     DetourRestoreAfterWith();
     DWORD payload_length = 0;
     const auto* encoded = static_cast<const std::uint8_t*>(
@@ -52,7 +76,7 @@ bool InitializeRuntime(const HINSTANCE instance) noexcept {
     if (bolt::protocol::DecodeRuntimePayload(encoded, payload_length, payload) !=
             bolt::protocol::RuntimePayloadStatus::kSuccess ||
         payload.target_process_id != GetCurrentProcessId()) {
-        return false;
+        return failed();
     }
 
     const HANDLE policy_handle = HandleFromWire(payload.policy_handle);
@@ -62,16 +86,16 @@ bool InitializeRuntime(const HINSTANCE instance) noexcept {
         instance, hook_path.data(), static_cast<DWORD>(hook_path.size()));
     if (hook_path_length == 0 || hook_path_length == hook_path.size() ||
         !bolt::process::ConfigureProcessRuntime(payload, hook_path.data())) {
-        return false;
+        return failed();
     }
     if (bolt::hook::InitializeEventSink(event_handle) !=
         bolt::hook::EventSinkStatus::kSuccess) {
-        return false;
+        return failed();
     }
     const auto* policy = static_cast<const std::uint8_t*>(
         MapViewOfFile(policy_handle, FILE_MAP_READ, 0, 0, payload.policy_length));
     if (policy == nullptr) {
-        return false;
+        return failed();
     }
     const auto file_hook_status =
         bolt::filesystem::InstallFileHooks(policy, payload.policy_length);
@@ -83,44 +107,51 @@ bool InitializeRuntime(const HINSTANCE instance) noexcept {
     UnmapViewOfFile(policy);
     if (file_hook_status != bolt::filesystem::HookInstallStatus::kSuccess ||
         network_hook_status != bolt::network::HookInstallStatus::kSuccess) {
-        return false;
+        return failed();
     }
     if (bolt::process::ApplyRequiredProcessMitigations() !=
         bolt::process::ProcessMitigationStatus::kSuccess) {
-        return false;
+        return failed();
     }
 
-    InterlockedExchange(&g_runtime_initialized, 1);
+    InterlockedExchange(&g_runtime_state, kRuntimeInitialized);
     if (payload.descendant_ready_handle != 0) {
         const HANDLE descendant_ready =
             HandleFromWire(payload.descendant_ready_handle);
         const HANDLE descendant_release = HandleFromWire(payload.release_handle);
         if (!SetEvent(descendant_ready) ||
             WaitForSingleObject(descendant_release, 30'000) != WAIT_OBJECT_0) {
-            InterlockedExchange(&g_runtime_initialized, 0);
-            return false;
+            InterlockedExchange(&g_runtime_state, kRuntimeFailed);
+            return RuntimeInitializationStatus::kFailed;
         }
         CloseHandle(descendant_ready);
         CloseHandle(descendant_release);
-        return true;
+        return RuntimeInitializationStatus::kSuccess;
     }
 
     const auto ready = bolt::protocol::EncodeReadyFrame(payload.handshake_nonce);
     if (!WriteExact(event_handle, ready.data(), ready.size())) {
-        InterlockedExchange(&g_runtime_initialized, 0);
-        return false;
+        InterlockedExchange(&g_runtime_state, kRuntimeFailed);
+        return RuntimeInitializationStatus::kFailed;
     }
     if (WaitForSingleObject(HandleFromWire(payload.release_handle), 30'000) != WAIT_OBJECT_0) {
-        InterlockedExchange(&g_runtime_initialized, 0);
-        return false;
+        InterlockedExchange(&g_runtime_state, kRuntimeFailed);
+        return RuntimeInitializationStatus::kFailed;
     }
-    return true;
+    return RuntimeInitializationStatus::kSuccess;
 }
 
 }  // namespace
 
 extern "C" __declspec(dllexport) BOOL BoltSandboxRuntimeInitialized() noexcept {
-    return InterlockedCompareExchange(&g_runtime_initialized, 1, 1) == 1;
+    return InterlockedCompareExchange(
+               &g_runtime_state, kRuntimeInitialized, kRuntimeInitialized) ==
+           kRuntimeInitialized;
+}
+
+extern "C" __declspec(dllexport) std::uint32_t
+BoltSandboxInitializeRuntime() noexcept {
+    return static_cast<std::uint32_t>(InitializeRuntime(g_runtime_instance));
 }
 
 extern "C" __declspec(dllexport) std::uint32_t
@@ -139,7 +170,10 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) noexcept 
         if (DetourIsHelperProcess()) {
             return TRUE;
         }
-        if (!InitializeRuntime(instance)) {
+        g_runtime_instance = instance;
+        const auto status = InitializeRuntime(instance);
+        if (status != RuntimeInitializationStatus::kSuccess &&
+            status != RuntimeInitializationStatus::kAlreadyInitialized) {
             return FALSE;
         }
         DisableThreadLibraryCalls(instance);

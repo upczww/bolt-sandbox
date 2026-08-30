@@ -388,6 +388,7 @@ wire_enum!(
     ProcessOperation::Elevation => 2,
     ProcessOperation::Breakaway => 3,
     ProcessOperation::MitigationWeakening => 4,
+    ProcessOperation::ExternalDelegation => 5,
 );
 
 fn push_u32(payload: &mut Vec<u8>, value: u32) {
@@ -706,6 +707,7 @@ mod tests {
             ProcessOperation::Elevation,
             ProcessOperation::Breakaway,
             ProcessOperation::MitigationWeakening,
+            ProcessOperation::ExternalDelegation,
         ] {
             let event = SandboxEvent::ProcessViolation(ProcessViolation {
                 process_id: 99,

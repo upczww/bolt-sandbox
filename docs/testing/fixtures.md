@@ -16,6 +16,23 @@ not be placed on its command line or in its environment.
   `sensitive`, with unique marker contents and links crossing every boundary.
 - Every mutating operation writes a nonce so stale state cannot satisfy an
   assertion. Teardown verifies resolved paths stay under the test root.
+- Optional host capabilities are supplied only to the test harness through
+  `BOLT_TEST_UNC_ROOT` and `BOLT_TEST_CASE_SENSITIVE_ROOT`. The first value is
+  an existing writable UNC share root; the second is an existing local
+  directory with `FILE_CS_FLAG_CASE_SENSITIVE_DIR` enabled. Missing variables
+  are recorded as `not_present` and do not silently substitute a local path.
+- When either capability variable is present, the fixture validates the real
+  capability before claiming evidence. UNC tests compare ordinary `\\server`
+  and extended `\\?\UNC\server` aliases and verify share-side contents.
+  Case-sensitive tests create two existing targets that differ only by case,
+  require distinct file IDs, and verify that an allow rule for one identity
+  cannot authorize the denied identity. The same conflicting policy must be
+  rejected on a case-insensitive directory.
+- Volume-alias fixtures exercise `\\.\`, `\\?\Volume{GUID}\`, `\??\`, and
+  direct `\Device\HarddiskVolume...` paths against DOS-path policy rules. The
+  volume GUID and native-device probes run in an isolated Job with a shared
+  stage word and a three-second watchdog; timeout terminates the whole Job and
+  reports the last completed stage instead of blocking the suite.
 
 ## Process fixtures
 
@@ -113,6 +130,17 @@ version for `cmd`, PowerShell, Node, Python, Git, Rust/Cargo, curl, and build
 scripts. Test commands operate only in the disposable fixture tree and local
 network. Tool discovery happens before the run; unavailable required tools make
 the environment ineligible rather than reducing the case count.
+
+The native process matrix is enabled only when
+`BOLT_TEST_REQUIRE_COMPATIBILITY=1`. Tool paths may be pinned with
+`BOLT_TEST_CMD`, `BOLT_TEST_POWERSHELL`, `BOLT_TEST_NODE`,
+`BOLT_TEST_PYTHON`, `BOLT_TEST_GIT`, and `BOLT_TEST_CARGO`; otherwise the
+fixture uses `SearchPathW`. A configured missing tool is a failure. Each tool
+runs once for an allowed startup/version workflow and once against a synthetic
+denied `Cargo.toml`; the latter must fail and emit a path-matching violation for
+the exact tool PID. The fixture redirects cwd/TEMP/TMP to a disposable
+read-write root and disables optional .NET diagnostics rather than granting an
+arbitrary named-pipe capability.
 
 ## Observation schema
 

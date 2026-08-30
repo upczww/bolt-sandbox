@@ -11,6 +11,7 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 & (Join-Path $PSScriptRoot 'verify-hook-manifest.ps1')
 & (Join-Path $PSScriptRoot 'audit-filesystem-evidence.ps1')
+& (Join-Path $PSScriptRoot 'audit-process-evidence.ps1')
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path -LiteralPath $vswhere)) {
     throw 'Visual Studio locator was not found.'

@@ -8,6 +8,9 @@
 #include "protocol/version.h"
 
 #include <algorithm>
+#include <array>
+#include <cstring>
+#include <filesystem>
 #include <limits>
 #include <new>
 #include <string>
@@ -31,6 +34,12 @@ struct Rule {
     std::wstring root;
     RuleKind kind;
     std::size_t depth;
+    bool case_sensitive = false;
+};
+
+struct PathAlias {
+    std::wstring prefix;
+    std::wstring replacement;
 };
 
 class Reader {
@@ -151,23 +160,166 @@ bool EqualIgnoreCase(const std::wstring& left, const std::wstring& right) noexce
                static_cast<int>(right.size()), TRUE) == CSTR_EQUAL;
 }
 
-bool RootContains(const std::wstring& root, const wchar_t* path) noexcept {
+bool QueryCaseSensitiveIdentity(
+    const std::wstring& root,
+    FILE_ID_INFO& identity) noexcept {
+    try {
+        if (root.rfind(L"\\\\", 0) == 0) {
+            return false;
+        }
+        const std::filesystem::path path(root);
+        const auto parent = path.parent_path();
+        if (parent.empty()) {
+            return false;
+        }
+        const HANDLE parent_handle = CreateFileW(
+            parent.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (parent_handle == INVALID_HANDLE_VALUE) {
+            return false;
+        }
+        FILE_CASE_SENSITIVE_INFO case_information{};
+        const bool case_sensitive =
+            GetFileInformationByHandleEx(
+                parent_handle, FileCaseSensitiveInfo, &case_information,
+                sizeof(case_information)) != FALSE &&
+            (case_information.Flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR) != 0;
+        CloseHandle(parent_handle);
+        if (!case_sensitive) {
+            return false;
+        }
+
+        const HANDLE target_handle = CreateFileW(
+            root.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (target_handle == INVALID_HANDLE_VALUE) {
+            return false;
+        }
+        const bool identified =
+            GetFileInformationByHandleEx(
+                target_handle, FileIdInfo, &identity, sizeof(identity)) != FALSE;
+        CloseHandle(target_handle);
+        return identified;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool EnableCaseSensitiveRules(Rule& left, Rule& right) noexcept {
+    FILE_ID_INFO left_identity{};
+    FILE_ID_INFO right_identity{};
+    if (!QueryCaseSensitiveIdentity(left.root, left_identity) ||
+        !QueryCaseSensitiveIdentity(right.root, right_identity)) {
+        return false;
+    }
+    const bool distinct =
+        left_identity.VolumeSerialNumber != right_identity.VolumeSerialNumber ||
+        std::memcmp(
+            left_identity.FileId.Identifier, right_identity.FileId.Identifier,
+            sizeof(left_identity.FileId.Identifier)) != 0;
+    if (!distinct) {
+        return false;
+    }
+    left.case_sensitive = true;
+    right.case_sensitive = true;
+    return true;
+}
+
+bool RootContains(
+    const std::wstring& root,
+    const wchar_t* path,
+    const bool case_sensitive = false) noexcept {
     const std::size_t path_length = std::wcslen(path);
     if (root.size() > path_length || root.size() > static_cast<std::size_t>(INT_MAX)) {
         return false;
     }
     if (CompareStringOrdinal(
             root.data(), static_cast<int>(root.size()), path,
-            static_cast<int>(root.size()), TRUE) != CSTR_EQUAL) {
+            static_cast<int>(root.size()), case_sensitive ? FALSE : TRUE) !=
+        CSTR_EQUAL) {
         return false;
     }
     return root.size() == path_length || IsDirectorySeparator(root.back()) ||
            IsDirectorySeparator(path[root.size()]);
 }
 
+bool HasPrefixIgnoreCase(
+    const std::wstring& value,
+    const std::wstring& prefix) noexcept {
+    return value.size() >= prefix.size() &&
+           prefix.size() <= static_cast<std::size_t>(INT_MAX) &&
+           CompareStringOrdinal(
+               value.data(), static_cast<int>(prefix.size()), prefix.data(),
+               static_cast<int>(prefix.size()), TRUE) == CSTR_EQUAL;
+}
+
+bool ReplaceAlias(
+    const std::wstring& path,
+    const std::vector<PathAlias>& aliases,
+    std::wstring& replaced) {
+    for (const auto& alias : aliases) {
+        if (!HasPrefixIgnoreCase(path, alias.prefix) ||
+            (path.size() > alias.prefix.size() &&
+             !IsDirectorySeparator(alias.prefix.back()) &&
+             !IsDirectorySeparator(path[alias.prefix.size()]))) {
+            continue;
+        }
+        replaced.assign(alias.replacement);
+        replaced.append(path, alias.prefix.size(), std::wstring::npos);
+        return true;
+    }
+    return false;
+}
+
+std::vector<PathAlias> LoadPathAliases() {
+    std::vector<PathAlias> aliases;
+    const DWORD required = GetLogicalDriveStringsW(0, nullptr);
+    if (required == 0) {
+        return aliases;
+    }
+    std::wstring drives(static_cast<std::size_t>(required) + 1, L'\0');
+    if (GetLogicalDriveStringsW(required, drives.data()) == 0) {
+        return {};
+    }
+    for (const wchar_t* drive = drives.c_str(); *drive != L'\0';
+         drive += std::wcslen(drive) + 1) {
+        if (std::wcslen(drive) < 3) {
+            continue;
+        }
+        std::array<wchar_t, 64> volume_name{};
+        if (GetVolumeNameForVolumeMountPointW(
+                drive, volume_name.data(),
+                static_cast<DWORD>(volume_name.size()))) {
+            const std::wstring volume(volume_name.data());
+            if (volume.rfind(L"\\\\?\\", 0) == 0 && volume.size() > 4) {
+                aliases.push_back({volume.substr(4), drive});
+            }
+        }
+        const wchar_t drive_name[] = {drive[0], L':', L'\0'};
+        std::array<wchar_t, 32'768> device_name{};
+        if (QueryDosDeviceW(
+                drive_name, device_name.data(),
+                static_cast<DWORD>(device_name.size())) != 0) {
+            aliases.push_back({device_name.data(), drive_name});
+        }
+    }
+    return aliases;
+}
+
 bool AssignPolicyPath(
-    const CanonicalizedPath& canonical,
+    const wchar_t* path,
+    const std::vector<PathAlias>& aliases,
     std::wstring& normalized_path) {
+    if (path == nullptr) {
+        return false;
+    }
+    const std::wstring raw_path(path);
+    if (ReplaceAlias(raw_path, aliases, normalized_path)) {
+        return true;
+    }
+    const auto canonical = CanonicalizedPath::Canonicalize(path);
     const wchar_t* normalized = canonical.GetPathStringWithoutTypePrefix();
     if (canonical.IsNull() || normalized == nullptr) {
         return false;
@@ -181,9 +333,13 @@ bool AssignPolicyPath(
             CSTR_EQUAL) {
         normalized_path.assign(L"\\\\");
         normalized_path.append(normalized + std::size(unc_marker) - 1);
-        return true;
+    } else {
+        normalized_path.assign(normalized);
     }
-    normalized_path.assign(normalized);
+    std::wstring replaced;
+    if (ReplaceAlias(normalized_path, aliases, replaced)) {
+        normalized_path = std::move(replaced);
+    }
     return true;
 }
 
@@ -207,6 +363,7 @@ Decision ApplyRule(const RuleKind kind, const Access access) noexcept {
 
 struct FilesystemPolicy::Impl {
     std::vector<Rule> rules;
+    std::vector<PathAlias> aliases;
 };
 
 FilesystemPolicy::FilesystemPolicy(std::unique_ptr<Impl> implementation) noexcept
@@ -232,6 +389,7 @@ PolicyLoadStatus FilesystemPolicy::Load(
         }
 
         auto implementation = std::make_unique<Impl>();
+        implementation->aliases = LoadPathAliases();
         implementation->rules.reserve(rule_count);
         for (std::size_t index = 0; index < rule_count; ++index) {
             std::size_t record_length = 0;
@@ -241,9 +399,18 @@ PolicyLoadStatus FilesystemPolicy::Load(
                 !ParseRule(record_bytes, record_length, rule)) {
                 return PolicyLoadStatus::kInvalidFilesystemPolicy;
             }
-            for (const auto& existing : implementation->rules) {
-                if (EqualIgnoreCase(existing.root, rule.root) && existing.kind != rule.kind &&
-                    existing.kind != RuleKind::kDeny && rule.kind != RuleKind::kDeny) {
+            for (auto& existing : implementation->rules) {
+                if (!EqualIgnoreCase(existing.root, rule.root) ||
+                    existing.kind == rule.kind) {
+                    continue;
+                }
+                if (existing.root != rule.root) {
+                    if (!EnableCaseSensitiveRules(existing, rule)) {
+                        return PolicyLoadStatus::kInvalidFilesystemPolicy;
+                    }
+                } else if (
+                    existing.kind != RuleKind::kDeny &&
+                    rule.kind != RuleKind::kDeny) {
                     return PolicyLoadStatus::kInvalidFilesystemPolicy;
                 }
             }
@@ -266,15 +433,15 @@ PolicyEvaluation FilesystemPolicy::Evaluate(
         return evaluation;
     }
     try {
-        const auto canonical = CanonicalizedPath::Canonicalize(path);
-        if (!AssignPolicyPath(canonical, evaluation.normalized_path)) {
+        if (!AssignPolicyPath(
+                path, implementation_->aliases, evaluation.normalized_path)) {
             return evaluation;
         }
         const wchar_t* normalized = evaluation.normalized_path.c_str();
 
         std::size_t maximum_depth = 0;
         for (const auto& rule : implementation_->rules) {
-            if (!RootContains(rule.root, normalized)) {
+            if (!RootContains(rule.root, normalized, rule.case_sensitive)) {
                 continue;
             }
             if (rule.kind == RuleKind::kDeny) {
@@ -306,15 +473,16 @@ bool FilesystemPolicy::HasDeniedDescendant(const wchar_t* path) const noexcept {
         return true;
     }
     try {
-        const auto canonical = CanonicalizedPath::Canonicalize(path);
         std::wstring normalized_root;
-        if (!AssignPolicyPath(canonical, normalized_root)) {
+        if (!AssignPolicyPath(
+                path, implementation_->aliases, normalized_root)) {
             return true;
         }
         for (const auto& rule : implementation_->rules) {
             if (rule.kind == RuleKind::kDeny &&
                 rule.root.size() > normalized_root.size() &&
-                RootContains(normalized_root, rule.root.c_str())) {
+                RootContains(
+                    normalized_root, rule.root.c_str(), rule.case_sensitive)) {
                 return true;
             }
         }

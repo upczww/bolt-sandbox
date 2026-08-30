@@ -31,6 +31,7 @@ enum class ProcessOperation : std::uint8_t {
     kElevation = 2,
     kBreakaway = 3,
     kMitigationWeakening = 4,
+    kExternalDelegation = 5,
 };
 
 enum class NetworkOperation : std::uint8_t {

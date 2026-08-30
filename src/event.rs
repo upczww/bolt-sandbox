@@ -111,6 +111,7 @@ pub enum ProcessOperation {
     Elevation,
     Breakaway,
     MitigationWeakening,
+    ExternalDelegation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

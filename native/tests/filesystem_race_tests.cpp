@@ -23,6 +23,7 @@
 #include <windows.h>
 #include <sddl.h>
 #include <winioctl.h>
+#include <winternl.h>
 
 namespace {
 
@@ -481,13 +482,18 @@ class RaceProcess final {
         return ResetEvent(ready_) != FALSE;
     }
 
-    bool WaitForExit() {
-        if (process_.Wait(10'000) != bolt::common::ProcessStatus::kSuccess) {
+    bool WaitForExit(const DWORD timeout_milliseconds = 10'000) {
+        if (process_.Wait(timeout_milliseconds) !=
+            bolt::common::ProcessStatus::kSuccess) {
             return false;
         }
         return process_.ExitCode(exit_code_) ==
                    bolt::common::ProcessStatus::kSuccess &&
                exit_code_ == 0;
+    }
+
+    bool Terminate(const DWORD exit_code) {
+        return job_.Terminate(exit_code) == bolt::common::JobStatus::kSuccess;
     }
 
     HANDLE event_pipe() const {
@@ -1020,6 +1026,160 @@ bool RunCaseSensitivePathTest(
             static_cast<unsigned long>(process.exit_code()));
     }
     return passed;
+}
+
+bool RunCaseInsensitiveCollisionRejectionTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const std::filesystem::path& test_root,
+    std::uint64_t& ordinal) {
+    const auto collision_root = test_root / L"case-insensitive-collision";
+    const auto allowed = collision_root / L"PolicyTarget.txt";
+    const auto denied = collision_root / L"policytarget.txt";
+    std::error_code error;
+    if (!std::filesystem::create_directories(collision_root, error) || error ||
+        !WriteFixture(allowed, "single-identity")) {
+        return false;
+    }
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const std::vector<bolt::tests::FilesystemRule> rules = {
+        {bolt::tests::FilesystemRuleKind::kReadWrite, allowed},
+        {bolt::tests::FilesystemRuleKind::kDeny, denied},
+    };
+    RaceProcess process;
+    const bool rejected =
+        start != nullptr &&
+        !process.Start(
+            executable, hook_path, rules, L"case-sensitive-paths",
+            collision_root, {}, start, ordinal++);
+    if (start != nullptr) {
+        CloseHandle(start);
+    }
+    if (!rejected) {
+        std::fprintf(
+            stderr,
+            "case-insensitive policy collision was not rejected: exit=%lu\n",
+            static_cast<unsigned long>(process.exit_code()));
+    }
+    return rejected;
+}
+
+bool RunVolumeGuidAliasTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const std::filesystem::path& test_root,
+    std::uint64_t& ordinal) {
+    const auto allowed = test_root / L"volume-guid-allowed.txt";
+    const auto denied = test_root / L"volume-guid-denied.txt";
+    if (!WriteFixture(allowed, "allowed-volume") ||
+        !WriteFixture(denied, "denied-volume")) {
+        return false;
+    }
+    const std::wstring mount_point = test_root.root_path().wstring();
+    std::array<wchar_t, 64> volume_name{};
+    if (mount_point.empty() ||
+        !GetVolumeNameForVolumeMountPointW(
+            mount_point.c_str(), volume_name.data(),
+            static_cast<DWORD>(volume_name.size()))) {
+        return false;
+    }
+    const auto volume_alias = [&](const std::filesystem::path& path) {
+        const auto relative = path.lexically_relative(test_root.root_path());
+        return std::filesystem::path(volume_name.data()) / relative;
+    };
+    const auto allowed_alias = volume_alias(allowed);
+    const auto denied_alias = volume_alias(denied);
+    const std::vector<bolt::tests::FilesystemRule> rules = {
+        {bolt::tests::FilesystemRuleKind::kReadOnly,
+         std::filesystem::path(executable).root_path()},
+        {bolt::tests::FilesystemRuleKind::kReadOnly, allowed},
+        {bolt::tests::FilesystemRuleKind::kDeny, denied},
+    };
+    const auto run_alias = [&](
+                               const std::wstring_view mode,
+                               const std::filesystem::path& allowed_path,
+                               const std::filesystem::path& denied_path,
+                               const char* label) {
+        SECURITY_ATTRIBUTES inheritable{};
+        inheritable.nLength = sizeof(inheritable);
+        inheritable.bInheritHandle = TRUE;
+        const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+        const HANDLE stage_mapping = CreateFileMappingW(
+            INVALID_HANDLE_VALUE, &inheritable, PAGE_READWRITE, 0, sizeof(LONG),
+            nullptr);
+        auto* stage = stage_mapping == nullptr
+                          ? nullptr
+                          : static_cast<volatile LONG*>(MapViewOfFile(
+                                stage_mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0,
+                                0, sizeof(LONG)));
+        if (stage != nullptr) {
+            InterlockedExchange(stage, 0);
+        }
+        RaceProcess process;
+        const bool started =
+            start != nullptr && stage_mapping != nullptr && stage != nullptr &&
+            process.Start(
+                executable, hook_path, rules, mode, allowed_path, denied_path,
+                start, ordinal++, stage_mapping);
+        const bool released =
+            started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
+        const bool exited = released && process.WaitForExit(3'000);
+        const LONG final_stage =
+            stage == nullptr ? -1 : InterlockedCompareExchange(stage, 0, 0);
+        if (released && !exited) {
+            process.Terminate(0xF016);
+        }
+        const bool passed =
+            exited && final_stage == 4 &&
+            PipeContainsViolationForPath(
+                process.event_pipe(),
+                bolt::protocol::FilesystemOperation::kRead, denied);
+        if (stage != nullptr) {
+            UnmapViewOfFile(const_cast<LONG*>(stage));
+        }
+        if (stage_mapping != nullptr) {
+            CloseHandle(stage_mapping);
+        }
+        if (start != nullptr) {
+            CloseHandle(start);
+        }
+        if (!passed) {
+            std::fprintf(
+                stderr,
+                "%s alias failed: exit=%lu stage=%ld started=%d released=%d\n",
+                label, static_cast<unsigned long>(process.exit_code()),
+                final_stage, started ? 1 : 0, released ? 1 : 0);
+        }
+        return passed;
+    };
+    const wchar_t drive_name[] = {mount_point[0], L':', L'\0'};
+    std::array<wchar_t, 32'768> device_name{};
+    if (QueryDosDeviceW(
+            drive_name, device_name.data(),
+            static_cast<DWORD>(device_name.size())) == 0) {
+        return false;
+    }
+    const auto device_alias = [&](const std::filesystem::path& path) {
+        std::wstring alias(device_name.data());
+        alias.push_back(L'\\');
+        alias.append(path.lexically_relative(test_root.root_path()).wstring());
+        return std::filesystem::path(alias);
+    };
+    const auto local_device_alias = [](const std::filesystem::path& path) {
+        return std::filesystem::path(L"\\\\.\\" + path.wstring());
+    };
+    return run_alias(
+               L"volume-guid-aliases", allowed_alias, denied_alias,
+               "volume GUID") &&
+           run_alias(
+               L"volume-guid-aliases", local_device_alias(allowed),
+               local_device_alias(denied), "local device") &&
+           run_alias(
+               L"native-device-aliases", device_alias(allowed),
+               device_alias(denied), "native device");
 }
 
 bool RunExistingSymlinkTest(
@@ -1603,6 +1763,99 @@ int RunFilesystemRaceChild(
             }
             return 327;
         }
+    } else if (mode == L"native-device-aliases") {
+        using NtCreateFileFunction = NTSTATUS(NTAPI*)(
+            PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK,
+            PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+        const auto nt_create_file = reinterpret_cast<NtCreateFileFunction>(
+            GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
+        const std::filesystem::path allowed(arguments[3]);
+        const std::filesystem::path denied(arguments[4]);
+        const HANDLE stage_mapping = reinterpret_cast<HANDLE>(
+            _wcstoui64(arguments[7], nullptr, 10));
+        auto* stage = static_cast<volatile LONG*>(MapViewOfFile(
+            stage_mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(LONG)));
+        if (nt_create_file == nullptr || stage == nullptr) {
+            return 368;
+        }
+        const auto open_native = [&](const std::filesystem::path& path) {
+            const std::wstring value = path.wstring();
+            UNICODE_STRING name{};
+            name.Length = static_cast<USHORT>(value.size() * sizeof(wchar_t));
+            name.MaximumLength = name.Length;
+            name.Buffer = const_cast<PWSTR>(value.data());
+            OBJECT_ATTRIBUTES attributes{};
+            attributes.Length = sizeof(attributes);
+            attributes.ObjectName = &name;
+            attributes.Attributes = OBJ_CASE_INSENSITIVE;
+            IO_STATUS_BLOCK io_status{};
+            HANDLE file = nullptr;
+            const NTSTATUS status = nt_create_file(
+                &file, FILE_GENERIC_READ | SYNCHRONIZE, &attributes, &io_status,
+                nullptr, FILE_ATTRIBUTE_NORMAL,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                FILE_OPEN,
+                FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, nullptr,
+                0);
+            if (file != nullptr) {
+                CloseHandle(file);
+            }
+            return status;
+        };
+        InterlockedExchange(stage, 1);
+        const NTSTATUS allowed_status = open_native(allowed);
+        InterlockedExchange(stage, 2);
+        if (allowed_status != 0) {
+            UnmapViewOfFile(const_cast<LONG*>(stage));
+            return 369;
+        }
+        InterlockedExchange(stage, 3);
+        constexpr NTSTATUS status_access_denied =
+            static_cast<NTSTATUS>(0xC0000022UL);
+        const NTSTATUS denied_status = open_native(denied);
+        InterlockedExchange(stage, 4);
+        UnmapViewOfFile(const_cast<LONG*>(stage));
+        if (denied_status != status_access_denied) {
+            return 370;
+        }
+    } else if (mode == L"volume-guid-aliases") {
+        const std::filesystem::path allowed(arguments[3]);
+        const std::filesystem::path denied(arguments[4]);
+        const HANDLE stage_mapping = reinterpret_cast<HANDLE>(
+            _wcstoui64(arguments[7], nullptr, 10));
+        auto* stage = static_cast<volatile LONG*>(MapViewOfFile(
+            stage_mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+            sizeof(LONG)));
+        if (stage == nullptr) {
+            return 364;
+        }
+        InterlockedExchange(stage, 1);
+        const HANDLE allowed_file = CreateFileW(
+            allowed.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        InterlockedExchange(stage, 2);
+        if (allowed_file == INVALID_HANDLE_VALUE) {
+            UnmapViewOfFile(const_cast<LONG*>(stage));
+            return 365;
+        }
+        CloseHandle(allowed_file);
+        InterlockedExchange(stage, 3);
+        SetLastError(ERROR_SUCCESS);
+        const HANDLE denied_file = CreateFileW(
+            denied.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const DWORD denied_error = GetLastError();
+        InterlockedExchange(stage, 4);
+        UnmapViewOfFile(const_cast<LONG*>(stage));
+        if (denied_file != INVALID_HANDLE_VALUE) {
+            CloseHandle(denied_file);
+            return 366;
+        }
+        if (denied_error != ERROR_ACCESS_DENIED) {
+            return 367;
+        }
     } else if (mode == L"unc-paths") {
         const std::filesystem::path root(arguments[3]);
         const auto allowed_file = root / L"allowed" / L"plain.txt";
@@ -2017,6 +2270,10 @@ bool RunFilesystemRaceTests() {
         RunPathFormsTest(executable, hook_path, test_root, ordinal) &&
         RunUncPathTest(executable, hook_path, ordinal) &&
         RunCaseSensitivePathTest(executable, hook_path, ordinal) &&
+        RunCaseInsensitiveCollisionRejectionTest(
+            executable, hook_path, test_root, ordinal) &&
+        RunVolumeGuidAliasTest(
+            executable, hook_path, test_root, ordinal) &&
         RunExistingSymlinkTest(executable, hook_path, ordinal) &&
         RunJunctionSwapTest(executable, hook_path, test_root, ordinal) &&
         RunReparseFailureTest(executable, hook_path, test_root, ordinal) &&

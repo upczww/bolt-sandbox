@@ -188,6 +188,24 @@ through both forms. ADS and Unicode-normalization lookalikes retain distinct
 object identities, while copy-on-write mappings may flush private changes
 without modifying the source file.
 
+Extended UNC paths require one Bolt compatibility adaptation at the policy
+boundary: BuildXL removes the `\\?\` type prefix and exposes an `UNC\server`
+suffix, which Bolt converts back to the canonical `\\server` identity before
+matching rules or reporting events. For local case-sensitive directories, Bolt
+retains BuildXL's normal case-insensitive behavior unless conflicting rules
+differ only by case and Windows confirms both the parent directory's
+case-sensitive flag and distinct target file IDs. Ambiguous, missing, remote,
+or case-insensitive collisions fail policy loading closed.
+
+Volume GUID and native-device aliases use a second bounded adaptation. Before
+the Detours transaction attaches filesystem hooks, Bolt snapshots logical-drive
+mappings with `GetVolumeNameForVolumeMountPointW` and `QueryDosDeviceW` into the
+immutable native policy view. `\\?\Volume{GUID}\`, `\\.\`, `\??\`, and direct
+`\Device\...` inputs are rewritten to their mapped DOS identity before rule
+matching, then checked again using the opened handle's final DOS path. Policy
+evaluation performs no per-operation volume-manager query; an unknown or
+unmapped device identity remains denied.
+
 BuildXL's vendored `ReplaceFileW` hook currently contains a policy TODO and
 only invalidates its cache. Bolt therefore keeps the upstream signature and
 scope pattern but supplies the architecture-required fail-closed adapter:
