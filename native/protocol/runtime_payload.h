@@ -28,6 +28,7 @@ struct RuntimePayload {
     std::uint32_t dns_maximum_frame_length = 0;
     std::array<std::uint8_t, 32> dns_authentication_key{};
     std::uint16_t tcp_proxy_port = 0;
+    std::uint16_t tcp_proxy_ipv6_port = 0;
 
     bool operator==(const RuntimePayload& other) const noexcept {
         return target_process_id == other.target_process_id &&
@@ -39,7 +40,8 @@ struct RuntimePayload {
                dns_response_handle == other.dns_response_handle &&
                dns_maximum_frame_length == other.dns_maximum_frame_length &&
                dns_authentication_key == other.dns_authentication_key &&
-               tcp_proxy_port == other.tcp_proxy_port;
+               tcp_proxy_port == other.tcp_proxy_port &&
+               tcp_proxy_ipv6_port == other.tcp_proxy_ipv6_port;
     }
     bool operator!=(const RuntimePayload& other) const noexcept { return !(*this == other); }
 };

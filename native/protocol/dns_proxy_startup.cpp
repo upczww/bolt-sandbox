@@ -19,6 +19,8 @@ constexpr std::size_t kKeyOffset = 64;
 constexpr std::size_t kTcpListenerHandleOffset = 96;
 constexpr std::size_t kTcpListenerPortOffset = 104;
 constexpr std::size_t kMaximumTcpConnectionsOffset = 108;
+constexpr std::size_t kTcpIpv6ListenerHandleOffset = 112;
+constexpr std::size_t kTcpIpv6ListenerPortOffset = 120;
 
 void WriteU16(std::uint8_t* bytes, std::size_t offset, std::uint16_t value) noexcept {
     bytes[offset] = static_cast<std::uint8_t>(value);
@@ -60,7 +62,9 @@ DnsProxyStartupStatus Validate(const DnsProxyStartup& startup) noexcept {
     if (startup.policy_handle == 0 || startup.read_handle == 0 || startup.write_handle == 0) {
         return DnsProxyStartupStatus::kInvalidHandle;
     }
-    if (startup.tcp_listener_handle == 0 || startup.tcp_listener_port == 0) {
+    if (startup.tcp_listener_handle == 0 || startup.tcp_listener_port == 0 ||
+        startup.tcp_ipv6_listener_handle == 0 ||
+        startup.tcp_ipv6_listener_port == 0) {
         return DnsProxyStartupStatus::kInvalidHandle;
     }
     if (startup.maximum_frame_length < kDnsProxyHeaderLength ||
@@ -108,6 +112,12 @@ std::array<std::uint8_t, kDnsProxyStartupLength> EncodeDnsProxyStartup(
     WriteU32(
         encoded.data(), kMaximumTcpConnectionsOffset,
         startup.maximum_tcp_connections);
+    WriteU64(
+        encoded.data(), kTcpIpv6ListenerHandleOffset,
+        startup.tcp_ipv6_listener_handle);
+    WriteU16(
+        encoded.data(), kTcpIpv6ListenerPortOffset,
+        startup.tcp_ipv6_listener_port);
     return encoded;
 }
 
@@ -142,6 +152,10 @@ DnsProxyStartupStatus DecodeDnsProxyStartup(
     startup.tcp_listener_port = ReadU16(encoded, kTcpListenerPortOffset);
     startup.maximum_tcp_connections =
         ReadU32(encoded, kMaximumTcpConnectionsOffset);
+    startup.tcp_ipv6_listener_handle =
+        ReadU64(encoded, kTcpIpv6ListenerHandleOffset);
+    startup.tcp_ipv6_listener_port =
+        ReadU16(encoded, kTcpIpv6ListenerPortOffset);
     return Validate(startup);
 }
 

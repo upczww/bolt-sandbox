@@ -8,7 +8,7 @@
 
 namespace bolt::protocol {
 
-inline constexpr std::size_t kDnsProxyStartupLength = 112;
+inline constexpr std::size_t kDnsProxyStartupLength = 128;
 
 struct DnsProxyStartup {
     std::uint32_t policy_length = 0;
@@ -20,6 +20,8 @@ struct DnsProxyStartup {
     std::uint64_t tcp_listener_handle = 0;
     std::uint16_t tcp_listener_port = 0;
     std::uint32_t maximum_tcp_connections = 0;
+    std::uint64_t tcp_ipv6_listener_handle = 0;
+    std::uint16_t tcp_ipv6_listener_port = 0;
     DnsProxySession session{};
 
     bool operator==(const DnsProxyStartup& other) const noexcept {
@@ -31,6 +33,8 @@ struct DnsProxyStartup {
                tcp_listener_handle == other.tcp_listener_handle &&
                tcp_listener_port == other.tcp_listener_port &&
                maximum_tcp_connections == other.maximum_tcp_connections &&
+               tcp_ipv6_listener_handle == other.tcp_ipv6_listener_handle &&
+               tcp_ipv6_listener_port == other.tcp_ipv6_listener_port &&
                session.nonce == other.session.nonce &&
                session.authentication_key == other.session.authentication_key;
     }

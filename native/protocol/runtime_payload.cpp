@@ -23,6 +23,7 @@ constexpr std::size_t kDnsResponseHandleOffset = 72;
 constexpr std::size_t kDnsMaximumFrameOffset = 80;
 constexpr std::size_t kDnsKeyOffset = 88;
 constexpr std::size_t kTcpProxyPortOffset = 120;
+constexpr std::size_t kTcpProxyIpv6PortOffset = 122;
 constexpr std::size_t kMinimumPolicyLength = kPolicyEnvelopeLength;
 constexpr std::size_t kMaximumPolicyLength = kPolicyEnvelopeLength + kPolicyMaximumBodyLength;
 
@@ -101,6 +102,9 @@ std::array<std::uint8_t, kRuntimePayloadLength> EncodeRuntimePayload(
         payload.dns_authentication_key.begin(),
         payload.dns_authentication_key.end(), encoded.begin() + kDnsKeyOffset);
     WriteU16(encoded.data(), kTcpProxyPortOffset, payload.tcp_proxy_port);
+    WriteU16(
+        encoded.data(), kTcpProxyIpv6PortOffset,
+        payload.tcp_proxy_ipv6_port);
     return encoded;
 }
 
@@ -142,6 +146,7 @@ RuntimePayloadStatus DecodeRuntimePayload(
         encoded + kDnsKeyOffset + decoded.dns_authentication_key.size(),
         decoded.dns_authentication_key.begin());
     decoded.tcp_proxy_port = ReadU16(encoded, kTcpProxyPortOffset);
+    decoded.tcp_proxy_ipv6_port = ReadU16(encoded, kTcpProxyIpv6PortOffset);
     if (decoded.target_process_id == 0) {
         return RuntimePayloadStatus::kInvalidProcessId;
     }
@@ -161,12 +166,14 @@ RuntimePayloadStatus DecodeRuntimePayload(
     const bool dns_absent = decoded.dns_request_handle == 0 &&
                             decoded.dns_response_handle == 0 &&
                             decoded.dns_maximum_frame_length == 0 &&
-                            decoded.tcp_proxy_port == 0 && dns_key_zero;
+                            decoded.tcp_proxy_port == 0 &&
+                            decoded.tcp_proxy_ipv6_port == 0 && dns_key_zero;
     const bool dns_valid = IsValidHandleValue(decoded.dns_request_handle) &&
                            IsValidHandleValue(decoded.dns_response_handle) &&
                            decoded.dns_maximum_frame_length >= 68 &&
                            decoded.dns_maximum_frame_length <= 1'048'576 &&
                            decoded.tcp_proxy_port != 0 &&
+                           decoded.tcp_proxy_ipv6_port != 0 &&
                            !dns_key_zero;
     if (!dns_absent && !dns_valid) {
         return RuntimePayloadStatus::kInvalidDnsProxy;
