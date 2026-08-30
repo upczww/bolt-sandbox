@@ -84,7 +84,7 @@ bool ReadFilesystemViolation(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 12) {
+    if (argument_count != 14) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -129,10 +129,14 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 90;
     }
+    if (CopyFileW(arguments[12], arguments[13], FALSE) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 91;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
-        return 91;
+        return 92;
     }
     return 0;
 }
@@ -203,6 +207,12 @@ bool RunProcessTests() {
     const std::filesystem::path denied_hardlink_destination =
         std::filesystem::temp_directory_path() /
         (L"bolt-sandbox-denied-hardlink-" + unique_suffix);
+    const std::filesystem::path denied_copy_source =
+        std::filesystem::temp_directory_path() /
+        (L"bolt-sandbox-denied-copy-source-" + unique_suffix);
+    const std::filesystem::path denied_copy_destination =
+        std::filesystem::temp_directory_path() /
+        (L"bolt-sandbox-denied-copy-destination-" + unique_suffix);
     DeleteFileW(denied_path.c_str());
     DeleteFileW(denied_delete_path.c_str());
     RemoveDirectoryW(denied_create_directory.c_str());
@@ -210,6 +220,8 @@ bool RunProcessTests() {
     DeleteFileW(denied_move_source.c_str());
     DeleteFileW(denied_move_destination.c_str());
     DeleteFileW(denied_hardlink_destination.c_str());
+    DeleteFileW(denied_copy_source.c_str());
+    DeleteFileW(denied_copy_destination.c_str());
     const HANDLE delete_fixture = CreateFileW(
         denied_delete_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -225,6 +237,15 @@ bool RunProcessTests() {
         return false;
     }
     CloseHandle(move_fixture);
+    const HANDLE copy_fixture = CreateFileW(
+        denied_copy_source.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (copy_fixture == INVALID_HANDLE_VALUE) {
+        DeleteFileW(denied_delete_path.c_str());
+        DeleteFileW(denied_move_source.c_str());
+        return false;
+    }
+    CloseHandle(copy_fixture);
     if (!CreateDirectoryW(denied_remove_directory.c_str(), nullptr)) {
         DeleteFileW(denied_delete_path.c_str());
         return false;
@@ -237,7 +258,9 @@ bool RunProcessTests() {
                                       denied_remove_directory.wstring() + L"\" \"" +
                                       denied_move_source.wstring() + L"\" \"" +
                                       denied_move_destination.wstring() + L"\" \"" +
-                                      denied_hardlink_destination.wstring() + L"\"";
+                                      denied_hardlink_destination.wstring() + L"\" \"" +
+                                      denied_copy_source.wstring() + L"\" \"" +
+                                      denied_copy_destination.wstring() + L"\"";
     const HANDLE inherited[] = {allowed, policy.handle(), event_client, release};
     bolt::common::ProcessLaunchOptions options{
         executable,
@@ -312,7 +335,10 @@ bool RunProcessTests() {
             bolt::protocol::FilesystemOperation::kRename, denied_move_source.wstring(), 5) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead, denied_move_source.wstring(), 6);
+            bolt::protocol::FilesystemOperation::kRead, denied_move_source.wstring(), 6) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 7);
     DWORD exit_code = 0;
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
@@ -325,7 +351,9 @@ bool RunProcessTests() {
                             std::filesystem::is_directory(denied_remove_directory) &&
                             std::filesystem::exists(denied_move_source) &&
                             !std::filesystem::exists(denied_move_destination) &&
-                            !std::filesystem::exists(denied_hardlink_destination);
+                            !std::filesystem::exists(denied_hardlink_destination) &&
+                            std::filesystem::exists(denied_copy_source) &&
+                            !std::filesystem::exists(denied_copy_destination);
     CloseHandle(allowed);
     CloseHandle(denied);
     if (event_client != INVALID_HANDLE_VALUE) {
@@ -335,6 +363,8 @@ bool RunProcessTests() {
     DeleteFileW(denied_delete_path.c_str());
     RemoveDirectoryW(denied_remove_directory.c_str());
     DeleteFileW(denied_move_source.c_str());
+    DeleteFileW(denied_copy_source.c_str());
+    DeleteFileW(denied_copy_destination.c_str());
     if (!exact_exit) {
         return false;
     }
