@@ -82,6 +82,11 @@ Denied native submissions return `STATUS_ACCESS_DENIED`, set result information
 to zero, leave caller buffers untouched, and do not signal the optional event
 or invoke an APC because no I/O request reaches the kernel.
 
+On supported Windows versions, `ReadFileEx` and `WriteFileEx` converge on those
+native submission seams. Dedicated overlapped-handle tests verify that denial
+occurs before submission, buffers remain unchanged, and completion routines
+are never queued; no duplicate high-level detour is installed.
+
 The first adapted BuildXL operation-family hooks are `CopyFileW/A`,
 `CopyFileExW/A`, `CopyFileTransactedW/A`, and the dynamically resolved
 `CopyFile2`. Like upstream BuildXL, ANSI entry points convert once and

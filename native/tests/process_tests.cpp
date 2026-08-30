@@ -206,10 +206,22 @@ bool ReadFilesystemViolation(
            written == expected.size() && actual == expected;
 }
 
+volatile LONG g_io_completion_calls = 0;
+
+void CALLBACK IoCompletionProbe(
+    const DWORD error,
+    const DWORD bytes,
+    const LPOVERLAPPED overlapped) {
+    static_cast<void>(error);
+    static_cast<void>(bytes);
+    static_cast<void>(overlapped);
+    InterlockedIncrement(&g_io_completion_calls);
+}
+
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 37) {
+    if (argument_count != 38) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -1067,6 +1079,34 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         io_status.Status != status_access_denied || io_status.Information != 0) {
         return 182;
     }
+    const auto denied_overlapped_file =
+        reinterpret_cast<HANDLE>(_wcstoui64(arguments[37], nullptr, 10));
+    OVERLAPPED denied_read_overlapped{};
+    std::array<char, 4> denied_ex_read_buffer = {'z', 'z', 'z', 'z'};
+    InterlockedExchange(&g_io_completion_calls, 0);
+    if (ReadFileEx(
+            denied_overlapped_file, denied_ex_read_buffer.data(),
+            static_cast<DWORD>(denied_ex_read_buffer.size()),
+            &denied_read_overlapped, IoCompletionProbe) ||
+        GetLastError() != ERROR_ACCESS_DENIED ||
+        InterlockedCompareExchange(&g_io_completion_calls, 0, 0) != 0 ||
+        denied_ex_read_buffer != std::array<char, 4>{'z', 'z', 'z', 'z'}) {
+        return 183;
+    }
+    OVERLAPPED denied_write_overlapped{};
+    std::array<char, 4> denied_ex_write_buffer = forbidden_write;
+    if (WriteFileEx(
+            denied_overlapped_file, denied_ex_write_buffer.data(),
+            static_cast<DWORD>(denied_ex_write_buffer.size()),
+            &denied_write_overlapped, IoCompletionProbe) ||
+        GetLastError() != ERROR_ACCESS_DENIED ||
+        InterlockedCompareExchange(&g_io_completion_calls, 0, 0) != 0) {
+        return 184;
+    }
+    SleepEx(0, TRUE);
+    if (InterlockedCompareExchange(&g_io_completion_calls, 0, 0) != 0) {
+        return 185;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1344,6 +1384,18 @@ bool RunProcessTests() {
         CloseHandle(read_only_mapping_handle);
         return false;
     }
+    const HANDLE denied_overlapped_handle = CreateFileW(
+        denied_mapping_path.c_str(), GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &inheritable,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
+    if (denied_overlapped_handle == INVALID_HANDLE_VALUE) {
+        CloseHandle(denied_disposition_handle);
+        CloseHandle(denied_truncate_handle);
+        CloseHandle(denied_mapping_handle);
+        CloseHandle(read_only_mapping_handle);
+        CloseHandle(denied_directory_handle);
+        return false;
+    }
     constexpr std::string_view copy_nonce = "bolt-copy-nonce";
     if (!WriteFixture(allowed_copy_source, copy_nonce)) {
         DeleteFileW(denied_delete_path.c_str());
@@ -1397,11 +1449,12 @@ bool RunProcessTests() {
                                       denied_junction_target.wstring() + L"\" \"" +
                                       denied_wildcard.wstring() + L"\" \"" +
                                       denied_event_name + L"\" " +
-                                      HandleText(denied_directory_handle);
+                                      HandleText(denied_directory_handle) + L" " +
+                                      HandleText(denied_overlapped_handle);
     const HANDLE inherited[] = {
         allowed, policy.handle(), event_client, release, denied_disposition_handle,
         denied_truncate_handle, denied_mapping_handle, read_only_mapping_handle,
-        denied_directory_handle};
+        denied_directory_handle, denied_overlapped_handle};
     bolt::common::ProcessLaunchOptions options{
         executable,
         command_line,
@@ -1758,7 +1811,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_mapping_path.wstring(), 81);
+            denied_mapping_path.wstring(), 81) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_mapping_path.wstring(), 82) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_mapping_path.wstring(), 83);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
@@ -1783,6 +1844,7 @@ bool RunProcessTests() {
     CloseHandle(denied_mapping_handle);
     CloseHandle(read_only_mapping_handle);
     CloseHandle(denied_directory_handle);
+    CloseHandle(denied_overlapped_handle);
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
                             exit_code == 0 &&
