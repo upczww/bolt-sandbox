@@ -2406,6 +2406,50 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         return 277;
     }
 
+    const HANDLE read_only_source = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[30], nullptr, 10));
+    HANDLE readable_duplicate = nullptr;
+    if (!DuplicateHandle(
+            GetCurrentProcess(), read_only_source, GetCurrentProcess(),
+            &readable_duplicate, GENERIC_READ, FALSE, 0)) {
+        return 278;
+    }
+    LARGE_INTEGER beginning{};
+    std::array<char, 1> duplicate_read{};
+    DWORD duplicate_bytes = 0;
+    const bool duplicate_readable =
+        SetFilePointerEx(readable_duplicate, beginning, nullptr, FILE_BEGIN) != FALSE &&
+        ReadFile(
+            readable_duplicate, duplicate_read.data(),
+            static_cast<DWORD>(duplicate_read.size()), &duplicate_bytes,
+            nullptr) != FALSE &&
+        duplicate_bytes == duplicate_read.size();
+    CloseHandle(readable_duplicate);
+    if (!duplicate_readable) {
+        return 279;
+    }
+
+    HANDLE writable_duplicate = nullptr;
+    if (!DuplicateHandle(
+            GetCurrentProcess(), read_only_source, GetCurrentProcess(),
+            &writable_duplicate, GENERIC_WRITE, FALSE, 0)) {
+        return 280;
+    }
+    duplicate_bytes = 123;
+    const char replacement = 'X';
+    SetLastError(ERROR_SUCCESS);
+    const BOOL duplicate_write =
+        SetFilePointerEx(writable_duplicate, beginning, nullptr, FILE_BEGIN) != FALSE
+            ? WriteFile(
+                  writable_duplicate, &replacement, 1, &duplicate_bytes, nullptr)
+            : FALSE;
+    const DWORD duplicate_write_error = GetLastError();
+    CloseHandle(writable_duplicate);
+    if (duplicate_write || duplicate_write_error != ERROR_ACCESS_DENIED ||
+        duplicate_bytes != 0) {
+        return 281;
+    }
+
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -2902,6 +2946,86 @@ int RunCrossArchitectureProcessParent(
 
 namespace {
 
+bool RunStartupHandleListTest(
+    const std::wstring& executable,
+    const std::filesystem::path& test_root) {
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE included_event =
+        CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const std::filesystem::path ambient_path =
+        test_root / L"ambient-inheritable-handle.txt";
+    const HANDLE ambient_file = CreateFileW(
+        ambient_path.c_str(), GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &inheritable,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (included_event == nullptr || ambient_file == INVALID_HANDLE_VALUE) {
+        if (included_event != nullptr) {
+            CloseHandle(included_event);
+        }
+        if (ambient_file != INVALID_HANDLE_VALUE) {
+            CloseHandle(ambient_file);
+        }
+        return false;
+    }
+
+    BY_HANDLE_FILE_INFORMATION ambient_identity{};
+    if (!GetFileInformationByHandle(ambient_file, &ambient_identity)) {
+        CloseHandle(ambient_file);
+        CloseHandle(included_event);
+        return false;
+    }
+
+    std::wstring command_line = L"\"" + executable + L"\" --job-child";
+    const HANDLE inherited[] = {included_event};
+    const bolt::common::ProcessLaunchOptions options{
+        executable, command_line, L"", nullptr, inherited,
+        std::size(inherited), 0};
+    bolt::common::SuspendedProcess process;
+    if (bolt::common::SuspendedProcess::Create(options, process) !=
+        bolt::common::ProcessStatus::kSuccess) {
+        CloseHandle(ambient_file);
+        CloseHandle(included_event);
+        return false;
+    }
+
+    HANDLE included_copy = nullptr;
+    const bool included_present =
+        DuplicateHandle(
+            process.process_handle(), included_event, GetCurrentProcess(),
+            &included_copy, EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, 0) != FALSE &&
+        SetEvent(included_copy) != FALSE &&
+        WaitForSingleObject(included_event, 0) == WAIT_OBJECT_0;
+
+    HANDLE ambient_copy = nullptr;
+    const BOOL ambient_duplicated = DuplicateHandle(
+        process.process_handle(), ambient_file, GetCurrentProcess(),
+        &ambient_copy, FILE_READ_ATTRIBUTES, FALSE, 0);
+    bool ambient_file_leaked = false;
+    if (ambient_duplicated && ambient_copy != nullptr) {
+        BY_HANDLE_FILE_INFORMATION copied_identity{};
+        ambient_file_leaked =
+            GetFileInformationByHandle(ambient_copy, &copied_identity) != FALSE &&
+            copied_identity.dwVolumeSerialNumber ==
+                ambient_identity.dwVolumeSerialNumber &&
+            copied_identity.nFileIndexHigh == ambient_identity.nFileIndexHigh &&
+            copied_identity.nFileIndexLow == ambient_identity.nFileIndexLow;
+    }
+
+    if (ambient_copy != nullptr) {
+        CloseHandle(ambient_copy);
+    }
+    if (included_copy != nullptr) {
+        CloseHandle(included_copy);
+    }
+    process.Close();
+    CloseHandle(ambient_file);
+    CloseHandle(included_event);
+    DeleteFileW(ambient_path.c_str());
+    return included_present && !ambient_file_leaked;
+}
+
 bool RunInheritedProcessTest(
     const std::wstring& executable,
     const std::filesystem::path& hook_path,
@@ -3124,6 +3248,9 @@ bool RunProcessTests() {
         return false;
     }
     const std::wstring executable = CurrentExecutable();
+    if (!RunStartupHandleListTest(executable, test_root)) {
+        return false;
+    }
     const std::filesystem::path executable_volume_root =
         std::filesystem::path(executable).root_path();
     const auto policy_payload = bolt::tests::SealPolicy({
@@ -3990,7 +4117,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
-            denied_directory_ex_a.wstring(), 119);
+            denied_directory_ex_a.wstring(), 119) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            read_only_mapping_path.wstring(), 120);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =

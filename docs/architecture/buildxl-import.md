@@ -138,6 +138,16 @@ filesystem seam. Shell may also attempt cache and recent-item maintenance; those
 out-of-policy side effects remain denied and auditable rather than being granted
 as hidden compatibility exceptions.
 
+Startup handle inheritance is constrained by the launcher's explicit
+`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`: an ambient inheritable file object that is
+not named in the trusted list is absent from the suspended target, while listed
+runtime synchronization handles remain available. A duplicated file handle does
+not require a parallel `DuplicateHandle` hook. Integration probes duplicate a
+Windows-writable handle whose final path is sandbox `read_only`; ordinary reads
+remain usable, but the existing handle-I/O seam resolves the duplicate's final
+identity, denies the write with zero transferred bytes, emits `Write`, and
+preserves file content.
+
 BuildXL's vendored `ReplaceFileW` hook currently contains a policy TODO and
 only invalidates its cache. Bolt therefore keeps the upstream signature and
 scope pattern but supplies the architecture-required fail-closed adapter:
