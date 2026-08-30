@@ -22,6 +22,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <sddl.h>
+#include <winioctl.h>
 
 namespace {
 
@@ -87,6 +88,63 @@ bool ApplyReadWriteDeniedAcl(const std::filesystem::path& path) {
                              descriptor) != FALSE;
     LocalFree(descriptor);
     return applied;
+}
+
+bool CreateJunction(
+    const std::filesystem::path& junction,
+    const std::filesystem::path& target) {
+    struct MountPointReparseDataBuffer {
+        ULONG tag;
+        USHORT data_length;
+        USHORT reserved;
+        USHORT substitute_offset;
+        USHORT substitute_length;
+        USHORT print_offset;
+        USHORT print_length;
+        WCHAR path_buffer[1];
+    };
+    constexpr DWORD reparse_header_size = 8;
+    if (!CreateDirectoryW(junction.c_str(), nullptr)) {
+        return false;
+    }
+    const HANDLE handle = CreateFileW(
+        junction.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        RemoveDirectoryW(junction.c_str());
+        return false;
+    }
+    const std::wstring substitute = L"\\??\\" + target.wstring();
+    const std::wstring print_name = target.wstring();
+    std::array<std::uint8_t, MAXIMUM_REPARSE_DATA_BUFFER_SIZE> storage{};
+    auto* reparse = reinterpret_cast<MountPointReparseDataBuffer*>(storage.data());
+    reparse->tag = IO_REPARSE_TAG_MOUNT_POINT;
+    reparse->substitute_offset = 0;
+    reparse->substitute_length =
+        static_cast<USHORT>(substitute.size() * sizeof(wchar_t));
+    reparse->print_offset = reparse->substitute_length + sizeof(wchar_t);
+    reparse->print_length =
+        static_cast<USHORT>(print_name.size() * sizeof(wchar_t));
+    std::memcpy(
+        reparse->path_buffer, substitute.data(), reparse->substitute_length);
+    std::memcpy(
+        reinterpret_cast<std::uint8_t*>(reparse->path_buffer) +
+            reparse->print_offset,
+        print_name.data(), reparse->print_length);
+    reparse->data_length = static_cast<USHORT>(
+        8 + reparse->print_offset + reparse->print_length + sizeof(wchar_t));
+    DWORD returned = 0;
+    const BOOL created = DeviceIoControl(
+        handle, FSCTL_SET_REPARSE_POINT, reparse,
+        reparse_header_size + reparse->data_length, nullptr, 0, &returned,
+        nullptr);
+    const DWORD error = GetLastError();
+    CloseHandle(handle);
+    if (!created) {
+        RemoveDirectoryW(junction.c_str());
+        SetLastError(error);
+    }
+    return created != FALSE;
 }
 
 std::string ReadFixture(const std::filesystem::path& path) {
@@ -204,6 +262,43 @@ bool PipeHasNoViolationForPath(
                 static_cast<unsigned>(payload[4]));
             return false;
         }
+    }
+}
+
+bool PipeContainsViolationForPath(
+    const HANDLE pipe,
+    const bolt::protocol::FilesystemOperation expected_operation,
+    const std::filesystem::path& expected_path) {
+    bool found = false;
+    for (;;) {
+        std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
+        DWORD first_read = 0;
+        if (!ReadFile(
+                pipe, header.data(), static_cast<DWORD>(header.size()),
+                &first_read, nullptr)) {
+            return GetLastError() == ERROR_BROKEN_PIPE && found;
+        }
+        if (first_read != header.size()) {
+            return false;
+        }
+        const std::size_t payload_length = ReadU32(header.data() + 8);
+        std::vector<std::uint8_t> payload(payload_length);
+        if (!ReadExact(pipe, payload.data(), payload.size())) {
+            return false;
+        }
+        if (payload.size() < 9 || payload[4] != static_cast<std::uint8_t>(expected_operation)) {
+            continue;
+        }
+        const std::size_t path_length = ReadU32(payload.data() + 5);
+        if (9 + path_length * sizeof(wchar_t) != payload.size()) {
+            continue;
+        }
+        std::wstring path(path_length, L'\0');
+        std::memcpy(
+            path.data(), payload.data() + 9, path.size() * sizeof(wchar_t));
+        found = found || CompareStringOrdinal(
+                              path.c_str(), -1, expected_path.c_str(), -1,
+                              TRUE) == CSTR_EQUAL;
     }
 }
 
@@ -331,6 +426,10 @@ class RaceProcess final {
 
     bool WaitAtBarrier() const {
         return WaitForSingleObject(ready_, 5'000) == WAIT_OBJECT_0;
+    }
+
+    bool ResetBarrierReady() const {
+        return ResetEvent(ready_) != FALSE;
     }
 
     bool WaitForExit() {
@@ -751,6 +850,123 @@ bool RunPathFormsTest(
     return passed;
 }
 
+bool RunExistingSymlinkTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    std::uint64_t& ordinal) {
+    const std::filesystem::path link_root = L"C:\\Users\\All Users";
+    const std::filesystem::path alias = link_root / L"Microsoft";
+    const std::filesystem::path target = L"C:\\ProgramData\\Microsoft";
+    const DWORD link_attributes = GetFileAttributesW(link_root.c_str());
+    if (link_attributes == INVALID_FILE_ATTRIBUTES ||
+        (link_attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 ||
+        !std::filesystem::is_directory(target)) {
+        return false;
+    }
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const std::vector<bolt::tests::FilesystemRule> allowed_rules = {
+        {bolt::tests::FilesystemRuleKind::kReadOnly, alias},
+        {bolt::tests::FilesystemRuleKind::kReadOnly, target},
+    };
+    const std::vector<bolt::tests::FilesystemRule> denied_rules = {
+        {bolt::tests::FilesystemRuleKind::kReadOnly, alias},
+        {bolt::tests::FilesystemRuleKind::kDeny, target},
+    };
+    RaceProcess allowed;
+    RaceProcess denied;
+    const bool started =
+        start != nullptr &&
+        allowed.Start(
+            executable, hook_path, allowed_rules, L"symlink-allowed", alias, {},
+            start, ordinal++) &&
+        denied.Start(
+            executable, hook_path, denied_rules, L"symlink-denied", alias, {},
+            start, ordinal++);
+    const bool released =
+        started && allowed.WaitAtBarrier() && denied.WaitAtBarrier() &&
+        SetEvent(start) != FALSE;
+    const bool exited =
+        released && allowed.WaitForExit() && denied.WaitForExit();
+    const bool passed =
+        exited && PipeContainsViolationForPath(
+                      denied.event_pipe(),
+                      bolt::protocol::FilesystemOperation::kMetadata, target);
+    if (start != nullptr) {
+        CloseHandle(start);
+    }
+    if (!passed) {
+        std::fprintf(
+            stderr, "existing symlink failed: allowed_exit=%lu denied_exit=%lu\n",
+            static_cast<unsigned long>(allowed.exit_code()),
+            static_cast<unsigned long>(denied.exit_code()));
+    }
+    return passed;
+}
+
+bool RunJunctionSwapTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const std::filesystem::path& test_root,
+    std::uint64_t& ordinal) {
+    const auto allowed_target = test_root / L"swap-allowed-target";
+    const auto denied_target = test_root / L"swap-denied-target";
+    const auto junction = test_root / L"swap-link";
+    const auto alias_file = junction / L"payload.txt";
+    const auto denied_file = denied_target / L"payload.txt";
+    std::error_code error;
+    std::filesystem::remove_all(junction, error);
+    error.clear();
+    if (!std::filesystem::create_directories(allowed_target, error) || error ||
+        !std::filesystem::create_directories(denied_target, error) || error ||
+        !WriteFixture(allowed_target / L"payload.txt", "allowed") ||
+        !WriteFixture(denied_file, "denied") ||
+        !CreateJunction(junction, allowed_target)) {
+        return false;
+    }
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const std::vector<bolt::tests::FilesystemRule> rules = {
+        {bolt::tests::FilesystemRuleKind::kReadOnly, junction},
+        {bolt::tests::FilesystemRuleKind::kReadOnly, allowed_target},
+        {bolt::tests::FilesystemRuleKind::kDeny, denied_target},
+    };
+    RaceProcess process;
+    const bool started =
+        start != nullptr &&
+        process.Start(
+            executable, hook_path, rules, L"junction-swap", alias_file, {},
+            start, ordinal++);
+    const bool first_release =
+        started && process.WaitAtBarrier() && process.ResetBarrierReady() &&
+        SetEvent(start) != FALSE;
+    const bool primed = first_release && process.WaitAtBarrier();
+    const bool swapped =
+        primed && RemoveDirectoryW(junction.c_str()) != FALSE &&
+        CreateJunction(junction, denied_target);
+    const bool second_release = swapped && SetEvent(start) != FALSE;
+    const bool exited = second_release && process.WaitForExit();
+    const bool passed =
+        exited && ReadFixture(denied_file) == "denied" &&
+        PipeContainsViolationForPath(
+            process.event_pipe(), bolt::protocol::FilesystemOperation::kRead,
+            denied_file);
+    if (start != nullptr) {
+        CloseHandle(start);
+    }
+    if (!passed) {
+        std::fprintf(
+            stderr, "junction swap failed: exit=%lu primed=%d swapped=%d\n",
+            static_cast<unsigned long>(process.exit_code()), primed ? 1 : 0,
+            swapped ? 1 : 0);
+    }
+    return passed;
+}
+
 }  // namespace
 
 int RunFilesystemRaceChild(
@@ -1087,6 +1303,45 @@ int RunFilesystemRaceChild(
             }
             return 327;
         }
+    } else if (mode == L"symlink-allowed" || mode == L"symlink-denied") {
+        const std::filesystem::path alias(arguments[3]);
+        SetLastError(ERROR_SUCCESS);
+        const DWORD attributes = GetFileAttributesW(alias.c_str());
+        const DWORD error = GetLastError();
+        if (mode == L"symlink-allowed") {
+            if (attributes == INVALID_FILE_ATTRIBUTES ||
+                (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+                return 328;
+            }
+        } else if (attributes != INVALID_FILE_ATTRIBUTES ||
+                   error != ERROR_ACCESS_DENIED) {
+            return 329;
+        }
+    } else if (mode == L"junction-swap") {
+        const std::filesystem::path alias_file(arguments[3]);
+        if (ReadFixture(alias_file) != "allowed") {
+            return 330;
+        }
+        if (!ResetEvent(start) || !SetEvent(ready) ||
+            WaitForSingleObject(start, 5'000) != WAIT_OBJECT_0) {
+            return 331;
+        }
+        SetLastError(ERROR_SUCCESS);
+        const HANDLE swapped = CreateFileW(
+            alias_file.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const DWORD swapped_error = GetLastError();
+        if (swapped != INVALID_HANDLE_VALUE) {
+            std::array<char, 6> content{};
+            DWORD read = 0;
+            ReadFile(swapped, content.data(), static_cast<DWORD>(content.size()), &read, nullptr);
+            CloseHandle(swapped);
+            return 332;
+        }
+        if (swapped_error != ERROR_ACCESS_DENIED) {
+            return 333;
+        }
     } else {
         return 298;
     }
@@ -1127,7 +1382,9 @@ bool RunFilesystemRaceTests() {
             executable, hook_path, test_root, ordinal) &&
         RunInheritUserAclTest(
             executable, hook_path, test_root, ordinal) &&
-        RunPathFormsTest(executable, hook_path, test_root, ordinal);
+        RunPathFormsTest(executable, hook_path, test_root, ordinal) &&
+        RunExistingSymlinkTest(executable, hook_path, ordinal) &&
+        RunJunctionSwapTest(executable, hook_path, test_root, ordinal);
     std::filesystem::remove_all(test_root, error);
     if (!passed) {
         std::fprintf(stderr, "filesystem race fixture failed\n");
