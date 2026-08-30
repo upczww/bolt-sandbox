@@ -12,6 +12,7 @@
 
 #include <cstring>
 #include <cwchar>
+#include <array>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -28,7 +29,7 @@ namespace bolt::filesystem {
 namespace {
 
 std::unique_ptr<FilesystemPolicy> g_policy;
-constexpr LONG kRequiredFilesystemHookCount = 74;
+constexpr LONG kRequiredFilesystemHookCount = 75;
 volatile LONG g_installed_file_hook_count = 0;
 
 CreateFileW_t g_create_file_w = CreateFileW;
@@ -73,8 +74,70 @@ using NtUnmapViewOfSectionFunction = NTSTATUS(NTAPI*)(HANDLE, PVOID);
 NtUnmapViewOfSectionFunction g_nt_unmap_view_of_section = nullptr;
 using NtQuerySectionFunction = NTSTATUS(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
 NtQuerySectionFunction g_nt_query_section = nullptr;
+using NtCloseFunction = NTSTATUS(NTAPI*)(HANDLE);
+NtCloseFunction g_nt_close = nullptr;
 using GetMappedFileNameWFunction = DWORD(WINAPI*)(HANDLE, LPVOID, LPWSTR, DWORD);
 GetMappedFileNameWFunction g_get_mapped_file_name_w = nullptr;
+
+struct AnonymousSectionEntry {
+    bool occupied = false;
+    HANDLE handle = nullptr;
+};
+
+constexpr std::size_t kAnonymousSectionCapacity = 256;
+SRWLOCK g_anonymous_section_lock = SRWLOCK_INIT;
+std::array<AnonymousSectionEntry, kAnonymousSectionCapacity>
+    g_anonymous_sections{};
+
+bool TrackAnonymousSection(const HANDLE handle) noexcept {
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    AcquireSRWLockExclusive(&g_anonymous_section_lock);
+    AnonymousSectionEntry* available = nullptr;
+    for (auto& entry : g_anonymous_sections) {
+        if (entry.occupied && entry.handle == handle) {
+            ReleaseSRWLockExclusive(&g_anonymous_section_lock);
+            return true;
+        }
+        if (!entry.occupied && available == nullptr) {
+            available = &entry;
+        }
+    }
+    if (available != nullptr) {
+        available->occupied = true;
+        available->handle = handle;
+    }
+    ReleaseSRWLockExclusive(&g_anonymous_section_lock);
+    return available != nullptr;
+}
+
+void UntrackAnonymousSection(const HANDLE handle) noexcept {
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    AcquireSRWLockExclusive(&g_anonymous_section_lock);
+    for (auto& entry : g_anonymous_sections) {
+        if (entry.occupied && entry.handle == handle) {
+            entry = {};
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_anonymous_section_lock);
+}
+
+bool IsTrackedAnonymousSection(const HANDLE handle) noexcept {
+    AcquireSRWLockShared(&g_anonymous_section_lock);
+    bool found = false;
+    for (const auto& entry : g_anonymous_sections) {
+        if (entry.occupied && entry.handle == handle) {
+            found = true;
+            break;
+        }
+    }
+    ReleaseSRWLockShared(&g_anonymous_section_lock);
+    return found;
+}
 DeviceIoControl_t g_device_io_control = DeviceIoControl;
 FindFirstFileW_t g_find_first_file_w = FindFirstFileW;
 FindFirstFileA_t g_find_first_file_a = FindFirstFileA;
@@ -639,10 +702,24 @@ bool TryGetSectionPath(const HANDLE section, std::wstring& path) noexcept {
     constexpr ULONG file_backed_attributes = SEC_FILE | SEC_IMAGE;
     constexpr NTSTATUS status_success = 0;
     SectionBasicInformation information{};
-    if (g_nt_query_section(
-            section, section_basic_information, &information, sizeof(information), nullptr) !=
-        status_success) {
-        return false;
+    NTSTATUS query_status = g_nt_query_section(
+        section, section_basic_information, &information, sizeof(information),
+        nullptr);
+    if (query_status != status_success) {
+        constexpr DWORD section_query = 0x0001;
+        HANDLE query_handle = nullptr;
+        if (!DuplicateHandle(
+                GetCurrentProcess(), section, GetCurrentProcess(),
+                &query_handle, section_query, FALSE, 0)) {
+            return false;
+        }
+        query_status = g_nt_query_section(
+            query_handle, section_basic_information, &information,
+            sizeof(information), nullptr);
+        CloseHandle(query_handle);
+        if (query_status != status_success) {
+            return false;
+        }
     }
     if ((information.allocation_attributes & file_backed_attributes) == 0) {
         path.clear();
@@ -680,6 +757,9 @@ bool TryGetSectionPath(const HANDLE section, std::wstring& path) noexcept {
 }
 
 bool AuthorizeSectionMapping(const HANDLE section, const ULONG protection) noexcept {
+    if (IsTrackedAnonymousSection(section)) {
+        return true;
+    }
     std::wstring source_path;
     if (!TryGetSectionPath(section, source_path)) {
         return false;
@@ -703,6 +783,32 @@ bool AuthorizeSectionMapping(const HANDLE section, const ULONG protection) noexc
                     : protocol::FilesystemOperation::kRead,
         EvaluatedPath(evaluation, source_path.c_str()));
     return false;
+}
+
+bool ReadCreatedHandle(
+    const PHANDLE handle_pointer,
+    HANDLE& handle) noexcept {
+    handle = nullptr;
+    if (handle_pointer == nullptr) {
+        return false;
+    }
+    __try {
+        handle = *handle_pointer;
+        return handle != nullptr && handle != INVALID_HANDLE_VALUE;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        handle = nullptr;
+        return false;
+    }
+}
+
+void ClearCreatedHandle(const PHANDLE handle_pointer) noexcept {
+    if (handle_pointer == nullptr) {
+        return;
+    }
+    __try {
+        *handle_pointer = nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
 }
 
 bool ReadReparseTarget(
@@ -2598,8 +2704,21 @@ HANDLE WINAPI DetouredCreateFileMappingW(
     if (!AuthorizeFileMapping(file, protection)) {
         return nullptr;
     }
-    return g_create_file_mapping_w(
-        file, security_attributes, protection, maximum_size_high, maximum_size_low, name);
+    const HANDLE mapping = g_create_file_mapping_w(
+        file, security_attributes, protection, maximum_size_high,
+        maximum_size_low, name);
+    if (mapping != nullptr) {
+        if (file == nullptr || file == INVALID_HANDLE_VALUE) {
+            if (!TrackAnonymousSection(mapping)) {
+                CloseHandle(mapping);
+                SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+                return nullptr;
+            }
+        } else {
+            UntrackAnonymousSection(mapping);
+        }
+    }
+    return mapping;
 }
 
 HANDLE WINAPI DetouredCreateFileMappingA(
@@ -2617,8 +2736,21 @@ HANDLE WINAPI DetouredCreateFileMappingA(
     if (!AuthorizeFileMapping(file, protection)) {
         return nullptr;
     }
-    return g_create_file_mapping_a(
-        file, security_attributes, protection, maximum_size_high, maximum_size_low, name);
+    const HANDLE mapping = g_create_file_mapping_a(
+        file, security_attributes, protection, maximum_size_high,
+        maximum_size_low, name);
+    if (mapping != nullptr) {
+        if (file == nullptr || file == INVALID_HANDLE_VALUE) {
+            if (!TrackAnonymousSection(mapping)) {
+                CloseHandle(mapping);
+                SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+                return nullptr;
+            }
+        } else {
+            UntrackAnonymousSection(mapping);
+        }
+    }
+    return mapping;
 }
 
 NTSTATUS NTAPI DetouredNtCreateSection(
@@ -2631,21 +2763,47 @@ NTSTATUS NTAPI DetouredNtCreateSection(
     const HANDLE file) noexcept {
     const Win32LastErrorGuard last_error_guard;
     DetouredScope scope;
-    if (scope.Detoured_IsDisabled() || file == nullptr || file == INVALID_HANDLE_VALUE) {
+    if (scope.Detoured_IsDisabled()) {
         return g_nt_create_section(
             section, desired_access, object_attributes, maximum_size, protection,
             allocation_attributes, file);
     }
-    if (!AuthorizeFileMapping(file, protection)) {
+    const bool anonymous = file == nullptr || file == INVALID_HANDLE_VALUE;
+    if (!anonymous && !AuthorizeFileMapping(file, protection)) {
         if (section != nullptr) {
             *section = nullptr;
         }
         constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
         return status_access_denied;
     }
-    return g_nt_create_section(
+    const NTSTATUS status = g_nt_create_section(
         section, desired_access, object_attributes, maximum_size, protection,
         allocation_attributes, file);
+    if (status >= 0) {
+        HANDLE created = nullptr;
+        if (!ReadCreatedHandle(section, created)) {
+            constexpr NTSTATUS status_invalid_handle =
+                static_cast<NTSTATUS>(0xC0000008UL);
+            return status_invalid_handle;
+        }
+        if (anonymous) {
+            if (!TrackAnonymousSection(created)) {
+                g_nt_close(created);
+                ClearCreatedHandle(section);
+                constexpr NTSTATUS status_insufficient_resources =
+                    static_cast<NTSTATUS>(0xC000009AUL);
+                return status_insufficient_resources;
+            }
+        } else {
+            UntrackAnonymousSection(created);
+        }
+    }
+    return status;
+}
+
+NTSTATUS NTAPI DetouredNtClose(const HANDLE handle) noexcept {
+    UntrackAnonymousSection(handle);
+    return g_nt_close(handle);
 }
 
 NTSTATUS NTAPI DetouredNtMapViewOfSection(
@@ -3178,6 +3336,8 @@ HookInstallStatus InstallFileHooks(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtUnmapViewOfSection"));
     g_nt_query_section = reinterpret_cast<NtQuerySectionFunction>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySection"));
+    g_nt_close = reinterpret_cast<NtCloseFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtClose"));
     g_get_mapped_file_name_w = reinterpret_cast<GetMappedFileNameWFunction>(
         GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "K32GetMappedFileNameW"));
     g_nt_query_information_file = reinterpret_cast<NtQueryInformationFileFunction>(
@@ -3206,7 +3366,8 @@ HookInstallStatus InstallFileHooks(
             GetModuleHandleW(L"ntdll.dll"), "NtNotifyChangeDirectoryFileEx"));
     if (g_zw_set_information_file == nullptr || g_nt_create_section == nullptr ||
         g_nt_map_view_of_section == nullptr || g_nt_unmap_view_of_section == nullptr ||
-        g_nt_query_section == nullptr || g_get_mapped_file_name_w == nullptr ||
+        g_nt_query_section == nullptr || g_nt_close == nullptr ||
+        g_get_mapped_file_name_w == nullptr ||
         g_nt_query_information_file == nullptr || g_nt_query_attributes_file == nullptr ||
         g_nt_query_full_attributes_file == nullptr || g_nt_query_directory_file == nullptr ||
         g_nt_query_directory_file_ex == nullptr || g_nt_read_file == nullptr ||
@@ -3400,6 +3561,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_nt_map_view_of_section),
             reinterpret_cast<PVOID>(DetouredNtMapViewOfSection)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_close),
+            reinterpret_cast<PVOID>(DetouredNtClose)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_device_io_control),
             reinterpret_cast<PVOID>(DetouredDeviceIoControl)) != NO_ERROR ||

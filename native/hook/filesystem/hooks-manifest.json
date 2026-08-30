@@ -64,6 +64,7 @@
     {"target":"g_create_file_mapping_a","detour":"DetouredCreateFileMappingA","symbol":"CreateFileMappingA","module":"kernel32.dll","availability":"required","operations":["mapping","read","write"],"cases":["FS-037","FS-038"]},
     {"target":"g_nt_create_section","detour":"DetouredNtCreateSection","symbol":"NtCreateSection","module":"ntdll.dll","availability":"required","operations":["mapping","read","write"],"cases":["FS-037","FS-038","FS-063"]},
     {"target":"g_nt_map_view_of_section","detour":"DetouredNtMapViewOfSection","symbol":"NtMapViewOfSection","module":"ntdll.dll","availability":"required","operations":["mapping","read","write"],"cases":["FS-062","FS-063"]},
+    {"target":"g_nt_close","detour":"DetouredNtClose","symbol":"NtClose","module":"ntdll.dll","availability":"required","operations":["mapping"],"cases":["FS-038","FS-062"]},
     {"target":"g_device_io_control","detour":"DetouredDeviceIoControl","symbol":"DeviceIoControl","module":"kernel32.dll","availability":"required","operations":["write","link"],"cases":["FS-028","FS-044"]},
     {"target":"g_zw_set_information_file","detour":"DetouredZwSetInformationFile","symbol":"ZwSetInformationFile","module":"ntdll.dll","availability":"required","operations":["write","delete","rename","link"],"cases":["FS-026","FS-034","FS-035","FS-036","FS-044","FS-063"]},
     {"target":"g_create_hard_link_w","detour":"DetouredCreateHardLinkW","symbol":"CreateHardLinkW","module":"kernel32.dll","availability":"required","operations":["link","create"],"cases":["FS-026"]},
