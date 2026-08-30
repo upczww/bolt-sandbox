@@ -82,7 +82,13 @@ share one source/destination authorization path. Both sides require write
 access, denied calls report `Rename`, and ANSI variants delegate to the
 wide-character implementation after conversion.
 
-For textually allowed copy and move source/destination paths, Bolt resolves the nearest existing ancestor
+BuildXL's vendored `ReplaceFileW` hook currently contains a policy TODO and
+only invalidates its cache. Bolt therefore keeps the upstream signature and
+scope pattern but supplies the architecture-required fail-closed adapter:
+`ReplaceFileW/A` validate the consumed replacement source, replaced target,
+and optional backup as independent write identities before invoking Windows.
+
+For textually allowed copy, move, and replace operation paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,
 appends any absent suffix, then evaluates the fully resolved source and
 destination again with the operation-specific access requirements. Results use BuildXL's `ResolvedPathCache`; the existing

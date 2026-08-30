@@ -39,6 +39,8 @@ MoveFileWithProgressW_t g_move_file_with_progress_w = MoveFileWithProgressW;
 MoveFileWithProgressA_t g_move_file_with_progress_a = MoveFileWithProgressA;
 MoveFileTransactedW_t g_move_file_transacted_w = MoveFileTransactedW;
 MoveFileTransactedA_t g_move_file_transacted_a = MoveFileTransactedA;
+ReplaceFileW_t g_replace_file_w = ReplaceFileW;
+ReplaceFileA_t g_replace_file_a = ReplaceFileA;
 using CreateHardLinkWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRIBUTES);
 CreateHardLinkWFunction g_create_hard_link_w = CreateHardLinkW;
 CopyFileW_t g_copy_file_w = CopyFileW;
@@ -158,6 +160,93 @@ bool AuthorizeMove(const wchar_t* existing_path, const wchar_t* new_path) noexce
     }
     InvalidateResolvedPathForMutation(resolved_source.c_str(), true);
     InvalidateResolvedPathForMutation(resolved_destination.c_str(), true);
+    return true;
+}
+
+bool AuthorizeReplace(
+    const wchar_t* replaced_path,
+    const wchar_t* replacement_path,
+    const wchar_t* backup_path) noexcept {
+    if (replaced_path == nullptr || replacement_path == nullptr) {
+        return true;
+    }
+    const auto* policy = g_policy.get();
+    const auto replacement_text = policy == nullptr
+                                      ? PolicyEvaluation{}
+                                      : policy->Evaluate(replacement_path, Access::kWrite);
+    const auto replaced_text =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(replaced_path, Access::kWrite);
+    const auto backup_text = policy == nullptr || backup_path == nullptr
+                                 ? PolicyEvaluation{}
+                                 : policy->Evaluate(backup_path, Access::kWrite);
+    const PolicyEvaluation* denied_text = nullptr;
+    const wchar_t* denied_fallback = nullptr;
+    if (replacement_text.decision == Decision::kDeny) {
+        denied_text = &replacement_text;
+        denied_fallback = replacement_path;
+    } else if (replaced_text.decision == Decision::kDeny) {
+        denied_text = &replaced_text;
+        denied_fallback = replaced_path;
+    } else if (backup_text.decision == Decision::kDeny) {
+        denied_text = &backup_text;
+        denied_fallback = backup_path;
+    }
+    if (denied_text != nullptr) {
+        ReportDenied(
+            protocol::FilesystemOperation::kRename,
+            EvaluatedPath(*denied_text, denied_fallback));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+
+    std::wstring resolved_replacement;
+    std::wstring resolved_replaced;
+    std::wstring resolved_backup;
+    if (!ResolveFinalPathForPolicy(
+            EvaluatedPath(replacement_text, replacement_path), g_create_file_w,
+            resolved_replacement) ||
+        !ResolveFinalPathForPolicy(
+            EvaluatedPath(replaced_text, replaced_path), g_create_file_w,
+            resolved_replaced) ||
+        (backup_path != nullptr &&
+         !ResolveFinalPathForPolicy(
+             EvaluatedPath(backup_text, backup_path), g_create_file_w, resolved_backup))) {
+        ReportDenied(protocol::FilesystemOperation::kRename, replacement_path);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+
+    const auto replacement_final =
+        policy->Evaluate(resolved_replacement.c_str(), Access::kWrite);
+    const auto replaced_final = policy->Evaluate(resolved_replaced.c_str(), Access::kWrite);
+    const auto backup_final = backup_path == nullptr
+                                  ? PolicyEvaluation{}
+                                  : policy->Evaluate(resolved_backup.c_str(), Access::kWrite);
+    const PolicyEvaluation* denied_final = nullptr;
+    const wchar_t* denied_final_path = nullptr;
+    if (replacement_final.decision == Decision::kDeny) {
+        denied_final = &replacement_final;
+        denied_final_path = resolved_replacement.c_str();
+    } else if (replaced_final.decision == Decision::kDeny) {
+        denied_final = &replaced_final;
+        denied_final_path = resolved_replaced.c_str();
+    } else if (backup_final.decision == Decision::kDeny) {
+        denied_final = &backup_final;
+        denied_final_path = resolved_backup.c_str();
+    }
+    if (denied_final != nullptr) {
+        ReportDenied(
+            protocol::FilesystemOperation::kRename,
+            EvaluatedPath(*denied_final, denied_final_path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+
+    InvalidateResolvedPathForMutation(resolved_replacement.c_str(), false);
+    InvalidateResolvedPathForMutation(resolved_replaced.c_str(), false);
+    if (backup_path != nullptr) {
+        InvalidateResolvedPathForMutation(resolved_backup.c_str(), false);
+    }
     return true;
 }
 
@@ -415,6 +504,52 @@ BOOL WINAPI DetouredMoveFileTransactedA(
         existing_wide.c_str(), new_wide.c_str(), progress_routine, data, flags, transaction);
 }
 
+BOOL WINAPI DetouredReplaceFileW(
+    const LPCWSTR replaced_path,
+    const LPCWSTR replacement_path,
+    const LPCWSTR backup_path,
+    const DWORD flags,
+    const LPVOID exclude,
+    const LPVOID reserved) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_replace_file_w(
+            replaced_path, replacement_path, backup_path, flags, exclude, reserved);
+    }
+    return AuthorizeReplace(replaced_path, replacement_path, backup_path)
+               ? g_replace_file_w(
+                     replaced_path, replacement_path, backup_path, flags, exclude, reserved)
+               : FALSE;
+}
+
+BOOL WINAPI DetouredReplaceFileA(
+    const LPCSTR replaced_path,
+    const LPCSTR replacement_path,
+    const LPCSTR backup_path,
+    const DWORD flags,
+    const LPVOID exclude,
+    const LPVOID reserved) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_replace_file_a(
+            replaced_path, replacement_path, backup_path, flags, exclude, reserved);
+    }
+    std::wstring replaced_wide;
+    std::wstring replacement_wide;
+    std::wstring backup_wide;
+    if (!ConvertAnsiPath(replaced_path, replaced_wide) ||
+        !ConvertAnsiPath(replacement_path, replacement_wide) ||
+        (backup_path != nullptr && !ConvertAnsiPath(backup_path, backup_wide)) ||
+        !AuthorizeReplace(
+            replaced_wide.c_str(), replacement_wide.c_str(),
+            backup_path == nullptr ? nullptr : backup_wide.c_str())) {
+        return FALSE;
+    }
+    return g_replace_file_w(
+        replaced_wide.c_str(), replacement_wide.c_str(),
+        backup_path == nullptr ? nullptr : backup_wide.c_str(), flags, exclude, reserved);
+}
+
 // Mirrors BuildXL's two-sided hard-link check: reading the existing object and
 // writing the new directory entry are separate policy decisions.
 BOOL WINAPI DetouredCreateHardLinkW(
@@ -635,6 +770,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_move_file_transacted_a),
             reinterpret_cast<PVOID>(DetouredMoveFileTransactedA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_replace_file_w),
+            reinterpret_cast<PVOID>(DetouredReplaceFileW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_replace_file_a),
+            reinterpret_cast<PVOID>(DetouredReplaceFileA)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_hard_link_w),
             reinterpret_cast<PVOID>(DetouredCreateHardLinkW)) != NO_ERROR ||
