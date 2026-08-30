@@ -20,6 +20,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winioctl.h>
+#include <winternl.h>
 
 namespace {
 
@@ -418,6 +419,23 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         SetEndOfFile(denied_truncate_handle) || GetLastError() != ERROR_ACCESS_DENIED) {
         return 121;
     }
+    using ZwSetInformationFileFunction = NTSTATUS(NTAPI*)(
+        HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, FILE_INFORMATION_CLASS);
+    const auto zw_set_information_file = reinterpret_cast<ZwSetInformationFileFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "ZwSetInformationFile"));
+    IO_STATUS_BLOCK io_status{};
+    LARGE_INTEGER direct_end_of_file{};
+    direct_end_of_file.QuadPart = 2;
+    constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+    constexpr FILE_INFORMATION_CLASS file_end_of_file_information =
+        static_cast<FILE_INFORMATION_CLASS>(20);
+    if (zw_set_information_file == nullptr ||
+        zw_set_information_file(
+            denied_truncate_handle, &io_status, &direct_end_of_file,
+            sizeof(direct_end_of_file), file_end_of_file_information) !=
+            status_access_denied) {
+        return 122;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -796,7 +814,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_truncate_path.wstring(), 29);
+            denied_truncate_path.wstring(), 29) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_truncate_path.wstring(), 30);
     DWORD exit_code = 0;
     CloseHandle(denied_disposition_handle);
     CloseHandle(denied_truncate_handle);
