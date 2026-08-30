@@ -445,6 +445,39 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         status_access_denied) {
         return 123;
     }
+    struct NtFileRenameInformation {
+        BOOLEAN replace_if_exists;
+        HANDLE root_directory;
+        ULONG file_name_length;
+        WCHAR file_name[1];
+    };
+    const HANDLE direct_rename_handle = CreateFileW(
+        arguments[22], DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    const std::size_t direct_rename_name_bytes =
+        std::wcslen(arguments[23]) * sizeof(wchar_t);
+    std::vector<std::uint8_t> direct_rename_buffer(
+        offsetof(NtFileRenameInformation, file_name) + direct_rename_name_bytes);
+    auto* direct_rename =
+        reinterpret_cast<NtFileRenameInformation*>(direct_rename_buffer.data());
+    direct_rename->replace_if_exists = FALSE;
+    direct_rename->root_directory = nullptr;
+    direct_rename->file_name_length = static_cast<ULONG>(direct_rename_name_bytes);
+    std::memcpy(direct_rename->file_name, arguments[23], direct_rename_name_bytes);
+    constexpr FILE_INFORMATION_CLASS file_rename_information =
+        static_cast<FILE_INFORMATION_CLASS>(10);
+    if (direct_rename_handle == INVALID_HANDLE_VALUE ||
+        zw_set_information_file(
+            direct_rename_handle, &io_status, direct_rename,
+            static_cast<ULONG>(direct_rename_buffer.size()), file_rename_information) !=
+            status_access_denied) {
+        if (direct_rename_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(direct_rename_handle);
+        }
+        return 124;
+    }
+    CloseHandle(direct_rename_handle);
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -831,7 +864,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kDelete,
-            denied_disposition_path.wstring(), 31);
+            denied_disposition_path.wstring(), 31) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRename,
+            denied_handle_rename_destination.wstring(), 32);
     DWORD exit_code = 0;
     CloseHandle(denied_disposition_handle);
     CloseHandle(denied_truncate_handle);
