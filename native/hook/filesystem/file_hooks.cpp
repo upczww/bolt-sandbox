@@ -134,6 +134,15 @@ using ReadDirectoryChangesWFunction = BOOL(WINAPI*)(
     LPOVERLAPPED_COMPLETION_ROUTINE);
 ReadDirectoryChangesWFunction g_read_directory_changes_w =
     ReadDirectoryChangesW;
+using NtNotifyChangeDirectoryFileFunction = NTSTATUS(NTAPI*)(
+    HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
+    ULONG, BOOLEAN);
+using NtNotifyChangeDirectoryFileExFunction = NTSTATUS(NTAPI*)(
+    HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
+    ULONG, BOOLEAN, ULONG);
+NtNotifyChangeDirectoryFileFunction g_nt_notify_change_directory_file = nullptr;
+NtNotifyChangeDirectoryFileExFunction g_nt_notify_change_directory_file_ex =
+    nullptr;
 
 void ReportDenied(
     const protocol::FilesystemOperation operation,
@@ -1333,6 +1342,65 @@ BOOL WINAPI DetouredReadDirectoryChangesW(
     return g_read_directory_changes_w(
         directory, buffer, buffer_size, watch_subtree, notify_filter,
         bytes_returned, overlapped, completion_routine);
+}
+
+NTSTATUS DenyNativeDirectoryNotification(
+    const PIO_STATUS_BLOCK io_status) noexcept {
+    constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+    if (io_status != nullptr) {
+        io_status->Status = status_access_denied;
+        io_status->Information = 0;
+    }
+    return status_access_denied;
+}
+
+NTSTATUS NTAPI DetouredNtNotifyChangeDirectoryFile(
+    const HANDLE directory,
+    const HANDLE event,
+    const PIO_APC_ROUTINE apc_routine,
+    const PVOID apc_context,
+    const PIO_STATUS_BLOCK io_status,
+    const PVOID buffer,
+    const ULONG buffer_size,
+    const ULONG completion_filter,
+    const BOOLEAN watch_tree) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_nt_notify_change_directory_file(
+            directory, event, apc_routine, apc_context, io_status, buffer,
+            buffer_size, completion_filter, watch_tree);
+    }
+    if (!AuthorizeHandleEnumeration(directory)) {
+        return DenyNativeDirectoryNotification(io_status);
+    }
+    return g_nt_notify_change_directory_file(
+        directory, event, apc_routine, apc_context, io_status, buffer,
+        buffer_size, completion_filter, watch_tree);
+}
+
+NTSTATUS NTAPI DetouredNtNotifyChangeDirectoryFileEx(
+    const HANDLE directory,
+    const HANDLE event,
+    const PIO_APC_ROUTINE apc_routine,
+    const PVOID apc_context,
+    const PIO_STATUS_BLOCK io_status,
+    const PVOID buffer,
+    const ULONG buffer_size,
+    const ULONG completion_filter,
+    const BOOLEAN watch_tree,
+    const ULONG information_class) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_nt_notify_change_directory_file_ex(
+            directory, event, apc_routine, apc_context, io_status, buffer,
+            buffer_size, completion_filter, watch_tree, information_class);
+    }
+    if (!AuthorizeHandleEnumeration(directory)) {
+        return DenyNativeDirectoryNotification(io_status);
+    }
+    return g_nt_notify_change_directory_file_ex(
+        directory, event, apc_routine, apc_context, io_status, buffer,
+        buffer_size, completion_filter, watch_tree, information_class);
 }
 
 BOOL WINAPI DetouredSetFileAttributesW(
@@ -2574,12 +2642,19 @@ HookInstallStatus InstallFileHooks(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
     g_nt_open_file = reinterpret_cast<NtOpenFile_t>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtOpenFile"));
+    g_nt_notify_change_directory_file =
+        reinterpret_cast<NtNotifyChangeDirectoryFileFunction>(GetProcAddress(
+            GetModuleHandleW(L"ntdll.dll"), "NtNotifyChangeDirectoryFile"));
+    g_nt_notify_change_directory_file_ex =
+        reinterpret_cast<NtNotifyChangeDirectoryFileExFunction>(GetProcAddress(
+            GetModuleHandleW(L"ntdll.dll"), "NtNotifyChangeDirectoryFileEx"));
     if (g_zw_set_information_file == nullptr || g_nt_create_section == nullptr ||
         g_nt_query_information_file == nullptr || g_nt_query_attributes_file == nullptr ||
         g_nt_query_full_attributes_file == nullptr || g_nt_query_directory_file == nullptr ||
         g_nt_query_directory_file_ex == nullptr || g_nt_read_file == nullptr ||
         g_nt_write_file == nullptr || g_nt_create_file == nullptr ||
-        g_nt_open_file == nullptr) {
+        g_nt_open_file == nullptr || g_nt_notify_change_directory_file == nullptr ||
+        g_nt_notify_change_directory_file_ex == nullptr) {
         return HookInstallStatus::kTransactionFailed;
     }
     if (DetourTransactionBegin() != NO_ERROR) {
@@ -2634,6 +2709,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_read_directory_changes_w),
             reinterpret_cast<PVOID>(DetouredReadDirectoryChangesW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_notify_change_directory_file),
+            reinterpret_cast<PVOID>(DetouredNtNotifyChangeDirectoryFile)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_notify_change_directory_file_ex),
+            reinterpret_cast<PVOID>(DetouredNtNotifyChangeDirectoryFileEx)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_set_file_attributes_w),
             reinterpret_cast<PVOID>(DetouredSetFileAttributesW)) != NO_ERROR ||

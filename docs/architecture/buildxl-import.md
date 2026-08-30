@@ -204,6 +204,11 @@ final identity as enumeration before submitting synchronous, overlapped, or
 completion-routine notification work. A denied watch returns
 `ERROR_ACCESS_DENIED`, zeros only the documented byte count, leaves the caller
 buffer and overlapped state untouched, and cannot schedule a completion.
+The native `NtNotifyChangeDirectoryFile` and
+`NtNotifyChangeDirectoryFileEx` entry points share that final-handle decision.
+They return `STATUS_ACCESS_DENIED` with zero completion information before an
+event or APC can be registered; both native signatures are Bolt-owned because
+the vendored BuildXL revision does not declare dedicated wrappers.
 
 Direct native opens reuse BuildXL's exact `NtCreateFile_t` and `NtOpenFile_t`
 signatures. Bolt maps the six NT create dispositions to the existing access
