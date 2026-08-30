@@ -1,0 +1,130 @@
+#include "hook/filesystem/filesystem_policy.h"
+
+#include "protocol/version.h"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <bcrypt.h>
+
+namespace {
+
+void append_u32(std::vector<std::uint8_t>& bytes, const std::size_t value) {
+    for (std::size_t shift = 0; shift < 32; shift += 8) {
+        bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+    }
+}
+
+void append_component(std::vector<std::uint8_t>& record, const std::uint8_t kind, const std::wstring& value) {
+    record.push_back(kind);
+    append_u32(record, value.size());
+    for (const wchar_t code_unit : value) {
+        record.push_back(static_cast<std::uint8_t>(code_unit));
+        record.push_back(static_cast<std::uint8_t>(code_unit >> 8));
+    }
+}
+
+void append_rule(
+    std::vector<std::uint8_t>& body,
+    const std::uint8_t kind,
+    const std::vector<std::wstring>& components) {
+    std::vector<std::uint8_t> record{kind};
+    append_u32(record, components.size() + 2U);
+    append_component(record, 0, L"C:");
+    append_component(record, 1, L"");
+    for (const auto& component : components) {
+        append_component(record, 2, component);
+    }
+    append_u32(body, record.size());
+    body.insert(body.end(), record.begin(), record.end());
+}
+
+bool hash_payload(std::vector<std::uint8_t>& payload) {
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    DWORD object_length = 0;
+    DWORD result_length = 0;
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0 ||
+        BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&object_length),
+                          sizeof(object_length), &result_length, 0) < 0) {
+        return false;
+    }
+    std::vector<std::uint8_t> object(object_length);
+    bool success = BCryptCreateHash(algorithm, &hash, object.data(), object_length, nullptr, 0, 0) >= 0;
+    if (success) {
+        success = BCryptHashData(hash, payload.data(), bolt::protocol::kPolicyDigestOffset, 0) >= 0;
+    }
+    if (success) {
+        success = BCryptHashData(
+                      hash, payload.data() + bolt::protocol::kPolicyEnvelopeLength,
+                      static_cast<ULONG>(payload.size() - bolt::protocol::kPolicyEnvelopeLength), 0) >= 0;
+    }
+    if (success) {
+        success = BCryptFinishHash(
+                      hash, payload.data() + bolt::protocol::kPolicyDigestOffset, 32, 0) >= 0;
+    }
+    if (hash != nullptr) {
+        BCryptDestroyHash(hash);
+    }
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    return success;
+}
+
+std::vector<std::uint8_t> policy_payload() {
+    std::vector<std::uint8_t> body{0};
+    append_u32(body, 6);
+    append_rule(body, 0, {L"work"});
+    append_rule(body, 2, {L"work", L"secret"});
+    append_rule(body, 1, {L"sdk"});
+    append_rule(body, 0, {L"sdk", L"cache"});
+    append_rule(body, 3, {L"metadata"});
+    append_rule(body, 4, {L"user"});
+    body.push_back(0);
+    append_u32(body, 0);
+
+    std::vector<std::uint8_t> payload(bolt::protocol::kPolicyEnvelopeLength, 0);
+    payload[0] = 'B';
+    payload[1] = 'L';
+    payload[2] = 'P';
+    payload[3] = '1';
+    payload[4] = 1;
+    payload[6] = static_cast<std::uint8_t>(bolt::protocol::kPolicyEnvelopeLength);
+    const auto body_length = body.size();
+    for (std::size_t shift = 0; shift < 32; shift += 8) {
+        payload[8 + shift / 8] = static_cast<std::uint8_t>(body_length >> shift);
+    }
+    payload.insert(payload.end(), body.begin(), body.end());
+    if (!hash_payload(payload)) {
+        return {};
+    }
+    return payload;
+}
+
+}  // namespace
+
+bool RunFilesystemPolicyTests() {
+    const auto payload = policy_payload();
+    std::unique_ptr<bolt::filesystem::FilesystemPolicy> policy;
+    if (payload.empty() || bolt::filesystem::FilesystemPolicy::Load(payload.data(), payload.size(), policy) !=
+                               bolt::filesystem::PolicyLoadStatus::kValid) {
+        return false;
+    }
+
+    using bolt::filesystem::Access;
+    using bolt::filesystem::Decision;
+    return policy->Decide(L"C:\\WORK\\source.cpp", Access::kWrite) == Decision::kAllow &&
+           policy->Decide(L"C:\\work\\secret\\key", Access::kRead) == Decision::kDeny &&
+           policy->Decide(L"C:\\sdk\\tool.exe", Access::kRead) == Decision::kAllow &&
+           policy->Decide(L"C:\\sdk\\tool.exe", Access::kWrite) == Decision::kDeny &&
+           policy->Decide(L"C:\\sdk\\cache\\item", Access::kWrite) == Decision::kAllow &&
+           policy->Decide(L"C:\\metadata\\item", Access::kMetadata) == Decision::kAllow &&
+           policy->Decide(L"C:\\metadata\\item", Access::kRead) == Decision::kDeny &&
+           policy->Decide(L"C:\\user\\item", Access::kRead) == Decision::kInheritUser &&
+           policy->Decide(L"C:\\worker\\lookalike", Access::kRead) == Decision::kDeny &&
+           policy->Decide(L"C:\\outside\\item", Access::kRead) == Decision::kDeny;
+}

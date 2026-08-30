@@ -25,6 +25,7 @@ bool RunEventFrameTests();
 bool RunPolicyMappingTests();
 bool RunRuntimePayloadTests();
 bool RunBuildXlTreeTests();
+bool RunFilesystemPolicyTests();
 int RunProcessChild(int argument_count, wchar_t** arguments);
 
 namespace {
@@ -131,6 +132,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunBuildXlTreeTests()) {
         return 12;
+    }
+    if (!RunFilesystemPolicyTests()) {
+        return 13;
     }
     return 0;
 }
