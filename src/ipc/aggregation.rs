@@ -121,6 +121,27 @@ mod tests {
     }
 
     #[test]
+    fn fs_056_canonical_alias_events_aggregate_under_one_resource() {
+        let mut aggregator = ViolationAggregator::new(NonZeroUsize::new(2).expect("nonzero"));
+        let canonical_from_win32 =
+            violation(42, FilesystemOperation::Write, r"C:\denied\protected.txt");
+        let canonical_from_native_alias =
+            violation(42, FilesystemOperation::Write, r"C:\denied\protected.txt");
+
+        assert_eq!(
+            aggregator.observe(canonical_from_win32.clone()),
+            Ok(AggregationDisposition::Added)
+        );
+        assert_eq!(
+            aggregator.observe(canonical_from_native_alias),
+            Ok(AggregationDisposition::Duplicate { duplicate_count: 1 })
+        );
+        assert_eq!(aggregator.entries().len(), 1);
+        assert_eq!(aggregator.entries()[0].event, canonical_from_win32);
+        assert_eq!(aggregator.entries()[0].duplicate_count, 1);
+    }
+
+    #[test]
     fn evt_005_process_operation_and_resource_are_part_of_the_aggregate_key() {
         let mut aggregator = ViolationAggregator::new(NonZeroUsize::new(6).expect("nonzero"));
         let events = [
