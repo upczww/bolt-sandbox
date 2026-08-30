@@ -63,20 +63,14 @@ std::string AnsiPath(const wchar_t* path) {
 }
 
 bool HasRequiredProcessMitigations() {
-    PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY strict_handles{};
     PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY extension_points{};
     PROCESS_MITIGATION_IMAGE_LOAD_POLICY image_load{};
     return GetProcessMitigationPolicy(
-               GetCurrentProcess(), ProcessStrictHandleCheckPolicy,
-               &strict_handles, sizeof(strict_handles)) != FALSE &&
-           GetProcessMitigationPolicy(
                GetCurrentProcess(), ProcessExtensionPointDisablePolicy,
                &extension_points, sizeof(extension_points)) != FALSE &&
            GetProcessMitigationPolicy(
                GetCurrentProcess(), ProcessImageLoadPolicy, &image_load,
                sizeof(image_load)) != FALSE &&
-           strict_handles.RaiseExceptionOnInvalidHandleReference != 0 &&
-           strict_handles.HandleExceptionsPermanentlyEnabled != 0 &&
            extension_points.DisableExtensionPoints != 0 &&
            image_load.NoRemoteImages != 0 &&
            image_load.NoLowMandatoryLabelImages != 0 &&
