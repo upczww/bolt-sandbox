@@ -988,6 +988,7 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
                   allowed_udp, &udp_byte, 1, 0, results->ai_addr,
                   static_cast<int>(results->ai_addrlen))
             : SOCKET_ERROR;
+    const int allowed_udp_error = WSAGetLastError();
 
     if (results != nullptr) {
         freeaddrinfo(results);
@@ -1054,7 +1055,7 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
     if (wide_resolve_status != 0) {
         return 224;
     }
-    if (allowed_udp_send != 1) {
+    if (allowed_udp_send != SOCKET_ERROR || allowed_udp_error != WSAEACCES) {
         return 225;
     }
     if (extended_status != 0) {
