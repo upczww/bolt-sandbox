@@ -155,6 +155,21 @@ NtNotifyChangeDirectoryFileExFunction g_nt_notify_change_directory_file_ex =
     nullptr;
 OpenFileById_t g_open_file_by_id = OpenFileById;
 
+class Win32LastErrorGuard final {
+  public:
+    Win32LastErrorGuard() noexcept : error_(GetLastError()) {}
+
+    ~Win32LastErrorGuard() noexcept {
+        SetLastError(error_);
+    }
+
+    Win32LastErrorGuard(const Win32LastErrorGuard&) = delete;
+    Win32LastErrorGuard& operator=(const Win32LastErrorGuard&) = delete;
+
+  private:
+    DWORD error_;
+};
+
 void ReportDenied(
     const protocol::FilesystemOperation operation,
     const wchar_t* path) noexcept {
@@ -1168,6 +1183,7 @@ NTSTATUS NTAPI DetouredNtCreateFile(
     const ULONG create_options,
     const PVOID ea_buffer,
     const ULONG ea_length) noexcept {
+    const Win32LastErrorGuard last_error_guard;
     DetouredScope scope;
     if (scope.Detoured_IsDisabled()) {
         return g_nt_create_file(
@@ -1193,6 +1209,7 @@ NTSTATUS NTAPI DetouredNtOpenFile(
     const PIO_STATUS_BLOCK io_status,
     const ULONG share_access,
     const ULONG open_options) noexcept {
+    const Win32LastErrorGuard last_error_guard;
     DetouredScope scope;
     if (scope.Detoured_IsDisabled()) {
         return g_nt_open_file(
