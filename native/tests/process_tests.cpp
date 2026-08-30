@@ -3093,6 +3093,42 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
     if (!job_query_succeeded || !remains_in_job) {
         return 254;
     }
+    std::array<wchar_t, MAX_PATH> system_directory{};
+    const UINT system_length = GetSystemDirectoryW(
+        system_directory.data(), static_cast<UINT>(system_directory.size()));
+    if (system_length == 0 || system_length >= system_directory.size()) {
+        return 321;
+    }
+    for (const wchar_t* broker_name : {L"schtasks.exe", L"sc.exe"}) {
+        const auto broker =
+            std::filesystem::path(system_directory.data()) / broker_name;
+        if (!std::filesystem::is_regular_file(broker)) {
+            return 322;
+        }
+        std::wstring broker_command = L"\"" + broker.wstring() + L"\" /?";
+        STARTUPINFOW broker_startup{};
+        broker_startup.cb = sizeof(broker_startup);
+        PROCESS_INFORMATION broker_process{
+            INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 1, 1};
+        SetLastError(ERROR_SUCCESS);
+        const BOOL broker_created = CreateProcessW(
+            broker.c_str(), broker_command.data(), nullptr, nullptr, FALSE, 0,
+            nullptr, nullptr, &broker_startup, &broker_process);
+        const DWORD broker_error = GetLastError();
+        if (broker_created) {
+            TerminateProcess(broker_process.hProcess, 323);
+            WaitForSingleObject(broker_process.hProcess, 5'000);
+            CloseHandle(broker_process.hThread);
+            CloseHandle(broker_process.hProcess);
+            return 323;
+        }
+        if (broker_error != ERROR_ACCESS_DENIED ||
+            broker_process.hProcess != nullptr ||
+            broker_process.hThread != nullptr || broker_process.dwProcessId != 0 ||
+            broker_process.dwThreadId != 0) {
+            return 324;
+        }
+    }
     constexpr std::array<DWORD, 3> confined_flag_families = {
         DETACHED_PROCESS,
         CREATE_NEW_PROCESS_GROUP,
