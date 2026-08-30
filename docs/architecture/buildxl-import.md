@@ -154,6 +154,12 @@ wrapper. ANSI paths are converted only for policy evaluation; the original
 native entry point receives the caller's descriptor after authorization.
 Denied calls preserve the descriptor and return `ERROR_ACCESS_DENIED`.
 
+BuildXL declares and funnels `EncryptFileW/A` and `DecryptFileW/A`, but leaves
+their wide-character policy logic as TODOs. Bolt reuses those exact function
+types and applies its write seam before the native EFS operation, so policy
+denials and events remain deterministic even when the underlying volume does
+not support EFS.
+
 `SetFileTime` closes the handle-based timestamp gap: non-empty time updates
 resolve the handle's final identity and require write access, while an all-null
 call retains native behavior. Denied updates report `Write` and leave every

@@ -74,6 +74,10 @@ using SetFileSecurityAFunction = BOOL(WINAPI*)(
     LPCSTR, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR);
 SetFileSecurityWFunction g_set_file_security_w = SetFileSecurityW;
 SetFileSecurityAFunction g_set_file_security_a = SetFileSecurityA;
+DecryptFileW_t g_decrypt_file_w = DecryptFileW;
+DecryptFileA_t g_decrypt_file_a = DecryptFileA;
+EncryptFileW_t g_encrypt_file_w = EncryptFileW;
+EncryptFileA_t g_encrypt_file_a = EncryptFileA;
 using SetFileTimeFunction = BOOL(WINAPI*)(
     HANDLE, const FILETIME*, const FILETIME*, const FILETIME*);
 SetFileTimeFunction g_set_file_time = SetFileTime;
@@ -649,6 +653,54 @@ BOOL WINAPI DetouredSetFileSecurityA(
     }
     return g_set_file_security_a(
         path, security_information, security_descriptor);
+}
+
+BOOL WINAPI DetouredEncryptFileW(const LPCWSTR path) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_encrypt_file_w(path);
+    }
+    return AuthorizeAttributeMutation(path) ? g_encrypt_file_w(path) : FALSE;
+}
+
+BOOL WINAPI DetouredEncryptFileA(const LPCSTR path) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_encrypt_file_a(path);
+    }
+    std::wstring path_wide;
+    if (!ConvertAnsiPath(path, path_wide) ||
+        !AuthorizeAttributeMutation(path_wide.c_str())) {
+        return FALSE;
+    }
+    return g_encrypt_file_a(path);
+}
+
+BOOL WINAPI DetouredDecryptFileW(
+    const LPCWSTR path,
+    const DWORD reserved) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_decrypt_file_w(path, reserved);
+    }
+    return AuthorizeAttributeMutation(path)
+               ? g_decrypt_file_w(path, reserved)
+               : FALSE;
+}
+
+BOOL WINAPI DetouredDecryptFileA(
+    const LPCSTR path,
+    const DWORD reserved) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_decrypt_file_a(path, reserved);
+    }
+    std::wstring path_wide;
+    if (!ConvertAnsiPath(path, path_wide) ||
+        !AuthorizeAttributeMutation(path_wide.c_str())) {
+        return FALSE;
+    }
+    return g_decrypt_file_a(path, reserved);
 }
 
 BOOL WINAPI DetouredSetFileTime(
@@ -1598,6 +1650,18 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_set_file_security_a),
             reinterpret_cast<PVOID>(DetouredSetFileSecurityA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_encrypt_file_w),
+            reinterpret_cast<PVOID>(DetouredEncryptFileW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_encrypt_file_a),
+            reinterpret_cast<PVOID>(DetouredEncryptFileA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_decrypt_file_w),
+            reinterpret_cast<PVOID>(DetouredDecryptFileW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_decrypt_file_a),
+            reinterpret_cast<PVOID>(DetouredDecryptFileA)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_set_file_time),
             reinterpret_cast<PVOID>(DetouredSetFileTime)) != NO_ERROR ||
