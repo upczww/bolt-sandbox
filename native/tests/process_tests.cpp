@@ -3502,6 +3502,34 @@ bool RunInheritedProcessTest(
     return passed;
 }
 
+bool RunUnicodeLaunchPathTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const wchar_t* hook_name,
+    const std::filesystem::path& test_root) {
+    const auto staged_directory = test_root / L"launch space \U0001F680";
+    const auto staged_executable =
+        staged_directory / std::filesystem::path(executable).filename();
+    const auto staged_hook = staged_directory / hook_path.filename();
+    std::error_code error;
+    if (!std::filesystem::create_directories(staged_directory, error) || error ||
+        !std::filesystem::copy_file(
+            executable, staged_executable,
+            std::filesystem::copy_options::overwrite_existing, error) || error ||
+        !std::filesystem::copy_file(
+            hook_path, staged_hook,
+            std::filesystem::copy_options::overwrite_existing, error) || error) {
+        return false;
+    }
+    const std::wstring arguments =
+        L"--nested-process " + std::wstring(hook_name) + L" 1";
+    const bool passed = RunInheritedProcessTest(
+        staged_executable.wstring(), staged_hook, hook_name,
+        PipeName(GetCurrentProcessId() ^ 0x5100'0022U), arguments, 0x64);
+    std::filesystem::remove_all(staged_directory, error);
+    return passed;
+}
+
 }  // namespace
 
 bool RunProcessTests() {
@@ -4607,7 +4635,8 @@ bool RunProcessTests() {
     }
 
     event_pipe.Close();
-    if (!RunInheritedProcessTest(executable, hook_path, hook_name, pipe_name)) {
+    if (!RunUnicodeLaunchPathTest(executable, hook_path, hook_name, test_root) ||
+        !RunInheritedProcessTest(executable, hook_path, hook_name, pipe_name)) {
         return false;
     }
 
