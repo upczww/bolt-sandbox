@@ -1,6 +1,7 @@
 #include "TreeNode.h"
 #include "PathTree.h"
 #include "CanonicalizedPath.h"
+#include "FilesCheckedForAccess.h"
 
 #include <memory>
 #include <string>
@@ -77,6 +78,14 @@ bool RunBuildXlTreeTests() {
 
     std::size_t extension_start = 0;
     const auto extended = canonical.RemoveLastComponent().Extend(L"\\nested\\result.bin", &extension_start);
-    return std::wstring(extended.GetPathString()) == L"C:\\root\\nested\\result.bin" &&
-           extension_start == 8U;
+    if (std::wstring(extended.GetPathString()) != L"C:\\root\\nested\\result.bin" ||
+        extension_start != 8U) {
+        return false;
+    }
+
+    const auto first_access = CanonicalizedPath::Canonicalize(L"C:\\bolt-tests\\checked.txt");
+    const auto same_access = CanonicalizedPath::Canonicalize(L"c:\\BOLT-TESTS\\CHECKED.txt");
+    auto* checked = FilesCheckedForAccess::GetInstance();
+    return checked->TryRegisterPath(first_access) && !checked->TryRegisterPath(same_access) &&
+           checked->IsRegistered(same_access);
 }
