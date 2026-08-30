@@ -19,9 +19,9 @@ and non-library files are not imported.
 
 ## Microsoft BuildXL
 
-Bolt Sandbox adapts the minimum audited portion of BuildXL DetoursServices for
-Windows sandbox policy lookup and filesystem interception. BuildXL is licensed
-under the MIT License.
+Bolt Sandbox vendors an audited DetoursServices filesystem runtime adaptation
+baseline for Windows policy enforcement and filesystem interception. BuildXL
+is licensed under the MIT License.
 
 - Source: https://github.com/microsoft/BuildXL
 - Revision: `24a3f64655741d9ab8619d35d12513e6a7baabc1`
@@ -32,11 +32,13 @@ under the MIT License.
   upstream; Bolt compatibility headers, adapters, protocol translation, and
   tests live outside the vendored directory.
 
-The import begins with BuildXL's independently testable path-tree data
-structure. Additional DetoursServices files will be admitted only with their
-transitive dependencies, hashes, notices, and behavior tests recorded. The
-BuildXL scheduler, C# engine, build graph, and manifest wire protocol are
-explicitly excluded.
+The manifest records the coherent upstream source closure and every file hash.
+Only the path-tree, canonical-path, and checked-path components are currently
+linked; the rest remains an immutable adaptation baseline. BuildXL-specific
+policy and reporting files retain upstream dependency context but are excluded
+from Bolt build targets and packaging. Bolt does not accept the BuildXL
+manifest wire protocol. The scheduler, C# engine, build graph, separate
+Detours fork, and unrelated Windows sandbox components are not imported.
 
 The pinned revision is the last commit that modified DetoursServices before
 the 2026-08-30 audit. The later audited main snapshot did not change any of the

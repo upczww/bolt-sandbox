@@ -6,42 +6,74 @@
   "audited_main_snapshot": "c73b56a4c3e6b3956ffa73d7f88866c9f772bf23",
   "license": "MIT",
   "upstream_path": "Public/Src/Sandbox/Windows/DetoursServices",
+  "integration_policy": "vendored files are immutable; Bolt adapters replace BuildXL manifest and report seams",
+  "currently_compiled_upstream_files": [
+    "CanonicalizedPath.cpp",
+    "FilesCheckedForAccess.cpp",
+    "PathTree.cpp",
+    "TreeNode.cpp"
+  ],
+  "adaptation_baseline_not_linked": "all other imported DetoursServices source files",
+  "excluded_from_bolt_build": [
+    "DataTypes.h",
+    "PolicyResult.cpp",
+    "PolicyResult.h",
+    "PolicyResult_common.cpp",
+    "PolicySearch.cpp",
+    "PolicySearch.h",
+    "SendReport.cpp",
+    "SendReport.h"
+  ],
   "imported_files": [
-    {
-      "path": "LICENSE",
-      "sha256": "88dc396a6da58d834a863fe88a832c268e29d41c3c0419354d4eb7923973c77f"
-    },
-    {
-      "path": "Public/Src/Sandbox/Windows/DetoursServices/CanonicalizedPath.cpp",
-      "sha256": "ae1ec8d125e2bdcfed1a344cf4760a365fe6112e808132f9a205b08e4ca658b4"
-    },
-    {
-      "path": "Public/Src/Sandbox/Windows/DetoursServices/CanonicalizedPath.h",
-      "sha256": "4d6539f0874a15c36a08b27ba5697e0f7a16b68a566bf4bc822ede3232ad0ed1"
-    },
-    {
-      "path": "Public/Src/Sandbox/Windows/DetoursServices/FilesCheckedForAccess.cpp",
-      "sha256": "7886d3d083257a606eaaf82bba792e0f0a038e5ac5ae60a64b7a101c8e2b0bd8"
-    },
-    {
-      "path": "Public/Src/Sandbox/Windows/DetoursServices/FilesCheckedForAccess.h",
-      "sha256": "1098675e9cf9e7c08549a31723760f59758ca51403fb7a92cba4fd84cb6361e2"
-    },
-    {
-      "path": "Public/Src/Sandbox/Windows/DetoursServices/PathTree.cpp",
-      "sha256": "9bfb27086d6c3cc2cd8b48c95aac02e1e73e8d1206c3605065d6b4c55ce3b32f"
-    },
-    {
-      "path": "Public/Src/Sandbox/Windows/DetoursServices/PathTree.h",
-      "sha256": "653a79287194ed6f7132b30f18eb54fecece35a222b4093369dda25205b0cb4e"
-    },
-    {
-      "path": "Public/Src/Sandbox/Windows/DetoursServices/TreeNode.cpp",
-      "sha256": "a3bff4aadeeb03320bf623a034ed710c4e00ac580ff5cbf4090343516cfc6775"
-    },
-    {
-      "path": "Public/Src/Sandbox/Windows/DetoursServices/TreeNode.h",
-      "sha256": "01cd3f7d87cf50f7427e5cc57038298224175fd5ae72e0d2947a80ea1bd2a034"
-    }
+    { "path": "LICENSE", "sha256": "88dc396a6da58d834a863fe88a832c268e29d41c3c0419354d4eb7923973c77f" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/Assertions.cpp", "sha256": "48c16132cde2182a92f2e7011343800c80cd6a56b9896cec5baffa9de62f6dcf" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/Assertions.h", "sha256": "dda981fc1b6201c55a600c4ecbe55d1b37db5ed361011894c72d7e1295c0ae0c" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/CanonicalizedPath.cpp", "sha256": "ae1ec8d125e2bdcfed1a344cf4760a365fe6112e808132f9a205b08e4ca658b4" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/CanonicalizedPath.h", "sha256": "4d6539f0874a15c36a08b27ba5697e0f7a16b68a566bf4bc822ede3232ad0ed1" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/DataTypes.h", "sha256": "77851b82fca749d5f696e0b0ffeb30deb7873abe5ea465e4954e687a6ab0c6d9" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/DebuggingHelpers.cpp", "sha256": "ed482873588e0469f45e4487956bf602babba328f45bcd915f6e6d0755d949ff" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/DebuggingHelpers.h", "sha256": "adb3dbee03b6e84d17a59e7503d0718041858a1c9f117d87a7c87c4d946ba8c1" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctionTypes.h", "sha256": "36e30609fba52dc7c64dfd048e4eca10466f7684c299e5f1488bce865a7ffbd8" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctions.cpp", "sha256": "b4b34f8e0198140d7795fe550ab151458d24a30386003fc1df7fa538630a6d6e" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctions.h", "sha256": "30494d3312800b055030cf1e8789c032ff79cd80daea58952320287b0bb523a4" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/DetouredScope.cpp", "sha256": "2328fb883aa6ffcacf60ca040bf70109f06cbe3e80ed260e2cb90892ac6e0c07" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/DetouredScope.h", "sha256": "9dbb84d9d0dcbf4acbb6123ea0e401e410a5f6fed5127833dfbbfb6e05d82ec9" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/DetoursHelpers.cpp", "sha256": "83cad86ee43c23ee5e6b7d32127b49d21b86f4d856cd02a74f952f2cc01e3d29" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/DetoursHelpers.h", "sha256": "4a02660a4469c32f90fde6d9a4825a1be5ff767cb17a775978f0444da9a7bd16" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/DetoursServices.cpp", "sha256": "1338fe70c41a2e944976262d889eaccd0ab3613275ac9a2b19c107666996deb2" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/DetoursServices.h", "sha256": "4532c3f9ea55d7260e2b9432eb0ca65829b33af18ba9cdd12232a4ff8bb3adcf" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/DeviceMap.cpp", "sha256": "7a59e49a033b2ea17f8dc6b42579501ec6a2cd29f2586ba5be5e920ee4f9c854" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/DeviceMap.h", "sha256": "2405bac388dd3b474b2a5e5bfd60393030e21aa30564f7fa6970c1beebc59a14" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/FileAccessHelpers.cpp", "sha256": "03d3cdfeeafb24539a521bbe73d030193cfcd005a905403c096ccc19470edad2" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/FileAccessHelpers.h", "sha256": "7fbc1214d5bc0b5b284fb1548bffb86019b0a8e3c70f673126702025b558796c" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/FilesCheckedForAccess.cpp", "sha256": "7886d3d083257a606eaaf82bba792e0f0a038e5ac5ae60a64b7a101c8e2b0bd8" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/FilesCheckedForAccess.h", "sha256": "1098675e9cf9e7c08549a31723760f59758ca51403fb7a92cba4fd84cb6361e2" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/HandleOverlay.cpp", "sha256": "4d383f8bd82a76577bdcf66163cd377c2d6519f8c3e9846133afcc669e0357b2" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/HandleOverlay.h", "sha256": "1b9135a24f9c3893803bcfc1d621ab33ae98ba6bf3980315131f5e3cfd490718" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/MetadataOverrides.cpp", "sha256": "10557da583c4c2634ee509e144f067fe375990c7d63c8901c5bfc3ac9040c9d2" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/MetadataOverrides.h", "sha256": "35154381ab1df0372d65d7f185ee08ec88281794037b0a91b43d1f9272d29fbf" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/PathTree.cpp", "sha256": "9bfb27086d6c3cc2cd8b48c95aac02e1e73e8d1206c3605065d6b4c55ce3b32f" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/PathTree.h", "sha256": "653a79287194ed6f7132b30f18eb54fecece35a222b4093369dda25205b0cb4e" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/PolicyResult.cpp", "sha256": "a1195fdbfc91d653a1f756ec8ed49c24d755e3cc14f15d6e151ab5760453478d" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/PolicyResult.h", "sha256": "656b303df8d2cc68b33463f5c15fb9c46d49bee16efb3e0c3f47df76195de9b9" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/PolicyResult_common.cpp", "sha256": "a143c4a85a12147d5fb1d78254b7fca815e8d1eb2e014c184c35cd1f75ea0276" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/PolicySearch.cpp", "sha256": "31b040044d6df81eca1195c306831fe46148f2bb7e83f69b5c16246e0aae83f2" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/PolicySearch.h", "sha256": "015b095e5577b5f5e1e8e8ef28a88a3202101ea0df38a801c99abd407e1223c9" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/ResolvedPathCache.h", "sha256": "fd346fc5ca100e7e2e3531e5ef021818081dcdeff7d7a4efbe1de1603e5f0906" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/SendReport.cpp", "sha256": "377d424dc7e28f4d11bc2deb703812992cd57312e5054edc5b7a45e28c56fb8f" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/SendReport.h", "sha256": "e64c842c57169a4609095e3e7f3b387e36cf23244e4c960596292c324348aaa0" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/StringOperations.cpp", "sha256": "ae9c0a22975cbae1d9bc87811c37f28bdc99a34f64914fe1a48ca2525e055dab" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/StringOperations.h", "sha256": "d2aebacb4bb1c7dd56cfcfa598f7aa284f38339f231881ebaee421623c2711fd" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/TreeNode.cpp", "sha256": "a3bff4aadeeb03320bf623a034ed710c4e00ac580ff5cbf4090343516cfc6775" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/TreeNode.h", "sha256": "01cd3f7d87cf50f7427e5cc57038298224175fd5ae72e0d2947a80ea1bd2a034" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/UnicodeConverter.h", "sha256": "a6cdd7da6033d2439437bf533ce7b61d779489c7f44a54c426ac1665dc22d5ea" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/UniqueHandle.h", "sha256": "1427d7996cd8226c47e9e9e2377974e505e790164451501c4c18db35ea75adc6" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/UtilityHelpers.h", "sha256": "b5761524f0f34896a364f7c399e8bcd49321d395b3a7af8f03e8c8991c13549d" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/buildXL_mem.h", "sha256": "f88f607331e1635667e9bfbb726feeec2fed37a71248fb29230bdbafe7dc220a" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/globals.h", "sha256": "3106300fce665c191f59ef91167e2c56ec9f3585a1f67dbea06cc90f2eeb9f85" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/stdafx-win.h", "sha256": "2cd436d11d0e036b32ac33381358bf0c4565f002960aca2e9bbe9269f5065eb8" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/stdafx.cpp", "sha256": "8fb53e7f885dfb3fcef2906379008f24185410b2e13d4900c7ec0c7557f656cd" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/stdafx.h", "sha256": "93e05a9865db98043a3fa165f6bcb6d737d9e4e7602d0c86cbfd54ef28889e40" },
+    { "path": "Public/Src/Sandbox/Windows/DetoursServices/targetver.h", "sha256": "9668bff7829f9d4cdc319597f94296eec0e7189274523d7614418ffcf899f660" }
   ]
 }
