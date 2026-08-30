@@ -5,6 +5,7 @@
 #include "hook/filesystem/file_hooks.h"
 #include "hook/event_sink.h"
 #include "hook/process/process_hooks.h"
+#include "hook/process/process_mitigations.h"
 
 #include <cstdint>
 
@@ -75,6 +76,10 @@ bool InitializeRuntime(const HINSTANCE instance) noexcept {
         bolt::filesystem::InstallFileHooks(policy, payload.policy_length);
     UnmapViewOfFile(policy);
     if (hook_status != bolt::filesystem::HookInstallStatus::kSuccess) {
+        return false;
+    }
+    if (bolt::process::ApplyRequiredProcessMitigations() !=
+        bolt::process::ProcessMitigationStatus::kSuccess) {
         return false;
     }
 

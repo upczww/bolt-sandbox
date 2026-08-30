@@ -152,6 +152,7 @@ target_link_libraries(bolt-sandbox-common PRIVATE bolt-sandbox-detours)
 target_link_libraries(bolt-sandbox-common PRIVATE bolt-sandbox-protocol)
 
 add_library(bolt-sandbox-process STATIC
+    hook/process/process_mitigations.cpp
     hook/process/process_hooks.cpp
 )
 bolt_native_warnings(bolt-sandbox-process)

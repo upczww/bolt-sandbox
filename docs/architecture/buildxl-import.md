@@ -378,6 +378,14 @@ same Ready handshake. Calls made by the Rtl adapter retain the existing
 thread-local disabled scope, so the nested syscall bypasses the lower hook and
 cannot inject or report twice.
 
+After all filesystem and process hooks commit, each target applies Bolt's
+compatibility-safe required process mitigation profile before either Ready
+signal. Existing policy bits are preserved, required bits are added and
+re-queried, and any query/application/verification failure aborts initialization
+before user code. Because descendants execute the same hook initialization,
+the profile is inherited semantically even where Windows does not inherit an
+individual mitigation bit automatically.
+
 The next slices are:
 
 1. Activate access classification and handle overlay behind `PolicyView`.

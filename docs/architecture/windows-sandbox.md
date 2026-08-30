@@ -555,6 +555,24 @@ Mandatory defense-in-depth:
 - Fail closed when the sandbox cannot be established.
 - Keep dangerous host capabilities behind brokered APIs.
 
+The initial compatibility-safe process mitigation profile is applied inside
+every injected target after the complete hook set is installed but before
+`Ready` or descendant readiness is signaled. The required irreversible bits
+are:
+
+- legacy extension-point disablement; and
+- image-load rejection for remote and low-integrity images, with System32
+  preference.
+
+Initialization queries the existing policy, only adds required bits, and then
+queries it again. A query, application, or verification failure fails sandbox
+initialization before user code. Strict invalid-handle termination,
+dynamic-code prohibition, Microsoft-only signing, Win32k disablement, and
+child-process prohibition are not part of this profile because they would
+break transacted-API compatibility probes, Detours injection, JIT-based tools,
+shell behavior, or the architecture's confined-child contract. They may only
+be added by a separately tested stricter backend/profile.
+
 If resistance to malicious native binaries becomes a requirement, add an
 AppContainer/BaseContainer backend instead of attempting to make DLL hooks a
 kernel-grade boundary.
