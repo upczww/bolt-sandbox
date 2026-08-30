@@ -779,6 +779,32 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 155;
     }
+    BY_HANDLE_FILE_INFORMATION handle_information{};
+    if (GetFileInformationByHandle(
+            denied_mapping_file, &handle_information) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 157;
+    }
+    FILE_BASIC_INFO handle_basic_information{};
+    if (GetFileInformationByHandleEx(
+            denied_mapping_file, FileBasicInfo, &handle_basic_information,
+            sizeof(handle_basic_information)) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 158;
+    }
+    using NtQueryInformationFileFunction = NTSTATUS(NTAPI*)(
+        HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, FILE_INFORMATION_CLASS);
+    const auto nt_query_information_file =
+        reinterpret_cast<NtQueryInformationFileFunction>(GetProcAddress(
+            GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationFile"));
+    NtFileBasicInformation queried_basic_information{};
+    if (nt_query_information_file == nullptr ||
+        nt_query_information_file(
+            denied_mapping_file, &io_status, &queried_basic_information,
+            sizeof(queried_basic_information), file_basic_information) !=
+            status_access_denied) {
+        return 159;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1365,7 +1391,19 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_delete_path.wstring(), 58);
+            denied_delete_path.wstring(), 58) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_mapping_path.wstring(), 59) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_mapping_path.wstring(), 60) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_mapping_path.wstring(), 61);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
