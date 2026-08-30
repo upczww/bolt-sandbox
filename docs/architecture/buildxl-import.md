@@ -31,10 +31,12 @@ This is a source and provenance baseline: vendored does not mean linked or
 shipped. The exact file list and hashes are enforced by the import manifest.
 
 The currently compiled upstream subset is `Assertions`, `StringOperations`,
-`TreeNode`, `PathTree`, `CanonicalizedPath`, and `FilesCheckedForAccess`. It
+`TreeNode`, `PathTree`, `ResolvedPathCache`, `CanonicalizedPath`, and
+`FilesCheckedForAccess`. It
 provides BuildXL's case-insensitive hashing and path comparison, Win32 path
-normalization, case-insensitive path tree, canonical paths, and checked-path
-set. The former hand-written string-operation subset has been removed.
+normalization, case-insensitive path tree, reparse-resolution cache and
+invalidation, canonical paths, and checked-path set. The former hand-written
+string-operation subset has been removed.
 
 CMake copies the immutable path-core files byte-for-byte into a generated
 adaptation directory. In that directory only, Bolt's narrow

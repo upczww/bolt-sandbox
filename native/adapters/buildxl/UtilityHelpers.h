@@ -28,6 +28,25 @@ struct CaseInsensitiveStringComparer {
     }
 };
 
+struct CaseInsensitiveStringLessThan {
+    bool operator()(const std::wstring& left, const std::wstring& right) const {
+        if (left.length() != right.length()) {
+            return left.length() < right.length();
+        }
+        if (left.data() == right.data()) {
+            return false;
+        }
+        return std::lexicographical_compare(
+            right.rbegin(), right.rend(), left.rbegin(), left.rend(),
+            [](const wchar_t left_character, const wchar_t right_character) {
+                if (left_character == right_character) {
+                    return false;
+                }
+                return std::towlower(left_character) < std::towlower(right_character);
+            });
+    }
+};
+
 struct CaseInsensitiveStringHasher {
     std::size_t operator()(const std::wstring& value) const {
         std::wstring normalized(value);

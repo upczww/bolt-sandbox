@@ -33,9 +33,9 @@ is licensed under the MIT License.
   tests live outside the vendored directory.
 
 The manifest records the coherent upstream source closure and every file hash.
-Only assertions, string/path operations, path-tree, canonical-path, and
-checked-path components are currently linked; the rest remains an immutable
-adaptation baseline. BuildXL-specific
+Only assertions, string/path operations, path-tree, resolved-path cache,
+canonical-path, and checked-path components are currently active; the rest
+remains an immutable adaptation baseline. BuildXL-specific
 policy and reporting files retain upstream dependency context but are excluded
 from Bolt build targets and packaging. Bolt does not accept the BuildXL
 manifest wire protocol. The scheduler, C# engine, build graph, separate

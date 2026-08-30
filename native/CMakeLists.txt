@@ -42,6 +42,7 @@ foreach(BUILDXL_PATH_CORE_FILE
     FilesCheckedForAccess.h
     PathTree.cpp
     PathTree.h
+    ResolvedPathCache.h
     TreeNode.cpp
     TreeNode.h
 )

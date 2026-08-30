@@ -12,6 +12,7 @@
     "CanonicalizedPath.cpp",
     "FilesCheckedForAccess.cpp",
     "PathTree.cpp",
+    "ResolvedPathCache.h",
     "StringOperations.cpp",
     "TreeNode.cpp"
   ],
