@@ -2250,7 +2250,8 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     const auto make_win32_root_rename = [win32_rename_root](const std::wstring& leaf) {
         const std::size_t name_bytes = leaf.size() * sizeof(wchar_t);
-        std::vector<std::uint8_t> buffer(offsetof(FILE_RENAME_INFO, FileName) + name_bytes);
+        std::vector<std::uint8_t> buffer(
+            offsetof(FILE_RENAME_INFO, FileName) + name_bytes + sizeof(wchar_t));
         auto* information = reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
         information->Flags = 0;
         information->RootDirectory = win32_rename_root;
@@ -2271,40 +2272,32 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
             win32_root_source_handle, FileRenameInfo,
             win32_root_rename_information.data(),
             static_cast<DWORD>(win32_root_rename_information.size()));
-    if (win32_root_source_handle != INVALID_HANDLE_VALUE) {
-        CloseHandle(win32_root_source_handle);
-    }
-    if (!win32_root_rename_result) {
-        if (win32_rename_root != INVALID_HANDLE_VALUE) {
-            CloseHandle(win32_rename_root);
-        }
-        return 268;
-    }
-    const HANDLE win32_root_intermediate_handle = CreateFileW(
-        win32_root_rename_intermediate.c_str(), DELETE | FILE_READ_ATTRIBUTES,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL, nullptr);
+    const DWORD win32_root_rename_error = GetLastError();
     auto win32_root_rename_ex_information = make_win32_root_rename(
         std::filesystem::path(win32_root_rename_destination).filename().wstring());
     const BOOL win32_root_rename_ex_result =
-        win32_root_intermediate_handle != INVALID_HANDLE_VALUE &&
+        win32_root_source_handle != INVALID_HANDLE_VALUE &&
         SetFileInformationByHandle(
-            win32_root_intermediate_handle, FileRenameInfoEx,
+            win32_root_source_handle, FileRenameInfoEx,
             win32_root_rename_ex_information.data(),
             static_cast<DWORD>(win32_root_rename_ex_information.size()));
-    if (win32_root_intermediate_handle != INVALID_HANDLE_VALUE) {
-        CloseHandle(win32_root_intermediate_handle);
+    const DWORD win32_root_rename_ex_error = GetLastError();
+    if (win32_root_source_handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(win32_root_source_handle);
     }
     if (win32_rename_root != INVALID_HANDLE_VALUE) {
         CloseHandle(win32_rename_root);
     }
-    if (!win32_root_rename_ex_result ||
-        GetFileAttributesW(win32_root_rename_source.c_str()) != INVALID_FILE_ATTRIBUTES ||
+    if (win32_root_rename_result ||
+        win32_root_rename_error != ERROR_INVALID_PARAMETER ||
+        win32_root_rename_ex_result ||
+        win32_root_rename_ex_error != ERROR_INVALID_PARAMETER ||
+        GetFileAttributesW(win32_root_rename_source.c_str()) == INVALID_FILE_ATTRIBUTES ||
         GetFileAttributesW(win32_root_rename_intermediate.c_str()) !=
             INVALID_FILE_ATTRIBUTES ||
-        GetFileAttributesW(win32_root_rename_destination.c_str()) ==
+        GetFileAttributesW(win32_root_rename_destination.c_str()) !=
             INVALID_FILE_ATTRIBUTES ||
-        !DeleteFileW(win32_root_rename_destination.c_str())) {
+        !DeleteFileW(win32_root_rename_source.c_str())) {
         return 269;
     }
 

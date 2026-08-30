@@ -915,35 +915,35 @@ bool TryGetObjectAttributesPath(
     return !path.empty();
 }
 
-struct NtFileLinkInformation {
+struct NtFileTargetInformation {
     BOOLEAN replace_if_exists;
     HANDLE root_directory;
     ULONG file_name_length;
     WCHAR file_name[1];
 };
 
-struct NtFileLinkInformationEx {
+struct NtFileTargetInformationEx {
     ULONG flags;
     HANDLE root_directory;
     ULONG file_name_length;
     WCHAR file_name[1];
 };
 
-bool TryGetLinkDestination(
+bool TryGetFileInformationDestination(
     const PVOID information,
     const ULONG information_size,
     const bool extended,
     std::wstring& destination) noexcept {
     const std::size_t header_size = extended
-                                        ? offsetof(NtFileLinkInformationEx, file_name)
-                                        : offsetof(NtFileLinkInformation, file_name);
+                                        ? offsetof(NtFileTargetInformationEx, file_name)
+                                        : offsetof(NtFileTargetInformation, file_name);
     if (information == nullptr || information_size < header_size) {
         return false;
     }
 
-    const auto* standard = static_cast<const NtFileLinkInformation*>(information);
+    const auto* standard = static_cast<const NtFileTargetInformation*>(information);
     const auto* extended_information =
-        static_cast<const NtFileLinkInformationEx*>(information);
+        static_cast<const NtFileTargetInformationEx*>(information);
     const ULONG name_length = extended ? extended_information->file_name_length
                                        : standard->file_name_length;
     const HANDLE root_directory = extended ? extended_information->root_directory
@@ -975,7 +975,7 @@ bool AuthorizeHandleHardLink(
     std::wstring source_path;
     std::wstring destination_path;
     if (!TryGetHandlePath(source, source_path) ||
-        !TryGetLinkDestination(
+        !TryGetFileInformationDestination(
             information, information_size, extended, destination_path)) {
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
@@ -2232,7 +2232,8 @@ BOOL WINAPI DetouredSetFileInformationByHandle(
     const FILE_INFO_BY_HANDLE_CLASS information_class,
     const LPVOID information,
     const DWORD information_size) noexcept {
-    const bool is_rename = information_class == FileRenameInfo;
+    const bool is_rename = information_class == FileRenameInfo ||
+                           information_class == FileRenameInfoEx;
     const bool is_disposition = information_class == FileDispositionInfo ||
                                 information_class == FileDispositionInfoEx;
     if (!is_rename && !is_disposition) {
@@ -2289,30 +2290,13 @@ BOOL WINAPI DetouredSetFileInformationByHandle(
             file, information_class, information, information_size);
     }
 
-    constexpr std::size_t header_size = offsetof(FILE_RENAME_INFO, FileName);
-    if (information == nullptr || information_size < header_size) {
-        return g_set_file_information_by_handle(
-            file, information_class, information, information_size);
-    }
-    const auto* rename = static_cast<const FILE_RENAME_INFO*>(information);
-    if (rename->RootDirectory != nullptr || rename->FileNameLength == 0 ||
-        rename->FileNameLength % sizeof(wchar_t) != 0 ||
-        rename->FileNameLength > information_size - header_size) {
-        SetLastError(ERROR_ACCESS_DENIED);
-        return FALSE;
-    }
-
     std::wstring source_path;
     std::wstring destination_path;
-    if (!TryGetHandlePath(file, source_path)) {
+    const bool extended = information_class == FileRenameInfoEx;
+    if (!TryGetHandlePath(file, source_path) ||
+        !TryGetFileInformationDestination(
+            information, information_size, extended, destination_path)) {
         SetLastError(ERROR_ACCESS_DENIED);
-        return FALSE;
-    }
-    try {
-        destination_path.assign(
-            rename->FileName, rename->FileNameLength / sizeof(wchar_t));
-    } catch (...) {
-        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         return FALSE;
     }
     if (!AuthorizeMove(source_path.c_str(), destination_path.c_str())) {
@@ -2607,41 +2591,12 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
             file, io_status, information, information_size, information_class);
     }
     if (is_rename) {
-        struct NtFileRenameInformation {
-            BOOLEAN replace_or_flags;
-            HANDLE root_directory;
-            ULONG file_name_length;
-            WCHAR file_name[1];
-        };
-        constexpr std::size_t header_size =
-            offsetof(NtFileRenameInformation, file_name);
-        if (information == nullptr || information_size < header_size) {
-            return g_zw_set_information_file(
-                file, io_status, information, information_size, information_class);
-        }
-        const auto* rename = static_cast<const NtFileRenameInformation*>(information);
-        if (rename->root_directory != nullptr || rename->file_name_length == 0 ||
-            rename->file_name_length % sizeof(wchar_t) != 0 ||
-            rename->file_name_length > information_size - header_size) {
-            if (io_status != nullptr) {
-                io_status->Status = status_access_denied;
-                io_status->Information = 0;
-            }
-            return status_access_denied;
-        }
         std::wstring source_path;
         std::wstring destination_path;
-        if (!TryGetHandlePath(file, source_path)) {
-            if (io_status != nullptr) {
-                io_status->Status = status_access_denied;
-                io_status->Information = 0;
-            }
-            return status_access_denied;
-        }
-        try {
-            destination_path.assign(
-                rename->file_name, rename->file_name_length / sizeof(wchar_t));
-        } catch (...) {
+        const bool extended = information_class == file_rename_information_ex;
+        if (!TryGetHandlePath(file, source_path) ||
+            !TryGetFileInformationDestination(
+                information, information_size, extended, destination_path)) {
             if (io_status != nullptr) {
                 io_status->Status = status_access_denied;
                 io_status->Information = 0;

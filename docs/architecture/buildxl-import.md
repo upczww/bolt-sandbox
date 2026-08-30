@@ -151,9 +151,14 @@ then invokes the real API. Bolt also attaches BuildXL's exact
 end-of-file information classes. Its disposition and extended-disposition
 branches mirror the Win32 delete-flag split and report `Delete`. Direct NT
 rename and extended-rename classes decode the NT length-delimited target and
-reuse two-sided move authorization. Direct NT callers receive native
-`STATUS_ACCESS_DENIED` without modifying the file; unsupported root-handle
-relative rename identities fail closed.
+reuse two-sided move authorization. Their optional root-directory handles are
+resolved to a final directory identity before the relative target is appended,
+so both the source handle and destination remain policy checked. Malformed or
+unresolvable identities fail closed with `STATUS_ACCESS_DENIED` and cleared
+completion information. Although the Win32 `FILE_RENAME_INFO` declaration also
+contains `RootDirectory`, `SetFileInformationByHandle` rejects a non-null value
+with `ERROR_INVALID_PARAMETER` on the supported Windows baseline; the adapter
+preserves that native result for both standard and extended rename classes.
 
 BuildXL's vendored headers still mark `CreateFileMapping*` as a TODO. Bolt's
 adapter therefore reuses final handle identity rather than importing incomplete
