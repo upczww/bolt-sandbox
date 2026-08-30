@@ -312,8 +312,7 @@ bool RunProcessTests() {
             bolt::protocol::FilesystemOperation::kRename, denied_move_source.wstring(), 5) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kCreate,
-            denied_hardlink_destination.wstring(), 6);
+            bolt::protocol::FilesystemOperation::kRead, denied_move_source.wstring(), 6);
     DWORD exit_code = 0;
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
