@@ -9,12 +9,15 @@
 #include "DetouredFunctionTypes.h"
 #include "DetouredScope.h"
 
+#include <cstring>
+#include <cwchar>
 #include <memory>
 #include <string>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winioctl.h>
+#include <shellapi.h>
 
 #include <detours.h>
 
@@ -109,6 +112,10 @@ CopyFileTransactedA_t g_copy_file_transacted_a = CopyFileTransactedA;
 using CopyFile2Function = HRESULT(WINAPI*)(
     PCWSTR, PCWSTR, const COPYFILE2_EXTENDED_PARAMETERS*);
 CopyFile2Function g_copy_file_2 = nullptr;
+using SHFileOperationWFunction = int(WINAPI*)(LPSHFILEOPSTRUCTW);
+using SHFileOperationAFunction = int(WINAPI*)(LPSHFILEOPSTRUCTA);
+SHFileOperationWFunction g_sh_file_operation_w = SHFileOperationW;
+SHFileOperationAFunction g_sh_file_operation_a = SHFileOperationA;
 
 void ReportDenied(
     const protocol::FilesystemOperation operation,
@@ -617,6 +624,47 @@ bool AuthorizeAttributeMutation(const wchar_t* path) noexcept {
     return true;
 }
 
+bool AuthorizeDeletion(const wchar_t* path) noexcept {
+    const auto* policy = g_policy.get();
+    const auto evaluation =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(path, Access::kWrite);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            protocol::FilesystemOperation::kDelete, EvaluatedPath(evaluation, path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, path), false);
+    return true;
+}
+
+bool AuthorizeShellDelete(const wchar_t* paths) noexcept {
+    if (paths == nullptr) {
+        return true;
+    }
+    for (const wchar_t* path = paths; *path != L'\0';
+         path += std::wcslen(path) + 1) {
+        if (!AuthorizeDeletion(path)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool AuthorizeShellDelete(const char* paths) noexcept {
+    if (paths == nullptr) {
+        return true;
+    }
+    for (const char* path = paths; *path != '\0'; path += std::strlen(path) + 1) {
+        std::wstring path_wide;
+        if (!ConvertAnsiPath(path, path_wide) ||
+            !AuthorizeDeletion(path_wide.c_str())) {
+            return false;
+        }
+    }
+    return true;
+}
+
 HANDLE WINAPI DetouredFindFirstFileW(
     const LPCWSTR path,
     const LPWIN32_FIND_DATAW find_data) noexcept {
@@ -1050,17 +1098,7 @@ BOOL WINAPI DetouredDeleteFileW(const LPCWSTR filename) noexcept {
     if (scope.Detoured_IsDisabled()) {
         return g_delete_file_w(filename);
     }
-    const auto* policy = g_policy.get();
-    const auto evaluation =
-        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(filename, Access::kWrite);
-    if (evaluation.decision == Decision::kDeny) {
-        ReportDenied(
-            protocol::FilesystemOperation::kDelete, EvaluatedPath(evaluation, filename));
-        SetLastError(ERROR_ACCESS_DENIED);
-        return FALSE;
-    }
-    InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, filename), false);
-    return g_delete_file_w(filename);
+    return AuthorizeDeletion(filename) ? g_delete_file_w(filename) : FALSE;
 }
 
 BOOL WINAPI DetouredCreateDirectoryW(
@@ -1853,6 +1891,36 @@ HRESULT WINAPI DetouredCopyFile2(
     return g_copy_file_2(existing_path, new_path, extended_parameters);
 }
 
+int WINAPI DetouredSHFileOperationW(
+    const LPSHFILEOPSTRUCTW operation) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled() || operation == nullptr ||
+        operation->wFunc != FO_DELETE) {
+        return g_sh_file_operation_w(operation);
+    }
+    if (!AuthorizeShellDelete(operation->pFrom)) {
+        operation->fAnyOperationsAborted = TRUE;
+        SetLastError(ERROR_ACCESS_DENIED);
+        return ERROR_ACCESS_DENIED;
+    }
+    return g_sh_file_operation_w(operation);
+}
+
+int WINAPI DetouredSHFileOperationA(
+    const LPSHFILEOPSTRUCTA operation) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled() || operation == nullptr ||
+        operation->wFunc != FO_DELETE) {
+        return g_sh_file_operation_a(operation);
+    }
+    if (!AuthorizeShellDelete(operation->pFrom)) {
+        operation->fAnyOperationsAborted = TRUE;
+        SetLastError(ERROR_ACCESS_DENIED);
+        return ERROR_ACCESS_DENIED;
+    }
+    return g_sh_file_operation_a(operation);
+}
+
 BOOL WINAPI DetouredCopyFileTransactedW(
     const LPCWSTR existing_path,
     const LPCWSTR new_path,
@@ -2102,6 +2170,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_copy_file_transacted_a),
             reinterpret_cast<PVOID>(DetouredCopyFileTransactedA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_sh_file_operation_w),
+            reinterpret_cast<PVOID>(DetouredSHFileOperationW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_sh_file_operation_a),
+            reinterpret_cast<PVOID>(DetouredSHFileOperationA)) != NO_ERROR ||
         (g_copy_file_2 != nullptr &&
          DetourAttach(
              reinterpret_cast<PVOID*>(&g_copy_file_2),

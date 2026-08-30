@@ -166,6 +166,7 @@ target_link_libraries(bolt-sandbox-filesystem PRIVATE
     bolt-sandbox-buildxl
     bolt-sandbox-detours
     bolt-sandbox-protocol
+    shell32
 )
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)

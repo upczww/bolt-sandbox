@@ -82,6 +82,12 @@ share one source/destination authorization path. Both sides require write
 access, denied calls report `Rename`, and ANSI variants delegate to the
 wide-character implementation after conversion.
 
+Shell deletion through `SHFileOperationW/A` preflights every entry in the
+double-NUL source list with the same delete decision before invoking Shell32.
+This prevents partial multi-item deletion, returns `ERROR_ACCESS_DENIED`, and
+marks the operation aborted when any source is denied. Other Shell operation
+codes are activated separately behind their two-sided source/destination tests.
+
 BuildXL's vendored `ReplaceFileW` hook currently contains a policy TODO and
 only invalidates its cache. Bolt therefore keeps the upstream signature and
 scope pattern but supplies the architecture-required fail-closed adapter:
