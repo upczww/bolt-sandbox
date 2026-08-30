@@ -201,6 +201,9 @@ class RaceProcess final {
             0, nullptr);
         if (event_client == INVALID_HANDLE_VALUE ||
             event_pipe_.Accept() != bolt::common::PipeStatus::kSuccess) {
+            if (event_client != INVALID_HANDLE_VALUE) {
+                CloseHandle(event_client);
+            }
             return false;
         }
 
