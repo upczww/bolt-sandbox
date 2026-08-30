@@ -1057,6 +1057,53 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
             sizeof(basic_information), file_basic_information) != status_access_denied) {
         return 146;
     }
+    struct NtFileShortNameInformation {
+        ULONG file_name_length;
+        WCHAR file_name[13];
+    };
+    NtFileShortNameInformation short_name_information{};
+    if (swprintf_s(
+            short_name_information.file_name, L"BOLT%04X.TMP",
+            GetCurrentProcessId() & 0xffffU) < 0) {
+        return 270;
+    }
+    short_name_information.file_name_length = static_cast<ULONG>(
+        std::wcslen(short_name_information.file_name) * sizeof(wchar_t));
+    constexpr FILE_INFORMATION_CLASS file_short_name_information =
+        static_cast<FILE_INFORMATION_CLASS>(40);
+    const HANDLE allowed_short_name_handle = CreateFileW(
+        arguments[26], DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    IO_STATUS_BLOCK allowed_short_name_status{};
+    const NTSTATUS allowed_short_name_result =
+        allowed_short_name_handle == INVALID_HANDLE_VALUE
+            ? status_access_denied
+            : zw_set_information_file(
+                  allowed_short_name_handle, &allowed_short_name_status,
+                  &short_name_information,
+                  offsetof(NtFileShortNameInformation, file_name) +
+                      short_name_information.file_name_length,
+                  file_short_name_information);
+    if (allowed_short_name_handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(allowed_short_name_handle);
+    }
+    if (allowed_short_name_result < 0) {
+        return 270;
+    }
+    IO_STATUS_BLOCK denied_short_name_status{};
+    denied_short_name_status.Status = 0;
+    denied_short_name_status.Information = 123;
+    if (zw_set_information_file(
+            denied_disposition_handle, &denied_short_name_status,
+            &short_name_information,
+            offsetof(NtFileShortNameInformation, file_name) +
+                short_name_information.file_name_length,
+            file_short_name_information) != status_access_denied ||
+        denied_short_name_status.Status != status_access_denied ||
+        denied_short_name_status.Information != 0) {
+        return 271;
+    }
     SECURITY_DESCRIPTOR security_descriptor{};
     if (!InitializeSecurityDescriptor(
             &security_descriptor, SECURITY_DESCRIPTOR_REVISION) ||
