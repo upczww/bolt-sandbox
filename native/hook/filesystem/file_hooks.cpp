@@ -44,6 +44,7 @@ ReplaceFileA_t g_replace_file_a = ReplaceFileA;
 SetFileInformationByHandle_t g_set_file_information_by_handle = SetFileInformationByHandle;
 using SetEndOfFileFunction = BOOL(WINAPI*)(HANDLE);
 SetEndOfFileFunction g_set_end_of_file = SetEndOfFile;
+ZwSetInformationFile_t g_zw_set_information_file = nullptr;
 using CreateHardLinkWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRIBUTES);
 CreateHardLinkWFunction g_create_hard_link_w = CreateHardLinkW;
 CopyFileW_t g_copy_file_w = CopyFileW;
@@ -695,6 +696,55 @@ BOOL WINAPI DetouredSetEndOfFile(const HANDLE file) noexcept {
     return g_set_end_of_file(file);
 }
 
+NTSTATUS NTAPI DetouredZwSetInformationFile(
+    const HANDLE file,
+    const PIO_STATUS_BLOCK io_status,
+    const PVOID information,
+    const ULONG information_size,
+    const FILE_INFORMATION_CLASS information_class) noexcept {
+    constexpr FILE_INFORMATION_CLASS file_allocation_information =
+        static_cast<FILE_INFORMATION_CLASS>(19);
+    constexpr FILE_INFORMATION_CLASS file_end_of_file_information =
+        static_cast<FILE_INFORMATION_CLASS>(20);
+    if (information_class != file_allocation_information &&
+        information_class != file_end_of_file_information) {
+        return g_zw_set_information_file(
+            file, io_status, information, information_size, information_class);
+    }
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_zw_set_information_file(
+            file, io_status, information, information_size, information_class);
+    }
+
+    constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+    std::wstring source_path;
+    if (!TryGetHandlePath(file, source_path)) {
+        if (io_status != nullptr) {
+            io_status->Status = status_access_denied;
+            io_status->Information = 0;
+        }
+        return status_access_denied;
+    }
+    const auto* policy = g_policy.get();
+    const auto evaluation = policy == nullptr
+                                ? PolicyEvaluation{}
+                                : policy->Evaluate(source_path.c_str(), Access::kWrite);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            protocol::FilesystemOperation::kWrite,
+            EvaluatedPath(evaluation, source_path.c_str()));
+        if (io_status != nullptr) {
+            io_status->Status = status_access_denied;
+            io_status->Information = 0;
+        }
+        return status_access_denied;
+    }
+    InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, source_path.c_str()), false);
+    return g_zw_set_information_file(
+        file, io_status, information, information_size, information_class);
+}
+
 // Mirrors BuildXL's two-sided hard-link check: reading the existing object and
 // writing the new directory entry are separate policy decisions.
 BOOL WINAPI DetouredCreateHardLinkW(
@@ -875,6 +925,11 @@ HookInstallStatus InstallFileHooks(
     }
     g_copy_file_2 = reinterpret_cast<CopyFile2Function>(
         GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CopyFile2"));
+    g_zw_set_information_file = reinterpret_cast<ZwSetInformationFile_t>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "ZwSetInformationFile"));
+    if (g_zw_set_information_file == nullptr) {
+        return HookInstallStatus::kTransactionFailed;
+    }
     if (DetourTransactionBegin() != NO_ERROR) {
         return HookInstallStatus::kTransactionFailed;
     }
@@ -927,6 +982,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_set_end_of_file),
             reinterpret_cast<PVOID>(DetouredSetEndOfFile)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_zw_set_information_file),
+            reinterpret_cast<PVOID>(DetouredZwSetInformationFile)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_hard_link_w),
             reinterpret_cast<PVOID>(DetouredCreateHardLinkW)) != NO_ERROR ||
