@@ -20,6 +20,8 @@ enum class EventSinkStatus : std::uint8_t {
 
 EventSinkStatus InitializeEventSink(HANDLE event_handle) noexcept;
 
+bool IsEventSinkHandle(HANDLE handle) noexcept;
+
 bool TryReportFilesystemViolation(
     protocol::FilesystemOperation operation,
     const wchar_t* path) noexcept;

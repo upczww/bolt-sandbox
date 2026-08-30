@@ -151,6 +151,11 @@ EventSinkStatus InitializeEventSink(const HANDLE event_handle) noexcept {
     return EventSinkStatus::kSuccess;
 }
 
+bool IsEventSinkHandle(const HANDLE handle) noexcept {
+    return InterlockedCompareExchange(&g_state.initialization_state, 1, 1) == 1 &&
+           handle == g_state.event_handle;
+}
+
 bool TryReportFilesystemViolation(
     const protocol::FilesystemOperation operation,
     const wchar_t* path) noexcept {

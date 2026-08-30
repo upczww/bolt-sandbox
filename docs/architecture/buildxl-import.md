@@ -71,6 +71,12 @@ junctions therefore cannot grant access to a denied target. Calls carrying
 `FILE_FLAG_OPEN_REPARSE_POINT` resolve only the parent and preserve the leaf
 reparse object, matching the caller's requested object identity.
 
+Synchronous `ReadFile` and `WriteFile` resolve the final identity from the
+supplied handle and reapply read or write policy before submitting I/O. This
+closes inherited-handle bypasses and zeroes the byte count on policy denial.
+The authenticated event-pipe handle is the sole current non-disk write bypass,
+allowing `EventSink` to report violations without recursively blocking itself.
+
 The first adapted BuildXL operation-family hooks are `CopyFileW/A`,
 `CopyFileExW/A`, `CopyFileTransactedW/A`, and the dynamically resolved
 `CopyFile2`. Like upstream BuildXL, ANSI entry points convert once and

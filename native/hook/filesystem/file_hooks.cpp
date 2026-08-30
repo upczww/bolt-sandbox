@@ -116,6 +116,11 @@ using SHFileOperationWFunction = int(WINAPI*)(LPSHFILEOPSTRUCTW);
 using SHFileOperationAFunction = int(WINAPI*)(LPSHFILEOPSTRUCTA);
 SHFileOperationWFunction g_sh_file_operation_w = SHFileOperationW;
 SHFileOperationAFunction g_sh_file_operation_a = SHFileOperationA;
+using ReadFileFunction = BOOL(WINAPI*)(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
+using WriteFileFunction = BOOL(WINAPI*)(
+    HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);
+ReadFileFunction g_read_file = ReadFile;
+WriteFileFunction g_write_file = WriteFile;
 
 void ReportDenied(
     const protocol::FilesystemOperation operation,
@@ -578,6 +583,34 @@ bool AuthorizeHandleEnumeration(const HANDLE directory) noexcept {
             EvaluatedPath(evaluation, source_path.c_str()));
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
+    }
+    return true;
+}
+
+bool AuthorizeHandleIo(
+    const HANDLE file,
+    const Access access,
+    const protocol::FilesystemOperation operation) noexcept {
+    if (access == Access::kWrite && hook::IsEventSinkHandle(file)) {
+        return true;
+    }
+    std::wstring source_path;
+    if (!TryGetHandlePath(file, source_path)) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    const auto* policy = g_policy.get();
+    const auto evaluation = policy == nullptr
+                                ? PolicyEvaluation{}
+                                : policy->Evaluate(source_path.c_str(), access);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(operation, EvaluatedPath(evaluation, source_path.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    if (access == Access::kWrite) {
+        InvalidateResolvedPathForMutation(
+            EvaluatedPath(evaluation, source_path.c_str()), false);
     }
     return true;
 }
@@ -1208,6 +1241,49 @@ BOOL WINAPI DetouredSetFileTime(
     }
     InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, source_path.c_str()), false);
     return g_set_file_time(file, creation_time, access_time, write_time);
+}
+
+BOOL WINAPI DetouredReadFile(
+    const HANDLE file,
+    const LPVOID buffer,
+    const DWORD bytes_to_read,
+    const LPDWORD bytes_read,
+    const LPOVERLAPPED overlapped) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_read_file(file, buffer, bytes_to_read, bytes_read, overlapped);
+    }
+    if (!AuthorizeHandleIo(
+            file, Access::kRead, protocol::FilesystemOperation::kRead)) {
+        if (bytes_read != nullptr) {
+            *bytes_read = 0;
+        }
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return g_read_file(file, buffer, bytes_to_read, bytes_read, overlapped);
+}
+
+BOOL WINAPI DetouredWriteFile(
+    const HANDLE file,
+    const LPCVOID buffer,
+    const DWORD bytes_to_write,
+    const LPDWORD bytes_written,
+    const LPOVERLAPPED overlapped) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_write_file(
+            file, buffer, bytes_to_write, bytes_written, overlapped);
+    }
+    if (!AuthorizeHandleIo(
+            file, Access::kWrite, protocol::FilesystemOperation::kWrite)) {
+        if (bytes_written != nullptr) {
+            *bytes_written = 0;
+        }
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return g_write_file(file, buffer, bytes_to_write, bytes_written, overlapped);
 }
 
 HANDLE WINAPI DetouredCreateFileW(
@@ -2274,6 +2350,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_set_file_time),
             reinterpret_cast<PVOID>(DetouredSetFileTime)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_read_file),
+            reinterpret_cast<PVOID>(DetouredReadFile)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_write_file),
+            reinterpret_cast<PVOID>(DetouredWriteFile)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_file_w),
             reinterpret_cast<PVOID>(DetouredCreateFileW)) != NO_ERROR ||
