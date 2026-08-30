@@ -1967,6 +1967,43 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
     }
 
     const std::wstring executable = CurrentExecutable();
+    const std::wstring missing_breakaway_image =
+        executable + L".missing-breakaway-image";
+    std::wstring breakaway_command_line =
+        L"\"" + missing_breakaway_image + L"\"";
+    STARTUPINFOW breakaway_startup{};
+    breakaway_startup.cb = sizeof(breakaway_startup);
+    PROCESS_INFORMATION breakaway_process{
+        INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 1, 1};
+    SetLastError(ERROR_SUCCESS);
+    const BOOL breakaway_created = CreateProcessW(
+        missing_breakaway_image.c_str(), breakaway_command_line.data(), nullptr,
+        nullptr, FALSE, CREATE_BREAKAWAY_FROM_JOB, nullptr, nullptr,
+        &breakaway_startup, &breakaway_process);
+    const DWORD breakaway_error = GetLastError();
+    BOOL remains_in_job = FALSE;
+    const BOOL job_query_succeeded =
+        IsProcessInJob(GetCurrentProcess(), nullptr, &remains_in_job);
+    if (breakaway_created || breakaway_error != ERROR_ACCESS_DENIED ||
+        breakaway_process.hProcess != nullptr ||
+        breakaway_process.hThread != nullptr ||
+        breakaway_process.dwProcessId != 0 ||
+        breakaway_process.dwThreadId != 0 || !job_query_succeeded ||
+        !remains_in_job) {
+        if (breakaway_created) {
+            TerminateProcess(breakaway_process.hProcess, 246);
+            WaitForSingleObject(breakaway_process.hProcess, 5'000);
+            CloseHandle(breakaway_process.hThread);
+            CloseHandle(breakaway_process.hProcess);
+        }
+        return 246;
+    }
+    const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
+        GetProcAddress(hook, "BoltSandboxFlushEvents"));
+    if (flush_events == nullptr || !flush_events(5'000)) {
+        return 247;
+    }
+
     SECURITY_ATTRIBUTES inheritable{};
     inheritable.nLength = sizeof(inheritable);
     inheritable.bInheritHandle = TRUE;
@@ -2315,8 +2352,17 @@ bool RunInheritedProcessTest(
                               bolt::protocol::ReadyFrameStatus::kSuccess &&
                           process.ReleaseAfterReady() == bolt::common::ProcessStatus::kSuccess &&
                           process.Wait(10'000) == bolt::common::ProcessStatus::kSuccess;
+    const auto parent_process_id = static_cast<std::uint32_t>(
+        GetProcessId(process.process_handle()));
+    constexpr auto breakaway_operation =
+        static_cast<bolt::protocol::ProcessOperation>(3);
+    const bool breakaway_event_ok =
+        !parent_arguments.empty() ||
+        ReadProcessViolation(
+            event_pipe.handle(), parent_process_id, breakaway_operation, 1);
     DWORD exit_code = 0;
     const bool passed = ready_ok &&
+                        breakaway_event_ok &&
                         process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                         exit_code == 0;
     if (!passed) {
