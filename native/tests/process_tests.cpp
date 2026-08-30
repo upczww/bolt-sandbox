@@ -643,6 +643,14 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 142;
     }
+    if (SetFileAttributesW(arguments[6], FILE_ATTRIBUTE_HIDDEN) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 143;
+    }
+    if (SetFileAttributesA(ansi_denied_metadata.c_str(), FILE_ATTRIBUTE_HIDDEN) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 144;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -794,6 +802,10 @@ bool RunProcessTests() {
         return false;
     }
     CloseHandle(delete_fixture);
+    const DWORD denied_delete_attributes = GetFileAttributesW(denied_delete_path.c_str());
+    if (denied_delete_attributes == INVALID_FILE_ATTRIBUTES) {
+        return false;
+    }
     const HANDLE move_fixture = CreateFileW(
         denied_move_source.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -1155,7 +1167,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kMetadata,
-            denied_delete_path.wstring(), 47);
+            denied_delete_path.wstring(), 47) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_delete_path.wstring(), 48) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_delete_path.wstring(), 49);
     DWORD exit_code = 0;
     CloseHandle(denied_disposition_handle);
     CloseHandle(denied_truncate_handle);
@@ -1168,6 +1188,8 @@ bool RunProcessTests() {
                             WaitForSingleObject(denied, 0) == WAIT_TIMEOUT &&
                             !std::filesystem::exists(denied_path) &&
                             std::filesystem::exists(denied_delete_path) &&
+                            GetFileAttributesW(denied_delete_path.c_str()) ==
+                                denied_delete_attributes &&
                             !std::filesystem::exists(denied_create_directory) &&
                             std::filesystem::is_directory(denied_remove_directory) &&
                             std::filesystem::exists(denied_move_source) &&
