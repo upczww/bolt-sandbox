@@ -144,6 +144,11 @@ because the vendored BuildXL layer has no dedicated wrapper. Both variants
 require write access, report denied changes as `Write`, and invalidate the path
 cache before an allowed native call.
 
+`SetFileTime` closes the handle-based timestamp gap: non-empty time updates
+resolve the handle's final identity and require write access, while an all-null
+call retains native behavior. Denied updates report `Write` and leave every
+timestamp unchanged.
+
 For textually allowed copy, move, and replace operation paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,
 appends any absent suffix, then evaluates the fully resolved source and

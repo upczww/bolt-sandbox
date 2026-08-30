@@ -68,6 +68,9 @@ using SetFileAttributesWFunction = BOOL(WINAPI*)(LPCWSTR, DWORD);
 using SetFileAttributesAFunction = BOOL(WINAPI*)(LPCSTR, DWORD);
 SetFileAttributesWFunction g_set_file_attributes_w = SetFileAttributesW;
 SetFileAttributesAFunction g_set_file_attributes_a = SetFileAttributesA;
+using SetFileTimeFunction = BOOL(WINAPI*)(
+    HANDLE, const FILETIME*, const FILETIME*, const FILETIME*);
+SetFileTimeFunction g_set_file_time = SetFileTime;
 CreateHardLinkW_t g_create_hard_link_w = CreateHardLinkW;
 CreateHardLinkA_t g_create_hard_link_a = CreateHardLinkA;
 CopyFileW_t g_copy_file_w = CopyFileW;
@@ -607,6 +610,36 @@ BOOL WINAPI DetouredSetFileAttributesA(
         return FALSE;
     }
     return g_set_file_attributes_a(path, attributes);
+}
+
+BOOL WINAPI DetouredSetFileTime(
+    const HANDLE file,
+    const FILETIME* creation_time,
+    const FILETIME* access_time,
+    const FILETIME* write_time) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled() ||
+        (creation_time == nullptr && access_time == nullptr && write_time == nullptr)) {
+        return g_set_file_time(file, creation_time, access_time, write_time);
+    }
+    std::wstring source_path;
+    if (!TryGetHandlePath(file, source_path)) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    const auto* policy = g_policy.get();
+    const auto evaluation = policy == nullptr
+                                ? PolicyEvaluation{}
+                                : policy->Evaluate(source_path.c_str(), Access::kWrite);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            protocol::FilesystemOperation::kWrite,
+            EvaluatedPath(evaluation, source_path.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, source_path.c_str()), false);
+    return g_set_file_time(file, creation_time, access_time, write_time);
 }
 
 HANDLE WINAPI DetouredCreateFileW(
@@ -1484,6 +1517,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_set_file_attributes_a),
             reinterpret_cast<PVOID>(DetouredSetFileAttributesA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_set_file_time),
+            reinterpret_cast<PVOID>(DetouredSetFileTime)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_file_w),
             reinterpret_cast<PVOID>(DetouredCreateFileW)) != NO_ERROR ||
