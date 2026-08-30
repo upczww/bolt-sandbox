@@ -849,12 +849,18 @@ bool RunPathFormsTest(
         {bolt::tests::FilesystemRuleKind::kReadWrite, allowed},
         {bolt::tests::FilesystemRuleKind::kDeny, denied},
     };
+    std::array<wchar_t, 64> volume_name{};
+    if (!GetVolumeNameForVolumeMountPointW(
+            allowed.root_path().c_str(), volume_name.data(),
+            static_cast<DWORD>(volume_name.size()))) {
+        return false;
+    }
     RaceProcess process;
     const bool started =
         start != nullptr &&
         process.Start(
-            executable, hook_path, rules, L"path-forms", test_root, {}, start,
-            ordinal++);
+            executable, hook_path, rules, L"path-forms", test_root,
+            std::filesystem::path(volume_name.data()), start, ordinal++);
     const bool released =
         started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
     const bool exited = released && process.WaitForExit();
@@ -1351,6 +1357,17 @@ int RunFilesystemRaceChild(
                                               (allowed / L"relative.txt").wstring();
         if (!can_read(allowed_extended.c_str())) {
             return 317;
+        }
+        const std::wstring relative_to_volume =
+            (allowed / L"relative.txt").wstring().substr(
+                allowed.root_path().wstring().size());
+        const std::wstring volume_alias =
+            std::wstring(arguments[4]) + relative_to_volume;
+        const std::wstring local_device_alias =
+            L"\\\\.\\" + (allowed / L"relative.txt").wstring();
+        if (!can_read(volume_alias.c_str()) ||
+            !can_read(local_device_alias.c_str())) {
+            return 351;
         }
         const std::wstring denied_extended =
             L"\\\\?\\" + (denied / L"base.txt").wstring();
