@@ -8,9 +8,12 @@
 
 #include <cstdint>
 #include <atomic>
+#include <cstring>
 #include <memory>
 #include <thread>
 #include <vector>
+
+#include <ws2tcpip.h>
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -20,6 +23,59 @@ namespace {
 
 HANDLE HandleFromWire(const std::uint64_t value) noexcept {
     return reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(value));
+}
+
+bool ValidateListener(
+    const SOCKET listener,
+    const int expected_family,
+    const std::uint16_t expected_port) noexcept {
+    if (listener == INVALID_SOCKET || expected_port == 0) {
+        return false;
+    }
+    sockaddr_storage storage{};
+    int storage_length = sizeof(storage);
+    BOOL accepting = FALSE;
+    int accepting_length = sizeof(accepting);
+    if (getsockname(
+            listener, reinterpret_cast<sockaddr*>(&storage),
+            &storage_length) == SOCKET_ERROR ||
+        storage.ss_family != expected_family ||
+        getsockopt(
+            listener, SOL_SOCKET, SO_ACCEPTCONN,
+            reinterpret_cast<char*>(&accepting), &accepting_length) ==
+            SOCKET_ERROR ||
+        accepting == FALSE) {
+        return false;
+    }
+    if (expected_family == AF_INET) {
+        const auto* endpoint = reinterpret_cast<const sockaddr_in*>(&storage);
+        if (endpoint->sin_addr.s_addr != htonl(INADDR_LOOPBACK) ||
+            ntohs(endpoint->sin_port) != expected_port) {
+            return false;
+        }
+    } else {
+        const auto* endpoint = reinterpret_cast<const sockaddr_in6*>(&storage);
+        if (std::memcmp(
+                &endpoint->sin6_addr, &in6addr_loopback,
+                sizeof(in6addr_loopback)) != 0 ||
+            ntohs(endpoint->sin6_port) != expected_port) {
+            return false;
+        }
+    }
+    return SetHandleInformation(
+               reinterpret_cast<HANDLE>(listener), HANDLE_FLAG_INHERIT, 0) !=
+           FALSE;
+}
+
+void CloseListeners(
+    const SOCKET ipv4_listener,
+    const SOCKET ipv6_listener) noexcept {
+    if (ipv4_listener != INVALID_SOCKET) {
+        closesocket(ipv4_listener);
+    }
+    if (ipv6_listener != INVALID_SOCKET) {
+        closesocket(ipv6_listener);
+    }
 }
 
 int RunProxy() noexcept {
@@ -61,25 +117,14 @@ int RunProxy() noexcept {
     }
     const SOCKET tcp_listener =
         static_cast<SOCKET>(startup.tcp_listener_handle);
-    sockaddr_in listener_endpoint{};
-    int listener_endpoint_length = sizeof(listener_endpoint);
-    BOOL accepting = FALSE;
-    int accepting_length = sizeof(accepting);
-    if (tcp_listener == INVALID_SOCKET ||
-        getsockname(
-            tcp_listener, reinterpret_cast<sockaddr*>(&listener_endpoint),
-            &listener_endpoint_length) == SOCKET_ERROR ||
-        listener_endpoint.sin_family != AF_INET ||
-        listener_endpoint.sin_addr.s_addr != htonl(INADDR_LOOPBACK) ||
-        ntohs(listener_endpoint.sin_port) != startup.tcp_listener_port ||
-        getsockopt(
-            tcp_listener, SOL_SOCKET, SO_ACCEPTCONN,
-            reinterpret_cast<char*>(&accepting), &accepting_length) ==
-            SOCKET_ERROR ||
-        accepting == FALSE ||
-        !SetHandleInformation(
-            reinterpret_cast<HANDLE>(tcp_listener), HANDLE_FLAG_INHERIT, 0)) {
-        closesocket(tcp_listener);
+    const SOCKET tcp_ipv6_listener =
+        static_cast<SOCKET>(startup.tcp_ipv6_listener_handle);
+    if (!ValidateListener(
+            tcp_listener, AF_INET, startup.tcp_listener_port) ||
+        !ValidateListener(
+            tcp_ipv6_listener, AF_INET6,
+            startup.tcp_ipv6_listener_port)) {
+        CloseListeners(tcp_listener, tcp_ipv6_listener);
         WSACleanup();
         SecureZeroMemory(
             startup.session.authentication_key.data(),
@@ -93,7 +138,7 @@ int RunProxy() noexcept {
             policy_handle, FILE_MAP_READ, 0, 0,
             static_cast<SIZE_T>(startup.policy_length)));
     if (policy_bytes == nullptr) {
-        closesocket(tcp_listener);
+        CloseListeners(tcp_listener, tcp_ipv6_listener);
         WSACleanup();
         SecureZeroMemory(
             startup.session.authentication_key.data(),
@@ -106,7 +151,7 @@ int RunProxy() noexcept {
     UnmapViewOfFile(policy_bytes);
     if (policy_status != bolt::network::PolicyLoadStatus::kValid ||
         policy == nullptr || policy->mode() != bolt::network::Mode::kAllowList) {
-        closesocket(tcp_listener);
+        CloseListeners(tcp_listener, tcp_ipv6_listener);
         WSACleanup();
         SecureZeroMemory(
             startup.session.authentication_key.data(),
@@ -119,7 +164,7 @@ int RunProxy() noexcept {
             HandleFromWire(startup.read_handle),
             HandleFromWire(startup.write_handle), startup.maximum_frame_length,
             transport) != bolt::network::HandleTransportStatus::kSuccess) {
-        closesocket(tcp_listener);
+        CloseListeners(tcp_listener, tcp_ipv6_listener);
         WSACleanup();
         SecureZeroMemory(
             startup.session.authentication_key.data(),
@@ -130,7 +175,7 @@ int RunProxy() noexcept {
     std::unique_ptr<bolt::network::DnsBindingTable> bindings;
     if (bolt::network::DnsBindingTable::Create(4'096, bindings) !=
         bolt::network::BindingStatus::kSuccess) {
-        closesocket(tcp_listener);
+        CloseListeners(tcp_listener, tcp_ipv6_listener);
         WSACleanup();
         SecureZeroMemory(
             startup.session.authentication_key.data(),
@@ -139,8 +184,12 @@ int RunProxy() noexcept {
     }
     auto listener_status =
         bolt::network::TcpProxyListenerStatus::kInvalidArgument;
+    auto ipv6_listener_status =
+        bolt::network::TcpProxyListenerStatus::kInvalidArgument;
     std::atomic<bool> stop_listener = false;
+    std::atomic<bool> stop_ipv6_listener = false;
     std::thread listener_thread;
+    std::thread ipv6_listener_thread;
     try {
         listener_thread = std::thread([&] {
             listener_status = bolt::network::RunTcpProxyListener(
@@ -148,8 +197,21 @@ int RunProxy() noexcept {
                 stop_listener,
                 startup.maximum_tcp_connections);
         });
+        ipv6_listener_thread = std::thread([&] {
+            ipv6_listener_status = bolt::network::RunTcpProxyListener(
+                tcp_ipv6_listener, startup.session, *policy, *bindings,
+                stop_ipv6_listener, startup.maximum_tcp_connections);
+        });
     } catch (...) {
-        closesocket(tcp_listener);
+        stop_listener.store(true, std::memory_order_release);
+        stop_ipv6_listener.store(true, std::memory_order_release);
+        if (listener_thread.joinable()) {
+            listener_thread.join();
+        }
+        if (ipv6_listener_thread.joinable()) {
+            ipv6_listener_thread.join();
+        }
+        CloseListeners(tcp_listener, tcp_ipv6_listener);
         WSACleanup();
         SecureZeroMemory(
             startup.session.authentication_key.data(),
@@ -160,14 +222,18 @@ int RunProxy() noexcept {
         startup.session, *policy, resolver, *bindings, *transport,
         startup.maximum_requests);
     stop_listener.store(true, std::memory_order_release);
+    stop_ipv6_listener.store(true, std::memory_order_release);
     listener_thread.join();
-    closesocket(tcp_listener);
+    ipv6_listener_thread.join();
+    CloseListeners(tcp_listener, tcp_ipv6_listener);
     WSACleanup();
     SecureZeroMemory(
         startup.session.authentication_key.data(),
         startup.session.authentication_key.size());
     return session_status == bolt::network::DnsProxySessionStatus::kCompleted &&
                    listener_status ==
+                       bolt::network::TcpProxyListenerStatus::kStopped &&
+                   ipv6_listener_status ==
                        bolt::network::TcpProxyListenerStatus::kStopped
                ? 0
                : 15;

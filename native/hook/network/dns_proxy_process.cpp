@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include <ws2tcpip.h>
+
 namespace bolt::network {
 namespace {
 
@@ -49,6 +51,64 @@ class SocketScope final {
     SOCKET socket_ = INVALID_SOCKET;
 };
 
+SOCKET CreateLoopbackListener(
+    const int family,
+    std::uint16_t& port) noexcept {
+    port = 0;
+    const SOCKET listener =
+        WSASocketW(family, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, 0);
+    if (listener == INVALID_SOCKET) {
+        return INVALID_SOCKET;
+    }
+    constexpr BOOL enabled = TRUE;
+    if (setsockopt(
+            listener, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+            reinterpret_cast<const char*>(&enabled), sizeof(enabled)) ==
+        SOCKET_ERROR) {
+        closesocket(listener);
+        return INVALID_SOCKET;
+    }
+    if (family == AF_INET6 &&
+        setsockopt(
+            listener, IPPROTO_IPV6, IPV6_V6ONLY,
+            reinterpret_cast<const char*>(&enabled), sizeof(enabled)) ==
+            SOCKET_ERROR) {
+        closesocket(listener);
+        return INVALID_SOCKET;
+    }
+    sockaddr_storage storage{};
+    int storage_length = 0;
+    if (family == AF_INET) {
+        auto* endpoint = reinterpret_cast<sockaddr_in*>(&storage);
+        endpoint->sin_family = AF_INET;
+        endpoint->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        storage_length = sizeof(*endpoint);
+    } else {
+        auto* endpoint = reinterpret_cast<sockaddr_in6*>(&storage);
+        endpoint->sin6_family = AF_INET6;
+        endpoint->sin6_addr = in6addr_loopback;
+        storage_length = sizeof(*endpoint);
+    }
+    if (bind(
+            listener, reinterpret_cast<const sockaddr*>(&storage),
+            storage_length) == SOCKET_ERROR ||
+        listen(listener, SOMAXCONN) == SOCKET_ERROR ||
+        getsockname(
+            listener, reinterpret_cast<sockaddr*>(&storage),
+            &storage_length) == SOCKET_ERROR ||
+        !SetHandleInformation(
+            reinterpret_cast<HANDLE>(listener), HANDLE_FLAG_INHERIT,
+            HANDLE_FLAG_INHERIT)) {
+        closesocket(listener);
+        return INVALID_SOCKET;
+    }
+    port = family == AF_INET
+               ? ntohs(reinterpret_cast<const sockaddr_in*>(&storage)->sin_port)
+               : ntohs(
+                     reinterpret_cast<const sockaddr_in6*>(&storage)->sin6_port);
+    return port == 0 ? INVALID_SOCKET : listener;
+}
+
 }  // namespace
 
 DnsProxyProcess::~DnsProxyProcess() noexcept { Close(); }
@@ -71,33 +131,16 @@ DnsProxyProcessStatus DnsProxyProcess::Start(
         if (!winsock.started()) {
             return DnsProxyProcessStatus::kResourceFailed;
         }
-        SocketScope tcp_listener(WSASocketW(
-            AF_INET, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, 0));
-        sockaddr_in tcp_endpoint{};
-        tcp_endpoint.sin_family = AF_INET;
-        tcp_endpoint.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        tcp_endpoint.sin_port = 0;
-        int tcp_endpoint_length = sizeof(tcp_endpoint);
-        constexpr BOOL exclusive = TRUE;
+        std::uint16_t tcp_proxy_port = 0;
+        std::uint16_t tcp_proxy_ipv6_port = 0;
+        SocketScope tcp_listener(
+            CreateLoopbackListener(AF_INET, tcp_proxy_port));
+        SocketScope tcp_ipv6_listener(
+            CreateLoopbackListener(AF_INET6, tcp_proxy_ipv6_port));
         if (tcp_listener.get() == INVALID_SOCKET ||
-            setsockopt(
-                tcp_listener.get(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
-                reinterpret_cast<const char*>(&exclusive), sizeof(exclusive)) ==
-                SOCKET_ERROR ||
-            bind(
-                tcp_listener.get(),
-                reinterpret_cast<const sockaddr*>(&tcp_endpoint),
-                sizeof(tcp_endpoint)) == SOCKET_ERROR ||
-            listen(tcp_listener.get(), SOMAXCONN) == SOCKET_ERROR ||
-            getsockname(
-                tcp_listener.get(), reinterpret_cast<sockaddr*>(&tcp_endpoint),
-                &tcp_endpoint_length) == SOCKET_ERROR ||
-            !SetHandleInformation(
-                reinterpret_cast<HANDLE>(tcp_listener.get()),
-                HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+            tcp_ipv6_listener.get() == INVALID_SOCKET) {
             return DnsProxyProcessStatus::kResourceFailed;
         }
-        const std::uint16_t tcp_proxy_port = ntohs(tcp_endpoint.sin_port);
         common::ImmutablePolicyMapping policy;
         if (common::ImmutablePolicyMapping::Create(
                 policy_bytes, policy_length, policy) !=
@@ -127,6 +170,9 @@ DnsProxyProcessStatus DnsProxyProcess::Start(
         startup.tcp_listener_handle =
             static_cast<std::uint64_t>(tcp_listener.get());
         startup.tcp_listener_port = tcp_proxy_port;
+        startup.tcp_ipv6_listener_handle =
+            static_cast<std::uint64_t>(tcp_ipv6_listener.get());
+        startup.tcp_ipv6_listener_port = tcp_proxy_ipv6_port;
         startup.maximum_tcp_connections = maximum_requests;
         startup.session = session;
         const auto startup_bytes = protocol::EncodeDnsProxyStartup(startup);
@@ -140,9 +186,10 @@ DnsProxyProcessStatus DnsProxyProcess::Start(
         InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_size);
         std::vector<std::uint8_t> storage(attribute_size);
         auto* attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
-        const std::array<HANDLE, 5> inherited = {
+        const std::array<HANDLE, 6> inherited = {
             startup_mapping.handle(), policy.handle(), request_read,
-            response_write, reinterpret_cast<HANDLE>(tcp_listener.get())};
+            response_write, reinterpret_cast<HANDLE>(tcp_listener.get()),
+            reinterpret_cast<HANDLE>(tcp_ipv6_listener.get())};
         if (!InitializeProcThreadAttributeList(attributes, 1, 0, &attribute_size) ||
             !UpdateProcThreadAttribute(
                 attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
@@ -177,6 +224,7 @@ DnsProxyProcessStatus DnsProxyProcess::Start(
         process->request_write_ = request_write;
         process->response_read_ = response_read;
         process->tcp_proxy_port_ = tcp_proxy_port;
+        process->tcp_proxy_ipv6_port_ = tcp_proxy_ipv6_port;
         output = std::move(process);
         return DnsProxyProcessStatus::kSuccess;
     } catch (...) {
