@@ -45,6 +45,11 @@ same-named BuildXL headers that otherwise pull in manifest, reporting, and
 process-injector globals. `Assertions.cpp` and `StringOperations.cpp` compile
 directly from the vendored paths.
 
+The Bolt filesystem hook layer canonicalizes mutation paths and invalidates the
+upstream `ResolvedPathCache` before create, delete, directory mutation, move,
+and hard-link calls. Directory and move invalidation conservatively removes
+cached descendants, matching BuildXL's defense against stale reparse targets.
+
 The remaining vendored files are not yet members of a Bolt build target. They
 are activated only after a failing behavior or compile-contract test defines
 the required boundary. In particular, `DataTypes`, `PolicySearch`,

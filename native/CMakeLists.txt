@@ -110,6 +110,7 @@ target_link_libraries(bolt-sandbox-common PRIVATE bolt-sandbox-protocol)
 add_library(bolt-sandbox-filesystem STATIC
     hook/filesystem/file_hooks.cpp
     hook/filesystem/filesystem_policy.cpp
+    hook/filesystem/path_cache.cpp
 )
 bolt_native_warnings(bolt-sandbox-filesystem)
 target_include_directories(bolt-sandbox-filesystem PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

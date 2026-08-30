@@ -1,6 +1,7 @@
 #include "hook/filesystem/file_hooks.h"
 
 #include "hook/filesystem/filesystem_policy.h"
+#include "hook/filesystem/path_cache.h"
 
 #include <memory>
 
@@ -48,11 +49,13 @@ HANDLE WINAPI DetouredCreateFileW(
     const DWORD flags_and_attributes,
     const HANDLE template_file) noexcept {
     const auto* policy = g_policy.get();
-    if (policy == nullptr ||
-        policy->Decide(filename, ClassifyAccess(desired_access, creation_disposition)) ==
-            Decision::kDeny) {
+    const auto access = ClassifyAccess(desired_access, creation_disposition);
+    if (policy == nullptr || policy->Decide(filename, access) == Decision::kDeny) {
         SetLastError(ERROR_ACCESS_DENIED);
         return INVALID_HANDLE_VALUE;
+    }
+    if (access == Access::kWrite) {
+        InvalidateResolvedPathForMutation(filename, false);
     }
     return g_create_file_w(
         filename, desired_access, share_mode, security_attributes, creation_disposition,
@@ -67,6 +70,7 @@ BOOL WINAPI DetouredDeleteFileW(const LPCWSTR filename) noexcept {
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
+    InvalidateResolvedPathForMutation(filename, false);
     return g_delete_file_w(filename);
 }
 
@@ -78,6 +82,7 @@ BOOL WINAPI DetouredCreateDirectoryW(
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
+    InvalidateResolvedPathForMutation(path, true);
     return g_create_directory_w(path, security_attributes);
 }
 
@@ -87,6 +92,7 @@ BOOL WINAPI DetouredRemoveDirectoryW(const LPCWSTR path) noexcept {
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
+    InvalidateResolvedPathForMutation(path, true);
     return g_remove_directory_w(path);
 }
 
@@ -103,6 +109,8 @@ BOOL WINAPI DetouredMoveFileExW(
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
+    InvalidateResolvedPathForMutation(existing_path, true);
+    InvalidateResolvedPathForMutation(new_path, true);
     return g_move_file_ex_w(existing_path, new_path, flags);
 }
 
@@ -118,6 +126,7 @@ BOOL WINAPI DetouredCreateHardLinkW(
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
+    InvalidateResolvedPathForMutation(new_path, false);
     return g_create_hard_link_w(new_path, existing_path, security_attributes);
 }
 
