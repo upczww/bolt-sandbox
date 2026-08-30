@@ -188,8 +188,14 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     bolt_native_warnings(bolt-sandbox-launcher)
 endif()
 
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(BOLT_HOOK_EXPORTS hook/hook-x64.def)
+else()
+    set(BOLT_HOOK_EXPORTS hook/hook-x86.def)
+endif()
 add_library(bolt-sandbox-hook SHARED
     hook/dllmain.cpp
+    ${BOLT_HOOK_EXPORTS}
 )
 bolt_native_warnings(bolt-sandbox-hook)
 target_include_directories(bolt-sandbox-hook PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

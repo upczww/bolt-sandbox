@@ -400,12 +400,15 @@ Recovery is not a substitute for policy enforcement.
 The initial release supports x64 and x86 on x64 Windows. ARM64 and ARM64EC are a
 separate compatibility milestone.
 
-The current same-architecture adapter duplicates only the authenticated policy,
-event, and private handshake handles into a forcibly suspended child. It uses a
-private descendant readiness event so the public session has exactly one
-`Ready` frame, and restores caller-requested `CREATE_SUSPENDED` semantics before
-returning. Cross-architecture creation fails closed until the x86/x64 remote
-injection broker is enabled.
+The descendant adapter duplicates only the authenticated policy, event, and
+private handshake handles into a forcibly suspended child. It uses a private
+descendant readiness event so the public session has exactly one `Ready` frame,
+and restores caller-requested `CREATE_SUSPENDED` semantics before returning.
+For a machine-type mismatch it selects the matching x86/x64 DLL and uses the
+Microsoft Detours helper payload and ordinal-1 injection flow. The helper is
+started from an absolute Windows system directory with a minimal internal
+environment, so target-controlled `PATH`, `WINDIR`, and other environment state
+cannot redirect it or receive secrets.
 
 Launcher selection parses the target file identity's PE headers rather than
 assuming the host architecture or trusting its filename. The parser requires a

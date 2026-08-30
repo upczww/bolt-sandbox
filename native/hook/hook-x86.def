@@ -1,0 +1,3 @@
+LIBRARY bolt-sandbox-x86
+EXPORTS
+    DetourFinishHelperProcess=_DetourFinishHelperProcess@16 @1

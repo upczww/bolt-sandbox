@@ -327,8 +327,12 @@ handshake avoids emitting a second session `Ready` frame. A caller-requested
 `CREATE_SUSPENDED` state is restored before release to the caller. Injection,
 duplication, or readiness failure terminates the child and clears its process
 information; an unconfined child is never used as a fallback. Cross-architecture
-descendants remain fail-closed until the BuildXL-derived remote-injector broker
-is activated.
+descendants select the hook DLL from the actual process machine and use
+Microsoft Detours' public helper payload/ordinal-1 flow. The Bolt adapter keeps
+the upstream helper protocol but resolves the system directory independently of
+the untrusted target environment and gives the helper a minimal, non-secret
+`SystemRoot`/`WINDIR` environment. This provides both x64-to-x86 and
+x86-to-x64 injection without importing BuildXL's C# `ProcessTreeContext` host.
 
 The next slices are:
 

@@ -7,8 +7,10 @@
 #include "DetouredFunctionTypes.h"
 #include "DetouredScope.h"
 
+#include <array>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include <detours.h>
 
@@ -20,6 +22,12 @@ enum class ChildProcessPolicy : std::uint8_t {
     kDeny = 1,
 };
 
+enum class ProcessArchitecture : std::uint8_t {
+    kX86,
+    kX64,
+    kUnsupported,
+};
+
 CreateProcessW_t g_create_process_w = CreateProcessW;
 CreateProcessA_t g_create_process_a = CreateProcessA;
 ChildProcessPolicy g_child_process_policy = ChildProcessPolicy::kDeny;
@@ -27,6 +35,225 @@ bool g_prepared = false;
 bool g_runtime_configured = false;
 protocol::RuntimePayload g_runtime_payload{};
 std::string g_hook_dll_path;
+
+ProcessArchitecture QueryProcessArchitecture(const HANDLE process) noexcept {
+    using IsWow64Process2Function = BOOL(WINAPI*)(HANDLE, USHORT*, USHORT*);
+    const auto is_wow64_process_2 = reinterpret_cast<IsWow64Process2Function>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "IsWow64Process2"));
+    if (is_wow64_process_2 != nullptr) {
+        USHORT process_machine = IMAGE_FILE_MACHINE_UNKNOWN;
+        USHORT native_machine = IMAGE_FILE_MACHINE_UNKNOWN;
+        if (!is_wow64_process_2(process, &process_machine, &native_machine)) {
+            return ProcessArchitecture::kUnsupported;
+        }
+        if (process_machine == IMAGE_FILE_MACHINE_I386) {
+            return ProcessArchitecture::kX86;
+        }
+        if (process_machine == IMAGE_FILE_MACHINE_UNKNOWN &&
+            native_machine == IMAGE_FILE_MACHINE_AMD64) {
+            return ProcessArchitecture::kX64;
+        }
+        return ProcessArchitecture::kUnsupported;
+    }
+
+    BOOL target_is_wow64 = FALSE;
+    if (!IsWow64Process(process, &target_is_wow64)) {
+        return ProcessArchitecture::kUnsupported;
+    }
+    if (target_is_wow64) {
+        return ProcessArchitecture::kX86;
+    }
+#if defined(_WIN64)
+    return ProcessArchitecture::kX64;
+#else
+    BOOL current_is_wow64 = FALSE;
+    if (!IsWow64Process(GetCurrentProcess(), &current_is_wow64)) {
+        return ProcessArchitecture::kUnsupported;
+    }
+    return current_is_wow64 ? ProcessArchitecture::kX64
+                            : ProcessArchitecture::kX86;
+#endif
+}
+
+bool SelectHookDll(
+    const HANDLE process,
+    std::string& selected_path) noexcept {
+    const ProcessArchitecture architecture = QueryProcessArchitecture(process);
+    const char* const file_name =
+        architecture == ProcessArchitecture::kX86
+            ? "bolt-sandbox-x86.dll"
+            : architecture == ProcessArchitecture::kX64
+                  ? "bolt-sandbox-x64.dll"
+                  : nullptr;
+    if (file_name == nullptr) {
+        SetLastError(ERROR_BAD_EXE_FORMAT);
+        return false;
+    }
+    const std::size_t separator = g_hook_dll_path.find_last_of("\\/");
+    if (separator == std::string::npos) {
+        SetLastError(ERROR_INVALID_NAME);
+        return false;
+    }
+    try {
+        selected_path.assign(g_hook_dll_path, 0, separator + 1);
+        selected_path.append(file_name);
+    } catch (...) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return false;
+    }
+    const DWORD attributes = GetFileAttributesA(selected_path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        if (attributes != INVALID_FILE_ATTRIBUTES) {
+            SetLastError(ERROR_FILE_NOT_FOUND);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool RequiresArchitectureHelper(const HANDLE process) noexcept {
+    const ProcessArchitecture architecture = QueryProcessArchitecture(process);
+#if defined(_WIN64)
+    return architecture == ProcessArchitecture::kX86;
+#else
+    return architecture == ProcessArchitecture::kX64;
+#endif
+}
+
+bool AppendEnvironmentEntry(
+    char* const environment,
+    const std::size_t capacity,
+    std::size_t& offset,
+    const char* const name,
+    const char* const value) noexcept {
+    const std::size_t name_length = std::strlen(name);
+    const std::size_t value_length = std::strlen(value);
+    const std::size_t required = name_length + 1 + value_length + 1;
+    if (offset > capacity || required > capacity - offset) {
+        return false;
+    }
+    std::memcpy(environment + offset, name, name_length);
+    offset += name_length;
+    environment[offset++] = '=';
+    std::memcpy(environment + offset, value, value_length);
+    offset += value_length;
+    environment[offset++] = '\0';
+    return true;
+}
+
+bool RunArchitectureHelper(
+    const DWORD target_process_id,
+    const char* const hook_dll_path) noexcept {
+    if (hook_dll_path == nullptr) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return false;
+    }
+    const std::size_t hook_path_length = std::strlen(hook_dll_path);
+    if (hook_path_length == 0 || hook_path_length >= 4'096) {
+        SetLastError(ERROR_INVALID_NAME);
+        return false;
+    }
+    const std::size_t payload_size =
+        sizeof(DETOUR_EXE_HELPER) + 4 + hook_path_length + 1;
+    std::vector<std::uint8_t> payload;
+    try {
+        payload.resize(payload_size);
+    } catch (...) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return false;
+    }
+    auto* const helper =
+        reinterpret_cast<PDETOUR_EXE_HELPER>(payload.data());
+    helper->cb = static_cast<DWORD>(payload.size());
+    helper->pid = target_process_id;
+    helper->nDlls = 1;
+    std::memcpy(helper->rDlls, hook_dll_path, hook_path_length + 1);
+
+    std::array<char, MAX_PATH> windows_directory{};
+    const UINT windows_directory_length = GetWindowsDirectoryA(
+        windows_directory.data(), static_cast<UINT>(windows_directory.size()));
+    if (windows_directory_length == 0 ||
+        windows_directory_length >= windows_directory.size()) {
+        return false;
+    }
+    std::string helper_executable;
+    std::string helper_command_line;
+    try {
+        helper_executable.assign(windows_directory.data(), windows_directory_length);
+#if defined(_WIN64)
+        helper_executable.append("\\SysWOW64\\rundll32.exe");
+#else
+        helper_executable.append("\\Sysnative\\rundll32.exe");
+#endif
+        helper_command_line = "rundll32.exe \"";
+        helper_command_line.append(hook_dll_path);
+        helper_command_line.append("\",#1");
+    } catch (...) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return false;
+    }
+    std::vector<char> mutable_command_line;
+    try {
+        mutable_command_line.assign(
+            helper_command_line.begin(), helper_command_line.end());
+        mutable_command_line.push_back('\0');
+    } catch (...) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return false;
+    }
+    std::array<char, MAX_PATH * 2 + 32> helper_environment{};
+    std::size_t offset = 0;
+    if (!AppendEnvironmentEntry(
+            helper_environment.data(), helper_environment.size(), offset,
+            "SystemRoot", windows_directory.data()) ||
+        !AppendEnvironmentEntry(
+            helper_environment.data(), helper_environment.size(), offset,
+            "WINDIR", windows_directory.data()) ||
+        offset >= helper_environment.size()) {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return false;
+    }
+    helper_environment[offset] = '\0';
+
+    STARTUPINFOA startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!g_create_process_a(
+            helper_executable.c_str(), mutable_command_line.data(), nullptr,
+            nullptr, FALSE, CREATE_SUSPENDED, helper_environment.data(), nullptr,
+            &startup, &process)) {
+        return false;
+    }
+    if (!DetourCopyPayloadToProcess(
+            process.hProcess, DETOUR_EXE_HELPER_GUID, payload.data(),
+            static_cast<DWORD>(payload.size()))) {
+        const DWORD error = GetLastError();
+        TerminateProcess(process.hProcess, ERROR_PROCESS_ABORTED);
+        WaitForSingleObject(process.hProcess, 5'000);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        SetLastError(error);
+        return false;
+    }
+    bool succeeded = false;
+    if (ResumeThread(process.hThread) != static_cast<DWORD>(-1)) {
+        const DWORD wait = WaitForSingleObject(process.hProcess, 30'000);
+        DWORD exit_code = ERROR_PROCESS_ABORTED;
+        succeeded = wait == WAIT_OBJECT_0 &&
+                    GetExitCodeProcess(process.hProcess, &exit_code) != FALSE &&
+                    exit_code == ERROR_SUCCESS;
+    }
+    if (!succeeded) {
+        TerminateProcess(process.hProcess, ERROR_PROCESS_ABORTED);
+        WaitForSingleObject(process.hProcess, 5'000);
+    }
+    const DWORD error = succeeded ? ERROR_SUCCESS : ERROR_DLL_INIT_FAILED;
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    SetLastError(error);
+    return succeeded;
+}
 
 HANDLE HandleFromWire(const std::uint64_t value) noexcept {
     return reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(value));
@@ -130,8 +357,21 @@ bool InstallDescendantRuntime(
         SetLastError(error);
         return false;
     }
-    LPCSTR dlls[] = {g_hook_dll_path.c_str()};
-    if (!DetourUpdateProcessWithDll(process_information->hProcess, dlls, 1)) {
+    std::string selected_hook_path;
+    if (!SelectHookDll(process_information->hProcess, selected_hook_path)) {
+        const DWORD error = GetLastError();
+        CloseHandle(ready);
+        CloseHandle(release);
+        SetLastError(error);
+        return false;
+    }
+    LPCSTR dlls[] = {selected_hook_path.c_str()};
+    const BOOL injected = RequiresArchitectureHelper(process_information->hProcess)
+                              ? RunArchitectureHelper(
+                                    process_information->dwProcessId, dlls[0])
+                              : DetourUpdateProcessWithDll(
+                                    process_information->hProcess, dlls, 1);
+    if (!injected) {
         const DWORD error = GetLastError();
         CloseHandle(ready);
         CloseHandle(release);

@@ -2701,6 +2701,7 @@ bool RunProcessTests() {
         std::filesystem::copy_options::overwrite_existing, filesystem_error);
     if (filesystem_error ||
         !std::filesystem::is_regular_file(opposite_executable)) {
+        std::filesystem::remove(staged_opposite_hook, filesystem_error);
         return false;
     }
     const std::wstring cross_arguments =
