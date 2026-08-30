@@ -1425,6 +1425,31 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         denied_final_path_a != denied_final_path_a_before) {
         return 208;
     }
+    const std::wstring descendant_executable = CurrentExecutable();
+    std::wstring descendant_command =
+        L"\"" + descendant_executable + L"\" --job-child";
+    STARTUPINFOW descendant_startup{};
+    descendant_startup.cb = sizeof(descendant_startup);
+    PROCESS_INFORMATION descendant_process{};
+    const BOOL descendant_created = CreateProcessW(
+        descendant_executable.c_str(), descendant_command.data(), nullptr,
+        nullptr, FALSE, 0, nullptr, nullptr, &descendant_startup,
+        &descendant_process);
+    const DWORD descendant_error = GetLastError();
+    if (descendant_created) {
+        TerminateProcess(descendant_process.hProcess, 209);
+        WaitForSingleObject(descendant_process.hProcess, 5'000);
+        CloseHandle(descendant_process.hThread);
+        CloseHandle(descendant_process.hProcess);
+        return 209;
+    }
+    if (descendant_error != ERROR_ACCESS_DENIED ||
+        descendant_process.hProcess != nullptr ||
+        descendant_process.hThread != nullptr ||
+        descendant_process.dwProcessId != 0 ||
+        descendant_process.dwThreadId != 0) {
+        return 210;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1512,11 +1537,15 @@ bool RunProcessTests() {
         filesystem_error) {
         return false;
     }
+    const std::wstring executable = CurrentExecutable();
+    const std::filesystem::path executable_volume_root =
+        std::filesystem::path(executable).root_path();
     const auto policy_payload = bolt::tests::SealPolicy({
+        {bolt::tests::FilesystemRuleKind::kReadOnly, executable_volume_root},
         {bolt::tests::FilesystemRuleKind::kReadWrite, test_root},
         {bolt::tests::FilesystemRuleKind::kReadOnly, read_only_root},
         {bolt::tests::FilesystemRuleKind::kDeny, denied_root},
-    });
+    }, bolt::tests::ChildProcessPolicyKind::kDeny);
     constexpr std::array<std::uint8_t, 16> nonce = {
         0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5,
         0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5,
@@ -1548,7 +1577,6 @@ bool RunProcessTests() {
         return false;
     }
 
-    const std::wstring executable = CurrentExecutable();
 #if defined(_WIN64)
     constexpr auto hook_name = L"bolt-sandbox-x64.dll";
 #else

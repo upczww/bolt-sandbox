@@ -116,8 +116,10 @@ bool HashPayload(std::vector<std::uint8_t>& payload) {
 }  // namespace
 
 std::vector<std::uint8_t> SealPolicy(
-    const std::vector<FilesystemRule>& filesystem_rules) {
-    std::vector<std::uint8_t> body{0};
+    const std::vector<FilesystemRule>& filesystem_rules,
+    const ChildProcessPolicyKind child_process_policy) {
+    std::vector<std::uint8_t> body{
+        static_cast<std::uint8_t>(child_process_policy)};
     if (!AppendU32(body, filesystem_rules.size())) {
         return {};
     }

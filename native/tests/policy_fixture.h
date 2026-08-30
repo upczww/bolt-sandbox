@@ -19,7 +19,14 @@ struct FilesystemRule {
     std::filesystem::path root;
 };
 
+enum class ChildProcessPolicyKind : std::uint8_t {
+    kInherit = 0,
+    kDeny = 1,
+};
+
 std::vector<std::uint8_t> SealPolicy(
-    const std::vector<FilesystemRule>& filesystem_rules);
+    const std::vector<FilesystemRule>& filesystem_rules,
+    ChildProcessPolicyKind child_process_policy =
+        ChildProcessPolicyKind::kInherit);
 
 }  // namespace bolt::tests
