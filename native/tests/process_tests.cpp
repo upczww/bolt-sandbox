@@ -30,7 +30,7 @@ std::wstring HandleText(const HANDLE handle) {
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 5) {
+    if (argument_count != 6) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -49,6 +49,14 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetProcAddress(hook, "BoltSandboxRuntimeInitialized"));
     if (initialized == nullptr || !initialized()) {
         return 84;
+    }
+    const HANDLE denied_file = CreateFileW(
+        arguments[5], GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (denied_file != INVALID_HANDLE_VALUE || GetLastError() != ERROR_ACCESS_DENIED) {
+        if (denied_file != INVALID_HANDLE_VALUE) {
+            CloseHandle(denied_file);
+        }
+        return 85;
     }
     return 0;
 }
@@ -97,9 +105,13 @@ bool RunProcessTests() {
 #endif
     const std::filesystem::path hook_path =
         std::filesystem::path(executable).parent_path() / hook_name;
+    const std::filesystem::path denied_path =
+        std::filesystem::temp_directory_path() /
+        (L"bolt-sandbox-denied-" + std::to_wstring(GetCurrentProcessId()) + L".txt");
+    DeleteFileW(denied_path.c_str());
     const std::wstring command_line = L"\"" + executable + L"\" --process-child " +
                                       HandleText(allowed) + L" " + HandleText(denied) + L" " +
-                                      hook_name;
+                                      hook_name + L" \"" + denied_path.wstring() + L"\"";
     const HANDLE inherited[] = {allowed, policy.handle(), event_client, release};
     bolt::common::ProcessLaunchOptions options{
         executable,
@@ -156,7 +168,8 @@ bool RunProcessTests() {
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             exit_code == 0 &&
                             WaitForSingleObject(allowed, 0) == WAIT_OBJECT_0 &&
-                             WaitForSingleObject(denied, 0) == WAIT_TIMEOUT;
+                            WaitForSingleObject(denied, 0) == WAIT_TIMEOUT &&
+                            !std::filesystem::exists(denied_path);
     CloseHandle(allowed);
     CloseHandle(denied);
     if (event_client != INVALID_HANDLE_VALUE) {
