@@ -181,7 +181,7 @@ bool ReadFilesystemViolation(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 26) {
+    if (argument_count != 28) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -397,6 +397,27 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 119;
     }
+    const HANDLE allowed_truncate_handle = CreateFileW(
+        arguments[26], GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    LARGE_INTEGER truncate_offset{};
+    truncate_offset.QuadPart = 4;
+    if (allowed_truncate_handle == INVALID_HANDLE_VALUE ||
+        !SetFilePointerEx(allowed_truncate_handle, truncate_offset, nullptr, FILE_BEGIN) ||
+        !SetEndOfFile(allowed_truncate_handle)) {
+        if (allowed_truncate_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(allowed_truncate_handle);
+        }
+        return 120;
+    }
+    CloseHandle(allowed_truncate_handle);
+
+    const auto denied_truncate_handle =
+        reinterpret_cast<HANDLE>(_wcstoui64(arguments[27], nullptr, 10));
+    if (!SetFilePointerEx(denied_truncate_handle, truncate_offset, nullptr, FILE_BEGIN) ||
+        SetEndOfFile(denied_truncate_handle) || GetLastError() != ERROR_ACCESS_DENIED) {
+        return 121;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -451,6 +472,10 @@ bool RunProcessTests() {
         allowed_root / L"handle-delete.txt";
     const std::filesystem::path denied_disposition_path =
         denied_root / L"handle-delete.txt";
+    const std::filesystem::path allowed_truncate_path =
+        allowed_root / L"handle-truncate.txt";
+    const std::filesystem::path denied_truncate_path =
+        denied_root / L"handle-truncate.txt";
     if (!std::filesystem::create_directories(denied_junction_target, filesystem_error) ||
         filesystem_error) {
         return false;
@@ -513,6 +538,8 @@ bool RunProcessTests() {
     DeleteFileW(denied_handle_rename_destination.c_str());
     DeleteFileW(allowed_disposition_path.c_str());
     DeleteFileW(denied_disposition_path.c_str());
+    DeleteFileW(allowed_truncate_path.c_str());
+    DeleteFileW(denied_truncate_path.c_str());
     const HANDLE delete_fixture = CreateFileW(
         denied_delete_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -559,6 +586,20 @@ bool RunProcessTests() {
     if (denied_disposition_handle == INVALID_HANDLE_VALUE) {
         return false;
     }
+    constexpr std::string_view truncate_nonce = "truncate-content";
+    if (!WriteFixture(allowed_truncate_path, truncate_nonce) ||
+        !WriteFixture(denied_truncate_path, truncate_nonce)) {
+        CloseHandle(denied_disposition_handle);
+        return false;
+    }
+    const HANDLE denied_truncate_handle = CreateFileW(
+        denied_truncate_path.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &inheritable, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (denied_truncate_handle == INVALID_HANDLE_VALUE) {
+        CloseHandle(denied_disposition_handle);
+        return false;
+    }
     constexpr std::string_view copy_nonce = "bolt-copy-nonce";
     if (!WriteFixture(allowed_copy_source, copy_nonce)) {
         DeleteFileW(denied_delete_path.c_str());
@@ -601,9 +642,12 @@ bool RunProcessTests() {
                                       allowed_handle_rename_source.wstring() + L"\" \"" +
                                       denied_handle_rename_destination.wstring() + L"\" \"" +
                                       allowed_disposition_path.wstring() + L"\" " +
-                                      HandleText(denied_disposition_handle);
+                                      HandleText(denied_disposition_handle) + L" \"" +
+                                      allowed_truncate_path.wstring() + L"\" " +
+                                      HandleText(denied_truncate_handle);
     const HANDLE inherited[] = {
-        allowed, policy.handle(), event_client, release, denied_disposition_handle};
+        allowed, policy.handle(), event_client, release, denied_disposition_handle,
+        denied_truncate_handle};
     bolt::common::ProcessLaunchOptions options{
         executable,
         command_line,
@@ -748,9 +792,14 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kDelete,
-            denied_disposition_path.wstring(), 28);
+            denied_disposition_path.wstring(), 28) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_truncate_path.wstring(), 29);
     DWORD exit_code = 0;
     CloseHandle(denied_disposition_handle);
+    CloseHandle(denied_truncate_handle);
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
                             exit_code == 0 &&
@@ -776,7 +825,9 @@ bool RunProcessTests() {
                             ReadFixture(allowed_handle_rename_source) == handle_rename_nonce &&
                             !std::filesystem::exists(denied_handle_rename_destination) &&
                             !std::filesystem::exists(allowed_disposition_path) &&
-                            ReadFixture(denied_disposition_path) == disposition_nonce;
+                            ReadFixture(denied_disposition_path) == disposition_nonce &&
+                            ReadFixture(allowed_truncate_path) == truncate_nonce.substr(0, 4) &&
+                            ReadFixture(denied_truncate_path) == truncate_nonce;
     CloseHandle(allowed);
     CloseHandle(denied);
     if (event_client != INVALID_HANDLE_VALUE) {
@@ -794,6 +845,8 @@ bool RunProcessTests() {
     DeleteFileW(allowed_replace_target.c_str());
     DeleteFileW(allowed_handle_rename_source.c_str());
     DeleteFileW(denied_disposition_path.c_str());
+    DeleteFileW(allowed_truncate_path.c_str());
+    DeleteFileW(denied_truncate_path.c_str());
     std::filesystem::remove_all(test_root, filesystem_error);
     if (!exact_exit) {
         return false;
