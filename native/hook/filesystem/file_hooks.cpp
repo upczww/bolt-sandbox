@@ -302,6 +302,17 @@ bool AuthorizeMove(const wchar_t* existing_path, const wchar_t* new_path) noexce
 
     const wchar_t* source_path = EvaluatedPath(source_text, existing_path);
     const wchar_t* destination_path = EvaluatedPath(destination_text, new_path);
+    const DWORD source_attributes = g_get_file_attributes_w(source_path);
+    const bool moves_directory_tree =
+        source_attributes != INVALID_FILE_ATTRIBUTES &&
+        (source_attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    if (moves_directory_tree &&
+        (policy->HasDeniedDescendant(source_path) ||
+         policy->HasDeniedDescendant(destination_path))) {
+        ReportDenied(protocol::FilesystemOperation::kRename, source_path);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
     std::wstring resolved_source;
     std::wstring resolved_destination;
     if (!ResolveFinalPathForPolicy(source_path, g_create_file_w, resolved_source) ||
@@ -322,6 +333,14 @@ bool AuthorizeMove(const wchar_t* existing_path, const wchar_t* new_path) noexce
             protocol::FilesystemOperation::kRename,
             source_denied ? EvaluatedPath(source_final, resolved_source.c_str())
                           : EvaluatedPath(destination_final, resolved_destination.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    if (moves_directory_tree &&
+        (policy->HasDeniedDescendant(resolved_source.c_str()) ||
+         policy->HasDeniedDescendant(resolved_destination.c_str()))) {
+        ReportDenied(
+            protocol::FilesystemOperation::kRename, resolved_source.c_str());
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
     }

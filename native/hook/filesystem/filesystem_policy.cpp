@@ -280,4 +280,28 @@ PolicyEvaluation FilesystemPolicy::Evaluate(
     }
 }
 
+bool FilesystemPolicy::HasDeniedDescendant(const wchar_t* path) const noexcept {
+    if (path == nullptr || implementation_ == nullptr) {
+        return true;
+    }
+    try {
+        const auto canonical = CanonicalizedPath::Canonicalize(path);
+        const wchar_t* normalized = canonical.GetPathStringWithoutTypePrefix();
+        if (canonical.IsNull() || normalized == nullptr) {
+            return true;
+        }
+        const std::wstring normalized_root(normalized);
+        for (const auto& rule : implementation_->rules) {
+            if (rule.kind == RuleKind::kDeny &&
+                rule.root.size() > normalized_root.size() &&
+                RootContains(normalized_root, rule.root.c_str())) {
+                return true;
+            }
+        }
+        return false;
+    } catch (...) {
+        return true;
+    }
+}
+
 }  // namespace bolt::filesystem

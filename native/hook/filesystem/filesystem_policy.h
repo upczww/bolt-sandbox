@@ -60,6 +60,9 @@ class FilesystemPolicy final : public PolicyView {
         const wchar_t* path,
         Access access) const noexcept override;
 
+    [[nodiscard]] bool HasDeniedDescendant(
+        const wchar_t* path) const noexcept;
+
   private:
     struct Impl;
     explicit FilesystemPolicy(std::unique_ptr<Impl> implementation) noexcept;

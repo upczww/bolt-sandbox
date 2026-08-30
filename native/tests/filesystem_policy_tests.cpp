@@ -159,6 +159,11 @@ bool RunFilesystemPolicyTests() {
     }
 
     return policy->Decide(L"C:\\WORK\\source.cpp", Access::kWrite) == Decision::kAllow &&
+           policy->HasDeniedDescendant(L"C:\\work") &&
+           policy->HasDeniedDescendant(L"c:\\WORK") &&
+           !policy->HasDeniedDescendant(L"C:\\work\\secret") &&
+           !policy->HasDeniedDescendant(L"C:\\worker") &&
+           policy->HasDeniedDescendant(nullptr) &&
            policy->Decide(L"C:\\work\\secret\\key", Access::kRead) == Decision::kDeny &&
            policy->Decide(L"C:\\sdk\\tool.exe", Access::kRead) == Decision::kAllow &&
            policy->Decide(L"C:\\sdk\\tool.exe", Access::kWrite) == Decision::kDeny &&
