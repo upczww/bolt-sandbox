@@ -734,6 +734,20 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 151;
     }
+    if (EncryptFileW(arguments[6]) || GetLastError() != ERROR_ACCESS_DENIED) {
+        return 152;
+    }
+    if (EncryptFileA(ansi_denied_metadata.c_str()) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 153;
+    }
+    if (DecryptFileW(arguments[6], 0) || GetLastError() != ERROR_ACCESS_DENIED) {
+        return 154;
+    }
+    if (DecryptFileA(ansi_denied_metadata.c_str(), 0) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 155;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1300,7 +1314,23 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_mapping_path.wstring(), 54);
+            denied_mapping_path.wstring(), 54) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_delete_path.wstring(), 55) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_delete_path.wstring(), 56) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_delete_path.wstring(), 57) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_delete_path.wstring(), 58);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
