@@ -23,6 +23,7 @@
 #include <windows.h>
 #include <sddl.h>
 #include <winioctl.h>
+#include <winternl.h>
 
 namespace {
 
@@ -1091,64 +1092,94 @@ bool RunVolumeGuidAliasTest(
     };
     const auto allowed_alias = volume_alias(allowed);
     const auto denied_alias = volume_alias(denied);
-
-    SECURITY_ATTRIBUTES inheritable{};
-    inheritable.nLength = sizeof(inheritable);
-    inheritable.bInheritHandle = TRUE;
-    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
-    const HANDLE stage_mapping = CreateFileMappingW(
-        INVALID_HANDLE_VALUE, &inheritable, PAGE_READWRITE, 0, sizeof(LONG),
-        nullptr);
-    auto* stage = stage_mapping == nullptr
-                      ? nullptr
-                      : static_cast<volatile LONG*>(MapViewOfFile(
-                            stage_mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
-                            sizeof(LONG)));
-    if (stage != nullptr) {
-        InterlockedExchange(stage, 0);
-    }
     const std::vector<bolt::tests::FilesystemRule> rules = {
         {bolt::tests::FilesystemRuleKind::kReadOnly,
          std::filesystem::path(executable).root_path()},
         {bolt::tests::FilesystemRuleKind::kReadOnly, allowed},
         {bolt::tests::FilesystemRuleKind::kDeny, denied},
     };
-    RaceProcess process;
-    const bool started =
-        start != nullptr && stage_mapping != nullptr && stage != nullptr &&
-        process.Start(
-            executable, hook_path, rules, L"volume-guid-aliases",
-            allowed_alias, denied_alias, start, ordinal++, stage_mapping);
-    const bool released =
-        started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
-    const bool exited = released && process.WaitForExit(3'000);
-    const LONG final_stage = stage == nullptr ? -1 : InterlockedCompareExchange(
-                                                      stage, 0, 0);
-    if (released && !exited) {
-        process.Terminate(0xF016);
+    const auto run_alias = [&](
+                               const std::wstring_view mode,
+                               const std::filesystem::path& allowed_path,
+                               const std::filesystem::path& denied_path,
+                               const char* label) {
+        SECURITY_ATTRIBUTES inheritable{};
+        inheritable.nLength = sizeof(inheritable);
+        inheritable.bInheritHandle = TRUE;
+        const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+        const HANDLE stage_mapping = CreateFileMappingW(
+            INVALID_HANDLE_VALUE, &inheritable, PAGE_READWRITE, 0, sizeof(LONG),
+            nullptr);
+        auto* stage = stage_mapping == nullptr
+                          ? nullptr
+                          : static_cast<volatile LONG*>(MapViewOfFile(
+                                stage_mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0,
+                                0, sizeof(LONG)));
+        if (stage != nullptr) {
+            InterlockedExchange(stage, 0);
+        }
+        RaceProcess process;
+        const bool started =
+            start != nullptr && stage_mapping != nullptr && stage != nullptr &&
+            process.Start(
+                executable, hook_path, rules, mode, allowed_path, denied_path,
+                start, ordinal++, stage_mapping);
+        const bool released =
+            started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
+        const bool exited = released && process.WaitForExit(3'000);
+        const LONG final_stage =
+            stage == nullptr ? -1 : InterlockedCompareExchange(stage, 0, 0);
+        if (released && !exited) {
+            process.Terminate(0xF016);
+        }
+        const bool passed =
+            exited && final_stage == 4 &&
+            PipeContainsViolationForPath(
+                process.event_pipe(),
+                bolt::protocol::FilesystemOperation::kRead, denied);
+        if (stage != nullptr) {
+            UnmapViewOfFile(const_cast<LONG*>(stage));
+        }
+        if (stage_mapping != nullptr) {
+            CloseHandle(stage_mapping);
+        }
+        if (start != nullptr) {
+            CloseHandle(start);
+        }
+        if (!passed) {
+            std::fprintf(
+                stderr,
+                "%s alias failed: exit=%lu stage=%ld started=%d released=%d\n",
+                label, static_cast<unsigned long>(process.exit_code()),
+                final_stage, started ? 1 : 0, released ? 1 : 0);
+        }
+        return passed;
+    };
+    const wchar_t drive_name[] = {mount_point[0], L':', L'\0'};
+    std::array<wchar_t, 32'768> device_name{};
+    if (QueryDosDeviceW(
+            drive_name, device_name.data(),
+            static_cast<DWORD>(device_name.size())) == 0) {
+        return false;
     }
-    const bool passed =
-        exited && final_stage == 4 &&
-        PipeContainsViolationForPath(
-            process.event_pipe(), bolt::protocol::FilesystemOperation::kRead,
-            denied);
-    if (stage != nullptr) {
-        UnmapViewOfFile(const_cast<LONG*>(stage));
-    }
-    if (stage_mapping != nullptr) {
-        CloseHandle(stage_mapping);
-    }
-    if (start != nullptr) {
-        CloseHandle(start);
-    }
-    if (!passed) {
-        std::fprintf(
-            stderr,
-            "volume GUID alias failed: exit=%lu stage=%ld started=%d released=%d\n",
-            static_cast<unsigned long>(process.exit_code()), final_stage,
-            started ? 1 : 0, released ? 1 : 0);
-    }
-    return passed;
+    const auto device_alias = [&](const std::filesystem::path& path) {
+        std::wstring alias(device_name.data());
+        alias.push_back(L'\\');
+        alias.append(path.lexically_relative(test_root.root_path()).wstring());
+        return std::filesystem::path(alias);
+    };
+    const auto local_device_alias = [](const std::filesystem::path& path) {
+        return std::filesystem::path(L"\\\\.\\" + path.wstring());
+    };
+    return run_alias(
+               L"volume-guid-aliases", allowed_alias, denied_alias,
+               "volume GUID") &&
+           run_alias(
+               L"volume-guid-aliases", local_device_alias(allowed),
+               local_device_alias(denied), "local device") &&
+           run_alias(
+               L"native-device-aliases", device_alias(allowed),
+               device_alias(denied), "native device");
 }
 
 bool RunExistingSymlinkTest(
@@ -1731,6 +1762,61 @@ int RunFilesystemRaceChild(
                 CloseHandle(arbitrary_mailslot);
             }
             return 327;
+        }
+    } else if (mode == L"native-device-aliases") {
+        using NtCreateFileFunction = NTSTATUS(NTAPI*)(
+            PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK,
+            PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+        const auto nt_create_file = reinterpret_cast<NtCreateFileFunction>(
+            GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
+        const std::filesystem::path allowed(arguments[3]);
+        const std::filesystem::path denied(arguments[4]);
+        const HANDLE stage_mapping = reinterpret_cast<HANDLE>(
+            _wcstoui64(arguments[7], nullptr, 10));
+        auto* stage = static_cast<volatile LONG*>(MapViewOfFile(
+            stage_mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(LONG)));
+        if (nt_create_file == nullptr || stage == nullptr) {
+            return 368;
+        }
+        const auto open_native = [&](const std::filesystem::path& path) {
+            const std::wstring value = path.wstring();
+            UNICODE_STRING name{};
+            name.Length = static_cast<USHORT>(value.size() * sizeof(wchar_t));
+            name.MaximumLength = name.Length;
+            name.Buffer = const_cast<PWSTR>(value.data());
+            OBJECT_ATTRIBUTES attributes{};
+            attributes.Length = sizeof(attributes);
+            attributes.ObjectName = &name;
+            attributes.Attributes = OBJ_CASE_INSENSITIVE;
+            IO_STATUS_BLOCK io_status{};
+            HANDLE file = nullptr;
+            const NTSTATUS status = nt_create_file(
+                &file, FILE_GENERIC_READ | SYNCHRONIZE, &attributes, &io_status,
+                nullptr, FILE_ATTRIBUTE_NORMAL,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                FILE_OPEN,
+                FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, nullptr,
+                0);
+            if (file != nullptr) {
+                CloseHandle(file);
+            }
+            return status;
+        };
+        InterlockedExchange(stage, 1);
+        const NTSTATUS allowed_status = open_native(allowed);
+        InterlockedExchange(stage, 2);
+        if (allowed_status != 0) {
+            UnmapViewOfFile(const_cast<LONG*>(stage));
+            return 369;
+        }
+        InterlockedExchange(stage, 3);
+        constexpr NTSTATUS status_access_denied =
+            static_cast<NTSTATUS>(0xC0000022UL);
+        const NTSTATUS denied_status = open_native(denied);
+        InterlockedExchange(stage, 4);
+        UnmapViewOfFile(const_cast<LONG*>(stage));
+        if (denied_status != status_access_denied) {
+            return 370;
         }
     } else if (mode == L"volume-guid-aliases") {
         const std::filesystem::path allowed(arguments[3]);

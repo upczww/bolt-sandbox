@@ -8,6 +8,7 @@
 #include "protocol/version.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -34,6 +35,11 @@ struct Rule {
     RuleKind kind;
     std::size_t depth;
     bool case_sensitive = false;
+};
+
+struct PathAlias {
+    std::wstring prefix;
+    std::wstring replacement;
 };
 
 class Reader {
@@ -239,9 +245,81 @@ bool RootContains(
            IsDirectorySeparator(path[root.size()]);
 }
 
+bool HasPrefixIgnoreCase(
+    const std::wstring& value,
+    const std::wstring& prefix) noexcept {
+    return value.size() >= prefix.size() &&
+           prefix.size() <= static_cast<std::size_t>(INT_MAX) &&
+           CompareStringOrdinal(
+               value.data(), static_cast<int>(prefix.size()), prefix.data(),
+               static_cast<int>(prefix.size()), TRUE) == CSTR_EQUAL;
+}
+
+bool ReplaceAlias(
+    const std::wstring& path,
+    const std::vector<PathAlias>& aliases,
+    std::wstring& replaced) {
+    for (const auto& alias : aliases) {
+        if (!HasPrefixIgnoreCase(path, alias.prefix) ||
+            (path.size() > alias.prefix.size() &&
+             !IsDirectorySeparator(alias.prefix.back()) &&
+             !IsDirectorySeparator(path[alias.prefix.size()]))) {
+            continue;
+        }
+        replaced.assign(alias.replacement);
+        replaced.append(path, alias.prefix.size(), std::wstring::npos);
+        return true;
+    }
+    return false;
+}
+
+std::vector<PathAlias> LoadPathAliases() {
+    std::vector<PathAlias> aliases;
+    const DWORD required = GetLogicalDriveStringsW(0, nullptr);
+    if (required == 0) {
+        return aliases;
+    }
+    std::wstring drives(static_cast<std::size_t>(required) + 1, L'\0');
+    if (GetLogicalDriveStringsW(required, drives.data()) == 0) {
+        return {};
+    }
+    for (const wchar_t* drive = drives.c_str(); *drive != L'\0';
+         drive += std::wcslen(drive) + 1) {
+        if (std::wcslen(drive) < 3) {
+            continue;
+        }
+        std::array<wchar_t, 64> volume_name{};
+        if (GetVolumeNameForVolumeMountPointW(
+                drive, volume_name.data(),
+                static_cast<DWORD>(volume_name.size()))) {
+            const std::wstring volume(volume_name.data());
+            if (volume.rfind(L"\\\\?\\", 0) == 0 && volume.size() > 4) {
+                aliases.push_back({volume.substr(4), drive});
+            }
+        }
+        const wchar_t drive_name[] = {drive[0], L':', L'\0'};
+        std::array<wchar_t, 32'768> device_name{};
+        if (QueryDosDeviceW(
+                drive_name, device_name.data(),
+                static_cast<DWORD>(device_name.size())) != 0) {
+            aliases.push_back({device_name.data(), drive_name});
+        }
+    }
+    return aliases;
+}
+
 bool AssignPolicyPath(
-    const CanonicalizedPath& canonical,
+    const wchar_t* path,
+    const std::vector<PathAlias>& aliases,
     std::wstring& normalized_path) {
+    if (path == nullptr) {
+        return false;
+    }
+    const std::wstring raw_path(path);
+    if (ReplaceAlias(raw_path, aliases, normalized_path)) {
+        return true;
+    }
+    const auto canonical = CanonicalizedPath::Canonicalize(path);
     const wchar_t* normalized = canonical.GetPathStringWithoutTypePrefix();
     if (canonical.IsNull() || normalized == nullptr) {
         return false;
@@ -255,9 +333,13 @@ bool AssignPolicyPath(
             CSTR_EQUAL) {
         normalized_path.assign(L"\\\\");
         normalized_path.append(normalized + std::size(unc_marker) - 1);
-        return true;
+    } else {
+        normalized_path.assign(normalized);
     }
-    normalized_path.assign(normalized);
+    std::wstring replaced;
+    if (ReplaceAlias(normalized_path, aliases, replaced)) {
+        normalized_path = std::move(replaced);
+    }
     return true;
 }
 
@@ -281,6 +363,7 @@ Decision ApplyRule(const RuleKind kind, const Access access) noexcept {
 
 struct FilesystemPolicy::Impl {
     std::vector<Rule> rules;
+    std::vector<PathAlias> aliases;
 };
 
 FilesystemPolicy::FilesystemPolicy(std::unique_ptr<Impl> implementation) noexcept
@@ -306,6 +389,7 @@ PolicyLoadStatus FilesystemPolicy::Load(
         }
 
         auto implementation = std::make_unique<Impl>();
+        implementation->aliases = LoadPathAliases();
         implementation->rules.reserve(rule_count);
         for (std::size_t index = 0; index < rule_count; ++index) {
             std::size_t record_length = 0;
@@ -349,8 +433,8 @@ PolicyEvaluation FilesystemPolicy::Evaluate(
         return evaluation;
     }
     try {
-        const auto canonical = CanonicalizedPath::Canonicalize(path);
-        if (!AssignPolicyPath(canonical, evaluation.normalized_path)) {
+        if (!AssignPolicyPath(
+                path, implementation_->aliases, evaluation.normalized_path)) {
             return evaluation;
         }
         const wchar_t* normalized = evaluation.normalized_path.c_str();
@@ -389,9 +473,9 @@ bool FilesystemPolicy::HasDeniedDescendant(const wchar_t* path) const noexcept {
         return true;
     }
     try {
-        const auto canonical = CanonicalizedPath::Canonicalize(path);
         std::wstring normalized_root;
-        if (!AssignPolicyPath(canonical, normalized_root)) {
+        if (!AssignPolicyPath(
+                path, implementation_->aliases, normalized_root)) {
             return true;
         }
         for (const auto& rule : implementation_->rules) {
