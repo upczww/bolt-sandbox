@@ -445,6 +445,57 @@ bool RunMixedTreeRenameTest(
     return passed;
 }
 
+bool RunAllowedReplaceRenameTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const std::filesystem::path& test_root,
+    std::uint64_t& ordinal) {
+    const auto replacement = test_root / L"allowed-replacement.txt";
+    const auto target = test_root / L"allowed-replace-target.txt";
+    const auto renamed = test_root / L"allowed-replace-renamed.txt";
+    DeleteFileW(replacement.c_str());
+    DeleteFileW(target.c_str());
+    DeleteFileW(renamed.c_str());
+    if (!WriteFixture(replacement, "new-content") ||
+        !WriteFixture(target, "old-content")) {
+        return false;
+    }
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const auto rules = RacePolicyRules(
+        executable, test_root, bolt::tests::FilesystemRuleKind::kReadWrite);
+    RaceProcess process;
+    const bool started =
+        start != nullptr &&
+        process.Start(
+            executable, hook_path, rules, L"allowed-replace-rename", test_root,
+            {}, start, ordinal++);
+    const bool released =
+        started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
+    const bool exited = released && process.WaitForExit();
+    const bool passed =
+        exited && !std::filesystem::exists(replacement) &&
+        !std::filesystem::exists(target) &&
+        ReadFixture(renamed) == "new-content" &&
+        PipeHasNoEvents(process.event_pipe());
+    if (start != nullptr) {
+        CloseHandle(start);
+    }
+    if (!passed) {
+        std::fprintf(
+            stderr,
+            "allowed replace/rename failed: exit=%lu replacement=%d target=%d renamed=%d renamed_size=%zu\n",
+            static_cast<unsigned long>(process.exit_code()),
+            std::filesystem::exists(replacement) ? 1 : 0,
+            std::filesystem::exists(target) ? 1 : 0,
+            std::filesystem::exists(renamed) ? 1 : 0,
+            ReadFixture(renamed).size());
+    }
+    return passed;
+}
+
 }  // namespace
 
 int RunFilesystemRaceChild(
@@ -517,6 +568,17 @@ int RunFilesystemRaceChild(
             GetLastError() != ERROR_ACCESS_DENIED) {
             return 300;
         }
+    } else if (mode == L"allowed-replace-rename") {
+        const std::filesystem::path root(arguments[3]);
+        const auto replacement = root / L"allowed-replacement.txt";
+        const auto target = root / L"allowed-replace-target.txt";
+        const auto renamed = root / L"allowed-replace-renamed.txt";
+        if (!ReplaceFileW(
+                target.c_str(), replacement.c_str(), nullptr, 0, nullptr,
+                nullptr) ||
+            !MoveFileW(target.c_str(), renamed.c_str())) {
+            return 301;
+        }
     } else {
         return 298;
     }
@@ -550,6 +612,8 @@ bool RunFilesystemRaceTests() {
         RunRenameDeleteRace(
             executable, hook_path, test_root, ordinal) &&
         RunMixedTreeRenameTest(
+            executable, hook_path, test_root, ordinal) &&
+        RunAllowedReplaceRenameTest(
             executable, hook_path, test_root, ordinal);
     std::filesystem::remove_all(test_root, error);
     if (!passed) {
