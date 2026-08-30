@@ -37,6 +37,9 @@ CopyFileW_t g_copy_file_w = CopyFileW;
 CopyFileExW_t g_copy_file_ex_w = CopyFileExW;
 CopyFileA_t g_copy_file_a = CopyFileA;
 CopyFileExA_t g_copy_file_ex_a = CopyFileExA;
+using CopyFile2Function = HRESULT(WINAPI*)(
+    PCWSTR, PCWSTR, const COPYFILE2_EXTENDED_PARAMETERS*);
+CopyFile2Function g_copy_file_2 = nullptr;
 
 void ReportDenied(
     const protocol::FilesystemOperation operation,
@@ -275,6 +278,16 @@ BOOL WINAPI DetouredCopyFileExA(
         existing_wide.c_str(), new_wide.c_str(), progress_routine, data, cancel, copy_flags);
 }
 
+HRESULT WINAPI DetouredCopyFile2(
+    const PCWSTR existing_path,
+    const PCWSTR new_path,
+    const COPYFILE2_EXTENDED_PARAMETERS* extended_parameters) noexcept {
+    if (!AuthorizeCopy(existing_path, new_path)) {
+        return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+    }
+    return g_copy_file_2(existing_path, new_path, extended_parameters);
+}
+
 }  // namespace
 
 HookInstallStatus InstallFileHooks(
@@ -288,6 +301,8 @@ HookInstallStatus InstallFileHooks(
     if (FilesystemPolicy::Load(policy_payload, policy_length, policy) != PolicyLoadStatus::kValid) {
         return HookInstallStatus::kInvalidPolicy;
     }
+    g_copy_file_2 = reinterpret_cast<CopyFile2Function>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CopyFile2"));
     if (DetourTransactionBegin() != NO_ERROR) {
         return HookInstallStatus::kTransactionFailed;
     }
@@ -322,6 +337,10 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_copy_file_ex_a),
             reinterpret_cast<PVOID>(DetouredCopyFileExA)) != NO_ERROR ||
+        (g_copy_file_2 != nullptr &&
+         DetourAttach(
+             reinterpret_cast<PVOID*>(&g_copy_file_2),
+             reinterpret_cast<PVOID>(DetouredCopyFile2)) != NO_ERROR) ||
         DetourTransactionCommit() != NO_ERROR) {
         DetourTransactionAbort();
         return HookInstallStatus::kTransactionFailed;

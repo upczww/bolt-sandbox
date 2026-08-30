@@ -62,8 +62,9 @@ opens as reads, all mutation or unknown rights as writes, and classifies
 `CREATE_NEW`, `CREATE_ALWAYS`, and `OPEN_ALWAYS` as creates. Unknown creation
 dispositions fail closed as writes.
 
-The first adapted BuildXL operation-family hooks are `CopyFileW/A` and
-`CopyFileExW/A`. Like upstream BuildXL, ANSI entry points convert once and
+The first adapted BuildXL operation-family hooks are `CopyFileW/A`,
+`CopyFileExW/A`, and the dynamically resolved `CopyFile2`. Like upstream
+BuildXL, ANSI entry points convert once and
 delegate to the wide-character operation path. All four entries share one
 source/destination authorization path that
 evaluates the source as read and the destination as write before invoking Windows,
