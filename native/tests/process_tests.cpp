@@ -2634,6 +2634,46 @@ int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
     return 0;
 }
 
+int RunNestedProcess(const int argument_count, wchar_t** arguments) {
+    if (argument_count != 4) {
+        return 288;
+    }
+    const HMODULE hook = GetModuleHandleW(arguments[2]);
+    const auto initialized = hook == nullptr
+                                 ? nullptr
+                                 : reinterpret_cast<BOOL (*)()>(GetProcAddress(
+                                       hook, "BoltSandboxRuntimeInitialized"));
+    BOOL remains_in_job = FALSE;
+    if (initialized == nullptr || !initialized() ||
+        !HasRequiredProcessMitigations() ||
+        !IsProcessInJob(GetCurrentProcess(), nullptr, &remains_in_job) ||
+        !remains_in_job) {
+        return 289;
+    }
+    wchar_t* end = nullptr;
+    const unsigned long remaining = std::wcstoul(arguments[3], &end, 10);
+    if (end == arguments[3] || *end != L'\0' || remaining > 8) {
+        return 290;
+    }
+    if (remaining == 0) {
+        return 0;
+    }
+    const std::wstring executable = CurrentExecutable();
+    std::wstring command =
+        L"\"" + executable + L"\" --nested-process " + arguments[2] + L" " +
+        std::to_wstring(remaining - 1);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION child{};
+    if (!CreateProcessW(
+            executable.c_str(), command.data(), nullptr, nullptr, FALSE, 0,
+            nullptr, nullptr, &startup, &child) ||
+        !WaitForSuccessfulChild(child)) {
+        return 291;
+    }
+    return 0;
+}
+
 int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
     if (argument_count != 3) {
         return 222;
@@ -2834,6 +2874,17 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
             !WaitForSuccessfulChild(flagged_process)) {
             return 287;
         }
+    }
+    std::wstring nested_command =
+        L"\"" + executable + L"\" --nested-process " + arguments[2] + L" 8";
+    STARTUPINFOW nested_startup{};
+    nested_startup.cb = sizeof(nested_startup);
+    PROCESS_INFORMATION nested_process{};
+    if (!CreateProcessW(
+            executable.c_str(), nested_command.data(), nullptr, nullptr, FALSE,
+            0, nullptr, nullptr, &nested_startup, &nested_process) ||
+        !WaitForSuccessfulChild(nested_process)) {
+        return 292;
     }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
