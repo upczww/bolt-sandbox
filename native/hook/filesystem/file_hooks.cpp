@@ -1474,7 +1474,25 @@ BOOL WINAPI DetouredCreateDirectoryW(
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
-    InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, path), true);
+    std::wstring resolved_path;
+    if (!ResolveParentFinalIdentity(
+            EvaluatedPath(evaluation, path), resolved_path)) {
+        ReportDenied(
+            protocol::FilesystemOperation::kCreate,
+            EvaluatedPath(evaluation, path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    const auto final_evaluation =
+        policy->Evaluate(resolved_path.c_str(), Access::kWrite);
+    if (final_evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            protocol::FilesystemOperation::kCreate,
+            EvaluatedPath(final_evaluation, resolved_path.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    InvalidateResolvedPathForMutation(resolved_path.c_str(), true);
     return g_create_directory_w(path, security_attributes);
 }
 

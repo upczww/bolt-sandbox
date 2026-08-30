@@ -57,6 +57,10 @@ The Bolt filesystem hook layer canonicalizes mutation paths and invalidates the
 upstream `ResolvedPathCache` before create, delete, directory mutation, move,
 and hard-link calls. Directory and move invalidation conservatively removes
 cached descendants, matching BuildXL's defense against stale reparse targets.
+Directory creation also resolves the parent directory's final identity and
+appends the new leaf before its second write-policy check, preventing an
+allowed path containing an intermediate junction from creating beneath a
+denied target.
 
 Create/open classification is a Bolt-owned compatibility seam derived from
 BuildXL's `WantsWriteAccess`, `WantsReadAccess`, and probe-only split. It treats
