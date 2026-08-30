@@ -208,7 +208,7 @@ bool ReadFilesystemViolation(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 35) {
+    if (argument_count != 36) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -216,7 +216,38 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     if (!SetEvent(allowed)) {
         return 81;
     }
-    if (SetEvent(denied)) {
+    using NtQueryObjectFunction = NTSTATUS(NTAPI*)(
+        HANDLE, ULONG, PVOID, ULONG, PULONG);
+    const auto nt_query_object = reinterpret_cast<NtQueryObjectFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryObject"));
+    if (nt_query_object == nullptr) {
+        return 156;
+    }
+    struct ObjectNameInformation {
+        UNICODE_STRING name;
+    };
+    std::array<std::uint8_t, 4'096> object_name_storage{};
+    ULONG object_name_size = 0;
+    const NTSTATUS object_name_status = nt_query_object(
+        denied, 1, object_name_storage.data(),
+        static_cast<ULONG>(object_name_storage.size()), &object_name_size);
+    const auto* object_name = reinterpret_cast<const ObjectNameInformation*>(
+        object_name_storage.data());
+    const std::wstring_view expected_name(arguments[35]);
+    const std::size_t separator = expected_name.find_last_of(L'\\');
+    const std::wstring_view expected_leaf =
+        separator == std::wstring_view::npos
+            ? expected_name
+            : expected_name.substr(separator + 1);
+    const std::wstring_view actual_name =
+        object_name_status >= 0 && object_name->name.Buffer != nullptr
+            ? std::wstring_view(
+                  object_name->name.Buffer,
+                  object_name->name.Length / sizeof(wchar_t))
+            : std::wstring_view{};
+    if (actual_name.size() >= expected_leaf.size() &&
+        actual_name.substr(actual_name.size() - expected_leaf.size()) ==
+            expected_leaf) {
         return 82;
     }
     if (GetModuleHandleW(arguments[4]) == nullptr) {
@@ -839,7 +870,10 @@ bool RunProcessTests() {
     inheritable.nLength = sizeof(inheritable);
     inheritable.bInheritHandle = TRUE;
     const HANDLE allowed = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
-    const HANDLE denied = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const std::wstring denied_event_name =
+        L"Local\\bolt-sandbox-denied-" + unique_suffix;
+    const HANDLE denied =
+        CreateEventW(&inheritable, TRUE, FALSE, denied_event_name.c_str());
     const HANDLE release = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
     bolt::common::ImmutablePolicyMapping policy;
     bolt::common::PrivatePipe event_pipe;
@@ -1062,7 +1096,8 @@ bool RunProcessTests() {
                                       alias_hardlink_destination.wstring() + L"\" \"" +
                                       forbidden_junction.wstring() + L"\" \"" +
                                       denied_junction_target.wstring() + L"\" \"" +
-                                      denied_wildcard.wstring() + L"\"";
+                                      denied_wildcard.wstring() + L"\" \"" +
+                                      denied_event_name + L"\"";
     const HANDLE inherited[] = {
         allowed, policy.handle(), event_client, release, denied_disposition_handle,
         denied_truncate_handle, denied_mapping_handle, read_only_mapping_handle};
