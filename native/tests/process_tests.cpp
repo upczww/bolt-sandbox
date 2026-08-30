@@ -1672,6 +1672,32 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         }
         return 200;
     }
+    std::wstring nt_allowed_path = L"\\??\\" + std::wstring(arguments[14]);
+    UNICODE_STRING nt_allowed_name{
+        static_cast<USHORT>(nt_allowed_path.size() * sizeof(wchar_t)),
+        static_cast<USHORT>((nt_allowed_path.size() + 1) * sizeof(wchar_t)),
+        nt_allowed_path.data()};
+    OBJECT_ATTRIBUTES nt_allowed_attributes{
+        sizeof(OBJECT_ATTRIBUTES), nullptr, &nt_allowed_name,
+        OBJ_CASE_INSENSITIVE, nullptr, nullptr};
+    IO_STATUS_BLOCK nt_allowed_status{};
+    HANDLE nt_allowed_file = nullptr;
+    SetLastError(native_last_error_sentinel);
+    const NTSTATUS nt_allowed_result = nt_open_file(
+        &nt_allowed_file, FILE_GENERIC_READ | SYNCHRONIZE,
+        &nt_allowed_attributes, &nt_allowed_status,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT);
+    const DWORD nt_allowed_last_error = GetLastError();
+    if (nt_allowed_result < 0 || nt_allowed_file == nullptr ||
+        nt_allowed_status.Status < 0 ||
+        nt_allowed_last_error != native_last_error_sentinel) {
+        if (nt_allowed_file != nullptr) {
+            CloseHandle(nt_allowed_file);
+        }
+        return 282;
+    }
+    CloseHandle(nt_allowed_file);
     std::array<std::uint8_t, 1'024> notification_buffer{};
     notification_buffer.fill(0xA5);
     const auto notification_buffer_before = notification_buffer;
@@ -2522,6 +2548,39 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     if (duplicate_write || duplicate_write_error != ERROR_ACCESS_DENIED ||
         duplicate_bytes != 0) {
         return 281;
+    }
+
+    SetLastError(native_last_error_sentinel);
+    const HANDLE existing_open_always = CreateFileW(
+        arguments[14], GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    const DWORD existing_open_always_error = GetLastError();
+    if (existing_open_always == INVALID_HANDLE_VALUE ||
+        existing_open_always_error != ERROR_ALREADY_EXISTS) {
+        if (existing_open_always != INVALID_HANDLE_VALUE) {
+            CloseHandle(existing_open_always);
+        }
+        return 283;
+    }
+    CloseHandle(existing_open_always);
+
+    SetLastError(native_last_error_sentinel);
+    const HANDLE created_open_always = CreateFileW(
+        arguments[17], GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    const DWORD created_open_always_error = GetLastError();
+    if (created_open_always == INVALID_HANDLE_VALUE ||
+        created_open_always_error != ERROR_SUCCESS) {
+        if (created_open_always != INVALID_HANDLE_VALUE) {
+            CloseHandle(created_open_always);
+        }
+        return 284;
+    }
+    CloseHandle(created_open_always);
+    if (!DeleteFileW(arguments[17])) {
+        return 285;
     }
 
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(

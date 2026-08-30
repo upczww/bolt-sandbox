@@ -283,6 +283,16 @@ absolute names paired with a root handle fail closed. Denial returns
 `STATUS_ACCESS_DENIED`, clears the output handle and completion information,
 and never calls ntdll.
 
+All installed NT filesystem entry points preserve the caller's Win32
+`LastError` slot across policy evaluation, event reporting, and the underlying
+NT call. Their observable result remains `NTSTATUS` plus the API-specific output
+or `IO_STATUS_BLOCK`; sandbox denials return `STATUS_ACCESS_DENIED` without
+leaking helper-call errors into Win32 thread state. Integration probes cover
+open/create, query, directory enumeration and notification, read/write,
+section/map, and information mutation on x86/x64. Win32 wrappers retain their
+documented error behavior; in particular, allowed `OPEN_ALWAYS` distinguishes
+an existing object (`ERROR_ALREADY_EXISTS`) from a new object (`ERROR_SUCCESS`).
+
 `OpenFileById` reuses BuildXL's exact function type; the vendored implementation
 is an explicit policy TODO and is not linked. Bolt opens the identified object
 without the destructive delete-on-close flag, authorizes the returned handle's
