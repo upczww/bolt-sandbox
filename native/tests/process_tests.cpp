@@ -1492,7 +1492,7 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
 }
 
 int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 3) {
+    if (argument_count != 3 && argument_count != 4) {
         return 220;
     }
     const HMODULE hook = GetModuleHandleW(arguments[2]);
@@ -1500,7 +1500,17 @@ int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
                                  ? nullptr
                                  : reinterpret_cast<BOOL (*)()>(GetProcAddress(
                                        hook, "BoltSandboxRuntimeInitialized"));
-    return initialized != nullptr && initialized() ? 0 : 221;
+    if (initialized == nullptr || !initialized()) {
+        return 221;
+    }
+    if (argument_count == 4) {
+        const HANDLE entered = reinterpret_cast<HANDLE>(
+            _wcstoui64(arguments[3], nullptr, 10));
+        if (!SetEvent(entered)) {
+            return 226;
+        }
+    }
+    return 0;
 }
 
 int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
@@ -1517,13 +1527,62 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
     }
 
     const std::wstring executable = CurrentExecutable();
-    std::wstring command_line =
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE entered = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    if (entered == nullptr) {
+        return 227;
+    }
+    std::wstring suspended_command_line =
+        L"\"" + executable + L"\" --inherit-leaf " + arguments[2] + L" " +
+        HandleText(entered);
+    STARTUPINFOW suspended_startup{};
+    suspended_startup.cb = sizeof(suspended_startup);
+    PROCESS_INFORMATION suspended_process{};
+    if (!CreateProcessW(
+            executable.c_str(), suspended_command_line.data(), nullptr, nullptr,
+            TRUE, CREATE_SUSPENDED, nullptr, nullptr, &suspended_startup,
+            &suspended_process)) {
+        CloseHandle(entered);
+        return 228;
+    }
+    const bool stayed_suspended = WaitForSingleObject(entered, 100) == WAIT_TIMEOUT;
+    const bool resumed = ResumeThread(suspended_process.hThread) !=
+                         static_cast<DWORD>(-1);
+    const bool entered_after_resume =
+        resumed && WaitForSingleObject(entered, 5'000) == WAIT_OBJECT_0;
+    const DWORD suspended_wait =
+        WaitForSingleObject(suspended_process.hProcess, 5'000);
+    DWORD suspended_exit_code = 0;
+    const bool suspended_exited =
+        suspended_wait == WAIT_OBJECT_0 &&
+        GetExitCodeProcess(suspended_process.hProcess, &suspended_exit_code) != FALSE;
+    if (!suspended_exited) {
+        TerminateProcess(suspended_process.hProcess, 229);
+        WaitForSingleObject(suspended_process.hProcess, 5'000);
+    }
+    CloseHandle(suspended_process.hThread);
+    CloseHandle(suspended_process.hProcess);
+    CloseHandle(entered);
+    if (!stayed_suspended || !entered_after_resume || !suspended_exited ||
+        suspended_exit_code != 0) {
+        return 229;
+    }
+
+    const std::wstring wide_command_line =
         L"\"" + executable + L"\" --inherit-leaf " + arguments[2];
-    STARTUPINFOW startup{};
+    const std::string executable_a = AnsiPath(executable.c_str());
+    const std::string command_line_source_a = AnsiPath(wide_command_line.c_str());
+    std::vector<char> command_line_a(
+        command_line_source_a.begin(), command_line_source_a.end());
+    command_line_a.push_back('\0');
+    STARTUPINFOA startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    if (!CreateProcessW(
-            executable.c_str(), command_line.data(), nullptr, nullptr, FALSE, 0,
+    if (executable_a.empty() || command_line_source_a.empty() ||
+        !CreateProcessA(
+            executable_a.c_str(), command_line_a.data(), nullptr, nullptr, FALSE, 0,
             nullptr, nullptr, &startup, &process)) {
         return 224;
     }

@@ -400,6 +400,13 @@ Recovery is not a substitute for policy enforcement.
 The initial release supports x64 and x86 on x64 Windows. ARM64 and ARM64EC are a
 separate compatibility milestone.
 
+The current same-architecture adapter duplicates only the authenticated policy,
+event, and private handshake handles into a forcibly suspended child. It uses a
+private descendant readiness event so the public session has exactly one
+`Ready` frame, and restores caller-requested `CREATE_SUSPENDED` semantics before
+returning. Cross-architecture creation fails closed until the x86/x64 remote
+injection broker is enabled.
+
 Launcher selection parses the target file identity's PE headers rather than
 assuming the host architecture or trusting its filename. The parser requires a
 complete 64-byte DOS header, `MZ` and `PE\0\0` signatures, a checked in-range

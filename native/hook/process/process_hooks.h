@@ -6,6 +6,10 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+namespace bolt::protocol {
+struct RuntimePayload;
+}
+
 namespace bolt::process {
 
 enum class ProcessHookPrepareStatus : std::uint8_t {
@@ -13,6 +17,10 @@ enum class ProcessHookPrepareStatus : std::uint8_t {
     kInvalidPolicy,
     kAlreadyPrepared,
 };
+
+bool ConfigureProcessRuntime(
+    const protocol::RuntimePayload& payload,
+    const char* hook_dll_path) noexcept;
 
 ProcessHookPrepareStatus PrepareProcessHooks(
     const std::uint8_t* policy_payload,

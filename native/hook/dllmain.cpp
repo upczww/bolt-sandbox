@@ -4,6 +4,7 @@
 #include "protocol/version.h"
 #include "hook/filesystem/file_hooks.h"
 #include "hook/event_sink.h"
+#include "hook/process/process_hooks.h"
 
 #include <cstdint>
 
@@ -40,7 +41,7 @@ bool WriteExact(
     return true;
 }
 
-bool InitializeRuntime() noexcept {
+bool InitializeRuntime(const HINSTANCE instance) noexcept {
     DetourRestoreAfterWith();
     DWORD payload_length = 0;
     const auto* encoded = static_cast<const std::uint8_t*>(
@@ -54,6 +55,13 @@ bool InitializeRuntime() noexcept {
 
     const HANDLE policy_handle = HandleFromWire(payload.policy_handle);
     const HANDLE event_handle = HandleFromWire(payload.event_handle);
+    std::array<char, 32'768> hook_path{};
+    const DWORD hook_path_length = GetModuleFileNameA(
+        instance, hook_path.data(), static_cast<DWORD>(hook_path.size()));
+    if (hook_path_length == 0 || hook_path_length == hook_path.size() ||
+        !bolt::process::ConfigureProcessRuntime(payload, hook_path.data())) {
+        return false;
+    }
     if (bolt::hook::InitializeEventSink(event_handle) !=
         bolt::hook::EventSinkStatus::kSuccess) {
         return false;
@@ -70,8 +78,22 @@ bool InitializeRuntime() noexcept {
         return false;
     }
 
-    const auto ready = bolt::protocol::EncodeReadyFrame(payload.handshake_nonce);
     InterlockedExchange(&g_runtime_initialized, 1);
+    if (payload.descendant_ready_handle != 0) {
+        const HANDLE descendant_ready =
+            HandleFromWire(payload.descendant_ready_handle);
+        const HANDLE descendant_release = HandleFromWire(payload.release_handle);
+        if (!SetEvent(descendant_ready) ||
+            WaitForSingleObject(descendant_release, 30'000) != WAIT_OBJECT_0) {
+            InterlockedExchange(&g_runtime_initialized, 0);
+            return false;
+        }
+        CloseHandle(descendant_ready);
+        CloseHandle(descendant_release);
+        return true;
+    }
+
+    const auto ready = bolt::protocol::EncodeReadyFrame(payload.handshake_nonce);
     if (!WriteExact(event_handle, ready.data(), ready.size())) {
         InterlockedExchange(&g_runtime_initialized, 0);
         return false;
@@ -100,7 +122,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) noexcept 
         if (DetourIsHelperProcess()) {
             return TRUE;
         }
-        if (!InitializeRuntime()) {
+        if (!InitializeRuntime(instance)) {
             return FALSE;
         }
         DisableThreadLibraryCalls(instance);

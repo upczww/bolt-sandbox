@@ -319,9 +319,16 @@ The first process-policy slice reuses BuildXL's exact `CreateProcessW_t` and
 Bolt payload passes integrity and shape validation, and both process hooks join
 the same Detours transaction as filesystem hooks. `Deny` clears the caller's
 process-information output and returns `ERROR_ACCESS_DENIED` before Windows can
-create a process. `Inherit` is temporarily fail-closed at this boundary until
-the BuildXL-derived suspended injection and readiness adapter is activated; an
-unconfined child is never used as a fallback.
+create a process. For same-architecture descendants, `Inherit` follows
+BuildXL's suspended-injection ordering: runtime handles are duplicated into the
+child, the authenticated payload and matching hook DLL are installed, and a
+private ready/release handshake completes before user code can run. The private
+handshake avoids emitting a second session `Ready` frame. A caller-requested
+`CREATE_SUSPENDED` state is restored before release to the caller. Injection,
+duplication, or readiness failure terminates the child and clears its process
+information; an unconfined child is never used as a fallback. Cross-architecture
+descendants remain fail-closed until the BuildXL-derived remote-injector broker
+is activated.
 
 The next slices are:
 
