@@ -8,6 +8,8 @@
 #include "protocol/version.h"
 
 #include <algorithm>
+#include <cstring>
+#include <filesystem>
 #include <limits>
 #include <new>
 #include <string>
@@ -31,6 +33,7 @@ struct Rule {
     std::wstring root;
     RuleKind kind;
     std::size_t depth;
+    bool case_sensitive = false;
 };
 
 class Reader {
@@ -151,14 +154,85 @@ bool EqualIgnoreCase(const std::wstring& left, const std::wstring& right) noexce
                static_cast<int>(right.size()), TRUE) == CSTR_EQUAL;
 }
 
-bool RootContains(const std::wstring& root, const wchar_t* path) noexcept {
+bool QueryCaseSensitiveIdentity(
+    const std::wstring& root,
+    FILE_ID_INFO& identity) noexcept {
+    try {
+        if (root.rfind(L"\\\\", 0) == 0) {
+            return false;
+        }
+        const std::filesystem::path path(root);
+        const auto parent = path.parent_path();
+        if (parent.empty()) {
+            return false;
+        }
+        const HANDLE parent_handle = CreateFileW(
+            parent.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (parent_handle == INVALID_HANDLE_VALUE) {
+            return false;
+        }
+        FILE_CASE_SENSITIVE_INFO case_information{};
+        const bool case_sensitive =
+            GetFileInformationByHandleEx(
+                parent_handle, FileCaseSensitiveInfo, &case_information,
+                sizeof(case_information)) != FALSE &&
+            (case_information.Flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR) != 0;
+        CloseHandle(parent_handle);
+        if (!case_sensitive) {
+            return false;
+        }
+
+        const HANDLE target_handle = CreateFileW(
+            root.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (target_handle == INVALID_HANDLE_VALUE) {
+            return false;
+        }
+        const bool identified =
+            GetFileInformationByHandleEx(
+                target_handle, FileIdInfo, &identity, sizeof(identity)) != FALSE;
+        CloseHandle(target_handle);
+        return identified;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool EnableCaseSensitiveRules(Rule& left, Rule& right) noexcept {
+    FILE_ID_INFO left_identity{};
+    FILE_ID_INFO right_identity{};
+    if (!QueryCaseSensitiveIdentity(left.root, left_identity) ||
+        !QueryCaseSensitiveIdentity(right.root, right_identity)) {
+        return false;
+    }
+    const bool distinct =
+        left_identity.VolumeSerialNumber != right_identity.VolumeSerialNumber ||
+        std::memcmp(
+            left_identity.FileId.Identifier, right_identity.FileId.Identifier,
+            sizeof(left_identity.FileId.Identifier)) != 0;
+    if (!distinct) {
+        return false;
+    }
+    left.case_sensitive = true;
+    right.case_sensitive = true;
+    return true;
+}
+
+bool RootContains(
+    const std::wstring& root,
+    const wchar_t* path,
+    const bool case_sensitive = false) noexcept {
     const std::size_t path_length = std::wcslen(path);
     if (root.size() > path_length || root.size() > static_cast<std::size_t>(INT_MAX)) {
         return false;
     }
     if (CompareStringOrdinal(
             root.data(), static_cast<int>(root.size()), path,
-            static_cast<int>(root.size()), TRUE) != CSTR_EQUAL) {
+            static_cast<int>(root.size()), case_sensitive ? FALSE : TRUE) !=
+        CSTR_EQUAL) {
         return false;
     }
     return root.size() == path_length || IsDirectorySeparator(root.back()) ||
@@ -241,9 +315,18 @@ PolicyLoadStatus FilesystemPolicy::Load(
                 !ParseRule(record_bytes, record_length, rule)) {
                 return PolicyLoadStatus::kInvalidFilesystemPolicy;
             }
-            for (const auto& existing : implementation->rules) {
-                if (EqualIgnoreCase(existing.root, rule.root) && existing.kind != rule.kind &&
-                    existing.kind != RuleKind::kDeny && rule.kind != RuleKind::kDeny) {
+            for (auto& existing : implementation->rules) {
+                if (!EqualIgnoreCase(existing.root, rule.root) ||
+                    existing.kind == rule.kind) {
+                    continue;
+                }
+                if (existing.root != rule.root) {
+                    if (!EnableCaseSensitiveRules(existing, rule)) {
+                        return PolicyLoadStatus::kInvalidFilesystemPolicy;
+                    }
+                } else if (
+                    existing.kind != RuleKind::kDeny &&
+                    rule.kind != RuleKind::kDeny) {
                     return PolicyLoadStatus::kInvalidFilesystemPolicy;
                 }
             }
@@ -274,7 +357,7 @@ PolicyEvaluation FilesystemPolicy::Evaluate(
 
         std::size_t maximum_depth = 0;
         for (const auto& rule : implementation_->rules) {
-            if (!RootContains(rule.root, normalized)) {
+            if (!RootContains(rule.root, normalized, rule.case_sensitive)) {
                 continue;
             }
             if (rule.kind == RuleKind::kDeny) {
@@ -314,7 +397,8 @@ bool FilesystemPolicy::HasDeniedDescendant(const wchar_t* path) const noexcept {
         for (const auto& rule : implementation_->rules) {
             if (rule.kind == RuleKind::kDeny &&
                 rule.root.size() > normalized_root.size() &&
-                RootContains(normalized_root, rule.root.c_str())) {
+                RootContains(
+                    normalized_root, rule.root.c_str(), rule.case_sensitive)) {
                 return true;
             }
         }

@@ -1022,6 +1022,45 @@ bool RunCaseSensitivePathTest(
     return passed;
 }
 
+bool RunCaseInsensitiveCollisionRejectionTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const std::filesystem::path& test_root,
+    std::uint64_t& ordinal) {
+    const auto collision_root = test_root / L"case-insensitive-collision";
+    const auto allowed = collision_root / L"PolicyTarget.txt";
+    const auto denied = collision_root / L"policytarget.txt";
+    std::error_code error;
+    if (!std::filesystem::create_directories(collision_root, error) || error ||
+        !WriteFixture(allowed, "single-identity")) {
+        return false;
+    }
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const std::vector<bolt::tests::FilesystemRule> rules = {
+        {bolt::tests::FilesystemRuleKind::kReadWrite, allowed},
+        {bolt::tests::FilesystemRuleKind::kDeny, denied},
+    };
+    RaceProcess process;
+    const bool rejected =
+        start != nullptr &&
+        !process.Start(
+            executable, hook_path, rules, L"case-sensitive-paths",
+            collision_root, {}, start, ordinal++);
+    if (start != nullptr) {
+        CloseHandle(start);
+    }
+    if (!rejected) {
+        std::fprintf(
+            stderr,
+            "case-insensitive policy collision was not rejected: exit=%lu\n",
+            static_cast<unsigned long>(process.exit_code()));
+    }
+    return rejected;
+}
+
 bool RunExistingSymlinkTest(
     const std::wstring& executable,
     const std::filesystem::path& hook_path,
@@ -2017,6 +2056,8 @@ bool RunFilesystemRaceTests() {
         RunPathFormsTest(executable, hook_path, test_root, ordinal) &&
         RunUncPathTest(executable, hook_path, ordinal) &&
         RunCaseSensitivePathTest(executable, hook_path, ordinal) &&
+        RunCaseInsensitiveCollisionRejectionTest(
+            executable, hook_path, test_root, ordinal) &&
         RunExistingSymlinkTest(executable, hook_path, ordinal) &&
         RunJunctionSwapTest(executable, hook_path, test_root, ordinal) &&
         RunReparseFailureTest(executable, hook_path, test_root, ordinal) &&
