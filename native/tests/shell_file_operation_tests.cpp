@@ -1,0 +1,508 @@
+#include "common/execution_job.h"
+#include "common/immutable_policy_mapping.h"
+#include "common/private_pipe.h"
+#include "common/suspended_process.h"
+#include "protocol/event_frame.h"
+#include "tests/policy_fixture.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <shellapi.h>
+#include <shobjidl.h>
+
+namespace {
+
+constexpr FILEOP_FLAGS kFileOperationFlags =
+    FOF_NOCONFIRMATION | FOF_NOCONFIRMMKDIR | FOF_NOERRORUI | FOF_SILENT;
+
+enum class ShellOperation {
+    kCopy,
+    kMove,
+    kRename,
+    kDelete,
+};
+
+class ComApartment final {
+  public:
+    ComApartment() : status_(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
+
+    ~ComApartment() {
+        if (SUCCEEDED(status_)) {
+            CoUninitialize();
+        }
+    }
+
+    bool initialized() const {
+        return SUCCEEDED(status_);
+    }
+
+  private:
+    HRESULT status_;
+};
+
+template <typename T>
+class ComPtr final {
+  public:
+    ComPtr() = default;
+    ~ComPtr() {
+        if (value_ != nullptr) {
+            value_->Release();
+        }
+    }
+
+    ComPtr(const ComPtr&) = delete;
+    ComPtr& operator=(const ComPtr&) = delete;
+
+    T** put() {
+        return &value_;
+    }
+
+    T* get() const {
+        return value_;
+    }
+
+    T* operator->() const {
+        return value_;
+    }
+
+  private:
+    T* value_ = nullptr;
+};
+
+std::wstring CurrentExecutable() {
+    std::wstring path(32'768, L'\0');
+    const DWORD length = GetModuleFileNameW(
+        nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (length == 0 || length == path.size()) {
+        return {};
+    }
+    path.resize(length);
+    return path;
+}
+
+std::wstring HandleText(const HANDLE handle) {
+    return std::to_wstring(reinterpret_cast<std::uintptr_t>(handle));
+}
+
+std::wstring PipeName(const DWORD process_id) {
+    std::wostringstream suffix;
+    suffix << std::hex << std::nouppercase << std::setfill(L'0')
+           << std::setw(32) << static_cast<std::uint64_t>(process_id);
+    return L"\\\\.\\pipe\\bolt-sandbox-" + suffix.str();
+}
+
+bool WriteFixture(
+    const std::filesystem::path& path,
+    const std::string_view content) {
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    stream.write(content.data(), static_cast<std::streamsize>(content.size()));
+    return stream.good();
+}
+
+bool ReadExact(
+    const HANDLE handle,
+    std::uint8_t* bytes,
+    const std::size_t length) {
+    std::size_t offset = 0;
+    while (offset < length) {
+        DWORD bytes_read = 0;
+        if (!ReadFile(
+                handle, bytes + offset,
+                static_cast<DWORD>(length - offset), &bytes_read, nullptr) ||
+            bytes_read == 0) {
+            return false;
+        }
+        offset += bytes_read;
+    }
+    return true;
+}
+
+std::uint32_t ReadU32(const std::uint8_t* bytes) {
+    std::uint32_t value = 0;
+    for (std::size_t index = 0; index < 4; ++index) {
+        value |= static_cast<std::uint32_t>(bytes[index]) << (index * 8);
+    }
+    return value;
+}
+
+std::uint16_t ReadU16(const std::uint8_t* bytes) {
+    return static_cast<std::uint16_t>(bytes[0]) |
+           static_cast<std::uint16_t>(bytes[1]) << 8;
+}
+
+std::uint64_t ReadU64(const std::uint8_t* bytes) {
+    std::uint64_t value = 0;
+    for (std::size_t index = 0; index < 8; ++index) {
+        value |= static_cast<std::uint64_t>(bytes[index]) << (index * 8);
+    }
+    return value;
+}
+
+bool ReadFilesystemViolation(
+    const HANDLE event_pipe,
+    const std::uint32_t process_id,
+    const bolt::protocol::FilesystemOperation operation,
+    const std::filesystem::path& path,
+    const std::uint64_t sequence) {
+    std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
+    if (!ReadExact(event_pipe, header.data(), header.size())) {
+        return false;
+    }
+    const std::size_t payload_length = ReadU32(header.data() + 8);
+    const std::size_t frame_length = header.size() + payload_length;
+    std::vector<std::uint8_t> actual(frame_length);
+    std::copy(header.begin(), header.end(), actual.begin());
+    if (!ReadExact(
+            event_pipe, actual.data() + header.size(),
+            frame_length - header.size())) {
+        return false;
+    }
+    const std::size_t expected_frame_length =
+        bolt::protocol::FilesystemViolationFrameLength(path.c_str());
+    std::vector<std::uint8_t> expected(expected_frame_length);
+    std::size_t written = 0;
+    const bool matches = bolt::protocol::EncodeFilesystemViolationFrame(
+               process_id, operation, path.c_str(), sequence,
+               expected.data(), expected.size(), written) ==
+               bolt::protocol::FrameEncodeStatus::kSuccess &&
+           written == expected.size() && actual == expected;
+    if (!matches && frame_length >= bolt::protocol::kEventHeaderLength + 9) {
+        const std::size_t actual_path_length = ReadU32(actual.data() + 29);
+        std::wstring actual_path;
+        if (33 + actual_path_length * sizeof(wchar_t) <= actual.size()) {
+            actual_path.resize(actual_path_length);
+            std::memcpy(
+                actual_path.data(), actual.data() + 33,
+                actual_path_length * sizeof(wchar_t));
+        }
+        std::string narrow_path;
+        narrow_path.reserve(actual_path.size());
+        for (const wchar_t code_unit : actual_path) {
+            narrow_path.push_back(
+                code_unit <= 0x7f ? static_cast<char>(code_unit) : '?');
+        }
+        std::fprintf(
+            stderr,
+            "IFileOperation event mismatch: kind=%u sequence=%llu operation=%u path=%s payload=%zu expected=%zu\n",
+            static_cast<unsigned>(ReadU16(actual.data() + 6)),
+            static_cast<unsigned long long>(ReadU64(actual.data() + 12)),
+            static_cast<unsigned>(actual[28]), narrow_path.c_str(),
+            payload_length,
+            expected_frame_length - bolt::protocol::kEventHeaderLength);
+    }
+    return matches;
+}
+
+bool CreateShellItem(
+    const std::filesystem::path& path,
+    ComPtr<IShellItem>& item) {
+    return SUCCEEDED(SHCreateItemFromParsingName(
+        path.c_str(), nullptr, IID_PPV_ARGS(item.put())));
+}
+
+bool RunFileOperation(
+    const ShellOperation operation,
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination,
+    const wchar_t* new_name,
+    const bool should_succeed) {
+    ComPtr<IFileOperation> file_operation;
+    ComPtr<IShellItem> source_item;
+    ComPtr<IShellItem> destination_item;
+    if (FAILED(CoCreateInstance(
+            CLSID_FileOperation, nullptr, CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(file_operation.put()))) ||
+        FAILED(file_operation->SetOperationFlags(kFileOperationFlags)) ||
+        !CreateShellItem(source, source_item)) {
+        return false;
+    }
+
+    HRESULT queued = E_INVALIDARG;
+    switch (operation) {
+        case ShellOperation::kCopy:
+            if (!CreateShellItem(destination, destination_item)) {
+                return false;
+            }
+            queued = file_operation->CopyItem(
+                source_item.get(), destination_item.get(), new_name, nullptr);
+            break;
+        case ShellOperation::kMove:
+            if (!CreateShellItem(destination, destination_item)) {
+                return false;
+            }
+            queued = file_operation->MoveItem(
+                source_item.get(), destination_item.get(), new_name, nullptr);
+            break;
+        case ShellOperation::kRename:
+            queued = file_operation->RenameItem(
+                source_item.get(), new_name, nullptr);
+            break;
+        case ShellOperation::kDelete:
+            queued = file_operation->DeleteItem(source_item.get(), nullptr);
+            break;
+    }
+    if (FAILED(queued)) {
+        return !should_succeed;
+    }
+
+    const HRESULT performed = file_operation->PerformOperations();
+    BOOL aborted = FALSE;
+    if (FAILED(file_operation->GetAnyOperationsAborted(&aborted))) {
+        return false;
+    }
+    return should_succeed ? SUCCEEDED(performed) && aborted == FALSE
+                          : FAILED(performed) || aborted != FALSE;
+}
+
+}  // namespace
+
+int RunShellFileOperationChild(
+    const int argument_count,
+    wchar_t** arguments) {
+    if (argument_count != 15) {
+        return 240;
+    }
+    ComApartment apartment;
+    if (!apartment.initialized()) {
+        return 241;
+    }
+
+    if (!RunFileOperation(
+            ShellOperation::kCopy, arguments[2], arguments[3],
+            L"allowed-copy.txt", true) ||
+        !RunFileOperation(
+            ShellOperation::kMove, arguments[4], arguments[3],
+            L"allowed-move.txt", true) ||
+        !RunFileOperation(
+            ShellOperation::kRename, arguments[5], {},
+            L"allowed-renamed.txt", true) ||
+        !RunFileOperation(
+            ShellOperation::kDelete, arguments[6], {}, nullptr, true)) {
+        return 242;
+    }
+
+    if (!RunFileOperation(
+            ShellOperation::kCopy, arguments[7], arguments[8],
+            L"denied-copy.txt", false) ||
+        !RunFileOperation(
+            ShellOperation::kMove, arguments[9], arguments[8],
+            L"denied-move.txt", false) ||
+        !RunFileOperation(
+            ShellOperation::kRename, arguments[10], {},
+            L"denied-renamed.txt", false) ||
+        !RunFileOperation(
+            ShellOperation::kDelete, arguments[11], {}, nullptr, false)) {
+        return 243;
+    }
+
+    const auto release = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[12], nullptr, 10));
+    return SetEvent(release) ? 0 : 244;
+}
+
+bool RunShellFileOperationTests() {
+    const std::wstring executable = CurrentExecutable();
+    if (executable.empty()) {
+        std::fprintf(stderr, "IFileOperation fixture: executable path unavailable\n");
+        return false;
+    }
+
+    const std::filesystem::path test_root =
+        std::filesystem::temp_directory_path() /
+        (L"bolt-sandbox-shell-" + std::to_wstring(GetCurrentProcessId()));
+    const std::filesystem::path allowed_root = test_root / L"allowed";
+    const std::filesystem::path read_only_root = test_root / L"read-only";
+    std::error_code error;
+    std::filesystem::remove_all(test_root, error);
+    error.clear();
+    if (!std::filesystem::create_directories(allowed_root, error) || error ||
+        !std::filesystem::create_directories(read_only_root, error) || error) {
+        std::fprintf(stderr, "IFileOperation fixture: directory setup failed\n");
+        return false;
+    }
+
+    const auto allowed_copy_source = allowed_root / L"allowed-copy-source.txt";
+    const auto allowed_move_source = allowed_root / L"allowed-move-source.txt";
+    const auto allowed_rename_source = allowed_root / L"allowed-rename-source.txt";
+    const auto allowed_delete_source = allowed_root / L"allowed-delete-source.txt";
+    const auto denied_copy_source = allowed_root / L"denied-copy-source.txt";
+    const auto denied_move_source = allowed_root / L"denied-move-source.txt";
+    const auto denied_rename_source = read_only_root / L"denied-rename-source.txt";
+    const auto denied_delete_source = read_only_root / L"denied-delete-source.txt";
+
+    constexpr std::string_view nonce = "shell-file-operation";
+    if (!WriteFixture(allowed_copy_source, nonce) ||
+        !WriteFixture(allowed_move_source, nonce) ||
+        !WriteFixture(allowed_rename_source, nonce) ||
+        !WriteFixture(allowed_delete_source, nonce) ||
+        !WriteFixture(denied_copy_source, nonce) ||
+        !WriteFixture(denied_move_source, nonce) ||
+        !WriteFixture(denied_rename_source, nonce) ||
+        !WriteFixture(denied_delete_source, nonce)) {
+        std::fprintf(stderr, "IFileOperation fixture: file setup failed\n");
+        std::filesystem::remove_all(test_root, error);
+        return false;
+    }
+
+    const auto policy_payload = bolt::tests::SealPolicy({
+        {bolt::tests::FilesystemRuleKind::kReadOnly,
+         std::filesystem::path(executable).root_path()},
+        {bolt::tests::FilesystemRuleKind::kReadWrite, test_root},
+        {bolt::tests::FilesystemRuleKind::kReadOnly, read_only_root},
+    }, bolt::tests::ChildProcessPolicyKind::kDeny);
+    constexpr std::array<std::uint8_t, 16> nonce_bytes = {
+        0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3,
+        0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3,
+    };
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE release = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    bolt::common::ImmutablePolicyMapping policy;
+    bolt::common::PrivatePipe event_pipe;
+    const std::wstring pipe_name = PipeName(GetCurrentProcessId());
+    if (release == nullptr || policy_payload.empty() ||
+        bolt::common::ImmutablePolicyMapping::Create(
+            policy_payload.data(), policy_payload.size(), policy) !=
+            bolt::common::PolicyMappingStatus::kSuccess ||
+        bolt::common::PrivatePipe::Create(pipe_name, event_pipe) !=
+            bolt::common::PipeStatus::kSuccess) {
+        std::fprintf(stderr, "IFileOperation fixture: runtime resource setup failed\n");
+        if (release != nullptr) {
+            CloseHandle(release);
+        }
+        std::filesystem::remove_all(test_root, error);
+        return false;
+    }
+
+    HANDLE event_client = CreateFileW(
+        pipe_name.c_str(), FILE_WRITE_DATA, 0, &inheritable, OPEN_EXISTING, 0,
+        nullptr);
+    if (event_client == INVALID_HANDLE_VALUE ||
+        event_pipe.Accept() != bolt::common::PipeStatus::kSuccess) {
+        std::fprintf(stderr, "IFileOperation fixture: event pipe connection failed\n");
+        CloseHandle(release);
+        std::filesystem::remove_all(test_root, error);
+        return false;
+    }
+
+#if defined(_WIN64)
+    constexpr auto hook_name = L"bolt-sandbox-x64.dll";
+#else
+    constexpr auto hook_name = L"bolt-sandbox-x86.dll";
+#endif
+    const std::filesystem::path hook_path =
+        std::filesystem::path(executable).parent_path() / hook_name;
+    const std::wstring command_line =
+        L"\"" + executable + L"\" --shell-file-operation-child \"" +
+        allowed_copy_source.wstring() + L"\" \"" + allowed_root.wstring() +
+        L"\" \"" + allowed_move_source.wstring() + L"\" \"" +
+        allowed_rename_source.wstring() + L"\" \"" +
+        allowed_delete_source.wstring() + L"\" \"" +
+        denied_copy_source.wstring() + L"\" \"" + read_only_root.wstring() +
+        L"\" \"" + denied_move_source.wstring() + L"\" \"" +
+        denied_rename_source.wstring() + L"\" \"" +
+        denied_delete_source.wstring() + L"\" " + HandleText(release) +
+        L" unused unused";
+    const HANDLE inherited[] = {policy.handle(), event_client, release};
+    const bolt::common::ProcessLaunchOptions options{
+        executable, command_line, L"", nullptr, inherited,
+        std::size(inherited), 0};
+    bolt::common::SuspendedProcess process;
+    bolt::common::ExecutionJob job;
+    const bool initialized =
+        bolt::common::ExecutionJob::Create(job) ==
+            bolt::common::JobStatus::kSuccess &&
+        bolt::common::SuspendedProcess::Create(options, process) ==
+            bolt::common::ProcessStatus::kSuccess &&
+        process.AssignTo(job) == bolt::common::ProcessStatus::kSuccess &&
+        process.InstallRuntimePayload(
+            policy.handle(), policy.length(), event_client, release,
+            nonce_bytes) == bolt::common::ProcessStatus::kSuccess &&
+        process.Inject(hook_path.string()) ==
+            bolt::common::ProcessStatus::kSuccess &&
+        process.BeginHookInitialization() ==
+            bolt::common::ProcessStatus::kSuccess;
+    CloseHandle(event_client);
+
+    std::array<std::uint8_t, bolt::protocol::kReadyFrameLength> ready{};
+    DWORD bytes_read = 0;
+    const bool ready_ok =
+        initialized &&
+        ReadFile(
+            event_pipe.handle(), ready.data(),
+            static_cast<DWORD>(ready.size()), &bytes_read, nullptr) != FALSE &&
+        bytes_read == ready.size() &&
+        bolt::protocol::ValidateReadyFrame(
+            ready.data(), ready.size(), nonce_bytes) ==
+            bolt::protocol::ReadyFrameStatus::kSuccess &&
+        process.ReleaseAfterReady() == bolt::common::ProcessStatus::kSuccess &&
+        process.Wait(10'000) == bolt::common::ProcessStatus::kSuccess;
+    DWORD exit_code = 0;
+    const bool child_ok =
+        ready_ok &&
+        process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
+        exit_code == 0 && WaitForSingleObject(release, 0) == WAIT_OBJECT_0;
+
+    const auto child_process_id =
+        static_cast<std::uint32_t>(GetProcessId(process.process_handle()));
+    const bool events_ok =
+        child_ok && child_process_id != 0 &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            read_only_root / L"denied-copy.txt", 1) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRename,
+            read_only_root / L"denied-move.txt", 2) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRename,
+            denied_rename_source, 3) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kDelete,
+            denied_delete_source, 4);
+
+    const bool side_effects_ok =
+        std::filesystem::exists(allowed_root / L"allowed-copy.txt") &&
+        !std::filesystem::exists(allowed_move_source) &&
+        std::filesystem::exists(allowed_root / L"allowed-move.txt") &&
+        !std::filesystem::exists(allowed_rename_source) &&
+        std::filesystem::exists(allowed_root / L"allowed-renamed.txt") &&
+        !std::filesystem::exists(allowed_delete_source) &&
+        std::filesystem::exists(denied_copy_source) &&
+        !std::filesystem::exists(read_only_root / L"denied-copy.txt") &&
+        std::filesystem::exists(denied_move_source) &&
+        !std::filesystem::exists(read_only_root / L"denied-move.txt") &&
+        std::filesystem::exists(denied_rename_source) &&
+        !std::filesystem::exists(read_only_root / L"denied-renamed.txt") &&
+        std::filesystem::exists(denied_delete_source);
+
+    CloseHandle(release);
+    event_pipe.Close();
+    std::filesystem::remove_all(test_root, error);
+    if (!child_ok || !events_ok || !side_effects_ok) {
+        std::fprintf(
+            stderr,
+            "IFileOperation fixture failed with exit code %lu, events %s, side effects %s\n",
+            static_cast<unsigned long>(exit_code),
+            events_ok ? "valid" : "invalid",
+            side_effects_ok ? "valid" : "invalid");
+    }
+    return child_ok && events_ok && side_effects_ok;
+}

@@ -222,6 +222,7 @@ add_executable(bolt-sandbox-native-tests
     tests/process_tests.cpp
     tests/protocol_tests.cpp
     tests/runtime_payload_tests.cpp
+    tests/shell_file_operation_tests.cpp
 )
 bolt_native_warnings(bolt-sandbox-native-tests)
 target_include_directories(bolt-sandbox-native-tests PRIVATE
@@ -236,6 +237,7 @@ target_link_libraries(
         bolt-sandbox-filesystem
         advapi32
         bcrypt
+        ole32
         shell32
 )
 
