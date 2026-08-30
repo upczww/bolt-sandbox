@@ -72,10 +72,26 @@ configure_file(
     ${BUILDXL_ADAPTED_DIR}/DetouredFunctionTypes.h
     COPYONLY
 )
+configure_file(
+    ${BUILDXL_DETOURS_SERVICES_DIR}/DetouredScope.cpp
+    ${BUILDXL_ADAPTED_DIR}/DetouredScope.cpp
+    COPYONLY
+)
+configure_file(
+    ${BUILDXL_DETOURS_SERVICES_DIR}/DetouredScope.h
+    ${BUILDXL_ADAPTED_DIR}/DetouredScope.h
+    COPYONLY
+)
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/buildxl/stdafx.h
+    ${BUILDXL_ADAPTED_DIR}/stdafx.h
+    COPYONLY
+)
 add_library(bolt-sandbox-buildxl STATIC
     ${BUILDXL_DETOURS_SERVICES_DIR}/Assertions.cpp
     ${BUILDXL_DETOURS_SERVICES_DIR}/StringOperations.cpp
     ${BUILDXL_ADAPTED_DIR}/CanonicalizedPath.cpp
+    ${BUILDXL_ADAPTED_DIR}/DetouredScope.cpp
     ${BUILDXL_ADAPTED_DIR}/FilesCheckedForAccess.cpp
     ${BUILDXL_ADAPTED_DIR}/PathTree.cpp
     ${BUILDXL_ADAPTED_DIR}/TreeNode.cpp

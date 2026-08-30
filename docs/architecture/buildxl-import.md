@@ -32,8 +32,8 @@ This is a source and provenance baseline: vendored does not mean linked or
 shipped. The exact file list and hashes are enforced by the import manifest.
 
 The currently compiled upstream subset is `Assertions`, `StringOperations`,
-`TreeNode`, `PathTree`, `ResolvedPathCache`, `CanonicalizedPath`, and
-`FilesCheckedForAccess`. The complete immutable `DetouredFunctions.cpp`
+`TreeNode`, `PathTree`, `ResolvedPathCache`, `CanonicalizedPath`,
+`FilesCheckedForAccess`, and `DetouredScope`. The complete immutable `DetouredFunctions.cpp`
 translation unit is also compiled as an object-only compatibility contract for
 x86/x64 Debug and Release, but is not linked into Bolt. This subset
 provides BuildXL's case-insensitive hashing and path comparison, Win32 path
@@ -49,6 +49,9 @@ process-injector globals. `Assertions.cpp` and `StringOperations.cpp` compile
 directly from the vendored paths. `DetouredFunctionTypes.h` is also copied
 unchanged into this narrow include boundary so hook signatures reuse BuildXL's
 audited Windows API declarations without exposing its wider header graph.
+`DetouredScope.cpp/h` are copied unchanged and compiled with a minimal generated
+precompiled-header adapter; the upstream thread-local scope ensures recursive
+Windows calls made by hook implementation details bypass policy re-entry.
 
 The Bolt filesystem hook layer canonicalizes mutation paths and invalidates the
 upstream `ResolvedPathCache` before create, delete, directory mutation, move,
@@ -65,13 +68,21 @@ dispositions fail closed as writes.
 The first adapted BuildXL operation-family hooks are `CopyFileW/A`,
 `CopyFileExW/A`, `CopyFileTransactedW/A`, and the dynamically resolved
 `CopyFile2`. Like upstream BuildXL, ANSI entry points convert once and
-delegate to the wide-character operation path. All four entries share one
+delegate to the wide-character operation path. All entries share one
 source/destination authorization path that
 evaluates the source as read and the destination as write before invoking Windows,
 reports the denied side through `EventSink`, and invalidates the destination
 path cache on an allowed call. Unlike BuildXL's build-observation-oriented
 post-call source check, Bolt performs both checks before the call so a denied
 copy cannot leave a destination side effect.
+
+For textually allowed copy paths, Bolt resolves the nearest existing ancestor
+through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,
+appends any absent suffix, then evaluates the fully resolved source and
+destination again. Results use BuildXL's `ResolvedPathCache`; the existing
+mutation invalidation path prevents stale junction/symlink targets. A denied
+final target is reported by its resolved canonical identity and Windows is not
+called.
 
 The remaining vendored files are not yet members of a Bolt runtime link target.
 They

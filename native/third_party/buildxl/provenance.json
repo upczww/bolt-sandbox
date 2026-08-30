@@ -11,6 +11,8 @@
     "Assertions.cpp",
     "CanonicalizedPath.cpp",
     "DetouredFunctions.cpp (compile-contract object only; not linked)",
+    "DetouredScope.cpp",
+    "DetouredScope.h",
     "FilesCheckedForAccess.cpp",
     "PathTree.cpp",
     "ResolvedPathCache.h",

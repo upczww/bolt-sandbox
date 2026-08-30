@@ -6,9 +6,12 @@
 #include "hook/event_sink.h"
 
 #include "DetouredFunctionTypes.h"
+#include "DetouredScope.h"
 
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -57,21 +60,105 @@ const wchar_t* EvaluatedPath(
 
 bool AuthorizeCopy(const wchar_t* existing_path, const wchar_t* new_path) noexcept {
     const auto* policy = g_policy.get();
-    const auto source =
+    const auto source_text =
         policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(existing_path, Access::kRead);
-    const auto destination =
+    const auto destination_text =
         policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(new_path, Access::kWrite);
-    if (source.decision == Decision::kDeny || destination.decision == Decision::kDeny) {
-        const bool source_denied = source.decision == Decision::kDeny;
+    if (source_text.decision == Decision::kDeny ||
+        destination_text.decision == Decision::kDeny) {
+        const bool source_denied = source_text.decision == Decision::kDeny;
         ReportDenied(
             source_denied ? protocol::FilesystemOperation::kRead
                           : protocol::FilesystemOperation::kCreate,
-            source_denied ? EvaluatedPath(source, existing_path)
-                          : EvaluatedPath(destination, new_path));
+            source_denied ? EvaluatedPath(source_text, existing_path)
+                          : EvaluatedPath(destination_text, new_path));
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
     }
-    InvalidateResolvedPathForMutation(EvaluatedPath(destination, new_path), false);
+
+    const auto resolve_path = [](const wchar_t* path, std::wstring& resolved) noexcept {
+        if (TryGetResolvedPathForPolicy(path, resolved)) {
+            return true;
+        }
+        if (path == nullptr || path[0] == L'\0') {
+            return false;
+        }
+        try {
+            std::filesystem::path candidate{path};
+            std::vector<std::filesystem::path> suffix;
+            constexpr std::size_t maximum_ancestors = 256;
+            for (std::size_t depth = 0; depth < maximum_ancestors; ++depth) {
+                const HANDLE handle = g_create_file_w(
+                    candidate.c_str(), GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                    OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+                if (handle != INVALID_HANDLE_VALUE) {
+                    const DWORD required = GetFinalPathNameByHandleW(
+                        handle, nullptr, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+                    if (required == 0) {
+                        CloseHandle(handle);
+                        return false;
+                    }
+                    std::wstring final_path(static_cast<std::size_t>(required) + 1, L'\0');
+                    const DWORD copied = GetFinalPathNameByHandleW(
+                        handle, final_path.data(), static_cast<DWORD>(final_path.size()),
+                        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+                    CloseHandle(handle);
+                    if (copied == 0 || copied >= final_path.size()) {
+                        return false;
+                    }
+                    final_path.resize(copied);
+                    std::filesystem::path combined{std::move(final_path)};
+                    for (auto iterator = suffix.rbegin(); iterator != suffix.rend(); ++iterator) {
+                        combined /= *iterator;
+                    }
+                    resolved = combined.lexically_normal().wstring();
+                    CacheResolvedPathForPolicy(path, resolved);
+                    return true;
+                }
+                const DWORD error = GetLastError();
+                if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+                    return false;
+                }
+                const auto parent = candidate.parent_path();
+                if (parent.empty() || parent == candidate || candidate.filename().empty()) {
+                    return false;
+                }
+                suffix.push_back(candidate.filename());
+                candidate = parent;
+            }
+        } catch (...) {
+            resolved.clear();
+        }
+        return false;
+    };
+
+    std::wstring resolved_source;
+    std::wstring resolved_destination;
+    const wchar_t* source_path = EvaluatedPath(source_text, existing_path);
+    const wchar_t* destination_path = EvaluatedPath(destination_text, new_path);
+    if (!resolve_path(source_path, resolved_source) ||
+        !resolve_path(destination_path, resolved_destination)) {
+        ReportDenied(protocol::FilesystemOperation::kRead, source_path);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+
+    const auto source_final = policy->Evaluate(resolved_source.c_str(), Access::kRead);
+    const auto destination_final =
+        policy->Evaluate(resolved_destination.c_str(), Access::kWrite);
+    if (source_final.decision == Decision::kDeny ||
+        destination_final.decision == Decision::kDeny) {
+        const bool source_denied = source_final.decision == Decision::kDeny;
+        ReportDenied(
+            source_denied ? protocol::FilesystemOperation::kRead
+                          : protocol::FilesystemOperation::kCreate,
+            source_denied ? EvaluatedPath(source_final, resolved_source.c_str())
+                          : EvaluatedPath(destination_final, resolved_destination.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    InvalidateResolvedPathForMutation(resolved_destination.c_str(), false);
     return true;
 }
 
@@ -108,6 +195,12 @@ HANDLE WINAPI DetouredCreateFileW(
     const DWORD creation_disposition,
     const DWORD flags_and_attributes,
     const HANDLE template_file) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_file_w(
+            filename, desired_access, share_mode, security_attributes, creation_disposition,
+            flags_and_attributes, template_file);
+    }
     const auto* policy = g_policy.get();
     const auto request = ClassifyCreateFileRequest(desired_access, creation_disposition);
     const auto evaluation =
@@ -128,6 +221,10 @@ HANDLE WINAPI DetouredCreateFileW(
 // BuildXL classifies DeleteFileW as a write and preserves the last reparse
 // point because the API deletes a link itself rather than its target.
 BOOL WINAPI DetouredDeleteFileW(const LPCWSTR filename) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_delete_file_w(filename);
+    }
     const auto* policy = g_policy.get();
     const auto evaluation =
         policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(filename, Access::kWrite);
@@ -144,6 +241,10 @@ BOOL WINAPI DetouredDeleteFileW(const LPCWSTR filename) noexcept {
 BOOL WINAPI DetouredCreateDirectoryW(
     const LPCWSTR path,
     const LPSECURITY_ATTRIBUTES security_attributes) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_directory_w(path, security_attributes);
+    }
     const auto* policy = g_policy.get();
     const auto evaluation =
         policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(path, Access::kWrite);
@@ -157,6 +258,10 @@ BOOL WINAPI DetouredCreateDirectoryW(
 }
 
 BOOL WINAPI DetouredRemoveDirectoryW(const LPCWSTR path) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_remove_directory_w(path);
+    }
     const auto* policy = g_policy.get();
     const auto evaluation =
         policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(path, Access::kWrite);
@@ -175,6 +280,10 @@ BOOL WINAPI DetouredMoveFileExW(
     const LPCWSTR existing_path,
     const LPCWSTR new_path,
     const DWORD flags) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_move_file_ex_w(existing_path, new_path, flags);
+    }
     const auto* policy = g_policy.get();
     const auto source =
         policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(existing_path, Access::kWrite);
@@ -202,6 +311,10 @@ BOOL WINAPI DetouredCreateHardLinkW(
     const LPCWSTR new_path,
     const LPCWSTR existing_path,
     const LPSECURITY_ATTRIBUTES security_attributes) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_hard_link_w(new_path, existing_path, security_attributes);
+    }
     const auto* policy = g_policy.get();
     const auto source =
         policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(existing_path, Access::kRead);
@@ -228,6 +341,10 @@ BOOL WINAPI DetouredCopyFileW(
     const LPCWSTR existing_path,
     const LPCWSTR new_path,
     const BOOL fail_if_exists) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_copy_file_w(existing_path, new_path, fail_if_exists);
+    }
     if (!AuthorizeCopy(existing_path, new_path)) {
         return FALSE;
     }
@@ -241,6 +358,11 @@ BOOL WINAPI DetouredCopyFileExW(
     const LPVOID data,
     const LPBOOL cancel,
     const DWORD copy_flags) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_copy_file_ex_w(
+            existing_path, new_path, progress_routine, data, cancel, copy_flags);
+    }
     if (!AuthorizeCopy(existing_path, new_path)) {
         return FALSE;
     }
@@ -252,6 +374,10 @@ BOOL WINAPI DetouredCopyFileA(
     const LPCSTR existing_path,
     const LPCSTR new_path,
     const BOOL fail_if_exists) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_copy_file_a(existing_path, new_path, fail_if_exists);
+    }
     std::wstring existing_wide;
     std::wstring new_wide;
     if (!ConvertAnsiPath(existing_path, existing_wide) ||
@@ -269,6 +395,11 @@ BOOL WINAPI DetouredCopyFileExA(
     const LPVOID data,
     const LPBOOL cancel,
     const DWORD copy_flags) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_copy_file_ex_a(
+            existing_path, new_path, progress_routine, data, cancel, copy_flags);
+    }
     std::wstring existing_wide;
     std::wstring new_wide;
     if (!ConvertAnsiPath(existing_path, existing_wide) ||
@@ -284,6 +415,10 @@ HRESULT WINAPI DetouredCopyFile2(
     const PCWSTR existing_path,
     const PCWSTR new_path,
     const COPYFILE2_EXTENDED_PARAMETERS* extended_parameters) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_copy_file_2(existing_path, new_path, extended_parameters);
+    }
     if (!AuthorizeCopy(existing_path, new_path)) {
         return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
     }
@@ -298,6 +433,11 @@ BOOL WINAPI DetouredCopyFileTransactedW(
     const LPBOOL cancel,
     const DWORD copy_flags,
     const HANDLE transaction) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_copy_file_transacted_w(
+            existing_path, new_path, progress_routine, data, cancel, copy_flags, transaction);
+    }
     if (!AuthorizeCopy(existing_path, new_path)) {
         return FALSE;
     }
@@ -313,6 +453,11 @@ BOOL WINAPI DetouredCopyFileTransactedA(
     const LPBOOL cancel,
     const DWORD copy_flags,
     const HANDLE transaction) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_copy_file_transacted_a(
+            existing_path, new_path, progress_routine, data, cancel, copy_flags, transaction);
+    }
     std::wstring existing_wide;
     std::wstring new_wide;
     if (!ConvertAnsiPath(existing_path, existing_wide) ||
