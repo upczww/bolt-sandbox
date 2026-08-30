@@ -1403,6 +1403,28 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         }
         return 206;
     }
+    std::array<wchar_t, 512> denied_final_path_w{};
+    denied_final_path_w.fill(L'Z');
+    const auto denied_final_path_w_before = denied_final_path_w;
+    if (GetFinalPathNameByHandleW(
+            denied_mapping_file, denied_final_path_w.data(),
+            static_cast<DWORD>(denied_final_path_w.size()),
+            FILE_NAME_NORMALIZED | VOLUME_NAME_DOS) != 0 ||
+        GetLastError() != ERROR_ACCESS_DENIED ||
+        denied_final_path_w != denied_final_path_w_before) {
+        return 207;
+    }
+    std::array<char, 512> denied_final_path_a{};
+    denied_final_path_a.fill('Z');
+    const auto denied_final_path_a_before = denied_final_path_a;
+    if (GetFinalPathNameByHandleA(
+            denied_mapping_file, denied_final_path_a.data(),
+            static_cast<DWORD>(denied_final_path_a.size()),
+            FILE_NAME_NORMALIZED | VOLUME_NAME_DOS) != 0 ||
+        GetLastError() != ERROR_ACCESS_DENIED ||
+        denied_final_path_a != denied_final_path_a_before) {
+        return 208;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -2238,7 +2260,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kRead,
-            denied_mapping_path.wstring(), 102);
+            denied_mapping_path.wstring(), 102) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_mapping_path.wstring(), 103) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_mapping_path.wstring(), 104);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =

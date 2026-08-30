@@ -242,6 +242,11 @@ Handle metadata probing through BuildXL's exact
 before invoking Windows. Direct `NtQueryInformationFile` calls share that
 decision and return native `STATUS_ACCESS_DENIED`, preventing a previously
 obtained handle from leaking attributes, size, timestamps, names, or IDs.
+x86 and x64 integration probes additionally call
+`GetFinalPathNameByHandleW/A` on an inherited denied handle. On the supported
+Windows baseline both wrappers converge on that installed native-query
+decision, leaving path buffers untouched and emitting canonical metadata
+events without a duplicate top-level detour.
 
 Path-based `NtQueryAttributesFile` and `NtQueryFullAttributesFile` calls decode
 the length-delimited absolute `OBJECT_ATTRIBUTES` name and pass the DOS/UNC
