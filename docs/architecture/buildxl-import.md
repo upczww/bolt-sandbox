@@ -166,6 +166,28 @@ same check runs again on final resolved identities, preventing a junction alias
 from hiding a mixed-grant subtree; ordinary file rename is not over-restricted
 by unrelated descendant-shaped rules.
 
+Non-filesystem pseudo-file creation is fail-closed inside the target. Bolt
+attaches `CreateNamedPipeW/A` and `CreateMailslotW/A` in the same atomic hook
+transaction and rejects arbitrary endpoints as `Create`; only calls made under
+the internal reentrancy scope can reach the real APIs. `CreateFileW` probes for
+reserved devices, console pseudo-files, and untrusted pipe names remain subject
+to normal path policy, while the authenticated event handle continues through
+its dedicated handle exemption.
+
+Asynchronous acceptance covers cancellation of a pending allowed directory
+watch, allowed file completion through IOCP and thread-pool I/O, and synchronous
+denial of an inherited forbidden overlapped handle without queuing a completion
+packet. Copy-on-write views may be modified and flushed without changing their
+source. All waits use kernel events or completion ports with explicit bounds;
+the fixtures do not use timing sleeps to manufacture races.
+
+Long DOS paths are converted to extended DOS or extended UNC form only for the
+real CreateFile trampoline after policy evaluation; canonical policy and event
+identities remain prefix-independent. Tests open the same beyond-MAX_PATH object
+through both forms. ADS and Unicode-normalization lookalikes retain distinct
+object identities, while copy-on-write mappings may flush private changes
+without modifying the source file.
+
 BuildXL's vendored `ReplaceFileW` hook currently contains a policy TODO and
 only invalidates its cache. Bolt therefore keeps the upstream signature and
 scope pattern but supplies the architecture-required fail-closed adapter:

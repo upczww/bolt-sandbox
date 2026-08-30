@@ -1711,7 +1711,8 @@ int RunFilesystemRaceChild(
         CloseHandle(threadpool_context.completed);
         CloseHandle(threadpool_file);
         if (!threadpool_completed || threadpool_context.result != ERROR_SUCCESS ||
-            threadpool_context.bytes != threadpool_buffer.size() ||
+            threadpool_context.bytes !=
+                static_cast<LONG>(threadpool_buffer.size()) ||
             std::string_view(threadpool_buffer.data(), threadpool_buffer.size()) !=
                 "allowed-io") {
             return 344;
