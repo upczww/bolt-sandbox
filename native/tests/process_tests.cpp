@@ -1323,6 +1323,71 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     if (!notification_denied) {
         return 202;
     }
+    using NtNotifyChangeDirectoryFileFunction = NTSTATUS(NTAPI*)(
+        HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
+        ULONG, BOOLEAN);
+    using NtNotifyChangeDirectoryFileExFunction = NTSTATUS(NTAPI*)(
+        HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
+        ULONG, BOOLEAN, ULONG);
+    const auto nt_notify_change_directory_file =
+        reinterpret_cast<NtNotifyChangeDirectoryFileFunction>(
+            GetProcAddress(ntdll, "NtNotifyChangeDirectoryFile"));
+    const auto nt_notify_change_directory_file_ex =
+        reinterpret_cast<NtNotifyChangeDirectoryFileExFunction>(
+            GetProcAddress(ntdll, "NtNotifyChangeDirectoryFileEx"));
+    const HANDLE nt_notification_event =
+        CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (nt_notify_change_directory_file == nullptr ||
+        nt_notify_change_directory_file_ex == nullptr ||
+        nt_notification_event == nullptr) {
+        if (nt_notification_event != nullptr) {
+            CloseHandle(nt_notification_event);
+        }
+        return 203;
+    }
+    std::array<std::uint8_t, 1'024> nt_notification_buffer{};
+    nt_notification_buffer.fill(0x5A);
+    const auto nt_notification_buffer_before = nt_notification_buffer;
+    IO_STATUS_BLOCK nt_notification_status{};
+    NTSTATUS nt_notification_result = nt_notify_change_directory_file(
+        notification_directory, nt_notification_event, nullptr, nullptr,
+        &nt_notification_status, nt_notification_buffer.data(),
+        static_cast<ULONG>(nt_notification_buffer.size()),
+        FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME, FALSE);
+    if (nt_notification_result != status_access_denied) {
+        CancelIoEx(notification_directory, nullptr);
+        WaitForSingleObject(nt_notification_event, 5'000);
+    }
+    const bool nt_notification_denied =
+        nt_notification_result == status_access_denied &&
+        nt_notification_status.Status == status_access_denied &&
+        nt_notification_status.Information == 0 &&
+        nt_notification_buffer == nt_notification_buffer_before &&
+        WaitForSingleObject(nt_notification_event, 0) == WAIT_TIMEOUT;
+    if (!nt_notification_denied) {
+        CloseHandle(nt_notification_event);
+        return 204;
+    }
+    nt_notification_status = {};
+    nt_notification_result = nt_notify_change_directory_file_ex(
+        notification_directory, nt_notification_event, nullptr, nullptr,
+        &nt_notification_status, nt_notification_buffer.data(),
+        static_cast<ULONG>(nt_notification_buffer.size()),
+        FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME, FALSE, 1);
+    if (nt_notification_result != status_access_denied) {
+        CancelIoEx(notification_directory, nullptr);
+        WaitForSingleObject(nt_notification_event, 5'000);
+    }
+    const bool nt_notification_ex_denied =
+        nt_notification_result == status_access_denied &&
+        nt_notification_status.Status == status_access_denied &&
+        nt_notification_status.Information == 0 &&
+        nt_notification_buffer == nt_notification_buffer_before &&
+        WaitForSingleObject(nt_notification_event, 0) == WAIT_TIMEOUT;
+    CloseHandle(nt_notification_event);
+    if (!nt_notification_ex_denied) {
+        return 205;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -2124,7 +2189,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kEnumerate,
-            denied_root.wstring(), 99);
+            denied_root.wstring(), 99) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_root.wstring(), 100) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_root.wstring(), 101);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
