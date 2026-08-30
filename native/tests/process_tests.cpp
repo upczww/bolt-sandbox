@@ -1599,13 +1599,59 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
     return exited && exit_code == 0 ? 0 : 225;
 }
 
+int RunCrossArchitectureProcessParent(
+    const int argument_count,
+    wchar_t** arguments) {
+    if (argument_count != 4) {
+        return 230;
+    }
+#if defined(_WIN64)
+    constexpr auto current_hook_name = L"bolt-sandbox-x64.dll";
+#else
+    constexpr auto current_hook_name = L"bolt-sandbox-x86.dll";
+#endif
+    const HMODULE current_hook = GetModuleHandleW(current_hook_name);
+    const auto initialized =
+        current_hook == nullptr
+            ? nullptr
+            : reinterpret_cast<BOOL (*)()>(GetProcAddress(
+                  current_hook, "BoltSandboxRuntimeInitialized"));
+    if (initialized == nullptr || !initialized()) {
+        return 231;
+    }
+
+    const std::wstring child_executable = arguments[2];
+    std::wstring command_line =
+        L"\"" + child_executable + L"\" --inherit-leaf " + arguments[3];
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(
+            child_executable.c_str(), command_line.data(), nullptr, nullptr,
+            FALSE, 0, nullptr, nullptr, &startup, &process)) {
+        return 232;
+    }
+    const DWORD wait = WaitForSingleObject(process.hProcess, 10'000);
+    DWORD exit_code = 0;
+    const bool exited = wait == WAIT_OBJECT_0 &&
+                        GetExitCodeProcess(process.hProcess, &exit_code) != FALSE;
+    if (!exited) {
+        TerminateProcess(process.hProcess, 233);
+        WaitForSingleObject(process.hProcess, 5'000);
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return exited && exit_code == 0 ? 0 : 233;
+}
+
 namespace {
 
 bool RunInheritedProcessTest(
     const std::wstring& executable,
     const std::filesystem::path& hook_path,
     const wchar_t* hook_name,
-    const std::wstring& pipe_name) {
+    const std::wstring& pipe_name,
+    const std::wstring& parent_arguments = {}) {
     const auto policy_payload = bolt::tests::SealPolicy({
         {bolt::tests::FilesystemRuleKind::kReadOnly,
          std::filesystem::path(executable).root_path()},
@@ -1640,8 +1686,11 @@ bool RunInheritedProcessTest(
         return false;
     }
 
-    const std::wstring command_line =
-        L"\"" + executable + L"\" --inherit-parent " + hook_name;
+    const std::wstring command_line = parent_arguments.empty()
+                                          ? L"\"" + executable +
+                                                L"\" --inherit-parent " + hook_name
+                                          : L"\"" + executable + L"\" " +
+                                                parent_arguments;
     const HANDLE inherited[] = {policy.handle(), event_client, release};
     const bolt::common::ProcessLaunchOptions options{
         executable, command_line, L"", nullptr, inherited, std::size(inherited), 0};
@@ -2621,6 +2670,42 @@ bool RunProcessTests() {
     if (!RunInheritedProcessTest(executable, hook_path, hook_name, pipe_name)) {
         return false;
     }
+
+#if defined(_WIN64)
+    const std::filesystem::path current_output_directory =
+        std::filesystem::path(executable).parent_path();
+    const std::filesystem::path native_target_directory =
+        current_output_directory.parent_path().parent_path();
+    const std::filesystem::path x86_output_directory =
+        native_target_directory / L"x86" /
+#if defined(NDEBUG)
+        L"Release";
+#else
+        L"Debug";
+#endif
+    const std::filesystem::path x86_executable =
+        x86_output_directory / L"bolt-sandbox-native-tests.exe";
+    const std::filesystem::path x86_hook_source =
+        x86_output_directory / L"bolt-sandbox-x86.dll";
+    const std::filesystem::path staged_x86_hook =
+        current_output_directory / L"bolt-sandbox-x86.dll";
+    filesystem_error.clear();
+    std::filesystem::copy_file(
+        x86_hook_source, staged_x86_hook,
+        std::filesystem::copy_options::overwrite_existing, filesystem_error);
+    if (filesystem_error || !std::filesystem::is_regular_file(x86_executable)) {
+        return false;
+    }
+    const std::wstring cross_arguments =
+        L"--cross-architecture-parent \"" + x86_executable.wstring() +
+        L"\" bolt-sandbox-x86.dll";
+    const bool cross_architecture_inherited = RunInheritedProcessTest(
+        executable, hook_path, hook_name, pipe_name, cross_arguments);
+    std::filesystem::remove(staged_x86_hook, filesystem_error);
+    if (!cross_architecture_inherited) {
+        return false;
+    }
+#endif
 
     auto breakaway = options;
     breakaway.creation_flags = CREATE_BREAKAWAY_FROM_JOB;

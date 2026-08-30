@@ -29,6 +29,7 @@ bool RunFilesystemPolicyTests();
 int RunProcessChild(int argument_count, wchar_t** arguments);
 int RunInheritedProcessParent(int argument_count, wchar_t** arguments);
 int RunInheritedProcessLeaf(int argument_count, wchar_t** arguments);
+int RunCrossArchitectureProcessParent(int argument_count, wchar_t** arguments);
 
 namespace {
 
@@ -100,6 +101,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--inherit-leaf") {
         return RunInheritedProcessLeaf(argument_count, arguments);
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--cross-architecture-parent") {
+        return RunCrossArchitectureProcessParent(argument_count, arguments);
     }
     constexpr std::uint8_t expected_magic[] = {'B', 'L', 'P', '1'};
     for (std::size_t index = 0; index < sizeof(expected_magic); ++index) {
