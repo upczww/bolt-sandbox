@@ -1267,6 +1267,30 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         }
         return 199;
     }
+    std::wstring nt_relative_path =
+        std::filesystem::path(arguments[6]).filename().wstring();
+    UNICODE_STRING nt_relative_name{
+        static_cast<USHORT>(nt_relative_path.size() * sizeof(wchar_t)),
+        static_cast<USHORT>((nt_relative_path.size() + 1) * sizeof(wchar_t)),
+        nt_relative_path.data()};
+    OBJECT_ATTRIBUTES nt_relative_attributes{
+        sizeof(OBJECT_ATTRIBUTES),
+        reinterpret_cast<HANDLE>(_wcstoui64(arguments[36], nullptr, 10)),
+        &nt_relative_name, OBJ_CASE_INSENSITIVE, nullptr, nullptr};
+    IO_STATUS_BLOCK nt_relative_status{};
+    HANDLE nt_relative_file = nullptr;
+    if (nt_open_file(
+            &nt_relative_file, FILE_GENERIC_READ | SYNCHRONIZE,
+            &nt_relative_attributes, &nt_relative_status,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT) !=
+            status_access_denied ||
+        nt_relative_file != nullptr) {
+        if (nt_relative_file != nullptr) {
+            CloseHandle(nt_relative_file);
+        }
+        return 200;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -2059,7 +2083,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kRead,
-            denied_delete_path.wstring(), 97);
+            denied_delete_path.wstring(), 97) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_delete_path.wstring(), 98);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
