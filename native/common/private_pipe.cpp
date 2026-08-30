@@ -13,7 +13,7 @@ namespace bolt::common {
 namespace {
 
 constexpr std::wstring_view kPipePrefix = L"\\\\.\\pipe\\bolt-sandbox-";
-constexpr DWORD kPipeBufferSize = 64 * 1'024;
+constexpr DWORD kPipeBufferSize = 128 * 1'024;
 
 bool IsValidName(const std::wstring_view name) noexcept {
     return name.size() == kPipePrefix.size() + 32 &&

@@ -132,7 +132,7 @@ bool RunConcurrentReentrancyProbe(
 
 std::filesystem::path LongDeniedPath(
     const std::filesystem::path& read_only_root) {
-    constexpr std::size_t target_code_units = 30'000;
+    constexpr std::size_t target_code_units = 32'700;
     std::wstring path = read_only_root.wstring();
     path.push_back(L'\\');
     if (path.size() < target_code_units) {
