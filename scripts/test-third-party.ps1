@@ -91,6 +91,66 @@ if ($buildXlFiles.Count -eq 0) {
     throw 'BuildXL imported source list is empty.'
 }
 
+$detoursServicesPrefix = 'Public/Src/Sandbox/Windows/DetoursServices/'
+$expectedBuildXlRuntimeFiles = @(
+    'Assertions.cpp',
+    'Assertions.h',
+    'CanonicalizedPath.cpp',
+    'CanonicalizedPath.h',
+    'DataTypes.h',
+    'DebuggingHelpers.cpp',
+    'DebuggingHelpers.h',
+    'DetouredFunctionTypes.h',
+    'DetouredFunctions.cpp',
+    'DetouredFunctions.h',
+    'DetouredScope.cpp',
+    'DetouredScope.h',
+    'DetoursHelpers.cpp',
+    'DetoursHelpers.h',
+    'DetoursServices.cpp',
+    'DetoursServices.h',
+    'DeviceMap.cpp',
+    'DeviceMap.h',
+    'FileAccessHelpers.cpp',
+    'FileAccessHelpers.h',
+    'FilesCheckedForAccess.cpp',
+    'FilesCheckedForAccess.h',
+    'HandleOverlay.cpp',
+    'HandleOverlay.h',
+    'MetadataOverrides.cpp',
+    'MetadataOverrides.h',
+    'PathTree.cpp',
+    'PathTree.h',
+    'PolicyResult.cpp',
+    'PolicyResult.h',
+    'PolicyResult_common.cpp',
+    'PolicySearch.cpp',
+    'PolicySearch.h',
+    'ResolvedPathCache.h',
+    'SendReport.cpp',
+    'SendReport.h',
+    'StringOperations.cpp',
+    'StringOperations.h',
+    'TreeNode.cpp',
+    'TreeNode.h',
+    'UnicodeConverter.h',
+    'UniqueHandle.h',
+    'UtilityHelpers.h',
+    'buildXL_mem.h',
+    'globals.h',
+    'stdafx-win.h',
+    'stdafx.cpp',
+    'stdafx.h',
+    'targetver.h'
+)
+$manifestBuildXlPaths = @($buildXlFiles | ForEach-Object { [string]$_.path })
+foreach ($runtimeFile in $expectedBuildXlRuntimeFiles) {
+    $runtimePath = $detoursServicesPrefix + $runtimeFile
+    if ($runtimePath -notin $manifestBuildXlPaths) {
+        throw "BuildXL filesystem runtime closure is missing: $runtimeFile"
+    }
+}
+
 $buildXlListedPaths = [System.Collections.Generic.HashSet[string]]::new(
     [System.StringComparer]::OrdinalIgnoreCase
 )
