@@ -86,6 +86,29 @@ bool RunBuildXlTreeTests() {
     const auto first_access = CanonicalizedPath::Canonicalize(L"C:\\bolt-tests\\checked.txt");
     const auto same_access = CanonicalizedPath::Canonicalize(L"c:\\BOLT-TESTS\\CHECKED.txt");
     auto* checked = FilesCheckedForAccess::GetInstance();
-    return checked->TryRegisterPath(first_access) && !checked->TryRegisterPath(same_access) &&
-           checked->IsRegistered(same_access);
+    if (!checked->TryRegisterPath(first_access) || checked->TryRegisterPath(same_access) ||
+        !checked->IsRegistered(same_access)) {
+        return false;
+    }
+
+    const std::wstring mixed_case_path = L"C:\\Root\\File.txt";
+    const std::wstring upper_case_path = L"C:\\ROOT\\FILE.TXT";
+    if (HashPath(mixed_case_path.c_str(), mixed_case_path.size()) !=
+            HashPath(upper_case_path.c_str(), upper_case_path.size()) ||
+        !IsPathWithinTree(L"C:\\Root", L"c:\\root\\nested\\file.txt") ||
+        IsPathWithinTree(L"C:\\Root", L"C:\\Rooted\\file.txt")) {
+        return false;
+    }
+
+    const std::wstring named_stream = L"C:\\Root\\file.txt:metadata";
+    const std::wstring default_stream = L"C:\\Root\\file.txt::$DATA";
+    if (!IsPathToNamedStream(named_stream.c_str(), named_stream.size()) ||
+        IsPathToNamedStream(default_stream.c_str(), default_stream.size())) {
+        return false;
+    }
+
+    return NormalizePath(L"C:\\Root\\.\\nested\\..\\file.txt") == L"C:\\Root\\file.txt" &&
+           NormalizePath(L"relative\\.\\path") == L"relative\\.\\path" &&
+           PathCombine(L"C:\\Root", L"nested\\file.txt") ==
+               L"C:\\Root\\nested\\file.txt";
 }
