@@ -143,6 +143,12 @@ Metadata probing through `GetFileAttributesW/A` and
 return the native failure sentinel, preserve `ERROR_ACCESS_DENIED`, and cannot
 leak existence, type, size, or timestamps through the output structure.
 
+Handle metadata probing through BuildXL's exact
+`GetFileInformationByHandle*` function types resolves the final file identity
+before invoking Windows. Direct `NtQueryInformationFile` calls share that
+decision and return native `STATUS_ACCESS_DENIED`, preventing a previously
+obtained handle from leaking attributes, size, timestamps, names, or IDs.
+
 Attribute mutation through `SetFileAttributesW/A` is a Bolt-owned Win32 seam
 because the vendored BuildXL layer has no dedicated wrapper. Both variants
 require write access, report denied changes as `Write`, and invalidate the path

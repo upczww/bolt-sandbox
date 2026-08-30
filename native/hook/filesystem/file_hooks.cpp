@@ -64,6 +64,13 @@ GetFileAttributesW_t g_get_file_attributes_w = GetFileAttributesW;
 GetFileAttributesA_t g_get_file_attributes_a = GetFileAttributesA;
 GetFileAttributesExW_t g_get_file_attributes_ex_w = GetFileAttributesExW;
 GetFileAttributesExA_t g_get_file_attributes_ex_a = GetFileAttributesExA;
+GetFileInformationByHandle_t g_get_file_information_by_handle =
+    GetFileInformationByHandle;
+GetFileInformationByHandleEx_t g_get_file_information_by_handle_ex =
+    GetFileInformationByHandleEx;
+using NtQueryInformationFileFunction = NTSTATUS(NTAPI*)(
+    HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, FILE_INFORMATION_CLASS);
+NtQueryInformationFileFunction g_nt_query_information_file = nullptr;
 using SetFileAttributesWFunction = BOOL(WINAPI*)(LPCWSTR, DWORD);
 using SetFileAttributesAFunction = BOOL(WINAPI*)(LPCSTR, DWORD);
 SetFileAttributesWFunction g_set_file_attributes_w = SetFileAttributesW;
@@ -470,6 +477,26 @@ bool AuthorizeMetadata(const wchar_t* path) noexcept {
     return true;
 }
 
+bool AuthorizeHandleMetadata(const HANDLE file) noexcept {
+    std::wstring source_path;
+    if (!TryGetHandlePath(file, source_path)) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    const auto* policy = g_policy.get();
+    const auto evaluation = policy == nullptr
+                                ? PolicyEvaluation{}
+                                : policy->Evaluate(source_path.c_str(), Access::kMetadata);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            protocol::FilesystemOperation::kMetadata,
+            EvaluatedPath(evaluation, source_path.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    return true;
+}
+
 bool AuthorizeAttributeMutation(const wchar_t* path) noexcept {
     const auto* policy = g_policy.get();
     const auto evaluation =
@@ -594,6 +621,57 @@ BOOL WINAPI DetouredGetFileAttributesExA(
         return FALSE;
     }
     return g_get_file_attributes_ex_a(path, info_level, information);
+}
+
+BOOL WINAPI DetouredGetFileInformationByHandle(
+    const HANDLE file,
+    const LPBY_HANDLE_FILE_INFORMATION information) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_get_file_information_by_handle(file, information);
+    }
+    return AuthorizeHandleMetadata(file)
+               ? g_get_file_information_by_handle(file, information)
+               : FALSE;
+}
+
+BOOL WINAPI DetouredGetFileInformationByHandleEx(
+    const HANDLE file,
+    const FILE_INFO_BY_HANDLE_CLASS information_class,
+    const LPVOID information,
+    const DWORD information_size) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_get_file_information_by_handle_ex(
+            file, information_class, information, information_size);
+    }
+    return AuthorizeHandleMetadata(file)
+               ? g_get_file_information_by_handle_ex(
+                     file, information_class, information, information_size)
+               : FALSE;
+}
+
+NTSTATUS NTAPI DetouredNtQueryInformationFile(
+    const HANDLE file,
+    const PIO_STATUS_BLOCK io_status,
+    const PVOID information,
+    const ULONG information_size,
+    const FILE_INFORMATION_CLASS information_class) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_nt_query_information_file(
+            file, io_status, information, information_size, information_class);
+    }
+    if (AuthorizeHandleMetadata(file)) {
+        return g_nt_query_information_file(
+            file, io_status, information, information_size, information_class);
+    }
+    constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+    if (io_status != nullptr) {
+        io_status->Status = status_access_denied;
+        io_status->Information = 0;
+    }
+    return status_access_denied;
 }
 
 BOOL WINAPI DetouredSetFileAttributesW(
@@ -1607,7 +1685,10 @@ HookInstallStatus InstallFileHooks(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "ZwSetInformationFile"));
     g_nt_create_section = reinterpret_cast<NtCreateSectionFunction>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateSection"));
-    if (g_zw_set_information_file == nullptr || g_nt_create_section == nullptr) {
+    g_nt_query_information_file = reinterpret_cast<NtQueryInformationFileFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationFile"));
+    if (g_zw_set_information_file == nullptr || g_nt_create_section == nullptr ||
+        g_nt_query_information_file == nullptr) {
         return HookInstallStatus::kTransactionFailed;
     }
     if (DetourTransactionBegin() != NO_ERROR) {
@@ -1638,6 +1719,15 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_get_file_attributes_ex_a),
             reinterpret_cast<PVOID>(DetouredGetFileAttributesExA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_get_file_information_by_handle),
+            reinterpret_cast<PVOID>(DetouredGetFileInformationByHandle)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_get_file_information_by_handle_ex),
+            reinterpret_cast<PVOID>(DetouredGetFileInformationByHandleEx)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_query_information_file),
+            reinterpret_cast<PVOID>(DetouredNtQueryInformationFile)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_set_file_attributes_w),
             reinterpret_cast<PVOID>(DetouredSetFileAttributesW)) != NO_ERROR ||
