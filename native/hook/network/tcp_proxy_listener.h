@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -25,6 +26,7 @@ TcpProxyListenerStatus RunTcpProxyListener(
     const protocol::DnsProxySession& session,
     const NetworkPolicy& policy,
     const DnsBindingTable& bindings,
+    const std::atomic<bool>& stop_requested,
     std::size_t maximum_connections) noexcept;
 
 }  // namespace bolt::network

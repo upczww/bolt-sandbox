@@ -15,6 +15,7 @@ TcpProxyListenerStatus RunTcpProxyListener(
     const protocol::DnsProxySession& session,
     const NetworkPolicy& policy,
     const DnsBindingTable& bindings,
+    const std::atomic<bool>& stop_requested,
     const std::size_t maximum_connections) noexcept {
     if (listener == INVALID_SOCKET || maximum_connections == 0 ||
         maximum_connections > 4'096) {
@@ -23,6 +24,26 @@ TcpProxyListenerStatus RunTcpProxyListener(
     std::uint64_t sequence = 1;
     std::size_t completed = 0;
     while (completed < maximum_connections) {
+        if (stop_requested.load(std::memory_order_acquire)) {
+            return TcpProxyListenerStatus::kStopped;
+        }
+        fd_set readable{};
+        FD_ZERO(&readable);
+        FD_SET(listener, &readable);
+        timeval timeout{};
+        timeout.tv_usec = 100'000;
+        const int selected =
+            select(0, &readable, nullptr, nullptr, &timeout);
+        if (selected == 0) {
+            continue;
+        }
+        if (selected == SOCKET_ERROR) {
+            const int error = WSAGetLastError();
+            if (error == WSAEINTR) {
+                continue;
+            }
+            return TcpProxyListenerStatus::kAcceptFailed;
+        }
         const SOCKET client = accept(listener, nullptr, nullptr);
         if (client == INVALID_SOCKET) {
             const int error = WSAGetLastError();

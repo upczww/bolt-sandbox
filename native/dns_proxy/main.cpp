@@ -7,6 +7,7 @@
 #include "protocol/dns_proxy_startup.h"
 
 #include <cstdint>
+#include <atomic>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -138,11 +139,13 @@ int RunProxy() noexcept {
     }
     auto listener_status =
         bolt::network::TcpProxyListenerStatus::kInvalidArgument;
+    std::atomic<bool> stop_listener = false;
     std::thread listener_thread;
     try {
         listener_thread = std::thread([&] {
             listener_status = bolt::network::RunTcpProxyListener(
                 tcp_listener, startup.session, *policy, *bindings,
+                stop_listener,
                 startup.maximum_tcp_connections);
         });
     } catch (...) {
@@ -156,8 +159,9 @@ int RunProxy() noexcept {
     const auto session_status = bolt::network::RunDnsProxySession(
         startup.session, *policy, resolver, *bindings, *transport,
         startup.maximum_requests);
-    closesocket(tcp_listener);
+    stop_listener.store(true, std::memory_order_release);
     listener_thread.join();
+    closesocket(tcp_listener);
     WSACleanup();
     SecureZeroMemory(
         startup.session.authentication_key.data(),
