@@ -1124,6 +1124,12 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 189;
     }
+    const std::filesystem::path alias_create_directory =
+        std::filesystem::path(arguments[18]).parent_path() / L"created-directory";
+    if (CreateDirectoryW(alias_create_directory.c_str(), nullptr) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 190;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1167,6 +1173,8 @@ bool RunProcessTests() {
     const std::filesystem::path denied_alias_target = denied_junction_target / L"protected.txt";
     const std::filesystem::path allowed_junction = allowed_root / L"junction";
     const std::filesystem::path alias_copy_destination = allowed_junction / L"protected.txt";
+    const std::filesystem::path denied_alias_created_directory =
+        denied_junction_target / L"created-directory";
     const std::filesystem::path allowed_alias_move_source = allowed_root / L"move-source.txt";
     const std::filesystem::path alias_move_destination = allowed_junction / L"move-target.txt";
     const std::filesystem::path denied_alias_move_target =
@@ -1271,6 +1279,7 @@ bool RunProcessTests() {
     DeleteFileW(read_only_mapping_path.c_str());
     DeleteFileW(denied_hardlink_escape_target.c_str());
     RemoveDirectoryW(forbidden_junction.c_str());
+    RemoveDirectoryW(denied_alias_created_directory.c_str());
     const HANDLE delete_fixture = CreateFileW(
         denied_delete_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -1857,7 +1866,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_alias_target.wstring(), 87);
+            denied_alias_target.wstring(), 87) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_alias_created_directory.wstring(), 88);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
@@ -1907,6 +1920,7 @@ bool RunProcessTests() {
                             ReadFixture(denied_alias_target) == protected_nonce &&
                             GetFileAttributesW(denied_alias_target.c_str()) ==
                                 denied_alias_attributes_before &&
+                            !std::filesystem::exists(denied_alias_created_directory) &&
                             ReadFixture(allowed_alias_move_source) == move_nonce &&
                             !std::filesystem::exists(denied_alias_move_target) &&
                             ReadFixture(allowed_replace_target) == replace_target_nonce &&
