@@ -49,6 +49,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets
 pwsh -NoProfile -File scripts/test-rust-coverage.ps1
 pwsh -NoProfile -File scripts/verify-hook-manifest.ps1
+pwsh -NoProfile -File scripts/audit-filesystem-evidence.ps1
 pwsh -NoProfile -File scripts/build-windows.ps1
 pwsh -NoProfile -File scripts/test-windows.ps1 -Suite Unit -Architecture x64
 pwsh -NoProfile -File scripts/test-windows.ps1 -Suite Unit -Architecture x86

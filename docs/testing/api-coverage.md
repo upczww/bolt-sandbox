@@ -81,6 +81,11 @@ access masks/dispositions/information classes to policy operation classes.
 - CI compares that manifest with this inventory and fails on unmapped additions,
   removals, unavailable required symbols, or a hook without an allow/deny/error
   test vector.
+- [`filesystem-evidence.json`](filesystem-evidence.json) records whether each
+  `FS-001..064` case is covered, partial, or a gap and pins non-gap claims to
+  source anchors. `scripts/audit-filesystem-evidence.ps1` validates the inventory
+  during Windows builds; release validation adds `-RequireComplete` and fails
+  while any partial or gap remains.
 - API aliases covered solely through a lower-level hook still require an
   integration probe proving that the wrapper reaches the lower-level decision.
 - `HOOK-009` verifies the runtime-installed set; static manifest coverage alone
