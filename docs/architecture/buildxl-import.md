@@ -129,6 +129,10 @@ buffers are length-checked, unknown tags fail closed, and both the reparse
 handle source and decoded target are authorized before Windows can create the
 link. Successful changes invalidate the resolved-path cache subtree.
 
+The same seam classifies `FSCTL_SET_COMPRESSION` as a handle-based write.
+Bolt resolves the final file identity before the control reaches Windows,
+reports denied calls as `Write`, and preserves the prior compression state.
+
 Directory enumeration begins with BuildXL's `FindFirstFileW/A` and
 `FindFirstFileExW/A` function families. All four entries share a metadata
 authorization decision and report denied searches as `Enumerate` before any

@@ -1150,7 +1150,40 @@ BOOL WINAPI DetouredDeviceIoControl(
     const LPDWORD bytes_returned,
     const LPOVERLAPPED overlapped) noexcept {
     DetouredScope scope;
-    if (scope.Detoured_IsDisabled() || control_code != FSCTL_SET_REPARSE_POINT) {
+    if (scope.Detoured_IsDisabled()) {
+        return g_device_io_control(
+            device, control_code, input, input_size, output, output_size, bytes_returned,
+            overlapped);
+    }
+
+    if (control_code == FSCTL_SET_COMPRESSION) {
+        std::wstring source_path;
+        if (!TryGetHandlePath(device, source_path)) {
+            SetLastError(ERROR_ACCESS_DENIED);
+            return FALSE;
+        }
+        const auto* policy = g_policy.get();
+        const auto source = policy == nullptr
+                                ? PolicyEvaluation{}
+                                : policy->Evaluate(source_path.c_str(), Access::kWrite);
+        if (source.decision == Decision::kDeny) {
+            ReportDenied(
+                protocol::FilesystemOperation::kWrite,
+                EvaluatedPath(source, source_path.c_str()));
+            SetLastError(ERROR_ACCESS_DENIED);
+            return FALSE;
+        }
+        const BOOL result = g_device_io_control(
+            device, control_code, input, input_size, output, output_size,
+            bytes_returned, overlapped);
+        if (result) {
+            InvalidateResolvedPathForMutation(
+                EvaluatedPath(source, source_path.c_str()), false);
+        }
+        return result;
+    }
+
+    if (control_code != FSCTL_SET_REPARSE_POINT) {
         return g_device_io_control(
             device, control_code, input, input_size, output, output_size, bytes_returned,
             overlapped);
