@@ -1,4 +1,5 @@
 #include "hook/process/process_hooks.h"
+#include "hook/process/native_process_abi.h"
 #include "hook/event_sink.h"
 
 #include "protocol/policy_payload.h"
@@ -39,6 +40,7 @@ decltype(&CreateProcessWithTokenW) g_create_process_with_token_w =
     CreateProcessWithTokenW;
 decltype(&CreateProcessWithLogonW) g_create_process_with_logon_w =
     CreateProcessWithLogonW;
+native::RtlCreateUserProcessFunction g_rtl_create_user_process = nullptr;
 ChildProcessPolicy g_child_process_policy = ChildProcessPolicy::kDeny;
 bool g_prepared = false;
 bool g_runtime_configured = false;
@@ -500,6 +502,24 @@ BOOL WINAPI DetouredCreateProcessA(
     return CompleteInheritedCreation(creation_flags, process_information) ? TRUE : FALSE;
 }
 
+void ClearNativeProcessInformation(
+    native::RtlUserProcessInformation* const process_information) noexcept {
+    if (process_information != nullptr) {
+        std::memset(process_information, 0, sizeof(*process_information));
+    }
+}
+
+NTSTATUS StatusFromWin32Error(const DWORD error) noexcept {
+    constexpr NTSTATUS status_unsuccessful =
+        static_cast<NTSTATUS>(0xC0000001UL);
+    if (error == ERROR_SUCCESS) {
+        return status_unsuccessful;
+    }
+    constexpr ULONG ntwin32_error = 0xC0070000UL;
+    return static_cast<NTSTATUS>(
+        ntwin32_error | (static_cast<ULONG>(error) & 0x0000FFFFUL));
+}
+
 BOOL WINAPI DetouredCreateProcessAsUserW(
     const HANDLE token,
     const LPCWSTR application_name,
@@ -564,6 +584,58 @@ BOOL WINAPI DetouredCreateProcessAsUserA(
         return FALSE;
     }
     return CompleteInheritedCreation(creation_flags, process_information) ? TRUE : FALSE;
+}
+
+NTSTATUS NTAPI DetouredRtlCreateUserProcess(
+    const PCUNICODE_STRING nt_image_path_name,
+    const ULONG extended_parameters,
+    const PRTL_USER_PROCESS_PARAMETERS process_parameters,
+    const PSECURITY_DESCRIPTOR process_security_descriptor,
+    const PSECURITY_DESCRIPTOR thread_security_descriptor,
+    const HANDLE parent_process,
+    const BOOLEAN inherit_handles,
+    const HANDLE debug_port,
+    const HANDLE token_handle,
+    native::RtlUserProcessInformation* const process_information) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_rtl_create_user_process(
+            nt_image_path_name, extended_parameters, process_parameters,
+            process_security_descriptor, thread_security_descriptor,
+            parent_process, inherit_handles, debug_port, token_handle,
+            process_information);
+    }
+
+    constexpr NTSTATUS status_access_denied =
+        static_cast<NTSTATUS>(0xC0000022UL);
+    if (g_child_process_policy == ChildProcessPolicy::kDeny ||
+        process_information == nullptr || !g_runtime_configured) {
+        ClearNativeProcessInformation(process_information);
+        return status_access_denied;
+    }
+
+    const NTSTATUS create_status = g_rtl_create_user_process(
+        nt_image_path_name, extended_parameters, process_parameters,
+        process_security_descriptor, thread_security_descriptor, parent_process,
+        inherit_handles, debug_port, token_handle, process_information);
+    if (create_status < 0) {
+        return create_status;
+    }
+
+    PROCESS_INFORMATION inherited_process{
+        process_information->process,
+        process_information->thread,
+        static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(
+            process_information->client_id.UniqueProcess)),
+        static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(
+            process_information->client_id.UniqueThread))};
+    if (CompleteInheritedCreation(CREATE_SUSPENDED, &inherited_process)) {
+        return create_status;
+    }
+
+    const DWORD error = GetLastError();
+    ClearNativeProcessInformation(process_information);
+    return StatusFromWin32Error(error);
 }
 
 BOOL WINAPI DetouredCreateProcessWithTokenW(
@@ -687,6 +759,16 @@ LONG AttachProcessHooks() noexcept {
     if (!g_prepared) {
         return ERROR_INVALID_STATE;
     }
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll == nullptr) {
+        return ERROR_MOD_NOT_FOUND;
+    }
+    g_rtl_create_user_process =
+        reinterpret_cast<native::RtlCreateUserProcessFunction>(
+            GetProcAddress(ntdll, "RtlCreateUserProcess"));
+    if (g_rtl_create_user_process == nullptr) {
+        return ERROR_PROC_NOT_FOUND;
+    }
     const LONG wide_status = DetourAttach(
         reinterpret_cast<PVOID*>(&g_create_process_w),
         reinterpret_cast<PVOID>(DetouredCreateProcessW));
@@ -710,6 +792,12 @@ LONG AttachProcessHooks() noexcept {
         reinterpret_cast<PVOID>(DetouredCreateProcessAsUserA));
     if (as_user_ansi_status != NO_ERROR) {
         return as_user_ansi_status;
+    }
+    const LONG rtl_status = DetourAttach(
+        reinterpret_cast<PVOID*>(&g_rtl_create_user_process),
+        reinterpret_cast<PVOID>(DetouredRtlCreateUserProcess));
+    if (rtl_status != NO_ERROR) {
+        return rtl_status;
     }
     const LONG shell_status = DetourAttach(
         reinterpret_cast<PVOID*>(&g_shell_execute_ex_w),

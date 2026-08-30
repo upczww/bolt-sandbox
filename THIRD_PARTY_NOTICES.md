@@ -48,6 +48,25 @@ imported source files. BuildXL's repository-wide third-party notices are not
 redistributed because this slice does not import the unrelated components they
 describe.
 
+## phnt
+
+Bolt Sandbox adapts the minimum native ABI declarations required to intercept
+`RtlCreateUserProcess` from the phnt headers maintained by Winsider Seminars &
+Solutions. phnt is licensed under the MIT License.
+
+- Source: https://github.com/winsiderss/phnt
+- Revision: `53fbbdc5b5d2b08761db1c7b26bfa8c820924356`
+- License: MIT
+- Upstream declarations: `ntrtl.h` and `ntmmapi.h`
+- Provenance manifest: `native/third_party/phnt/provenance.json`
+- Modification boundary: only the required function signature and output
+  structure layouts are adapted into
+  `native/hook/process/native_process_abi.h`; the complete phnt header graph is
+  neither imported nor compiled.
+
+The vendored `native/third_party/phnt/LICENSE` is byte-for-byte identical to
+the upstream license at the pinned revision.
+
 ## getrandom 0.4.3
 
 Bolt Sandbox depends on the `getrandom` Rust crate to obtain execution pipe

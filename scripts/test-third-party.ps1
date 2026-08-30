@@ -196,3 +196,63 @@ if (-not $notice.Contains($expectedBuildXlRevision) -or
 }
 
 Write-Host "BuildXL provenance verified at $expectedBuildXlRevision."
+
+$phntRoot = Join-Path $repositoryRoot 'native\third_party\phnt'
+$phntProvenancePath = Join-Path $phntRoot 'provenance.json'
+$expectedPhntRevision = '53fbbdc5b5d2b08761db1c7b26bfa8c820924356'
+$expectedPhntUpstream = 'https://github.com/winsiderss/phnt'
+
+if (-not (Test-Path -LiteralPath $phntProvenancePath -PathType Leaf)) {
+    throw 'phnt provenance manifest is missing.'
+}
+
+$phntProvenance = Get-Content -LiteralPath $phntProvenancePath -Raw | ConvertFrom-Json
+if ($phntProvenance.upstream -ne $expectedPhntUpstream -or
+    $phntProvenance.revision -ne $expectedPhntRevision -or
+    $phntProvenance.license -ne 'MIT') {
+    throw 'phnt provenance does not match the audited revision.'
+}
+if ($phntProvenance.local_adaptation -ne
+        'native/hook/process/native_process_abi.h' -or
+    @($phntProvenance.upstream_files).Count -ne 2 -or
+    'ntrtl.h' -notin @($phntProvenance.upstream_files) -or
+    'ntmmapi.h' -notin @($phntProvenance.upstream_files)) {
+    throw 'phnt native ABI adaptation boundary is invalid.'
+}
+
+$phntFiles = @($phntProvenance.copied_files)
+if ($phntFiles.Count -ne 1 -or $phntFiles[0].path -ne 'LICENSE') {
+    throw 'phnt copied-file boundary must contain only the upstream license.'
+}
+$phntLicensePath = Join-Path $phntRoot 'LICENSE'
+if (-not (Test-Path -LiteralPath $phntLicensePath -PathType Leaf)) {
+    throw 'phnt license is missing.'
+}
+$phntLicenseHash =
+    (Get-FileHash -LiteralPath $phntLicensePath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($phntLicenseHash -ne [string]$phntFiles[0].sha256) {
+    throw 'phnt license hash does not match the pinned upstream file.'
+}
+$phntUnlistedFiles = Get-ChildItem -LiteralPath $phntRoot -File -Recurse |
+    ForEach-Object {
+        [System.IO.Path]::GetRelativePath($phntRoot, $_.FullName).Replace('\', '/')
+    } |
+    Where-Object { $_ -notin @('LICENSE', 'provenance.json') }
+if ($phntUnlistedFiles) {
+    throw "Unlisted phnt files: $($phntUnlistedFiles -join ', ')"
+}
+$phntAdaptationPath = Join-Path $repositoryRoot $phntProvenance.local_adaptation
+if (-not (Test-Path -LiteralPath $phntAdaptationPath -PathType Leaf)) {
+    throw 'phnt local ABI adaptation is missing.'
+}
+$phntAdaptation = Get-Content -LiteralPath $phntAdaptationPath -Raw
+if (-not $phntAdaptation.Contains($expectedPhntRevision) -or
+    -not $phntAdaptation.Contains('RtlCreateUserProcess')) {
+    throw 'phnt local ABI adaptation does not identify its pinned source.'
+}
+if (-not $notice.Contains($expectedPhntRevision) -or
+    -not $notice.Contains('native/third_party/phnt/provenance.json')) {
+    throw 'THIRD_PARTY_NOTICES.md does not record the phnt revision and boundary.'
+}
+
+Write-Host "phnt provenance verified at $expectedPhntRevision."

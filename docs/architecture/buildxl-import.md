@@ -358,6 +358,21 @@ returned process handle is cleared, and the event contains only process identity
 plus the fixed elevation operation. The reentrancy scope ends before ordinary
 Shell activation so its nested process creation remains detoured.
 
+Direct `RtlCreateUserProcess` is attached in the same all-or-nothing Detours
+transaction. Its native ABI comes from the pinned MIT-licensed phnt revision
+recorded in `native/third_party/phnt/provenance.json`; Bolt adapts only the
+function signature and output layouts instead of importing phnt's complete
+header graph. `Deny` clears the native process-information output and returns
+`STATUS_ACCESS_DENIED` before image resolution. On `Inherit`, ordinary native
+creation failures retain their original `NTSTATUS`; a successfully created,
+natively suspended initial thread follows the existing BuildXL-derived payload,
+architecture selection, injection, Ready, and release sequence. Because this
+API promises a suspended initial thread, Bolt restores that state before
+returning it to the caller. Any confinement failure terminates the process,
+clears the output, and returns a failing NTSTATUS. Direct
+`NtCreateUserProcess` remains a separate lower-level activation slice and is not
+claimed by this adapter.
+
 The next slices are:
 
 1. Activate access classification and handle overlay behind `PolicyView`.
