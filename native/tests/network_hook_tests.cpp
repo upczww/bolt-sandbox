@@ -709,7 +709,7 @@ bool RunNetworkHookTests() {
 }
 
 int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 4) {
+    if (argument_count != 5) {
         return 210;
     }
     WSADATA winsock{};
@@ -737,6 +737,15 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
             ? connect(allowed_socket, results->ai_addr,
                       static_cast<int>(results->ai_addrlen))
             : SOCKET_ERROR;
+    sockaddr_in connected_peer{};
+    int connected_peer_length = sizeof(connected_peer);
+    const bool connected_through_proxy = connect_status == 0 &&
+        getpeername(
+            allowed_socket, reinterpret_cast<sockaddr*>(&connected_peer),
+            &connected_peer_length) == 0 &&
+        connected_peer.sin_family == AF_INET &&
+        ntohs(connected_peer.sin_port) ==
+            static_cast<std::uint16_t>(_wtoi(arguments[4]));
     ADDRINFOW wide_hints{};
     wide_hints.ai_family = AF_INET;
     wide_hints.ai_socktype = SOCK_STREAM;
@@ -856,6 +865,9 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
     }
     if (connect_status != 0) {
         return 221;
+    }
+    if (!connected_through_proxy) {
+        return 233;
     }
     if (wide_resolve_status != 0) {
         return 224;
@@ -995,7 +1007,8 @@ bool RunNetworkAllowListTests() {
     const auto hook_path = std::filesystem::path(executable).parent_path() / hook_name;
     const std::wstring command_line = L"\"" + executable +
         L"\" --network-allow-list-child " + allowed_domain_w + L" " +
-        std::to_wstring(port);
+        std::to_wstring(port) + L" " +
+        std::to_wstring(dns_proxy->tcp_proxy_port());
     const HANDLE inherited[] = {
         policy.handle(), event_client, release,
         dns_proxy->request_write_handle(), dns_proxy->response_read_handle()};
