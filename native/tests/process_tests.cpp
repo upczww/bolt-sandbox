@@ -2137,6 +2137,103 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         return 263;
     }
 
+    const std::wstring root_rename_source =
+        std::wstring(arguments[16]) + L".root-rename-source";
+    const std::wstring root_rename_intermediate =
+        std::wstring(arguments[16]) + L".root-rename-intermediate";
+    const std::wstring root_rename_destination =
+        std::wstring(arguments[16]) + L".root-rename-destination";
+    if (!CopyFileW(arguments[28], root_rename_source.c_str(), TRUE)) {
+        return 264;
+    }
+    const HANDLE rename_root = CreateFileW(
+        std::filesystem::path(root_rename_source).parent_path().c_str(),
+        FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    const auto make_root_rename = [rename_root](const std::wstring& leaf) {
+        const std::size_t name_bytes = leaf.size() * sizeof(wchar_t);
+        std::vector<std::uint8_t> buffer(
+            offsetof(NtFileRenameInformation, file_name) + name_bytes);
+        auto* information = reinterpret_cast<NtFileRenameInformation*>(buffer.data());
+        information->replace_if_exists = FALSE;
+        information->root_directory = rename_root;
+        information->file_name_length = static_cast<ULONG>(name_bytes);
+        std::memcpy(information->file_name, leaf.data(), name_bytes);
+        return buffer;
+    };
+    const HANDLE root_rename_source_handle = CreateFileW(
+        root_rename_source.c_str(), DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    auto root_rename_information = make_root_rename(
+        std::filesystem::path(root_rename_intermediate).filename().wstring());
+    IO_STATUS_BLOCK root_rename_status{};
+    const NTSTATUS root_rename_result =
+        rename_root == INVALID_HANDLE_VALUE ||
+                root_rename_source_handle == INVALID_HANDLE_VALUE
+            ? status_access_denied
+            : zw_set_information_file(
+                  root_rename_source_handle, &root_rename_status,
+                  root_rename_information.data(),
+                  static_cast<ULONG>(root_rename_information.size()),
+                  file_rename_information);
+    if (root_rename_source_handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(root_rename_source_handle);
+    }
+    if (root_rename_result < 0) {
+        if (rename_root != INVALID_HANDLE_VALUE) {
+            CloseHandle(rename_root);
+        }
+        return 265;
+    }
+
+    struct NtFileRenameInformationEx {
+        ULONG flags;
+        HANDLE root_directory;
+        ULONG file_name_length;
+        WCHAR file_name[1];
+    };
+    const std::wstring destination_leaf =
+        std::filesystem::path(root_rename_destination).filename().wstring();
+    const std::size_t destination_bytes = destination_leaf.size() * sizeof(wchar_t);
+    std::vector<std::uint8_t> root_rename_ex_buffer(
+        offsetof(NtFileRenameInformationEx, file_name) + destination_bytes);
+    auto* root_rename_ex =
+        reinterpret_cast<NtFileRenameInformationEx*>(root_rename_ex_buffer.data());
+    root_rename_ex->flags = 0;
+    root_rename_ex->root_directory = rename_root;
+    root_rename_ex->file_name_length = static_cast<ULONG>(destination_bytes);
+    std::memcpy(root_rename_ex->file_name, destination_leaf.data(), destination_bytes);
+    const HANDLE root_rename_intermediate_handle = CreateFileW(
+        root_rename_intermediate.c_str(), DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    IO_STATUS_BLOCK root_rename_ex_status{};
+    constexpr FILE_INFORMATION_CLASS file_rename_information_ex =
+        static_cast<FILE_INFORMATION_CLASS>(65);
+    const NTSTATUS root_rename_ex_result =
+        root_rename_intermediate_handle == INVALID_HANDLE_VALUE
+            ? status_access_denied
+            : zw_set_information_file(
+                  root_rename_intermediate_handle, &root_rename_ex_status,
+                  root_rename_ex_buffer.data(),
+                  static_cast<ULONG>(root_rename_ex_buffer.size()),
+                  file_rename_information_ex);
+    if (root_rename_intermediate_handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(root_rename_intermediate_handle);
+    }
+    if (rename_root != INVALID_HANDLE_VALUE) {
+        CloseHandle(rename_root);
+    }
+    if (root_rename_ex_result < 0 ||
+        GetFileAttributesW(root_rename_source.c_str()) != INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(root_rename_intermediate.c_str()) != INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(root_rename_destination.c_str()) == INVALID_FILE_ATTRIBUTES ||
+        !DeleteFileW(root_rename_destination.c_str())) {
+        return 266;
+    }
+
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -2786,6 +2883,12 @@ bool RunProcessTests() {
         missing_copy_destination.wstring() + L".native-link";
     const std::filesystem::path denied_native_link_ex =
         missing_copy_destination.wstring() + L".native-link-ex";
+    const std::filesystem::path root_rename_source =
+        missing_copy_source.wstring() + L".root-rename-source";
+    const std::filesystem::path root_rename_intermediate =
+        missing_copy_source.wstring() + L".root-rename-intermediate";
+    const std::filesystem::path root_rename_destination =
+        missing_copy_source.wstring() + L".root-rename-destination";
     const std::filesystem::path denied_junction_target = denied_root / L"junction-target";
     const std::filesystem::path denied_alias_target = denied_junction_target / L"protected.txt";
     const std::filesystem::path allowed_junction = allowed_root / L"junction";
@@ -2898,6 +3001,9 @@ bool RunProcessTests() {
     DeleteFileW(allowed_native_link_ex.c_str());
     DeleteFileW(denied_native_link.c_str());
     DeleteFileW(denied_native_link_ex.c_str());
+    DeleteFileW(root_rename_source.c_str());
+    DeleteFileW(root_rename_intermediate.c_str());
+    DeleteFileW(root_rename_destination.c_str());
     DeleteFileW(allowed_replace_target.c_str());
     DeleteFileW(allowed_handle_rename_source.c_str());
     DeleteFileW(denied_handle_rename_destination.c_str());
@@ -3713,6 +3819,9 @@ bool RunProcessTests() {
                             !std::filesystem::exists(allowed_native_link_ex) &&
                             !std::filesystem::exists(denied_native_link) &&
                             !std::filesystem::exists(denied_native_link_ex) &&
+                            !std::filesystem::exists(root_rename_source) &&
+                            !std::filesystem::exists(root_rename_intermediate) &&
+                            !std::filesystem::exists(root_rename_destination) &&
                             ReadFixture(denied_alias_target) == protected_nonce &&
                             GetFileAttributesW(denied_alias_target.c_str()) ==
                                 denied_alias_attributes_before &&
