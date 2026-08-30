@@ -155,6 +155,20 @@ bool ReadDomainNetworkViolation(
            written == expected.size() && actual == expected;
 }
 
+SOCKET AcceptWithTimeout(
+    const SOCKET listener,
+    const long timeout_milliseconds) {
+    fd_set readable{};
+    FD_ZERO(&readable);
+    FD_SET(listener, &readable);
+    timeval timeout{};
+    timeout.tv_sec = timeout_milliseconds / 1'000;
+    timeout.tv_usec = (timeout_milliseconds % 1'000) * 1'000;
+    return select(0, &readable, nullptr, nullptr, &timeout) == 1
+               ? accept(listener, nullptr, nullptr)
+               : INVALID_SOCKET;
+}
+
 }  // namespace
 
 int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
@@ -829,6 +843,63 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
             std::end(dns_ex_cancel.Reserved),
             [](const char byte) { return byte == 0; });
 
+    const SOCKET allowed_connect_ex_socket =
+        socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in connect_ex_local{};
+    connect_ex_local.sin_family = AF_INET;
+    connect_ex_local.sin_addr.s_addr = htonl(INADDR_ANY);
+    connect_ex_local.sin_port = 0;
+    GUID connect_ex_guid = WSAID_CONNECTEX;
+    LPFN_CONNECTEX allowed_connect_ex = nullptr;
+    DWORD connect_ex_extension_bytes = 0;
+    const int connect_ex_extension_status = WSAIoctl(
+        allowed_connect_ex_socket, SIO_GET_EXTENSION_FUNCTION_POINTER,
+        &connect_ex_guid, sizeof(connect_ex_guid), &allowed_connect_ex,
+        sizeof(allowed_connect_ex), &connect_ex_extension_bytes, nullptr,
+        nullptr);
+    const HANDLE connect_ex_event =
+        CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    OVERLAPPED connect_ex_overlapped{};
+    connect_ex_overlapped.hEvent = connect_ex_event;
+    DWORD connect_ex_bytes = 99;
+    const bool connect_ex_ready =
+        allowed_connect_ex_socket != INVALID_SOCKET &&
+        bind(
+            allowed_connect_ex_socket,
+            reinterpret_cast<const sockaddr*>(&connect_ex_local),
+            sizeof(connect_ex_local)) == 0 &&
+        connect_ex_extension_status == 0 && allowed_connect_ex != nullptr &&
+        connect_ex_extension_bytes == sizeof(allowed_connect_ex) &&
+        connect_ex_event != nullptr && results != nullptr;
+    const BOOL allowed_connect_ex_result =
+        connect_ex_ready
+            ? allowed_connect_ex(
+                  allowed_connect_ex_socket, results->ai_addr,
+                  static_cast<int>(results->ai_addrlen), nullptr, 0,
+                  &connect_ex_bytes, &connect_ex_overlapped)
+            : FALSE;
+    const int allowed_connect_ex_error = WSAGetLastError();
+    DWORD connect_ex_transferred = 0;
+    DWORD connect_ex_flags = 0;
+    const bool connect_ex_completed =
+        (allowed_connect_ex_result != FALSE && connect_ex_bytes == 0) ||
+        (allowed_connect_ex_result == FALSE &&
+         allowed_connect_ex_error == WSA_IO_PENDING &&
+         WaitForSingleObject(connect_ex_event, 5'000) == WAIT_OBJECT_0 &&
+         WSAGetOverlappedResult(
+             allowed_connect_ex_socket, &connect_ex_overlapped,
+             &connect_ex_transferred, FALSE, &connect_ex_flags) != FALSE &&
+         connect_ex_transferred == 0);
+    sockaddr_in connect_ex_peer{};
+    int connect_ex_peer_length = sizeof(connect_ex_peer);
+    const bool connect_ex_peer_is_original = connect_ex_completed &&
+        getpeername(
+            allowed_connect_ex_socket,
+            reinterpret_cast<sockaddr*>(&connect_ex_peer),
+            &connect_ex_peer_length) == 0 &&
+        ntohs(connect_ex_peer.sin_port) ==
+            static_cast<std::uint16_t>(_wtoi(arguments[3]));
+
     sockaddr_in wrong_port{};
     if (results != nullptr && results->ai_addrlen >= sizeof(wrong_port)) {
         std::memcpy(&wrong_port, results->ai_addr, sizeof(wrong_port));
@@ -896,6 +967,10 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
     const int closed_peer_error = WSAGetLastError();
     closesocket(denied_socket);
     closesocket(ipv6_socket);
+    closesocket(allowed_connect_ex_socket);
+    if (connect_ex_event != nullptr) {
+        CloseHandle(connect_ex_event);
+    }
     closesocket(allowed_udp);
     WSACleanup();
     if (resolve_status != 0) {
@@ -912,6 +987,10 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
     }
     if (!ipv6_peer_is_original_target) {
         return 236;
+    }
+    if (!connect_ex_ready || !connect_ex_completed ||
+        !connect_ex_peer_is_original) {
+        return 237;
     }
     if (closed_peer_status != SOCKET_ERROR ||
         closed_peer_error != WSAENOTSOCK) {
@@ -1115,25 +1194,33 @@ bool RunNetworkAllowListTests() {
         bolt::protocol::ValidateReadyFrame(ready.data(), ready.size(), nonce) ==
             bolt::protocol::ReadyFrameStatus::kSuccess &&
         process.ReleaseAfterReady() == bolt::common::ProcessStatus::kSuccess;
-    const bool waited = process.Wait(5'000) == bolt::common::ProcessStatus::kSuccess;
-    const SOCKET accepted = waited ? accept(listener, nullptr, nullptr)
-                                   : INVALID_SOCKET;
-    const SOCKET ipv6_accepted =
-        waited ? accept(ipv6_listener, nullptr, nullptr) : INVALID_SOCKET;
+    const SOCKET accepted = ready_ok ? AcceptWithTimeout(listener, 5'000)
+                                     : INVALID_SOCKET;
     if (accepted != INVALID_SOCKET) {
         shutdown(accepted, SD_BOTH);
         closesocket(accepted);
     }
+    const SOCKET ipv6_accepted =
+        ready_ok ? AcceptWithTimeout(ipv6_listener, 5'000) : INVALID_SOCKET;
     if (ipv6_accepted != INVALID_SOCKET) {
         shutdown(ipv6_accepted, SD_BOTH);
         closesocket(ipv6_accepted);
     }
+    const SOCKET connect_ex_accepted =
+        ready_ok ? AcceptWithTimeout(listener, 2'000) : INVALID_SOCKET;
+    if (connect_ex_accepted != INVALID_SOCKET) {
+        shutdown(connect_ex_accepted, SD_BOTH);
+        closesocket(connect_ex_accepted);
+    }
+    const bool waited =
+        process.Wait(5'000) == bolt::common::ProcessStatus::kSuccess;
     dns_proxy->CloseClientHandles();
     DWORD exit_code = 0;
     const bool proxy_waited =
         dns_proxy->Wait(5'000) == bolt::network::DnsProxyProcessStatus::kSuccess;
     const bool passed = ready_ok && waited && accepted != INVALID_SOCKET &&
         ipv6_accepted != INVALID_SOCKET && proxy_waited &&
+        connect_ex_accepted != INVALID_SOCKET &&
         process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess && exit_code == 0;
     closesocket(listener);
     closesocket(ipv6_listener);
