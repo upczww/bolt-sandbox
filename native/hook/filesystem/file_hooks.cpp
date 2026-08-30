@@ -5,6 +5,7 @@
 #include "hook/filesystem/filesystem_policy.h"
 #include "hook/filesystem/path_cache.h"
 #include "hook/event_sink.h"
+#include "hook/process/process_hooks.h"
 
 #include "DetouredFunctionTypes.h"
 #include "DetouredScope.h"
@@ -2666,6 +2667,10 @@ HookInstallStatus InstallFileHooks(
     if (FilesystemPolicy::Load(policy_payload, policy_length, policy) != PolicyLoadStatus::kValid) {
         return HookInstallStatus::kInvalidPolicy;
     }
+    if (process::PrepareProcessHooks(policy_payload, policy_length) !=
+        process::ProcessHookPrepareStatus::kSuccess) {
+        return HookInstallStatus::kInvalidPolicy;
+    }
     g_copy_file_2 = reinterpret_cast<CopyFile2Function>(
         GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CopyFile2"));
     g_zw_set_information_file = reinterpret_cast<ZwSetInformationFile_t>(
@@ -2709,6 +2714,7 @@ HookInstallStatus InstallFileHooks(
         return HookInstallStatus::kTransactionFailed;
     }
     if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR ||
+        process::AttachProcessHooks() != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_find_first_file_w),
             reinterpret_cast<PVOID>(DetouredFindFirstFileW)) != NO_ERROR ||

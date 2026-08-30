@@ -314,6 +314,15 @@ Bolt-owned adapters replace these coupled seams:
 - Process injection and lifecycle adapters map Bolt execution state without a
   BuildXL scheduler, build graph, or C# host.
 
+The first process-policy slice reuses BuildXL's exact `CreateProcessW_t` and
+`CreateProcessA_t` signatures. Child policy is read only after the complete
+Bolt payload passes integrity and shape validation, and both process hooks join
+the same Detours transaction as filesystem hooks. `Deny` clears the caller's
+process-information output and returns `ERROR_ACCESS_DENIED` before Windows can
+create a process. `Inherit` is temporarily fail-closed at this boundary until
+the BuildXL-derived suspended injection and readiness adapter is activated; an
+unconfined child is never used as a fallback.
+
 The next slices are:
 
 1. Activate access classification and handle overlay behind `PolicyView`.

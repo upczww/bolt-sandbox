@@ -151,6 +151,17 @@ target_link_libraries(bolt-sandbox-common PUBLIC advapi32)
 target_link_libraries(bolt-sandbox-common PRIVATE bolt-sandbox-detours)
 target_link_libraries(bolt-sandbox-common PRIVATE bolt-sandbox-protocol)
 
+add_library(bolt-sandbox-process STATIC
+    hook/process/process_hooks.cpp
+)
+bolt_native_warnings(bolt-sandbox-process)
+target_include_directories(bolt-sandbox-process PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(bolt-sandbox-process PRIVATE
+    bolt-sandbox-buildxl
+    bolt-sandbox-detours
+    bolt-sandbox-protocol
+)
+
 add_library(bolt-sandbox-filesystem STATIC
     hook/event_sink.cpp
     hook/filesystem/access_classifier.cpp
@@ -165,6 +176,7 @@ target_link_libraries(bolt-sandbox-filesystem PRIVATE
     advapi32
     bolt-sandbox-buildxl
     bolt-sandbox-detours
+    bolt-sandbox-process
     bolt-sandbox-protocol
     shell32
 )
