@@ -973,6 +973,14 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     if (SHFileOperationA(&shell_operation_a) != ERROR_ACCESS_DENIED) {
         return 171;
     }
+    if (DeleteFileW(arguments[18]) || GetLastError() != ERROR_ACCESS_DENIED) {
+        return 172;
+    }
+    const std::string ansi_alias_delete = AnsiPath(arguments[18]);
+    if (ansi_alias_delete.empty() || DeleteFileA(ansi_alias_delete.c_str()) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 173;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1632,7 +1640,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kRename,
-            denied_move_source.wstring(), 73);
+            denied_move_source.wstring(), 73) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kDelete,
+            denied_alias_target.wstring(), 74) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kDelete,
+            denied_alias_target.wstring(), 75);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
