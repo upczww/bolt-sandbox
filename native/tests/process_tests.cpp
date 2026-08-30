@@ -4,9 +4,11 @@
 #include "common/suspended_process.h"
 #include "protocol/event_frame.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -25,6 +27,58 @@ std::wstring CurrentExecutable() {
 
 std::wstring HandleText(const HANDLE handle) {
     return std::to_wstring(reinterpret_cast<std::uintptr_t>(handle));
+}
+
+bool ReadExact(const HANDLE handle, std::uint8_t* bytes, const std::size_t length) {
+    std::size_t offset = 0;
+    while (offset < length) {
+        DWORD bytes_read = 0;
+        if (!ReadFile(
+                handle, bytes + offset, static_cast<DWORD>(length - offset), &bytes_read,
+                nullptr) ||
+            bytes_read == 0) {
+            return false;
+        }
+        offset += bytes_read;
+    }
+    return true;
+}
+
+std::uint32_t ReadU32(const std::uint8_t* bytes) {
+    std::uint32_t value = 0;
+    for (std::size_t index = 0; index < 4; ++index) {
+        value |= static_cast<std::uint32_t>(bytes[index]) << (index * 8);
+    }
+    return value;
+}
+
+bool ReadFilesystemViolation(
+    const HANDLE event_pipe,
+    const std::uint32_t process_id,
+    const bolt::protocol::FilesystemOperation operation,
+    const std::wstring& path,
+    const std::uint64_t sequence) {
+    std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
+    if (!ReadExact(event_pipe, header.data(), header.size())) {
+        return false;
+    }
+    const std::size_t payload_length = ReadU32(header.data() + 8);
+    const std::size_t frame_length = header.size() + payload_length;
+    if (frame_length != bolt::protocol::FilesystemViolationFrameLength(path.c_str())) {
+        return false;
+    }
+    std::vector<std::uint8_t> actual(frame_length);
+    std::copy(header.begin(), header.end(), actual.begin());
+    if (!ReadExact(
+            event_pipe, actual.data() + header.size(), frame_length - header.size())) {
+        return false;
+    }
+    std::vector<std::uint8_t> expected(frame_length);
+    std::size_t written = 0;
+    return bolt::protocol::EncodeFilesystemViolationFrame(
+               process_id, operation, path.c_str(), sequence, expected.data(), expected.size(),
+               written) == bolt::protocol::FrameEncodeStatus::kSuccess &&
+           written == expected.size() && actual == expected;
 }
 
 }  // namespace
@@ -231,8 +285,33 @@ bool RunProcessTests() {
         CloseHandle(denied);
         return false;
     }
+    const std::uint32_t child_process_id = GetProcessId(process.process_handle());
+    const bool violation_events =
+        child_process_id != 0 &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate, denied_path.wstring(), 1) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kDelete, denied_delete_path.wstring(), 2) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_create_directory.wstring(), 3) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kDelete,
+            denied_remove_directory.wstring(), 4) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRename, denied_move_source.wstring(), 5) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_hardlink_destination.wstring(), 6);
     DWORD exit_code = 0;
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
+                            violation_events &&
                             exit_code == 0 &&
                             WaitForSingleObject(allowed, 0) == WAIT_OBJECT_0 &&
                             WaitForSingleObject(denied, 0) == WAIT_TIMEOUT &&
