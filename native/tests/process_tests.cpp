@@ -436,6 +436,15 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
             status_access_denied) {
         return 122;
     }
+    constexpr FILE_INFORMATION_CLASS file_disposition_information =
+        static_cast<FILE_INFORMATION_CLASS>(13);
+    FILE_DISPOSITION_INFO direct_disposition{TRUE};
+    if (zw_set_information_file(
+            denied_disposition_handle, &io_status, &direct_disposition,
+            sizeof(direct_disposition), file_disposition_information) !=
+        status_access_denied) {
+        return 123;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -818,7 +827,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_truncate_path.wstring(), 30);
+            denied_truncate_path.wstring(), 30) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kDelete,
+            denied_disposition_path.wstring(), 31);
     DWORD exit_code = 0;
     CloseHandle(denied_disposition_handle);
     CloseHandle(denied_truncate_handle);
