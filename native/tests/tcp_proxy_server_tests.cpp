@@ -5,6 +5,7 @@
 #include "protocol/tcp_proxy_protocol.h"
 #include "tests/policy_fixture.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <memory>

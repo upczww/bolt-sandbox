@@ -180,6 +180,7 @@ add_library(bolt-sandbox-network STATIC
     hook/network/network_hooks.cpp
     hook/network/network_policy.cpp
     hook/network/system_dns_resolver.cpp
+    hook/network/tcp_proxy_server.cpp
     hook/network/winhttp_hooks.cpp
     hook/network/wininet_hooks.cpp
 )
