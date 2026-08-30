@@ -129,6 +129,11 @@ buffers are length-checked, unknown tags fail closed, and both the reparse
 handle source and decoded target are authorized before Windows can create the
 link. Successful changes invalidate the resolved-path cache subtree.
 
+Directory enumeration begins with BuildXL's `FindFirstFileW/A` and
+`FindFirstFileExW/A` function families. All four entries share a metadata
+authorization decision and report denied searches as `Enumerate` before any
+search handle or directory entry can be returned.
+
 For textually allowed copy, move, and replace operation paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,
 appends any absent suffix, then evaluates the fully resolved source and

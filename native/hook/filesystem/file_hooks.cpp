@@ -56,6 +56,10 @@ using NtCreateSectionFunction = NTSTATUS(NTAPI*)(
     PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PLARGE_INTEGER, ULONG, ULONG, HANDLE);
 NtCreateSectionFunction g_nt_create_section = nullptr;
 DeviceIoControl_t g_device_io_control = DeviceIoControl;
+FindFirstFileW_t g_find_first_file_w = FindFirstFileW;
+FindFirstFileA_t g_find_first_file_a = FindFirstFileA;
+FindFirstFileExW_t g_find_first_file_ex_w = FindFirstFileExW;
+FindFirstFileExA_t g_find_first_file_ex_a = FindFirstFileExA;
 CreateHardLinkW_t g_create_hard_link_w = CreateHardLinkW;
 CreateHardLinkA_t g_create_hard_link_a = CreateHardLinkA;
 CopyFileW_t g_copy_file_w = CopyFileW;
@@ -417,6 +421,82 @@ bool ReadReparseTarget(
         return false;
     }
     return !target.empty();
+}
+
+bool AuthorizeEnumeration(const wchar_t* path) noexcept {
+    const auto* policy = g_policy.get();
+    const auto evaluation =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(path, Access::kMetadata);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            protocol::FilesystemOperation::kEnumerate, EvaluatedPath(evaluation, path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    return true;
+}
+
+HANDLE WINAPI DetouredFindFirstFileW(
+    const LPCWSTR path,
+    const LPWIN32_FIND_DATAW find_data) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_find_first_file_w(path, find_data);
+    }
+    return AuthorizeEnumeration(path) ? g_find_first_file_w(path, find_data)
+                                      : INVALID_HANDLE_VALUE;
+}
+
+HANDLE WINAPI DetouredFindFirstFileA(
+    const LPCSTR path,
+    const LPWIN32_FIND_DATAA find_data) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_find_first_file_a(path, find_data);
+    }
+    std::wstring path_wide;
+    if (!ConvertAnsiPath(path, path_wide) || !AuthorizeEnumeration(path_wide.c_str())) {
+        return INVALID_HANDLE_VALUE;
+    }
+    return g_find_first_file_a(path, find_data);
+}
+
+HANDLE WINAPI DetouredFindFirstFileExW(
+    const LPCWSTR path,
+    const FINDEX_INFO_LEVELS info_level,
+    const LPVOID find_data,
+    const FINDEX_SEARCH_OPS search_operation,
+    const LPVOID search_filter,
+    const DWORD flags) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_find_first_file_ex_w(
+            path, info_level, find_data, search_operation, search_filter, flags);
+    }
+    return AuthorizeEnumeration(path)
+               ? g_find_first_file_ex_w(
+                     path, info_level, find_data, search_operation, search_filter, flags)
+               : INVALID_HANDLE_VALUE;
+}
+
+HANDLE WINAPI DetouredFindFirstFileExA(
+    const LPCSTR path,
+    const FINDEX_INFO_LEVELS info_level,
+    const LPVOID find_data,
+    const FINDEX_SEARCH_OPS search_operation,
+    const LPVOID search_filter,
+    const DWORD flags) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_find_first_file_ex_a(
+            path, info_level, find_data, search_operation, search_filter, flags);
+    }
+    std::wstring path_wide;
+    if (!ConvertAnsiPath(path, path_wide) || !AuthorizeEnumeration(path_wide.c_str())) {
+        return INVALID_HANDLE_VALUE;
+    }
+    return g_find_first_file_ex_a(
+        path, info_level, find_data, search_operation, search_filter, flags);
 }
 
 HANDLE WINAPI DetouredCreateFileW(
@@ -1264,6 +1344,18 @@ HookInstallStatus InstallFileHooks(
         return HookInstallStatus::kTransactionFailed;
     }
     if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_find_first_file_w),
+            reinterpret_cast<PVOID>(DetouredFindFirstFileW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_find_first_file_a),
+            reinterpret_cast<PVOID>(DetouredFindFirstFileA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_find_first_file_ex_w),
+            reinterpret_cast<PVOID>(DetouredFindFirstFileExW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_find_first_file_ex_a),
+            reinterpret_cast<PVOID>(DetouredFindFirstFileExA)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_file_w),
             reinterpret_cast<PVOID>(DetouredCreateFileW)) != NO_ERROR ||
