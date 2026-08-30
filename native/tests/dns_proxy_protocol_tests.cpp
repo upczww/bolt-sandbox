@@ -16,7 +16,7 @@ bool RunDnsProxyProtocolTests() {
 
     std::vector<std::uint8_t> encoded;
     if (bolt::protocol::EncodeDnsProxyRequest(
-            session, 7, "api.example", 443, encoded) !=
+            session, 7, 1'234, "api.example", 443, encoded) !=
             bolt::protocol::DnsProxyStatus::kSuccess ||
         encoded.size() != bolt::protocol::DnsProxyRequestFrameLength("api.example")) {
         return false;
@@ -25,7 +25,8 @@ bool RunDnsProxyProtocolTests() {
     if (bolt::protocol::DecodeDnsProxyRequest(
             session, encoded.data(), encoded.size(), 7, decoded) !=
             bolt::protocol::DnsProxyStatus::kSuccess ||
-        decoded.sequence != 7 || decoded.port != 443 ||
+        decoded.sequence != 7 || decoded.process_id != 1'234 ||
+        decoded.port != 443 ||
         decoded.ascii_domain != "api.example") {
         return false;
     }
