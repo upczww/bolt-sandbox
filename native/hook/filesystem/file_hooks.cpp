@@ -64,6 +64,10 @@ GetFileAttributesW_t g_get_file_attributes_w = GetFileAttributesW;
 GetFileAttributesA_t g_get_file_attributes_a = GetFileAttributesA;
 GetFileAttributesExW_t g_get_file_attributes_ex_w = GetFileAttributesExW;
 GetFileAttributesExA_t g_get_file_attributes_ex_a = GetFileAttributesExA;
+using SetFileAttributesWFunction = BOOL(WINAPI*)(LPCWSTR, DWORD);
+using SetFileAttributesAFunction = BOOL(WINAPI*)(LPCSTR, DWORD);
+SetFileAttributesWFunction g_set_file_attributes_w = SetFileAttributesW;
+SetFileAttributesAFunction g_set_file_attributes_a = SetFileAttributesA;
 CreateHardLinkW_t g_create_hard_link_w = CreateHardLinkW;
 CreateHardLinkA_t g_create_hard_link_a = CreateHardLinkA;
 CopyFileW_t g_copy_file_w = CopyFileW;
@@ -453,6 +457,20 @@ bool AuthorizeMetadata(const wchar_t* path) noexcept {
     return true;
 }
 
+bool AuthorizeAttributeMutation(const wchar_t* path) noexcept {
+    const auto* policy = g_policy.get();
+    const auto evaluation =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(path, Access::kWrite);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            protocol::FilesystemOperation::kWrite, EvaluatedPath(evaluation, path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, path), false);
+    return true;
+}
+
 HANDLE WINAPI DetouredFindFirstFileW(
     const LPCWSTR path,
     const LPWIN32_FIND_DATAW find_data) noexcept {
@@ -563,6 +581,32 @@ BOOL WINAPI DetouredGetFileAttributesExA(
         return FALSE;
     }
     return g_get_file_attributes_ex_a(path, info_level, information);
+}
+
+BOOL WINAPI DetouredSetFileAttributesW(
+    const LPCWSTR path,
+    const DWORD attributes) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_set_file_attributes_w(path, attributes);
+    }
+    return AuthorizeAttributeMutation(path) ? g_set_file_attributes_w(path, attributes)
+                                            : FALSE;
+}
+
+BOOL WINAPI DetouredSetFileAttributesA(
+    const LPCSTR path,
+    const DWORD attributes) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_set_file_attributes_a(path, attributes);
+    }
+    std::wstring path_wide;
+    if (!ConvertAnsiPath(path, path_wide) ||
+        !AuthorizeAttributeMutation(path_wide.c_str())) {
+        return FALSE;
+    }
+    return g_set_file_attributes_a(path, attributes);
 }
 
 HANDLE WINAPI DetouredCreateFileW(
@@ -1434,6 +1478,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_get_file_attributes_ex_a),
             reinterpret_cast<PVOID>(DetouredGetFileAttributesExA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_set_file_attributes_w),
+            reinterpret_cast<PVOID>(DetouredSetFileAttributesW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_set_file_attributes_a),
+            reinterpret_cast<PVOID>(DetouredSetFileAttributesA)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_file_w),
             reinterpret_cast<PVOID>(DetouredCreateFileW)) != NO_ERROR ||

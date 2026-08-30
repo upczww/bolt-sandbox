@@ -139,6 +139,11 @@ Metadata probing through `GetFileAttributesW/A` and
 return the native failure sentinel, preserve `ERROR_ACCESS_DENIED`, and cannot
 leak existence, type, size, or timestamps through the output structure.
 
+Attribute mutation through `SetFileAttributesW/A` is a Bolt-owned Win32 seam
+because the vendored BuildXL layer has no dedicated wrapper. Both variants
+require write access, report denied changes as `Write`, and invalidate the path
+cache before an allowed native call.
+
 For textually allowed copy, move, and replace operation paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,
 appends any absent suffix, then evaluates the fully resolved source and
