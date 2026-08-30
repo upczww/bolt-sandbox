@@ -123,6 +123,12 @@ source-read/destination-write authorization path. Both identities are resolved
 before Windows is called, preventing an allowed junction from placing a new
 hard-link directory entry in a denied target.
 
+Bolt extends BuildXL's `DeviceIoControl_t` seam beyond upstream GET-path
+translation for `FSCTL_SET_REPARSE_POINT`. Mount-point and symbolic-link
+buffers are length-checked, unknown tags fail closed, and both the reparse
+handle source and decoded target are authorized before Windows can create the
+link. Successful changes invalidate the resolved-path cache subtree.
+
 For textually allowed copy, move, and replace operation paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,
 appends any absent suffix, then evaluates the fully resolved source and

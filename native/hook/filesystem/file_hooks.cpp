@@ -14,6 +14,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <winioctl.h>
 
 #include <detours.h>
 
@@ -54,6 +55,7 @@ CreateFileMappingAFunction g_create_file_mapping_a = CreateFileMappingA;
 using NtCreateSectionFunction = NTSTATUS(NTAPI*)(
     PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PLARGE_INTEGER, ULONG, ULONG, HANDLE);
 NtCreateSectionFunction g_nt_create_section = nullptr;
+DeviceIoControl_t g_device_io_control = DeviceIoControl;
 CreateHardLinkW_t g_create_hard_link_w = CreateHardLinkW;
 CreateHardLinkA_t g_create_hard_link_a = CreateHardLinkA;
 CopyFileW_t g_copy_file_w = CopyFileW;
@@ -336,6 +338,85 @@ bool AuthorizeFileMapping(const HANDLE file, const DWORD protection) noexcept {
         return false;
     }
     return true;
+}
+
+bool ReadReparseTarget(
+    const void* buffer,
+    const DWORD buffer_size,
+    std::wstring& target) noexcept {
+    struct ReparseDataBuffer {
+        ULONG tag;
+        USHORT data_length;
+        USHORT reserved;
+        union {
+            struct {
+                USHORT substitute_offset;
+                USHORT substitute_length;
+                USHORT print_offset;
+                USHORT print_length;
+                WCHAR path_buffer[1];
+            } mount_point;
+            struct {
+                USHORT substitute_offset;
+                USHORT substitute_length;
+                USHORT print_offset;
+                USHORT print_length;
+                ULONG flags;
+                WCHAR path_buffer[1];
+            } symbolic_link;
+        } data;
+    };
+    constexpr DWORD header_size = 8;
+    if (buffer == nullptr || buffer_size < header_size) {
+        return false;
+    }
+    const auto* reparse = static_cast<const ReparseDataBuffer*>(buffer);
+    if (static_cast<DWORD>(reparse->data_length) + header_size > buffer_size) {
+        return false;
+    }
+
+    const wchar_t* path_buffer = nullptr;
+    USHORT offset = 0;
+    USHORT length = 0;
+    std::size_t path_capacity = 0;
+    if (reparse->tag == IO_REPARSE_TAG_MOUNT_POINT) {
+        path_buffer = reparse->data.mount_point.path_buffer;
+        offset = reparse->data.mount_point.substitute_offset;
+        length = reparse->data.mount_point.substitute_length;
+        path_capacity = reparse->data_length >= 8
+                            ? reparse->data_length - 8
+                            : 0;
+    } else if (reparse->tag == IO_REPARSE_TAG_SYMLINK) {
+        path_buffer = reparse->data.symbolic_link.path_buffer;
+        offset = reparse->data.symbolic_link.substitute_offset;
+        length = reparse->data.symbolic_link.substitute_length;
+        path_capacity = reparse->data_length >= 12
+                            ? reparse->data_length - 12
+                            : 0;
+    } else {
+        return false;
+    }
+    if (length == 0 || length % sizeof(wchar_t) != 0 ||
+        static_cast<std::size_t>(offset) + length > path_capacity) {
+        return false;
+    }
+    try {
+        target.assign(
+            reinterpret_cast<const wchar_t*>(
+                reinterpret_cast<const std::uint8_t*>(path_buffer) + offset),
+            length / sizeof(wchar_t));
+        constexpr wchar_t nt_prefix[] = L"\\??\\";
+        if (target.rfind(nt_prefix, 0) == 0) {
+            target.erase(0, std::size(nt_prefix) - 1);
+            if (target.rfind(L"UNC\\", 0) == 0) {
+                target.replace(0, 4, L"\\\\");
+            }
+        }
+    } catch (...) {
+        target.clear();
+        return false;
+    }
+    return !target.empty();
 }
 
 HANDLE WINAPI DetouredCreateFileW(
@@ -797,6 +878,55 @@ NTSTATUS NTAPI DetouredNtCreateSection(
         allocation_attributes, file);
 }
 
+BOOL WINAPI DetouredDeviceIoControl(
+    const HANDLE device,
+    const DWORD control_code,
+    const LPVOID input,
+    const DWORD input_size,
+    const LPVOID output,
+    const DWORD output_size,
+    const LPDWORD bytes_returned,
+    const LPOVERLAPPED overlapped) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled() || control_code != FSCTL_SET_REPARSE_POINT) {
+        return g_device_io_control(
+            device, control_code, input, input_size, output, output_size, bytes_returned,
+            overlapped);
+    }
+
+    std::wstring source_path;
+    std::wstring target_path;
+    if (!TryGetHandlePath(device, source_path) ||
+        !ReadReparseTarget(input, input_size, target_path)) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    const auto* policy = g_policy.get();
+    const auto source = policy == nullptr
+                            ? PolicyEvaluation{}
+                            : policy->Evaluate(source_path.c_str(), Access::kWrite);
+    const auto target = policy == nullptr
+                            ? PolicyEvaluation{}
+                            : policy->Evaluate(target_path.c_str(), Access::kMetadata);
+    if (source.decision == Decision::kDeny || target.decision == Decision::kDeny) {
+        const bool source_denied = source.decision == Decision::kDeny;
+        ReportDenied(
+            protocol::FilesystemOperation::kCreate,
+            source_denied ? EvaluatedPath(source, source_path.c_str())
+                          : EvaluatedPath(target, target_path.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+
+    const BOOL result = g_device_io_control(
+        device, control_code, input, input_size, output, output_size, bytes_returned,
+        overlapped);
+    if (result) {
+        InvalidateResolvedPathForMutation(EvaluatedPath(source, source_path.c_str()), true);
+    }
+    return result;
+}
+
 NTSTATUS NTAPI DetouredZwSetInformationFile(
     const HANDLE file,
     const PIO_STATUS_BLOCK io_status,
@@ -1191,6 +1321,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_nt_create_section),
             reinterpret_cast<PVOID>(DetouredNtCreateSection)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_device_io_control),
+            reinterpret_cast<PVOID>(DetouredDeviceIoControl)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_zw_set_information_file),
             reinterpret_cast<PVOID>(DetouredZwSetInformationFile)) != NO_ERROR ||
