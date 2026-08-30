@@ -1209,6 +1209,64 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 197;
     }
+    using NtCreateFileFunction = NTSTATUS(NTAPI*)(
+        PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK,
+        PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+    using NtOpenFileFunction = NTSTATUS(NTAPI*)(
+        PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, ULONG,
+        ULONG);
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto nt_create_file = reinterpret_cast<NtCreateFileFunction>(
+        GetProcAddress(ntdll, "NtCreateFile"));
+    const auto nt_open_file = reinterpret_cast<NtOpenFileFunction>(
+        GetProcAddress(ntdll, "NtOpenFile"));
+    std::wstring nt_create_path = L"\\??\\" + std::wstring(arguments[5]);
+    UNICODE_STRING nt_create_name{
+        static_cast<USHORT>(nt_create_path.size() * sizeof(wchar_t)),
+        static_cast<USHORT>((nt_create_path.size() + 1) * sizeof(wchar_t)),
+        nt_create_path.data()};
+    OBJECT_ATTRIBUTES nt_create_attributes{
+        sizeof(OBJECT_ATTRIBUTES), nullptr, &nt_create_name,
+        OBJ_CASE_INSENSITIVE, nullptr, nullptr};
+    IO_STATUS_BLOCK nt_create_status{};
+    HANDLE nt_created_file = nullptr;
+    if (nt_create_file == nullptr ||
+        nt_create_file(
+            &nt_created_file, FILE_GENERIC_WRITE | SYNCHRONIZE,
+            &nt_create_attributes, &nt_create_status, nullptr,
+            FILE_ATTRIBUTE_NORMAL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_CREATE, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+            nullptr, 0) != status_access_denied ||
+        nt_created_file != nullptr) {
+        if (nt_created_file != nullptr) {
+            CloseHandle(nt_created_file);
+        }
+        return 198;
+    }
+    std::wstring nt_open_path = L"\\??\\" + std::wstring(arguments[6]);
+    UNICODE_STRING nt_open_name{
+        static_cast<USHORT>(nt_open_path.size() * sizeof(wchar_t)),
+        static_cast<USHORT>((nt_open_path.size() + 1) * sizeof(wchar_t)),
+        nt_open_path.data()};
+    OBJECT_ATTRIBUTES nt_open_attributes{
+        sizeof(OBJECT_ATTRIBUTES), nullptr, &nt_open_name,
+        OBJ_CASE_INSENSITIVE, nullptr, nullptr};
+    IO_STATUS_BLOCK nt_open_status{};
+    HANDLE nt_opened_file = nullptr;
+    if (nt_open_file == nullptr ||
+        nt_open_file(
+            &nt_opened_file, FILE_GENERIC_READ | SYNCHRONIZE,
+            &nt_open_attributes, &nt_open_status,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT) !=
+            status_access_denied ||
+        nt_opened_file != nullptr) {
+        if (nt_opened_file != nullptr) {
+            CloseHandle(nt_opened_file);
+        }
+        return 199;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1993,7 +2051,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kDelete,
-            denied_alias_removed_directory_a.wstring(), 95);
+            denied_alias_removed_directory_a.wstring(), 95) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_path.wstring(), 96) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_delete_path.wstring(), 97);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
