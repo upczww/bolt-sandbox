@@ -8,7 +8,7 @@
 
 namespace bolt::protocol {
 
-inline constexpr std::size_t kRuntimePayloadLength = 56;
+inline constexpr std::size_t kRuntimePayloadLength = 64;
 inline constexpr GUID kRuntimePayloadGuid = {
     0x4f8a6d21, 0x91c7, 0x4bb7, {0xa6, 0x7e, 0x31, 0x57, 0x2b, 0xd9, 0x46, 0x10}};
 
@@ -18,12 +18,17 @@ struct RuntimePayload {
     std::uint64_t policy_handle = 0;
     std::uint64_t event_handle = 0;
     std::uint64_t release_handle = 0;
+    // Zero identifies the initial target. Descendants receive a private event
+    // that is signaled after hooks are installed, without emitting another
+    // session Ready frame.
+    std::uint64_t descendant_ready_handle = 0;
     std::array<std::uint8_t, 16> handshake_nonce{};
 
     bool operator==(const RuntimePayload& other) const noexcept {
         return target_process_id == other.target_process_id &&
                policy_length == other.policy_length && policy_handle == other.policy_handle &&
                event_handle == other.event_handle && release_handle == other.release_handle &&
+               descendant_ready_handle == other.descendant_ready_handle &&
                handshake_nonce == other.handshake_nonce;
     }
     bool operator!=(const RuntimePayload& other) const noexcept { return !(*this == other); }

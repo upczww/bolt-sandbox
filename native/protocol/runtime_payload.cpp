@@ -16,7 +16,8 @@ constexpr std::size_t kPolicyLengthOffset = 12;
 constexpr std::size_t kPolicyHandleOffset = 16;
 constexpr std::size_t kEventHandleOffset = 24;
 constexpr std::size_t kReleaseHandleOffset = 32;
-constexpr std::size_t kNonceOffset = 40;
+constexpr std::size_t kDescendantReadyHandleOffset = 40;
+constexpr std::size_t kNonceOffset = 48;
 constexpr std::size_t kMinimumPolicyLength = kPolicyEnvelopeLength;
 constexpr std::size_t kMaximumPolicyLength = kPolicyEnvelopeLength + kPolicyMaximumBodyLength;
 
@@ -83,6 +84,9 @@ std::array<std::uint8_t, kRuntimePayloadLength> EncodeRuntimePayload(
     WriteU64(encoded.data(), kPolicyHandleOffset, payload.policy_handle);
     WriteU64(encoded.data(), kEventHandleOffset, payload.event_handle);
     WriteU64(encoded.data(), kReleaseHandleOffset, payload.release_handle);
+    WriteU64(
+        encoded.data(), kDescendantReadyHandleOffset,
+        payload.descendant_ready_handle);
     std::copy(payload.handshake_nonce.begin(), payload.handshake_nonce.end(),
               encoded.begin() + kNonceOffset);
     return encoded;
@@ -114,6 +118,8 @@ RuntimePayloadStatus DecodeRuntimePayload(
     decoded.policy_handle = ReadU64(encoded, kPolicyHandleOffset);
     decoded.event_handle = ReadU64(encoded, kEventHandleOffset);
     decoded.release_handle = ReadU64(encoded, kReleaseHandleOffset);
+    decoded.descendant_ready_handle =
+        ReadU64(encoded, kDescendantReadyHandleOffset);
     std::copy(encoded + kNonceOffset, encoded + kRuntimePayloadLength,
               decoded.handshake_nonce.begin());
     if (decoded.target_process_id == 0) {
@@ -124,7 +130,9 @@ RuntimePayloadStatus DecodeRuntimePayload(
         return RuntimePayloadStatus::kInvalidPolicyLength;
     }
     if (!IsValidHandleValue(decoded.policy_handle) || !IsValidHandleValue(decoded.event_handle) ||
-        !IsValidHandleValue(decoded.release_handle)) {
+        !IsValidHandleValue(decoded.release_handle) ||
+        (decoded.descendant_ready_handle != 0 &&
+         !IsValidHandleValue(decoded.descendant_ready_handle))) {
         return RuntimePayloadStatus::kInvalidHandle;
     }
     output = decoded;
