@@ -539,6 +539,33 @@ bool AuthorizeEnumeration(const wchar_t* path) noexcept {
     return true;
 }
 
+bool ResolveParentFinalIdentity(
+    const wchar_t* path,
+    std::wstring& resolved_path) noexcept {
+    try {
+        const std::filesystem::path candidate{path};
+        const auto parent = candidate.parent_path();
+        if (candidate.filename().empty()) {
+            return ResolveFinalPathForPolicy(
+                candidate.c_str(), g_create_file_w, resolved_path);
+        }
+        std::wstring resolved_parent;
+        if (parent.empty() ||
+            !ResolveFinalPathForPolicy(
+                parent.c_str(), g_create_file_w, resolved_parent)) {
+            return false;
+        }
+        resolved_path =
+            (std::filesystem::path(resolved_parent) / candidate.filename())
+                .lexically_normal()
+                .wstring();
+        return true;
+    } catch (...) {
+        resolved_path.clear();
+        return false;
+    }
+}
+
 bool AuthorizeMetadata(const wchar_t* path) noexcept {
     const auto* policy = g_policy.get();
     const auto evaluation =
@@ -546,6 +573,24 @@ bool AuthorizeMetadata(const wchar_t* path) noexcept {
     if (evaluation.decision == Decision::kDeny) {
         ReportDenied(
             protocol::FilesystemOperation::kMetadata, EvaluatedPath(evaluation, path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    std::wstring resolved_path;
+    if (!ResolveParentFinalIdentity(
+            EvaluatedPath(evaluation, path), resolved_path)) {
+        ReportDenied(
+            protocol::FilesystemOperation::kMetadata,
+            EvaluatedPath(evaluation, path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    const auto final_evaluation =
+        policy->Evaluate(resolved_path.c_str(), Access::kMetadata);
+    if (final_evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            protocol::FilesystemOperation::kMetadata,
+            EvaluatedPath(final_evaluation, resolved_path.c_str()));
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
     }
@@ -673,23 +718,9 @@ bool AuthorizeDeletion(const wchar_t* path) noexcept {
         return false;
     }
 
-    std::wstring resolved_parent;
     std::wstring resolved_path;
-    try {
-        const std::filesystem::path candidate{EvaluatedPath(evaluation, path)};
-        const auto parent = candidate.parent_path();
-        if (parent.empty() || candidate.filename().empty() ||
-            !ResolveFinalPathForPolicy(
-                parent.c_str(), g_create_file_w, resolved_parent)) {
-            ReportDenied(protocol::FilesystemOperation::kDelete, path);
-            SetLastError(ERROR_ACCESS_DENIED);
-            return false;
-        }
-        resolved_path =
-            (std::filesystem::path(resolved_parent) / candidate.filename())
-                .lexically_normal()
-                .wstring();
-    } catch (...) {
+    if (!ResolveParentFinalIdentity(
+            EvaluatedPath(evaluation, path), resolved_path)) {
         ReportDenied(protocol::FilesystemOperation::kDelete, path);
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
@@ -715,19 +746,7 @@ bool ResolveCreateFileIdentity(
         return ResolveFinalPathForPolicy(path, g_create_file_w, resolved_path);
     }
     try {
-        const std::filesystem::path candidate{path};
-        const auto parent = candidate.parent_path();
-        std::wstring resolved_parent;
-        if (parent.empty() || candidate.filename().empty() ||
-            !ResolveFinalPathForPolicy(
-                parent.c_str(), g_create_file_w, resolved_parent)) {
-            return false;
-        }
-        resolved_path =
-            (std::filesystem::path(resolved_parent) / candidate.filename())
-                .lexically_normal()
-                .wstring();
-        return true;
+        return ResolveParentFinalIdentity(path, resolved_path);
     } catch (...) {
         resolved_path.clear();
         return false;

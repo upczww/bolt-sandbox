@@ -190,6 +190,9 @@ Metadata probing through `GetFileAttributesW/A` and
 `GetFileAttributesExW/A` shares one metadata-policy decision. Denied targets
 return the native failure sentinel, preserve `ERROR_ACCESS_DENIED`, and cannot
 leak existence, type, size, or timestamps through the output structure.
+Their identity resolver follows every parent junction while preserving the
+leaf reparse object, so an allowed textual alias cannot reveal metadata from a
+denied final parent target.
 
 Handle metadata probing through BuildXL's exact
 `GetFileInformationByHandle*` function types resolves the final file identity
