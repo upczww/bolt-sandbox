@@ -131,6 +131,17 @@ scripts. Test commands operate only in the disposable fixture tree and local
 network. Tool discovery happens before the run; unavailable required tools make
 the environment ineligible rather than reducing the case count.
 
+The native process matrix is enabled only when
+`BOLT_TEST_REQUIRE_COMPATIBILITY=1`. Tool paths may be pinned with
+`BOLT_TEST_CMD`, `BOLT_TEST_POWERSHELL`, `BOLT_TEST_NODE`,
+`BOLT_TEST_PYTHON`, `BOLT_TEST_GIT`, and `BOLT_TEST_CARGO`; otherwise the
+fixture uses `SearchPathW`. A configured missing tool is a failure. Each tool
+runs once for an allowed startup/version workflow and once against a synthetic
+denied `Cargo.toml`; the latter must fail and emit a path-matching violation for
+the exact tool PID. The fixture redirects cwd/TEMP/TMP to a disposable
+read-write root and disables optional .NET diagnostics rather than granting an
+arbitrary named-pipe capability.
+
 ## Observation schema
 
 Every probe returns at least:

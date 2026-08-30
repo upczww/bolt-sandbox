@@ -502,6 +502,55 @@ bool ReadFilesystemViolation(
            written == expected.size() && actual == expected;
 }
 
+bool ReadAnyFilesystemViolationForPath(
+    const HANDLE event_pipe,
+    const std::uint32_t process_id,
+    const std::wstring& expected_path) {
+    bool found = false;
+    for (;;) {
+        std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
+        DWORD first_read = 0;
+        if (!ReadFile(
+                event_pipe, header.data(), static_cast<DWORD>(header.size()),
+                &first_read, nullptr)) {
+            const DWORD error = GetLastError();
+            std::fprintf(
+                stderr,
+                "compatibility event stream ended: error=%lu pid=%lu found=%d\n",
+                static_cast<unsigned long>(error),
+                static_cast<unsigned long>(process_id), found ? 1 : 0);
+            return (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA) &&
+                   found;
+        }
+        if (first_read == 0) {
+            return found;
+        }
+        if (first_read != header.size()) {
+            return false;
+        }
+        const std::size_t payload_length = ReadU32(header.data() + 8);
+        std::vector<std::uint8_t> payload(payload_length);
+        if (!ReadExact(event_pipe, payload.data(), payload.size())) {
+            return false;
+        }
+        if (payload.size() < 9 || ReadU32(payload.data()) != process_id) {
+            continue;
+        }
+        const std::size_t path_length = ReadU32(payload.data() + 5);
+        if (9 + path_length * sizeof(wchar_t) != payload.size()) {
+            continue;
+        }
+        std::wstring path(path_length, L'\0');
+        std::memcpy(
+            path.data(), payload.data() + 9,
+            path.size() * sizeof(wchar_t));
+        const bool matches = CompareStringOrdinal(
+                                 path.c_str(), -1, expected_path.c_str(), -1,
+                                 TRUE) == CSTR_EQUAL;
+        found = found || matches;
+    }
+}
+
 bool ReadProcessViolation(
     const HANDLE event_pipe,
     const std::uint32_t process_id,
@@ -2753,6 +2802,113 @@ int RunParentExitFixture(const int argument_count, wchar_t** arguments) {
     return 0;
 }
 
+int RunCompatibilityParent(const int argument_count, wchar_t** arguments) {
+    if (argument_count != 7) {
+        return 315;
+    }
+    const HMODULE hook = GetModuleHandleW(arguments[2]);
+    const auto initialized = hook == nullptr
+                                 ? nullptr
+                                 : reinterpret_cast<BOOL (*)()>(GetProcAddress(
+                                       hook, "BoltSandboxRuntimeInitialized"));
+    if (initialized == nullptr || !initialized() ||
+        !HasRequiredProcessMitigations()) {
+        return 316;
+    }
+    const std::wstring kind = arguments[3];
+    const std::wstring tool = arguments[4];
+    const std::wstring denied = arguments[5];
+    const auto compatibility_root =
+        std::filesystem::path(denied).parent_path().parent_path();
+    const auto compatibility_work = compatibility_root / L"compatibility-work";
+    SetEnvironmentVariableW(L"TEMP", compatibility_work.c_str());
+    SetEnvironmentVariableW(L"TMP", compatibility_work.c_str());
+    SetEnvironmentVariableW(L"POWERSHELL_TELEMETRY_OPTOUT", L"1");
+    SetEnvironmentVariableW(L"DOTNET_CLI_TELEMETRY_OPTOUT", L"1");
+    SetEnvironmentVariableW(L"DOTNET_EnableDiagnostics", L"0");
+    const HANDLE process_id_mapping = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[6], nullptr, 10));
+    auto* process_id = static_cast<volatile LONG*>(MapViewOfFile(
+        process_id_mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+        sizeof(DWORD) * 2));
+    if (process_id == nullptr) {
+        return 317;
+    }
+    const auto run = [&](const std::wstring& parameters, const bool expect_success) {
+        std::wstring command = L"\"" + tool + L"\" " + parameters;
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW(
+                tool.c_str(), command.data(), nullptr, nullptr, FALSE,
+                0, nullptr, compatibility_work.c_str(), &startup,
+                &process)) {
+            const DWORD error = GetLastError();
+            std::fwprintf(
+                stderr,
+                L"compatibility CreateProcessW failed: kind=%ls error=%lu command=%ls\n",
+                kind.c_str(), static_cast<unsigned long>(error),
+                command.c_str());
+            InterlockedExchange(process_id + 1, static_cast<LONG>(error));
+            return false;
+        }
+        InterlockedExchange(
+            process_id, static_cast<LONG>(process.dwProcessId));
+        const DWORD wait = WaitForSingleObject(process.hProcess, 15'000);
+        DWORD exit_code = 0;
+        const bool exited =
+            wait == WAIT_OBJECT_0 &&
+            GetExitCodeProcess(process.hProcess, &exit_code) != FALSE;
+        if (!exited) {
+            TerminateProcess(process.hProcess, 318);
+        }
+        if (expect_success && exited && exit_code != 0) {
+            InterlockedExchange(process_id + 1, static_cast<LONG>(exit_code));
+        }
+        if (expect_success && exited && exit_code == 0) {
+            InterlockedExchange(process_id, 0);
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        return exited && (expect_success ? exit_code == 0 : exit_code != 0);
+    };
+    std::wstring allowed_parameters;
+    std::wstring denied_parameters;
+    if (kind == L"cmd") {
+        allowed_parameters = L"/d /c exit 0";
+        denied_parameters = L"/d /c type \"" + denied + L"\"";
+    } else if (kind == L"powershell") {
+        allowed_parameters = L"-NoProfile -NonInteractive -Command exit 0";
+        denied_parameters =
+            L"-NoProfile -NonInteractive -Command \"Get-Content -LiteralPath '" +
+            denied + L"' -ErrorAction Stop | Out-Null\"";
+    } else if (kind == L"node") {
+        allowed_parameters = L"--version";
+        denied_parameters =
+            L"-e \"require('fs').readFileSync(process.argv[1])\" \"" + denied +
+            L"\"";
+    } else if (kind == L"python") {
+        allowed_parameters = L"--version";
+        denied_parameters =
+            L"-c \"import pathlib,sys;pathlib.Path(sys.argv[1]).read_bytes()\" \"" +
+            denied + L"\"";
+    } else if (kind == L"git") {
+        allowed_parameters = L"--version";
+        denied_parameters = L"hash-object \"" + denied + L"\"";
+    } else if (kind == L"cargo") {
+        allowed_parameters = L"--version";
+        denied_parameters =
+            L"metadata --no-deps --format-version 1 --manifest-path \"" + denied +
+            L"\"";
+    } else {
+        return 319;
+    }
+    const bool passed = run(allowed_parameters, true) &&
+                        run(denied_parameters, false);
+    UnmapViewOfFile(const_cast<LONG*>(process_id));
+    return passed ? 0 : 320;
+}
+
 int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
     if (argument_count != 3) {
         return 222;
@@ -3299,6 +3455,13 @@ struct ParentExitProbe {
     volatile LONG* child_id;
 };
 
+struct CompatibilityProbe {
+    HANDLE process_id_mapping;
+    volatile LONG* process_id;
+    std::wstring denied_path;
+    std::wstring tool_root;
+};
+
 bool RunStartupHandleListTest(
     const std::wstring& executable,
     const std::filesystem::path& test_root) {
@@ -3386,11 +3549,27 @@ bool RunInheritedProcessTest(
     const std::wstring& pipe_name,
     const std::wstring& parent_arguments = {},
     const std::uint8_t nonce_byte = 0x5A,
-    const ParentExitProbe* parent_exit_probe = nullptr) {
-    const auto policy_payload = bolt::tests::SealPolicy({
+    const ParentExitProbe* parent_exit_probe = nullptr,
+    const CompatibilityProbe* compatibility_probe = nullptr) {
+    std::vector<bolt::tests::FilesystemRule> policy_rules = {
         {bolt::tests::FilesystemRuleKind::kReadOnly,
          std::filesystem::path(executable).root_path()},
-    }, bolt::tests::ChildProcessPolicyKind::kInherit);
+    };
+    if (compatibility_probe != nullptr) {
+        policy_rules.push_back(
+            {bolt::tests::FilesystemRuleKind::kInheritUser,
+             compatibility_probe->tool_root});
+        policy_rules.push_back(
+            {bolt::tests::FilesystemRuleKind::kReadWrite,
+             std::filesystem::path(compatibility_probe->denied_path)
+                 .parent_path()
+                 .parent_path()});
+        policy_rules.push_back(
+            {bolt::tests::FilesystemRuleKind::kDeny,
+             compatibility_probe->denied_path});
+    }
+    const auto policy_payload = bolt::tests::SealPolicy(
+        policy_rules, bolt::tests::ChildProcessPolicyKind::kInherit);
     std::array<std::uint8_t, 16> nonce{};
     nonce.fill(nonce_byte);
     SECURITY_ATTRIBUTES inheritable{};
@@ -3429,6 +3608,9 @@ bool RunInheritedProcessTest(
         inherited.push_back(parent_exit_probe->ready);
         inherited.push_back(parent_exit_probe->release);
         inherited.push_back(parent_exit_probe->child_id_mapping);
+    }
+    if (compatibility_probe != nullptr) {
+        inherited.push_back(compatibility_probe->process_id_mapping);
     }
     const bolt::common::ProcessLaunchOptions options{
         executable, command_line, L"", nullptr, inherited.data(),
@@ -3478,6 +3660,24 @@ bool RunInheritedProcessTest(
             CloseHandle(child);
         }
     }
+    bool compatibility_event_ok = true;
+    if (compatibility_probe != nullptr) {
+        const DWORD tool_process_id = static_cast<DWORD>(
+            InterlockedCompareExchange(compatibility_probe->process_id, 0, 0));
+        const DWORD tool_error = static_cast<DWORD>(InterlockedCompareExchange(
+            compatibility_probe->process_id + 1, 0, 0));
+        if (tool_process_id == 0 || tool_error != 0) {
+            std::fprintf(
+                stderr, "compatibility probe pid=%lu error=%lu ready=%d\n",
+                static_cast<unsigned long>(tool_process_id),
+                static_cast<unsigned long>(tool_error), ready_ok ? 1 : 0);
+        }
+        compatibility_event_ok =
+            ready_ok && tool_process_id != 0 &&
+            ReadAnyFilesystemViolationForPath(
+                event_pipe.handle(), tool_process_id,
+                compatibility_probe->denied_path);
+    }
     constexpr auto breakaway_operation =
         static_cast<bolt::protocol::ProcessOperation>(3);
     constexpr auto mitigation_weakening_operation =
@@ -3502,14 +3702,19 @@ bool RunInheritedProcessTest(
              mitigation_weakening_operation, 9));
     DWORD exit_code = 0;
     const bool passed = ready_ok && parent_exit_descendant_ok &&
+                        compatibility_event_ok &&
                         breakaway_event_ok &&
                         mitigation_weakening_events_ok &&
                         process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                         exit_code == 0;
     if (!passed) {
         std::fprintf(
-            stderr, "inherited process fixture failed with exit code %lu\n",
-            static_cast<unsigned long>(exit_code));
+            stderr,
+            "inherited process fixture failed: exit=%lu ready=%d descendant=%d compatibility=%d breakaway=%d mitigation=%d\n",
+            static_cast<unsigned long>(exit_code), ready_ok ? 1 : 0,
+            parent_exit_descendant_ok ? 1 : 0,
+            compatibility_event_ok ? 1 : 0, breakaway_event_ok ? 1 : 0,
+            mitigation_weakening_events_ok ? 1 : 0);
     }
     CloseHandle(release);
     return passed;
@@ -3537,6 +3742,117 @@ bool RunUnicodeLaunchPathTest(
         PipeName(GetCurrentProcessId() ^ 0x5100'0022U), arguments, 0x64);
     std::filesystem::remove_all(staged_directory, error);
     return passed;
+}
+
+std::wstring FindCompatibilityTool(
+    const wchar_t* environment_name,
+    const wchar_t* executable_name) {
+    std::wstring path(32'768, L'\0');
+    const DWORD environment_length = GetEnvironmentVariableW(
+        environment_name, path.data(), static_cast<DWORD>(path.size()));
+    if (environment_length != 0 && environment_length < path.size()) {
+        path.resize(environment_length);
+        return std::filesystem::is_regular_file(path) ? path : std::wstring{};
+    }
+    const DWORD search_length = SearchPathW(
+        nullptr, executable_name, nullptr, static_cast<DWORD>(path.size()),
+        path.data(), nullptr);
+    if (search_length == 0 || search_length >= path.size()) {
+        return {};
+    }
+    path.resize(search_length);
+    return path;
+}
+
+bool RunCompatibilityToolTests(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const wchar_t* hook_name,
+    const std::filesystem::path& test_root) {
+    std::array<wchar_t, 8> required{};
+    const DWORD required_length = GetEnvironmentVariableW(
+        L"BOLT_TEST_REQUIRE_COMPATIBILITY", required.data(),
+        static_cast<DWORD>(required.size()));
+    if (required_length != 1 || required[0] != L'1') {
+        std::fprintf(
+            stderr,
+            "process capability BOLT_TEST_REQUIRE_COMPATIBILITY=not_present\n");
+        return true;
+    }
+    const auto denied_directory = test_root / L"compatibility-denied";
+    const auto denied_path = denied_directory / L"Cargo.toml";
+    const auto compatibility_work = test_root / L"compatibility-work";
+    std::error_code error;
+    if (!std::filesystem::create_directories(denied_directory, error) || error ||
+        !std::filesystem::create_directories(compatibility_work, error) || error ||
+        !WriteFixture(
+            denied_path,
+            "[package]\nname='bolt-denied'\nversion='0.0.0'\n")) {
+        return false;
+    }
+    struct Tool {
+        const wchar_t* kind;
+        const wchar_t* environment;
+        const wchar_t* executable;
+    };
+    constexpr std::array<Tool, 6> tools = {{
+        {L"cmd", L"BOLT_TEST_CMD", L"cmd.exe"},
+        {L"powershell", L"BOLT_TEST_POWERSHELL", L"powershell.exe"},
+        {L"node", L"BOLT_TEST_NODE", L"node.exe"},
+        {L"python", L"BOLT_TEST_PYTHON", L"python.exe"},
+        {L"git", L"BOLT_TEST_GIT", L"git.exe"},
+        {L"cargo", L"BOLT_TEST_CARGO", L"cargo.exe"},
+    }};
+    for (std::size_t index = 0; index < tools.size(); ++index) {
+        const auto tool_path = FindCompatibilityTool(
+            tools[index].environment, tools[index].executable);
+        if (tool_path.empty()) {
+            std::fwprintf(
+                stderr, L"required compatibility tool not present: %ls\n",
+                tools[index].kind);
+            return false;
+        }
+        SECURITY_ATTRIBUTES inheritable{};
+        inheritable.nLength = sizeof(inheritable);
+        inheritable.bInheritHandle = TRUE;
+        const HANDLE mapping = CreateFileMappingW(
+            INVALID_HANDLE_VALUE, &inheritable, PAGE_READWRITE, 0,
+            sizeof(DWORD) * 2, nullptr);
+        auto* process_id = mapping == nullptr
+                               ? nullptr
+                               : static_cast<volatile LONG*>(MapViewOfFile(
+                                     mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0,
+                                     0, sizeof(DWORD) * 2));
+        if (mapping == nullptr || process_id == nullptr) {
+            return false;
+        }
+        InterlockedExchange(process_id, 0);
+        InterlockedExchange(process_id + 1, 0);
+        const std::wstring arguments =
+            L"--compatibility-parent " + std::wstring(hook_name) + L" " +
+            tools[index].kind + L" \"" + tool_path + L"\" \"" +
+            denied_path.wstring() + L"\" " + HandleText(mapping);
+        const CompatibilityProbe probe{
+            mapping, process_id, denied_path.wstring(),
+            std::filesystem::path(tool_path).parent_path().wstring()};
+        const bool passed = RunInheritedProcessTest(
+            executable, hook_path, hook_name,
+            PipeName(
+                GetCurrentProcessId() ^
+                (0x5100'0100U + static_cast<DWORD>(index))),
+            arguments, static_cast<std::uint8_t>(0x70U + index), nullptr,
+            &probe);
+        UnmapViewOfFile(const_cast<LONG*>(process_id));
+        CloseHandle(mapping);
+        if (!passed) {
+            std::fwprintf(
+                stderr, L"compatibility tool failed: %ls (%ls)\n",
+                tools[index].kind, tool_path.c_str());
+            return false;
+        }
+    }
+    std::filesystem::remove_all(denied_directory, error);
+    return true;
 }
 
 }  // namespace
@@ -4645,6 +4961,8 @@ bool RunProcessTests() {
 
     event_pipe.Close();
     if (!RunUnicodeLaunchPathTest(executable, hook_path, hook_name, test_root) ||
+        !RunCompatibilityToolTests(
+            executable, hook_path, hook_name, test_root) ||
         !RunInheritedProcessTest(executable, hook_path, hook_name, pipe_name)) {
         return false;
     }
