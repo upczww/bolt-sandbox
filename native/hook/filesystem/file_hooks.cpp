@@ -5,6 +5,8 @@
 #include "hook/filesystem/path_cache.h"
 #include "hook/event_sink.h"
 
+#include "DetouredFunctionTypes.h"
+
 #include <memory>
 
 #define WIN32_LEAN_AND_MEAN
@@ -30,6 +32,7 @@ using MoveFileExWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, DWORD);
 MoveFileExWFunction g_move_file_ex_w = MoveFileExW;
 using CreateHardLinkWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRIBUTES);
 CreateHardLinkWFunction g_create_hard_link_w = CreateHardLinkW;
+CopyFileW_t g_copy_file_w = CopyFileW;
 
 void ReportDenied(
     const protocol::FilesystemOperation operation,
@@ -164,6 +167,32 @@ BOOL WINAPI DetouredCreateHardLinkW(
     return g_create_hard_link_w(new_path, existing_path, security_attributes);
 }
 
+// Adapts BuildXL's CopyFile contract: source and destination are independent
+// policy identities requiring read and write access respectively. Bolt checks
+// both before invoking Windows so a denied source cannot leave a partial copy.
+BOOL WINAPI DetouredCopyFileW(
+    const LPCWSTR existing_path,
+    const LPCWSTR new_path,
+    const BOOL fail_if_exists) noexcept {
+    const auto* policy = g_policy.get();
+    const auto source =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(existing_path, Access::kRead);
+    const auto destination =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(new_path, Access::kWrite);
+    if (source.decision == Decision::kDeny || destination.decision == Decision::kDeny) {
+        const bool source_denied = source.decision == Decision::kDeny;
+        ReportDenied(
+            source_denied ? protocol::FilesystemOperation::kRead
+                          : protocol::FilesystemOperation::kCreate,
+            source_denied ? EvaluatedPath(source, existing_path)
+                          : EvaluatedPath(destination, new_path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    InvalidateResolvedPathForMutation(EvaluatedPath(destination, new_path), false);
+    return g_copy_file_w(existing_path, new_path, fail_if_exists);
+}
+
 }  // namespace
 
 HookInstallStatus InstallFileHooks(
@@ -199,6 +228,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_hard_link_w),
             reinterpret_cast<PVOID>(DetouredCreateHardLinkW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_copy_file_w),
+            reinterpret_cast<PVOID>(DetouredCopyFileW)) != NO_ERROR ||
         DetourTransactionCommit() != NO_ERROR) {
         DetourTransactionAbort();
         return HookInstallStatus::kTransactionFailed;

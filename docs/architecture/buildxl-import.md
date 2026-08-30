@@ -46,7 +46,9 @@ adaptation directory. In that directory only, Bolt's narrow
 `FileAccessHelpers` and `UtilityHelpers` compatibility headers replace the
 same-named BuildXL headers that otherwise pull in manifest, reporting, and
 process-injector globals. `Assertions.cpp` and `StringOperations.cpp` compile
-directly from the vendored paths.
+directly from the vendored paths. `DetouredFunctionTypes.h` is also copied
+unchanged into this narrow include boundary so hook signatures reuse BuildXL's
+audited Windows API declarations without exposing its wider header graph.
 
 The Bolt filesystem hook layer canonicalizes mutation paths and invalidates the
 upstream `ResolvedPathCache` before create, delete, directory mutation, move,
@@ -59,6 +61,13 @@ attribute/EA/security/synchronization-only opens as metadata, execution/content
 opens as reads, all mutation or unknown rights as writes, and classifies
 `CREATE_NEW`, `CREATE_ALWAYS`, and `OPEN_ALWAYS` as creates. Unknown creation
 dispositions fail closed as writes.
+
+The first adapted BuildXL operation-family hook is `CopyFileW`. It evaluates
+the source as read and the destination as write before invoking Windows,
+reports the denied side through `EventSink`, and invalidates the destination
+path cache on an allowed call. Unlike BuildXL's build-observation-oriented
+post-call source check, Bolt performs both checks before the call so a denied
+copy cannot leave a destination side effect.
 
 The remaining vendored files are not yet members of a Bolt runtime link target.
 They

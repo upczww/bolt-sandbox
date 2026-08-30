@@ -67,6 +67,11 @@ configure_file(
     ${BUILDXL_ADAPTED_DIR}/StringOperations.h
     COPYONLY
 )
+configure_file(
+    ${BUILDXL_DETOURS_SERVICES_DIR}/DetouredFunctionTypes.h
+    ${BUILDXL_ADAPTED_DIR}/DetouredFunctionTypes.h
+    COPYONLY
+)
 add_library(bolt-sandbox-buildxl STATIC
     ${BUILDXL_DETOURS_SERVICES_DIR}/Assertions.cpp
     ${BUILDXL_DETOURS_SERVICES_DIR}/StringOperations.cpp
