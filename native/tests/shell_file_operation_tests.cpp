@@ -35,6 +35,112 @@ enum class ShellOperation {
     kDelete,
 };
 
+using FlushEventsFunction = BOOL (*)(DWORD);
+
+struct ConcurrentCreateContext {
+    HANDLE start = nullptr;
+    std::wstring path;
+    volatile LONG passed = 0;
+};
+
+struct ConcurrentFlushContext {
+    HANDLE start = nullptr;
+    FlushEventsFunction flush = nullptr;
+    volatile LONG passed = 0;
+};
+
+DWORD WINAPI RunDeniedCreateThread(LPVOID parameter) {
+    auto* context = static_cast<ConcurrentCreateContext*>(parameter);
+    if (WaitForSingleObject(context->start, 5'000) != WAIT_OBJECT_0) {
+        return 1;
+    }
+    SetLastError(ERROR_SUCCESS);
+    const HANDLE file = CreateFileW(
+        context->path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    const DWORD error = GetLastError();
+    if (file != INVALID_HANDLE_VALUE) {
+        CloseHandle(file);
+        DeleteFileW(context->path.c_str());
+    }
+    InterlockedExchange(
+        &context->passed,
+        file == INVALID_HANDLE_VALUE && error == ERROR_ACCESS_DENIED ? 1 : 0);
+    return 0;
+}
+
+DWORD WINAPI RunConcurrentFlushThread(LPVOID parameter) {
+    auto* context = static_cast<ConcurrentFlushContext*>(parameter);
+    if (WaitForSingleObject(context->start, 5'000) != WAIT_OBJECT_0) {
+        return 1;
+    }
+    InterlockedExchange(
+        &context->passed,
+        context->flush != nullptr && context->flush(5'000) ? 1 : 0);
+    return 0;
+}
+
+bool RunConcurrentReentrancyProbe(
+    const std::filesystem::path& read_only_root,
+    const FlushEventsFunction flush) {
+    constexpr std::size_t worker_count = 16;
+    if (flush == nullptr || !flush(5'000)) {
+        return false;
+    }
+    const HANDLE start = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (start == nullptr) {
+        return false;
+    }
+
+    std::array<ConcurrentCreateContext, worker_count> contexts{};
+    std::array<HANDLE, worker_count + 1> threads{};
+    bool created = true;
+    for (std::size_t index = 0; index < worker_count; ++index) {
+        contexts[index].start = start;
+        contexts[index].path =
+            read_only_root /
+            (L"concurrent-denied-" + std::to_wstring(index) + L".txt");
+        threads[index] = CreateThread(
+            nullptr, 0, RunDeniedCreateThread, &contexts[index], 0, nullptr);
+        created = created && threads[index] != nullptr;
+    }
+    ConcurrentFlushContext flush_context{start, flush, 0};
+    threads[worker_count] = CreateThread(
+        nullptr, 0, RunConcurrentFlushThread, &flush_context, 0, nullptr);
+    created = created && threads[worker_count] != nullptr;
+
+    const bool started = SetEvent(start) != FALSE;
+    const DWORD wait = created && started
+                           ? WaitForMultipleObjects(
+                                 static_cast<DWORD>(threads.size()),
+                                 threads.data(), TRUE, 5'000)
+                           : WAIT_FAILED;
+    bool passed = created && started && wait == WAIT_OBJECT_0 &&
+                  flush_context.passed == 1;
+    for (std::size_t index = 0; index < worker_count; ++index) {
+        passed = passed && contexts[index].passed == 1 &&
+                 !std::filesystem::exists(contexts[index].path);
+    }
+    for (const HANDLE thread : threads) {
+        if (thread != nullptr) {
+            CloseHandle(thread);
+        }
+    }
+    CloseHandle(start);
+    return passed && flush(5'000);
+}
+
+std::filesystem::path LongDeniedPath(
+    const std::filesystem::path& read_only_root) {
+    constexpr std::size_t target_code_units = 30'000;
+    std::wstring path = read_only_root.wstring();
+    path.push_back(L'\\');
+    if (path.size() < target_code_units) {
+        path.append(target_code_units - path.size(), L'x');
+    }
+    return path;
+}
+
 class ComApartment final {
   public:
     ComApartment() : status_(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
@@ -176,6 +282,10 @@ bool ReadFilesystemViolations(
                 return !violations.empty();
             }
             if (error != ERROR_MORE_DATA || first_read != header.size()) {
+                std::fprintf(
+                    stderr, "event header read failed: error=%lu bytes=%lu count=%zu\n",
+                    static_cast<unsigned long>(error),
+                    static_cast<unsigned long>(first_read), violations.size());
                 return false;
             }
         }
@@ -184,6 +294,7 @@ bool ReadFilesystemViolations(
              !ReadExact(
                  event_pipe, header.data() + first_read,
                  header.size() - first_read))) {
+            std::fprintf(stderr, "event header was truncated\n");
             return false;
         }
 
@@ -193,6 +304,12 @@ bool ReadFilesystemViolations(
                                  bolt::protocol::kMaximumEventPathCodeUnits *
                                      sizeof(wchar_t) ||
             ReadU64(header.data() + 12) != expected_sequence) {
+            std::fprintf(
+                stderr,
+                "event header invalid: kind=%u payload=%zu sequence=%llu expected=%llu\n",
+                static_cast<unsigned>(ReadU16(header.data() + 6)), payload_length,
+                static_cast<unsigned long long>(ReadU64(header.data() + 12)),
+                static_cast<unsigned long long>(expected_sequence));
             return false;
         }
         std::vector<std::uint8_t> frame(header.size() + payload_length);
@@ -200,11 +317,18 @@ bool ReadFilesystemViolations(
         if (!ReadExact(
                 event_pipe, frame.data() + header.size(), payload_length) ||
             ReadU32(frame.data() + 24) != process_id || frame[28] > 6) {
+            std::fprintf(
+                stderr, "event payload read failed: payload=%zu sequence=%llu\n",
+                payload_length,
+                static_cast<unsigned long long>(expected_sequence));
             return false;
         }
         const std::size_t path_length = ReadU32(frame.data() + 29);
         if (path_length == 0 ||
             33 + path_length * sizeof(wchar_t) != frame.size()) {
+            std::fprintf(
+                stderr, "event path invalid: length=%zu frame=%zu\n",
+                path_length, frame.size());
             return false;
         }
 
@@ -221,6 +345,9 @@ bool ReadFilesystemViolations(
                 expected.data(), expected.size(), written) !=
                 bolt::protocol::FrameEncodeStatus::kSuccess ||
             written != expected.size() || expected != frame) {
+            std::fprintf(
+                stderr, "event checksum mismatch: sequence=%llu\n",
+                static_cast<unsigned long long>(expected_sequence));
             return false;
         }
         violations.push_back({operation, std::move(path)});
@@ -342,6 +469,34 @@ int RunShellFileOperationChild(
         !RunFileOperation(
             ShellOperation::kDelete, arguments[11], {}, nullptr, false)) {
         return 243;
+    }
+
+#if defined(_WIN64)
+    constexpr auto hook_name = L"bolt-sandbox-x64.dll";
+#else
+    constexpr auto hook_name = L"bolt-sandbox-x86.dll";
+#endif
+    const HMODULE hook = GetModuleHandleW(hook_name);
+    const auto flush = hook == nullptr
+                           ? nullptr
+                           : reinterpret_cast<FlushEventsFunction>(
+                                 GetProcAddress(hook, "BoltSandboxFlushEvents"));
+    if (!RunConcurrentReentrancyProbe(arguments[8], flush)) {
+        return 245;
+    }
+    const std::filesystem::path long_denied_path = LongDeniedPath(arguments[8]);
+    SetLastError(ERROR_SUCCESS);
+    const HANDLE long_denied_file = CreateFileW(
+        long_denied_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    const DWORD long_denied_error = GetLastError();
+    if (long_denied_file != INVALID_HANDLE_VALUE) {
+        CloseHandle(long_denied_file);
+        DeleteFileW(long_denied_path.c_str());
+    }
+    if (long_denied_file != INVALID_HANDLE_VALUE ||
+        long_denied_error != ERROR_ACCESS_DENIED || !flush(5'000)) {
+        return 246;
     }
 
     const auto release = reinterpret_cast<HANDLE>(
@@ -496,10 +651,12 @@ bool RunShellFileOperationTests() {
     const auto child_process_id =
         static_cast<std::uint32_t>(GetProcessId(process.process_handle()));
     std::vector<FilesystemViolation> violations;
-    const bool events_ok =
+    const bool event_stream_ok =
         child_ok && child_process_id != 0 &&
         ReadFilesystemViolations(
-            event_pipe.handle(), child_process_id, violations) &&
+            event_pipe.handle(), child_process_id, violations);
+    bool events_ok =
+        event_stream_ok &&
         ContainsViolation(
             violations,
             bolt::protocol::FilesystemOperation::kCreate,
@@ -516,8 +673,18 @@ bool RunShellFileOperationTests() {
             violations,
             bolt::protocol::FilesystemOperation::kDelete,
             denied_delete_source);
+    for (std::size_t index = 0; index < 16; ++index) {
+        events_ok = events_ok && ContainsViolation(
+            violations, bolt::protocol::FilesystemOperation::kCreate,
+            read_only_root /
+                (L"concurrent-denied-" + std::to_wstring(index) + L".txt"));
+    }
+    const std::filesystem::path long_denied_path = LongDeniedPath(read_only_root);
+    events_ok = events_ok && ContainsViolation(
+        violations, bolt::protocol::FilesystemOperation::kCreate,
+        long_denied_path);
 
-    const bool side_effects_ok =
+    bool side_effects_ok =
         std::filesystem::exists(allowed_root / L"allowed-copy.txt") &&
         !std::filesystem::exists(allowed_move_source) &&
         std::filesystem::exists(allowed_root / L"allowed-move.txt") &&
@@ -531,6 +698,15 @@ bool RunShellFileOperationTests() {
         std::filesystem::exists(denied_rename_source) &&
         !std::filesystem::exists(read_only_root / L"denied-renamed.txt") &&
         std::filesystem::exists(denied_delete_source);
+    for (std::size_t index = 0; index < 16; ++index) {
+        side_effects_ok =
+            side_effects_ok &&
+            !std::filesystem::exists(
+                read_only_root /
+                (L"concurrent-denied-" + std::to_wstring(index) + L".txt"));
+    }
+    side_effects_ok =
+        side_effects_ok && !std::filesystem::exists(long_denied_path);
 
     CloseHandle(release);
     event_pipe.Close();
@@ -538,8 +714,10 @@ bool RunShellFileOperationTests() {
     if (!child_ok || !events_ok || !side_effects_ok) {
         std::fprintf(
             stderr,
-            "IFileOperation fixture failed with exit code %lu, events %s, side effects %s\n",
+            "IFileOperation fixture failed with exit code %lu, pid %lu, stream %s, frames %zu, events %s, side effects %s\n",
             static_cast<unsigned long>(exit_code),
+            static_cast<unsigned long>(child_process_id),
+            event_stream_ok ? "valid" : "invalid", violations.size(),
             events_ok ? "valid" : "invalid",
             side_effects_ok ? "valid" : "invalid");
         for (const auto& violation : violations) {

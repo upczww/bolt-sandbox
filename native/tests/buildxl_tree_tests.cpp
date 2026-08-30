@@ -3,14 +3,108 @@
 #include "CanonicalizedPath.h"
 #include "FilesCheckedForAccess.h"
 #include "ResolvedPathCache.h"
+#include "DetouredScope.h"
 #include "hook/filesystem/path_cache.h"
 
+#include <array>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+namespace {
+
+struct ScopeThreadContext {
+    HANDLE start;
+    HANDLE ready;
+    volatile LONG passed;
+};
+
+DWORD WINAPI RunScopeThread(LPVOID parameter) {
+    auto* context = static_cast<ScopeThreadContext*>(parameter);
+    DetouredScope outer;
+    const bool outer_enabled_before = !outer.Detoured_IsDisabled();
+    SetEvent(context->ready);
+    if (WaitForSingleObject(context->start, 5'000) != WAIT_OBJECT_0) {
+        return 1;
+    }
+    bool nested_disabled = false;
+    {
+        DetouredScope nested;
+        nested_disabled = nested.Detoured_IsDisabled();
+    }
+    const bool outer_enabled_after = !outer.Detoured_IsDisabled();
+    InterlockedExchange(
+        &context->passed,
+        outer_enabled_before && nested_disabled && outer_enabled_after ? 1 : 0);
+    return 0;
+}
+
+bool DetouredScopesAreThreadLocal() {
+    constexpr std::size_t thread_count = 4;
+    const HANDLE start = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    std::array<ScopeThreadContext, thread_count> contexts{};
+    std::array<HANDLE, thread_count> ready{};
+    std::array<HANDLE, thread_count> threads{};
+    if (start == nullptr) {
+        return false;
+    }
+
+    bool created = true;
+    for (std::size_t index = 0; index < thread_count; ++index) {
+        ready[index] = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        contexts[index] = {start, ready[index], 0};
+        threads[index] = CreateThread(
+            nullptr, 0, RunScopeThread, &contexts[index], 0, nullptr);
+        created = created && ready[index] != nullptr && threads[index] != nullptr;
+        if (!created) {
+            break;
+        }
+    }
+
+    bool main_scope_valid = false;
+    if (created) {
+        DetouredScope outer;
+        const bool outer_enabled_before = !outer.Detoured_IsDisabled();
+        const DWORD ready_wait = WaitForMultipleObjects(
+            static_cast<DWORD>(ready.size()), ready.data(), TRUE, 5'000);
+        bool nested_disabled = false;
+        {
+            DetouredScope nested;
+            nested_disabled = nested.Detoured_IsDisabled();
+        }
+        main_scope_valid = outer_enabled_before && nested_disabled &&
+                           !outer.Detoured_IsDisabled() &&
+                           ready_wait == WAIT_OBJECT_0 && SetEvent(start) != FALSE;
+    } else {
+        SetEvent(start);
+    }
+
+    const DWORD thread_wait = WaitForMultipleObjects(
+        static_cast<DWORD>(threads.size()), threads.data(), TRUE, 5'000);
+    bool workers_valid = thread_wait == WAIT_OBJECT_0;
+    for (std::size_t index = 0; index < thread_count; ++index) {
+        workers_valid = workers_valid && contexts[index].passed == 1;
+        if (threads[index] != nullptr) {
+            CloseHandle(threads[index]);
+        }
+        if (ready[index] != nullptr) {
+            CloseHandle(ready[index]);
+        }
+    }
+    CloseHandle(start);
+    return created && main_scope_valid && workers_valid;
+}
+
+}  // namespace
+
 bool RunBuildXlTreeTests() {
+    if (!DetouredScopesAreThreadLocal()) {
+        return false;
+    }
     TreeNodeChildren children;
     auto original = std::make_unique<TreeNode>();
     TreeNode* original_pointer = original.get();
