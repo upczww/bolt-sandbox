@@ -25,6 +25,8 @@ using RemoveDirectoryWFunction = BOOL(WINAPI*)(LPCWSTR);
 RemoveDirectoryWFunction g_remove_directory_w = RemoveDirectoryW;
 using MoveFileExWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, DWORD);
 MoveFileExWFunction g_move_file_ex_w = MoveFileExW;
+using CreateHardLinkWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRIBUTES);
+CreateHardLinkWFunction g_create_hard_link_w = CreateHardLinkW;
 
 Access ClassifyAccess(const DWORD desired_access, const DWORD creation_disposition) noexcept {
     constexpr DWORD write_access = GENERIC_WRITE | FILE_WRITE_DATA | FILE_APPEND_DATA |
@@ -104,6 +106,21 @@ BOOL WINAPI DetouredMoveFileExW(
     return g_move_file_ex_w(existing_path, new_path, flags);
 }
 
+// Mirrors BuildXL's two-sided hard-link check: reading the existing object and
+// writing the new directory entry are separate policy decisions.
+BOOL WINAPI DetouredCreateHardLinkW(
+    const LPCWSTR new_path,
+    const LPCWSTR existing_path,
+    const LPSECURITY_ATTRIBUTES security_attributes) noexcept {
+    const auto* policy = g_policy.get();
+    if (policy == nullptr || policy->Decide(existing_path, Access::kRead) == Decision::kDeny ||
+        policy->Decide(new_path, Access::kWrite) == Decision::kDeny) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return g_create_hard_link_w(new_path, existing_path, security_attributes);
+}
+
 }  // namespace
 
 HookInstallStatus InstallFileHooks(
@@ -136,6 +153,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_move_file_ex_w),
             reinterpret_cast<PVOID>(DetouredMoveFileExW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_create_hard_link_w),
+            reinterpret_cast<PVOID>(DetouredCreateHardLinkW)) != NO_ERROR ||
         DetourTransactionCommit() != NO_ERROR) {
         DetourTransactionAbort();
         return HookInstallStatus::kTransactionFailed;
