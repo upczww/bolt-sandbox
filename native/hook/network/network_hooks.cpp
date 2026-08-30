@@ -51,6 +51,7 @@ using DnsQueryExFunction = decltype(&DnsQueryEx);
 using DnsFreeFunction = decltype(&DnsFree);
 using SendToFunction = decltype(&sendto);
 using WsaSendToFunction = decltype(&WSASendTo);
+using WsaSendFunction = decltype(&WSASend);
 using GetPeerNameFunction = decltype(&getpeername);
 using CloseSocketFunction = decltype(&closesocket);
 
@@ -100,6 +101,7 @@ DnsQueryExFunction g_dns_query_ex = DnsQueryEx;
 DnsFreeFunction g_dns_free = DnsFree;
 SendToFunction g_send_to = sendto;
 WsaSendToFunction g_wsa_send_to = WSASendTo;
+WsaSendFunction g_wsa_send = WSASend;
 GetPeerNameFunction g_get_peer_name = getpeername;
 CloseSocketFunction g_close_socket = closesocket;
 constexpr GUID kConnectExGuid = WSAID_CONNECTEX;
@@ -546,6 +548,20 @@ bool ReadEndpoint(
     return false;
 }
 
+bool WriteTransferredBytes(
+    const LPDWORD output,
+    const DWORD value) noexcept {
+    if (output == nullptr) {
+        return true;
+    }
+    __try {
+        *output = value;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 bool WriteEndpoint(
     const protocol::NetworkEndpoint& endpoint,
     sockaddr* const address,
@@ -769,6 +785,57 @@ BOOL PASCAL DetouredConnectEx(
     const DWORD send_length,
     LPDWORD bytes_sent,
     LPOVERLAPPED overlapped) noexcept {
+    if (overlapped == nullptr || (send_length != 0 && send_buffer == nullptr)) {
+        WSASetLastError(overlapped == nullptr ? WSAEINVAL : WSAEFAULT);
+        return FALSE;
+    }
+
+    int proxy_result = SOCKET_ERROR;
+    if (TryProxyConnect(socket, address, address_length, proxy_result)) {
+        if (proxy_result == SOCKET_ERROR) {
+            return FALSE;
+        }
+        WSABUF buffer{};
+        buffer.buf = static_cast<char*>(send_buffer);
+        buffer.len = send_length;
+        DWORD transferred = 0;
+        const int send_status = g_wsa_send(
+            socket, &buffer, 1, &transferred, 0, overlapped, nullptr);
+        if (send_status == 0) {
+            if (!WriteTransferredBytes(bytes_sent, transferred)) {
+                shutdown(socket, SD_BOTH);
+                if (g_socket_targets != nullptr) {
+                    g_socket_targets->Remove(
+                        static_cast<std::uintptr_t>(socket));
+                }
+                WSASetLastError(WSAEFAULT);
+                return FALSE;
+            }
+            WSASetLastError(0);
+            return TRUE;
+        }
+        const int send_error = WSAGetLastError();
+        if (send_error == WSA_IO_PENDING) {
+            if (!WriteTransferredBytes(bytes_sent, 0)) {
+                shutdown(socket, SD_BOTH);
+                if (g_socket_targets != nullptr) {
+                    g_socket_targets->Remove(
+                        static_cast<std::uintptr_t>(socket));
+                }
+                WSASetLastError(WSAEFAULT);
+                return FALSE;
+            }
+            WSASetLastError(WSA_IO_PENDING);
+            return FALSE;
+        }
+        shutdown(socket, SD_BOTH);
+        if (g_socket_targets != nullptr) {
+            g_socket_targets->Remove(static_cast<std::uintptr_t>(socket));
+        }
+        WSASetLastError(send_error);
+        return FALSE;
+    }
+
     if (DenyConnect(address, address_length)) {
         return FALSE;
     }

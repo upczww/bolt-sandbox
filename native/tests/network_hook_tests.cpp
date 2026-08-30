@@ -760,6 +760,13 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
         connected_peer.sin_family == AF_INET &&
         ntohs(connected_peer.sin_port) ==
             static_cast<std::uint16_t>(_wtoi(arguments[3]));
+    closesocket(allowed_socket);
+    sockaddr_in closed_peer{};
+    int closed_peer_length = sizeof(closed_peer);
+    const int closed_peer_status = getpeername(
+        allowed_socket, reinterpret_cast<sockaddr*>(&closed_peer),
+        &closed_peer_length);
+    const int closed_peer_error = WSAGetLastError();
     const std::string ipv6_port = std::to_string(_wtoi(arguments[4]));
     ADDRINFOA ipv6_hints{};
     ipv6_hints.ai_family = AF_INET6;
@@ -958,13 +965,6 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
     if (dns_ex_event != nullptr) {
         CloseHandle(dns_ex_event);
     }
-    closesocket(allowed_socket);
-    sockaddr_in closed_peer{};
-    int closed_peer_length = sizeof(closed_peer);
-    const int closed_peer_status = getpeername(
-        allowed_socket, reinterpret_cast<sockaddr*>(&closed_peer),
-        &closed_peer_length);
-    const int closed_peer_error = WSAGetLastError();
     closesocket(denied_socket);
     closesocket(ipv6_socket);
     closesocket(allowed_connect_ex_socket);
