@@ -169,6 +169,49 @@ SOCKET AcceptWithTimeout(
                : INVALID_SOCKET;
 }
 
+bool ServeHttpOnce(
+    const SOCKET ipv4_listener,
+    const SOCKET ipv6_listener) {
+    fd_set readable{};
+    FD_ZERO(&readable);
+    FD_SET(ipv4_listener, &readable);
+    FD_SET(ipv6_listener, &readable);
+    timeval timeout{};
+    timeout.tv_sec = 3;
+    if (select(0, &readable, nullptr, nullptr, &timeout) <= 0) {
+        return false;
+    }
+    const SOCKET accepted = FD_ISSET(ipv4_listener, &readable)
+                                ? accept(ipv4_listener, nullptr, nullptr)
+                                : accept(ipv6_listener, nullptr, nullptr);
+    if (accepted == INVALID_SOCKET) {
+        return false;
+    }
+    constexpr DWORD receive_timeout = 3'000;
+    setsockopt(
+        accepted, SOL_SOCKET, SO_RCVTIMEO,
+        reinterpret_cast<const char*>(&receive_timeout),
+        sizeof(receive_timeout));
+    std::array<char, 4'096> request{};
+    const int received =
+        recv(accepted, request.data(), static_cast<int>(request.size()), 0);
+    constexpr char response[] =
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+    int offset = 0;
+    while (received > 0 && offset < static_cast<int>(sizeof(response) - 1)) {
+        const int sent = send(
+            accepted, response + offset,
+            static_cast<int>(sizeof(response) - 1) - offset, 0);
+        if (sent <= 0) {
+            break;
+        }
+        offset += sent;
+    }
+    shutdown(accepted, SD_BOTH);
+    closesocket(accepted);
+    return received > 0 && offset == static_cast<int>(sizeof(response) - 1);
+}
+
 }  // namespace
 
 int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
@@ -723,7 +766,7 @@ bool RunNetworkHookTests() {
 }
 
 int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 5) {
+    if (argument_count != 6) {
         return 210;
     }
     WSADATA winsock{};
@@ -906,6 +949,12 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
             &connect_ex_peer_length) == 0 &&
         ntohs(connect_ex_peer.sin_port) ==
             static_cast<std::uint16_t>(_wtoi(arguments[3]));
+    const auto http_port =
+        static_cast<std::uint16_t>(_wtoi(arguments[5]));
+    const bool win_http_allowed =
+        bolt::tests::TryWinHttpGet(arguments[2], http_port);
+    const bool win_inet_allowed =
+        bolt::tests::TryWinInetGetW(arguments[2], http_port);
 
     sockaddr_in wrong_port{};
     if (results != nullptr && results->ai_addrlen >= sizeof(wrong_port)) {
@@ -991,6 +1040,9 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
     if (!connect_ex_ready || !connect_ex_completed ||
         !connect_ex_peer_is_original) {
         return 237;
+    }
+    if (!win_http_allowed || !win_inet_allowed) {
+        return 238;
     }
     if (closed_peer_status != SOCKET_ERROR ||
         closed_peer_error != WSAENOTSOCK) {
@@ -1078,6 +1130,53 @@ bool RunNetworkAllowListTests() {
         return false;
     }
     const std::uint16_t ipv6_port = ntohs(ipv6_endpoint.sin6_port);
+    const SOCKET http_listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in http_endpoint{};
+    http_endpoint.sin_family = AF_INET;
+    http_endpoint.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    http_endpoint.sin_port = 0;
+    int http_endpoint_length = sizeof(http_endpoint);
+    if (http_listener == INVALID_SOCKET ||
+        bind(
+            http_listener, reinterpret_cast<const sockaddr*>(&http_endpoint),
+            sizeof(http_endpoint)) != 0 ||
+        listen(http_listener, 2) != 0 ||
+        getsockname(
+            http_listener, reinterpret_cast<sockaddr*>(&http_endpoint),
+            &http_endpoint_length) != 0) {
+        closesocket(listener);
+        closesocket(ipv6_listener);
+        if (http_listener != INVALID_SOCKET) {
+            closesocket(http_listener);
+        }
+        WSACleanup();
+        return false;
+    }
+    const std::uint16_t http_port = ntohs(http_endpoint.sin_port);
+    const SOCKET http_ipv6_listener =
+        socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in6 http_ipv6_endpoint{};
+    http_ipv6_endpoint.sin6_family = AF_INET6;
+    http_ipv6_endpoint.sin6_addr = in6addr_loopback;
+    http_ipv6_endpoint.sin6_port = htons(http_port);
+    if (http_ipv6_listener == INVALID_SOCKET ||
+        setsockopt(
+            http_ipv6_listener, IPPROTO_IPV6, IPV6_V6ONLY,
+            reinterpret_cast<const char*>(&ipv6_only), sizeof(ipv6_only)) != 0 ||
+        bind(
+            http_ipv6_listener,
+            reinterpret_cast<const sockaddr*>(&http_ipv6_endpoint),
+            sizeof(http_ipv6_endpoint)) != 0 ||
+        listen(http_ipv6_listener, 2) != 0) {
+        closesocket(listener);
+        closesocket(ipv6_listener);
+        closesocket(http_listener);
+        if (http_ipv6_listener != INVALID_SOCKET) {
+            closesocket(http_ipv6_listener);
+        }
+        WSACleanup();
+        return false;
+    }
     const std::string allowed_domain = "localhost";
     const std::wstring allowed_domain_w = L"localhost";
     const std::wstring executable = CurrentExecutable();
@@ -1088,7 +1187,7 @@ bool RunNetworkAllowListTests() {
     loopback.address[3] = 1;
     const bolt::tests::NetworkAllowListRules allow_list{
         {{false, allowed_domain}}, {loopback},
-        {{port, port}, {ipv6_port, ipv6_port}}};
+        {{port, port}, {ipv6_port, ipv6_port}, {http_port, http_port}}};
     const auto payload = bolt::tests::SealPolicy(
         {{bolt::tests::FilesystemRuleKind::kReadWrite,
           std::filesystem::path(executable).root_path()}},
@@ -1103,6 +1202,8 @@ bool RunNetworkAllowListTests() {
         checked_policy->DecidePort(port) != bolt::network::Decision::kAllow) {
         std::fprintf(stderr, "allow-list fixture policy mismatch at port %u\n", port);
         closesocket(ipv6_listener);
+        closesocket(http_listener);
+        closesocket(http_ipv6_listener);
         return false;
     }
     constexpr std::array<std::uint8_t, 16> nonce = {0x6A};
@@ -1122,6 +1223,8 @@ bool RunNetworkAllowListTests() {
             bolt::common::PipeStatus::kSuccess) {
         closesocket(listener);
         closesocket(ipv6_listener);
+        closesocket(http_listener);
+        closesocket(http_ipv6_listener);
         WSACleanup();
         return false;
     }
@@ -1132,6 +1235,8 @@ bool RunNetworkAllowListTests() {
         CloseHandle(release);
         closesocket(listener);
         closesocket(ipv6_listener);
+        closesocket(http_listener);
+        closesocket(http_ipv6_listener);
         WSACleanup();
         return false;
     }
@@ -1164,7 +1269,8 @@ bool RunNetworkAllowListTests() {
     const auto hook_path = std::filesystem::path(executable).parent_path() / hook_name;
     const std::wstring command_line = L"\"" + executable +
         L"\" --network-allow-list-child " + allowed_domain_w + L" " +
-        std::to_wstring(port) + L" " + std::to_wstring(ipv6_port);
+        std::to_wstring(port) + L" " + std::to_wstring(ipv6_port) + L" " +
+        std::to_wstring(http_port);
     const HANDLE inherited[] = {
         policy.handle(), event_client, release,
         dns_proxy->request_write_handle(), dns_proxy->response_read_handle()};
@@ -1212,6 +1318,10 @@ bool RunNetworkAllowListTests() {
         shutdown(connect_ex_accepted, SD_BOTH);
         closesocket(connect_ex_accepted);
     }
+    const bool win_http_served =
+        ready_ok && ServeHttpOnce(http_listener, http_ipv6_listener);
+    const bool win_inet_served =
+        ready_ok && ServeHttpOnce(http_listener, http_ipv6_listener);
     const bool waited =
         process.Wait(5'000) == bolt::common::ProcessStatus::kSuccess;
     dns_proxy->CloseClientHandles();
@@ -1221,9 +1331,12 @@ bool RunNetworkAllowListTests() {
     const bool passed = ready_ok && waited && accepted != INVALID_SOCKET &&
         ipv6_accepted != INVALID_SOCKET && proxy_waited &&
         connect_ex_accepted != INVALID_SOCKET &&
+        win_http_served && win_inet_served &&
         process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess && exit_code == 0;
     closesocket(listener);
     closesocket(ipv6_listener);
+    closesocket(http_listener);
+    closesocket(http_ipv6_listener);
     CloseHandle(release);
     event_pipe.Close();
     WSACleanup();
