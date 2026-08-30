@@ -121,6 +121,14 @@ TcpProxyConnectionStatus RunTcpProxyConnection(
         if (upstream == INVALID_SOCKET) {
             return TcpProxyConnectionStatus::kRejected;
         }
+        constexpr DWORD no_timeout = 0;
+        if (setsockopt(
+                client, SOL_SOCKET, SO_RCVTIMEO,
+                reinterpret_cast<const char*>(&no_timeout),
+                sizeof(no_timeout)) == SOCKET_ERROR) {
+            closesocket(upstream);
+            return TcpProxyConnectionStatus::kRelayFailed;
+        }
         const auto relay_status = RelayTcpSockets(client, upstream);
         closesocket(upstream);
         return relay_status == TcpRelayStatus::kCompleted

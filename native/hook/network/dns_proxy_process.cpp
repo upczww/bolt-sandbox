@@ -12,6 +12,44 @@
 #include <vector>
 
 namespace bolt::network {
+namespace {
+
+class WinsockScope final {
+  public:
+    WinsockScope() noexcept {
+        WSADATA data{};
+        started_ = WSAStartup(MAKEWORD(2, 2), &data) == 0;
+    }
+    ~WinsockScope() noexcept {
+        if (started_) {
+            WSACleanup();
+        }
+    }
+    WinsockScope(const WinsockScope&) = delete;
+    WinsockScope& operator=(const WinsockScope&) = delete;
+    [[nodiscard]] bool started() const noexcept { return started_; }
+
+  private:
+    bool started_ = false;
+};
+
+class SocketScope final {
+  public:
+    explicit SocketScope(const SOCKET socket) noexcept : socket_(socket) {}
+    ~SocketScope() noexcept {
+        if (socket_ != INVALID_SOCKET) {
+            closesocket(socket_);
+        }
+    }
+    SocketScope(const SocketScope&) = delete;
+    SocketScope& operator=(const SocketScope&) = delete;
+    [[nodiscard]] SOCKET get() const noexcept { return socket_; }
+
+  private:
+    SOCKET socket_ = INVALID_SOCKET;
+};
+
+}  // namespace
 
 DnsProxyProcess::~DnsProxyProcess() noexcept { Close(); }
 
@@ -29,6 +67,37 @@ DnsProxyProcessStatus DnsProxyProcess::Start(
         return DnsProxyProcessStatus::kInvalidArgument;
     }
     try {
+        WinsockScope winsock;
+        if (!winsock.started()) {
+            return DnsProxyProcessStatus::kResourceFailed;
+        }
+        SocketScope tcp_listener(WSASocketW(
+            AF_INET, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, 0));
+        sockaddr_in tcp_endpoint{};
+        tcp_endpoint.sin_family = AF_INET;
+        tcp_endpoint.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        tcp_endpoint.sin_port = 0;
+        int tcp_endpoint_length = sizeof(tcp_endpoint);
+        constexpr BOOL exclusive = TRUE;
+        if (tcp_listener.get() == INVALID_SOCKET ||
+            setsockopt(
+                tcp_listener.get(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                reinterpret_cast<const char*>(&exclusive), sizeof(exclusive)) ==
+                SOCKET_ERROR ||
+            bind(
+                tcp_listener.get(),
+                reinterpret_cast<const sockaddr*>(&tcp_endpoint),
+                sizeof(tcp_endpoint)) == SOCKET_ERROR ||
+            listen(tcp_listener.get(), SOMAXCONN) == SOCKET_ERROR ||
+            getsockname(
+                tcp_listener.get(), reinterpret_cast<sockaddr*>(&tcp_endpoint),
+                &tcp_endpoint_length) == SOCKET_ERROR ||
+            !SetHandleInformation(
+                reinterpret_cast<HANDLE>(tcp_listener.get()),
+                HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+            return DnsProxyProcessStatus::kResourceFailed;
+        }
+        const std::uint16_t tcp_proxy_port = ntohs(tcp_endpoint.sin_port);
         common::ImmutablePolicyMapping policy;
         if (common::ImmutablePolicyMapping::Create(
                 policy_bytes, policy_length, policy) !=
@@ -55,6 +124,10 @@ DnsProxyProcessStatus DnsProxyProcess::Start(
         startup.write_handle = reinterpret_cast<std::uintptr_t>(response_write);
         startup.maximum_frame_length = maximum_frame_length;
         startup.maximum_requests = maximum_requests;
+        startup.tcp_listener_handle =
+            static_cast<std::uint64_t>(tcp_listener.get());
+        startup.tcp_listener_port = tcp_proxy_port;
+        startup.maximum_tcp_connections = maximum_requests;
         startup.session = session;
         const auto startup_bytes = protocol::EncodeDnsProxyStartup(startup);
         common::ImmutableMapping startup_mapping;
@@ -67,8 +140,9 @@ DnsProxyProcessStatus DnsProxyProcess::Start(
         InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_size);
         std::vector<std::uint8_t> storage(attribute_size);
         auto* attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
-        const std::array<HANDLE, 4> inherited = {
-            startup_mapping.handle(), policy.handle(), request_read, response_write};
+        const std::array<HANDLE, 5> inherited = {
+            startup_mapping.handle(), policy.handle(), request_read,
+            response_write, reinterpret_cast<HANDLE>(tcp_listener.get())};
         if (!InitializeProcThreadAttributeList(attributes, 1, 0, &attribute_size) ||
             !UpdateProcThreadAttribute(
                 attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
@@ -102,6 +176,7 @@ DnsProxyProcessStatus DnsProxyProcess::Start(
         process->process_ = created.hProcess;
         process->request_write_ = request_write;
         process->response_read_ = response_read;
+        process->tcp_proxy_port_ = tcp_proxy_port;
         output = std::move(process);
         return DnsProxyProcessStatus::kSuccess;
     } catch (...) {

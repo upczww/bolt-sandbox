@@ -9,6 +9,7 @@
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
 #include <windows.h>
 
 namespace bolt::network {
@@ -42,6 +43,7 @@ class DnsProxyProcess final {
     DnsProxyProcessStatus Wait(DWORD timeout_milliseconds) noexcept;
     HANDLE request_write_handle() const noexcept { return request_write_; }
     HANDLE response_read_handle() const noexcept { return response_read_; }
+    std::uint16_t tcp_proxy_port() const noexcept { return tcp_proxy_port_; }
 
   private:
     DnsProxyProcess() noexcept = default;
@@ -49,6 +51,7 @@ class DnsProxyProcess final {
     HANDLE process_ = nullptr;
     HANDLE request_write_ = nullptr;
     HANDLE response_read_ = nullptr;
+    std::uint16_t tcp_proxy_port_ = 0;
 };
 
 }  // namespace bolt::network
