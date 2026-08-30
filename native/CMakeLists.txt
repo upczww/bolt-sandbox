@@ -183,6 +183,7 @@ add_library(bolt-sandbox-network STATIC
     hook/network/system_tcp_connector.cpp
     hook/network/tcp_relay.cpp
     hook/network/tcp_proxy_connection.cpp
+    hook/network/tcp_proxy_client.cpp
     hook/network/tcp_proxy_listener.cpp
     hook/network/tcp_proxy_server.cpp
     hook/network/winhttp_hooks.cpp
