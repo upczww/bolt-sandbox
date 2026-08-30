@@ -24,9 +24,10 @@ The audit also compared the imported source blobs with main snapshot
 
 ## Vendored adaptation baseline
 
-The repository vendors the 49-file DetoursServices filesystem runtime closure
+The repository vendors the 55-file DetoursServices Windows runtime closure
 needed to adapt BuildXL's path handling, access classification, handle overlay,
-metadata virtualization, detoured filesystem functions, and reporting seams.
+metadata virtualization, detoured filesystem/process functions, manifest
+iteration, process injection, substitution, and reporting seams.
 This is a source and provenance baseline: vendored does not mean linked or
 shipped. The exact file list and hashes are enforced by the import manifest.
 
@@ -87,7 +88,6 @@ The next slices are:
 
 The rest of `Public/Src/Sandbox/Windows` is deliberately not copied. It
 contains BuildXL build definitions and unit-test infrastructure, a separate
-Detours fork, and components such as process substitution and manifest
-iteration that are outside Bolt's architecture. Required source is admitted
+Detours fork, and unrelated platform components. Required source is admitted
 from the pinned revision when a tested runtime dependency demonstrates the
 need.

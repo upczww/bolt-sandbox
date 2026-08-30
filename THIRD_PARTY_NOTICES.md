@@ -32,7 +32,8 @@ is licensed under the MIT License.
   upstream; Bolt compatibility headers, adapters, protocol translation, and
   tests live outside the vendored directory.
 
-The manifest records the coherent upstream source closure and every file hash.
+The manifest records the 55-file coherent upstream Windows runtime source
+closure and every file hash.
 Only assertions, string/path operations, path-tree, resolved-path cache,
 canonical-path, and checked-path components are currently active; the rest
 remains an immutable adaptation baseline. BuildXL-specific
