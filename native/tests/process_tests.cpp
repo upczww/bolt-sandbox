@@ -62,6 +62,27 @@ std::string AnsiPath(const wchar_t* path) {
     return converted;
 }
 
+bool HasRequiredProcessMitigations() {
+    PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY strict_handles{};
+    PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY extension_points{};
+    PROCESS_MITIGATION_IMAGE_LOAD_POLICY image_load{};
+    return GetProcessMitigationPolicy(
+               GetCurrentProcess(), ProcessStrictHandleCheckPolicy,
+               &strict_handles, sizeof(strict_handles)) != FALSE &&
+           GetProcessMitigationPolicy(
+               GetCurrentProcess(), ProcessExtensionPointDisablePolicy,
+               &extension_points, sizeof(extension_points)) != FALSE &&
+           GetProcessMitigationPolicy(
+               GetCurrentProcess(), ProcessImageLoadPolicy, &image_load,
+               sizeof(image_load)) != FALSE &&
+           strict_handles.RaiseExceptionOnInvalidHandleReference != 0 &&
+           strict_handles.HandleExceptionsPermanentlyEnabled != 0 &&
+           extension_points.DisableExtensionPoints != 0 &&
+           image_load.NoRemoteImages != 0 &&
+           image_load.NoLowMandatoryLabelImages != 0 &&
+           image_load.PreferSystem32Images != 0;
+}
+
 // Narrow Native ABI fixture derived from winsiderss/phnt commit
 // 53fbbdc5b5d2b08761db1c7b26bfa8c820924356 (MIT).
 struct NativeSectionImageInformation {
@@ -564,6 +585,9 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetProcAddress(hook, "BoltSandboxRuntimeInitialized"));
     if (initialized == nullptr || !initialized()) {
         return 84;
+    }
+    if (!HasRequiredProcessMitigations()) {
+        return 244;
     }
     const HANDLE denied_file = CreateFileW(
         arguments[5], GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -1921,6 +1945,9 @@ int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
                                        hook, "BoltSandboxRuntimeInitialized"));
     if (initialized == nullptr || !initialized()) {
         return 221;
+    }
+    if (!HasRequiredProcessMitigations()) {
+        return 245;
     }
     if (argument_count == 4) {
         const HANDLE entered = reinterpret_cast<HANDLE>(
