@@ -65,6 +65,12 @@ opens as reads, all mutation or unknown rights as writes, and classifies
 `CREATE_NEW`, `CREATE_ALWAYS`, and `OPEN_ALWAYS` as creates. Unknown creation
 dispositions fail closed as writes.
 
+`CreateFileW/A` apply that classification first to the textual identity and
+again to the fully resolved identity before returning a handle. Intermediate
+junctions therefore cannot grant access to a denied target. Calls carrying
+`FILE_FLAG_OPEN_REPARSE_POINT` resolve only the parent and preserve the leaf
+reparse object, matching the caller's requested object identity.
+
 The first adapted BuildXL operation-family hooks are `CopyFileW/A`,
 `CopyFileExW/A`, `CopyFileTransactedW/A`, and the dynamically resolved
 `CopyFile2`. Like upstream BuildXL, ANSI entry points convert once and

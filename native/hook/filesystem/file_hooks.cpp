@@ -27,9 +27,8 @@ namespace {
 
 std::unique_ptr<FilesystemPolicy> g_policy;
 
-using CreateFileWFunction = HANDLE(WINAPI*)(
-    LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
-CreateFileWFunction g_create_file_w = CreateFileW;
+CreateFileW_t g_create_file_w = CreateFileW;
+CreateFileA_t g_create_file_a = CreateFileA;
 DeleteFileW_t g_delete_file_w = DeleteFileW;
 DeleteFileA_t g_delete_file_a = DeleteFileA;
 using CreateDirectoryWFunction = BOOL(WINAPI*)(LPCWSTR, LPSECURITY_ATTRIBUTES);
@@ -670,6 +669,68 @@ bool AuthorizeDeletion(const wchar_t* path) noexcept {
     return true;
 }
 
+bool ResolveCreateFileIdentity(
+    const wchar_t* path,
+    const DWORD flags_and_attributes,
+    std::wstring& resolved_path) noexcept {
+    if ((flags_and_attributes & FILE_FLAG_OPEN_REPARSE_POINT) == 0) {
+        return ResolveFinalPathForPolicy(path, g_create_file_w, resolved_path);
+    }
+    try {
+        const std::filesystem::path candidate{path};
+        const auto parent = candidate.parent_path();
+        std::wstring resolved_parent;
+        if (parent.empty() || candidate.filename().empty() ||
+            !ResolveFinalPathForPolicy(
+                parent.c_str(), g_create_file_w, resolved_parent)) {
+            return false;
+        }
+        resolved_path =
+            (std::filesystem::path(resolved_parent) / candidate.filename())
+                .lexically_normal()
+                .wstring();
+        return true;
+    } catch (...) {
+        resolved_path.clear();
+        return false;
+    }
+}
+
+bool AuthorizeCreateFile(
+    const wchar_t* path,
+    const ClassifiedAccess& request,
+    const DWORD flags_and_attributes) noexcept {
+    const auto* policy = g_policy.get();
+    const auto text_evaluation =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(path, request.access);
+    if (text_evaluation.decision == Decision::kDeny) {
+        ReportDenied(request.operation, EvaluatedPath(text_evaluation, path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    std::wstring resolved_path;
+    if (!ResolveCreateFileIdentity(
+            EvaluatedPath(text_evaluation, path), flags_and_attributes,
+            resolved_path)) {
+        ReportDenied(request.operation, EvaluatedPath(text_evaluation, path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    const auto final_evaluation =
+        policy->Evaluate(resolved_path.c_str(), request.access);
+    if (final_evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            request.operation,
+            EvaluatedPath(final_evaluation, resolved_path.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    if (request.access == Access::kWrite) {
+        InvalidateResolvedPathForMutation(resolved_path.c_str(), false);
+    }
+    return true;
+}
+
 bool AuthorizeShellDelete(const wchar_t* paths) noexcept {
     if (paths == nullptr) {
         return true;
@@ -1163,21 +1224,39 @@ HANDLE WINAPI DetouredCreateFileW(
             filename, desired_access, share_mode, security_attributes, creation_disposition,
             flags_and_attributes, template_file);
     }
-    const auto* policy = g_policy.get();
     const auto request = ClassifyCreateFileRequest(desired_access, creation_disposition);
-    const auto evaluation =
-        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(filename, request.access);
-    if (evaluation.decision == Decision::kDeny) {
-        ReportDenied(request.operation, EvaluatedPath(evaluation, filename));
-        SetLastError(ERROR_ACCESS_DENIED);
+    if (!AuthorizeCreateFile(filename, request, flags_and_attributes)) {
         return INVALID_HANDLE_VALUE;
-    }
-    if (request.access == Access::kWrite) {
-        InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, filename), false);
     }
     return g_create_file_w(
         filename, desired_access, share_mode, security_attributes, creation_disposition,
         flags_and_attributes, template_file);
+}
+
+HANDLE WINAPI DetouredCreateFileA(
+    const LPCSTR filename,
+    const DWORD desired_access,
+    const DWORD share_mode,
+    const LPSECURITY_ATTRIBUTES security_attributes,
+    const DWORD creation_disposition,
+    const DWORD flags_and_attributes,
+    const HANDLE template_file) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_file_a(
+            filename, desired_access, share_mode, security_attributes,
+            creation_disposition, flags_and_attributes, template_file);
+    }
+    std::wstring filename_wide;
+    const auto request = ClassifyCreateFileRequest(desired_access, creation_disposition);
+    if (!ConvertAnsiPath(filename, filename_wide) ||
+        !AuthorizeCreateFile(
+            filename_wide.c_str(), request, flags_and_attributes)) {
+        return INVALID_HANDLE_VALUE;
+    }
+    return g_create_file_w(
+        filename_wide.c_str(), desired_access, share_mode, security_attributes,
+        creation_disposition, flags_and_attributes, template_file);
 }
 
 // BuildXL classifies DeleteFileW as a write and preserves the last reparse
@@ -2198,6 +2277,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_file_w),
             reinterpret_cast<PVOID>(DetouredCreateFileW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_create_file_a),
+            reinterpret_cast<PVOID>(DetouredCreateFileA)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_delete_file_w),
             reinterpret_cast<PVOID>(DetouredDeleteFileW)) != NO_ERROR ||
