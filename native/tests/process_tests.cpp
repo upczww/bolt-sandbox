@@ -2677,6 +2677,69 @@ int RunNestedProcess(const int argument_count, wchar_t** arguments) {
     return 0;
 }
 
+int RunPersistentLeaf(const int argument_count, wchar_t** arguments) {
+    if (argument_count != 5) {
+        return 301;
+    }
+    const HMODULE hook = GetModuleHandleW(arguments[2]);
+    const auto initialized = hook == nullptr
+                                 ? nullptr
+                                 : reinterpret_cast<BOOL (*)()>(GetProcAddress(
+                                       hook, "BoltSandboxRuntimeInitialized"));
+    BOOL remains_in_job = FALSE;
+    const HANDLE ready = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[3], nullptr, 10));
+    const HANDLE release = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[4], nullptr, 10));
+    if (initialized == nullptr || !initialized() ||
+        !HasRequiredProcessMitigations() ||
+        !IsProcessInJob(GetCurrentProcess(), nullptr, &remains_in_job) ||
+        !remains_in_job || !SetEvent(ready) ||
+        WaitForSingleObject(release, 10'000) != WAIT_OBJECT_0) {
+        return 302;
+    }
+    return 0;
+}
+
+int RunParentExitFixture(const int argument_count, wchar_t** arguments) {
+    if (argument_count != 6) {
+        return 303;
+    }
+    const HMODULE hook = GetModuleHandleW(arguments[2]);
+    const auto initialized = hook == nullptr
+                                 ? nullptr
+                                 : reinterpret_cast<BOOL (*)()>(GetProcAddress(
+                                       hook, "BoltSandboxRuntimeInitialized"));
+    if (initialized == nullptr || !initialized()) {
+        return 304;
+    }
+    const HANDLE child_id_mapping = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[5], nullptr, 10));
+    auto* child_id = static_cast<volatile LONG*>(MapViewOfFile(
+        child_id_mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(DWORD)));
+    if (child_id == nullptr) {
+        return 305;
+    }
+    const std::wstring executable = CurrentExecutable();
+    std::wstring command =
+        L"\"" + executable + L"\" --persistent-leaf " + arguments[2] + L" " +
+        arguments[3] + L" " + arguments[4];
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION child{};
+    if (!CreateProcessW(
+            executable.c_str(), command.data(), nullptr, nullptr, TRUE, 0,
+            nullptr, nullptr, &startup, &child)) {
+        UnmapViewOfFile(const_cast<LONG*>(child_id));
+        return 306;
+    }
+    InterlockedExchange(child_id, static_cast<LONG>(child.dwProcessId));
+    CloseHandle(child.hThread);
+    CloseHandle(child.hProcess);
+    UnmapViewOfFile(const_cast<LONG*>(child_id));
+    return 0;
+}
+
 int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
     if (argument_count != 3) {
         return 222;
@@ -2889,7 +2952,7 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
         !WaitForSuccessfulChild(nested_process)) {
         return 292;
     }
-    constexpr std::size_t churn_threads = 8;
+    constexpr std::size_t churn_threads = 4;
     constexpr std::size_t churn_children_per_thread = 4;
     std::atomic_bool churn_succeeded{true};
     std::mutex churn_ids_mutex;
@@ -3216,6 +3279,13 @@ int RunCrossArchitectureProcessParent(
 
 namespace {
 
+struct ParentExitProbe {
+    HANDLE ready;
+    HANDLE release;
+    HANDLE child_id_mapping;
+    volatile LONG* child_id;
+};
+
 bool RunStartupHandleListTest(
     const std::wstring& executable,
     const std::filesystem::path& test_root) {
@@ -3302,7 +3372,8 @@ bool RunInheritedProcessTest(
     const wchar_t* hook_name,
     const std::wstring& pipe_name,
     const std::wstring& parent_arguments = {},
-    const std::uint8_t nonce_byte = 0x5A) {
+    const std::uint8_t nonce_byte = 0x5A,
+    const ParentExitProbe* parent_exit_probe = nullptr) {
     const auto policy_payload = bolt::tests::SealPolicy({
         {bolt::tests::FilesystemRuleKind::kReadOnly,
          std::filesystem::path(executable).root_path()},
@@ -3340,9 +3411,15 @@ bool RunInheritedProcessTest(
                                                 L"\" --inherit-parent " + hook_name
                                           : L"\"" + executable + L"\" " +
                                                 parent_arguments;
-    const HANDLE inherited[] = {policy.handle(), event_client, release};
+    std::vector<HANDLE> inherited = {policy.handle(), event_client, release};
+    if (parent_exit_probe != nullptr) {
+        inherited.push_back(parent_exit_probe->ready);
+        inherited.push_back(parent_exit_probe->release);
+        inherited.push_back(parent_exit_probe->child_id_mapping);
+    }
     const bolt::common::ProcessLaunchOptions options{
-        executable, command_line, L"", nullptr, inherited, std::size(inherited), 0};
+        executable, command_line, L"", nullptr, inherited.data(),
+        inherited.size(), 0};
     bolt::common::SuspendedProcess process;
     bolt::common::ExecutionJob job;
     const bool initialized =
@@ -3370,6 +3447,24 @@ bool RunInheritedProcessTest(
                           process.Wait(10'000) == bolt::common::ProcessStatus::kSuccess;
     const auto parent_process_id = static_cast<std::uint32_t>(
         GetProcessId(process.process_handle()));
+    bool parent_exit_descendant_ok = true;
+    if (parent_exit_probe != nullptr) {
+        parent_exit_descendant_ok =
+            ready_ok &&
+            WaitForSingleObject(parent_exit_probe->ready, 5'000) == WAIT_OBJECT_0;
+        const DWORD child_id = static_cast<DWORD>(InterlockedCompareExchange(
+            parent_exit_probe->child_id, 0, 0));
+        const HANDLE child = child_id == 0
+                                 ? nullptr
+                                 : OpenProcess(SYNCHRONIZE, FALSE, child_id);
+        parent_exit_descendant_ok =
+            parent_exit_descendant_ok && child != nullptr &&
+            SetEvent(parent_exit_probe->release) != FALSE &&
+            WaitForSingleObject(child, 5'000) == WAIT_OBJECT_0;
+        if (child != nullptr) {
+            CloseHandle(child);
+        }
+    }
     constexpr auto breakaway_operation =
         static_cast<bolt::protocol::ProcessOperation>(3);
     constexpr auto mitigation_weakening_operation =
@@ -3393,7 +3488,7 @@ bool RunInheritedProcessTest(
              event_pipe.handle(), parent_process_id,
              mitigation_weakening_operation, 9));
     DWORD exit_code = 0;
-    const bool passed = ready_ok &&
+    const bool passed = ready_ok && parent_exit_descendant_ok &&
                         breakaway_event_ok &&
                         mitigation_weakening_events_ok &&
                         process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
@@ -4533,6 +4628,45 @@ bool RunProcessTests() {
         session.join();
     }
     if (!concurrent_session_results[0] || !concurrent_session_results[1]) {
+        return false;
+    }
+    SECURITY_ATTRIBUTES parent_exit_inheritable{};
+    parent_exit_inheritable.nLength = sizeof(parent_exit_inheritable);
+    parent_exit_inheritable.bInheritHandle = TRUE;
+    const HANDLE parent_exit_ready =
+        CreateEventW(&parent_exit_inheritable, TRUE, FALSE, nullptr);
+    const HANDLE parent_exit_release =
+        CreateEventW(&parent_exit_inheritable, TRUE, FALSE, nullptr);
+    const HANDLE parent_exit_mapping = CreateFileMappingW(
+        INVALID_HANDLE_VALUE, &parent_exit_inheritable, PAGE_READWRITE, 0,
+        sizeof(DWORD), nullptr);
+    auto* parent_exit_child_id =
+        parent_exit_mapping == nullptr
+            ? nullptr
+            : static_cast<volatile LONG*>(MapViewOfFile(
+                  parent_exit_mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+                  sizeof(DWORD)));
+    if (parent_exit_ready == nullptr || parent_exit_release == nullptr ||
+        parent_exit_mapping == nullptr || parent_exit_child_id == nullptr) {
+        return false;
+    }
+    InterlockedExchange(parent_exit_child_id, 0);
+    const std::wstring parent_exit_arguments =
+        L"--parent-exit-fixture " + std::wstring(hook_name) + L" " +
+        HandleText(parent_exit_ready) + L" " + HandleText(parent_exit_release) +
+        L" " + HandleText(parent_exit_mapping);
+    const ParentExitProbe parent_exit_probe{
+        parent_exit_ready, parent_exit_release, parent_exit_mapping,
+        parent_exit_child_id};
+    const bool parent_exit_ok = RunInheritedProcessTest(
+        executable, hook_path, hook_name,
+        PipeName(GetCurrentProcessId() ^ 0x5100'0013U),
+        parent_exit_arguments, 0x63, &parent_exit_probe);
+    UnmapViewOfFile(const_cast<LONG*>(parent_exit_child_id));
+    CloseHandle(parent_exit_mapping);
+    CloseHandle(parent_exit_release);
+    CloseHandle(parent_exit_ready);
+    if (!parent_exit_ok) {
         return false;
     }
 

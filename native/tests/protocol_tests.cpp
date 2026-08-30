@@ -35,6 +35,8 @@ int RunShellFileOperationChild(int argument_count, wchar_t** arguments);
 int RunInheritedProcessParent(int argument_count, wchar_t** arguments);
 int RunInheritedProcessLeaf(int argument_count, wchar_t** arguments);
 int RunNestedProcess(int argument_count, wchar_t** arguments);
+int RunParentExitFixture(int argument_count, wchar_t** arguments);
+int RunPersistentLeaf(int argument_count, wchar_t** arguments);
 int RunCrossArchitectureProcessParent(int argument_count, wchar_t** arguments);
 
 namespace {
@@ -129,6 +131,12 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--nested-process") {
         return RunNestedProcess(argument_count, arguments);
+    }
+    if (argument_count >= 2 && std::wstring(arguments[1]) == L"--parent-exit-fixture") {
+        return RunParentExitFixture(argument_count, arguments);
+    }
+    if (argument_count >= 2 && std::wstring(arguments[1]) == L"--persistent-leaf") {
+        return RunPersistentLeaf(argument_count, arguments);
     }
     if (argument_count >= 2 &&
         std::wstring(arguments[1]) == L"--cross-architecture-parent") {
