@@ -166,10 +166,19 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 95;
     }
+    using CopyFile2Function = HRESULT(WINAPI*)(
+        PCWSTR, PCWSTR, const COPYFILE2_EXTENDED_PARAMETERS*);
+    const auto copy_file_2 = reinterpret_cast<CopyFile2Function>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CopyFile2"));
+    if (copy_file_2 == nullptr ||
+        copy_file_2(arguments[12], arguments[13], nullptr) !=
+            HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED)) {
+        return 96;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
-        return 96;
+        return 97;
     }
     return 0;
 }
@@ -380,7 +389,10 @@ bool RunProcessTests() {
             bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 9) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 10);
+            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 10) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead, denied_copy_source.wstring(), 11);
     DWORD exit_code = 0;
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
