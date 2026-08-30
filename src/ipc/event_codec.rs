@@ -694,4 +694,24 @@ mod tests {
 
         assert_eq!(decode_event(&encoded), Err(ProtocolError::InvalidPayload));
     }
+
+    #[test]
+    fn proc_020_all_process_violation_operations_round_trip() {
+        for operation in [
+            ProcessOperation::CreateWithToken,
+            ProcessOperation::CreateWithLogon,
+            ProcessOperation::Elevation,
+        ] {
+            let event = SandboxEvent::ProcessViolation(ProcessViolation {
+                process_id: 99,
+                operation,
+            });
+            let encoded = encode_event(&event, 7).expect("event must encode");
+
+            assert_eq!(
+                decode_event(&encoded).expect("event must decode").event,
+                event
+            );
+        }
+    }
 }

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -1607,6 +1608,27 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         }
         return 214;
     }
+    const std::wstring missing_elevation_target =
+        descendant_executable + L".missing-elevation-target";
+    SHELLEXECUTEINFOW elevation{};
+    elevation.cbSize = sizeof(elevation);
+    elevation.fMask =
+        SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+    elevation.hwnd = nullptr;
+    elevation.lpVerb = L"runas";
+    elevation.lpFile = missing_elevation_target.c_str();
+    elevation.nShow = SW_HIDE;
+    const BOOL elevation_started = ShellExecuteExW(&elevation);
+    const DWORD elevation_error = GetLastError();
+    if (elevation_started || elevation_error != ERROR_ACCESS_DENIED ||
+        elevation.hProcess != nullptr) {
+        if (elevation.hProcess != nullptr) {
+            TerminateProcess(elevation.hProcess, 217);
+            WaitForSingleObject(elevation.hProcess, 5'000);
+            CloseHandle(elevation.hProcess);
+        }
+        return 217;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1730,6 +1752,37 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
     CloseHandle(restricted_token);
     if (!as_user_created_a || !WaitForSuccessfulChild(as_user_process_a)) {
         return 238;
+    }
+
+    const std::wstring shell_parameters =
+        L"--inherit-leaf " + std::wstring(arguments[2]);
+    SHELLEXECUTEINFOW shell_execute{};
+    shell_execute.cbSize = sizeof(shell_execute);
+    shell_execute.fMask =
+        SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+    shell_execute.hwnd = nullptr;
+    shell_execute.lpVerb = L"open";
+    shell_execute.lpFile = executable.c_str();
+    shell_execute.lpParameters = shell_parameters.c_str();
+    shell_execute.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&shell_execute) || shell_execute.hProcess == nullptr) {
+        if (shell_execute.hProcess != nullptr) {
+            CloseHandle(shell_execute.hProcess);
+        }
+        return 239;
+    }
+    const DWORD shell_wait = WaitForSingleObject(shell_execute.hProcess, 5'000);
+    DWORD shell_exit_code = 0;
+    const bool shell_exited =
+        shell_wait == WAIT_OBJECT_0 &&
+        GetExitCodeProcess(shell_execute.hProcess, &shell_exit_code) != FALSE;
+    if (!shell_exited) {
+        TerminateProcess(shell_execute.hProcess, 240);
+        WaitForSingleObject(shell_execute.hProcess, 5'000);
+    }
+    CloseHandle(shell_execute.hProcess);
+    if (!shell_exited || shell_exit_code != 0) {
+        return 240;
     }
 
     const std::wstring wide_command_line =
@@ -1885,6 +1938,11 @@ bool RunInheritedProcessTest(
     const bool passed = ready_ok &&
                         process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                         exit_code == 0;
+    if (!passed) {
+        std::fprintf(
+            stderr, "inherited process fixture failed with exit code %lu\n",
+            static_cast<unsigned long>(exit_code));
+    }
     CloseHandle(release);
     return passed;
 }
@@ -2735,7 +2793,10 @@ bool RunProcessTests() {
             bolt::protocol::ProcessOperation::kCreateWithToken, 105) &&
         ReadProcessViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::ProcessOperation::kCreateWithLogon, 106);
+            bolt::protocol::ProcessOperation::kCreateWithLogon, 106) &&
+        ReadProcessViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::ProcessOperation::kElevation, 107);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
@@ -2831,6 +2892,9 @@ bool RunProcessTests() {
     DeleteFileW(read_only_mapping_path.c_str());
     std::filesystem::remove_all(test_root, filesystem_error);
     if (!exact_exit) {
+        std::fprintf(
+            stderr, "policy process fixture failed with exit code %lu\n",
+            static_cast<unsigned long>(exit_code));
         return false;
     }
 
