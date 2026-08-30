@@ -158,7 +158,8 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
     const HANDLE dns_response_handle,
     const std::array<std::uint8_t, 32>* const dns_authentication_key,
     const std::uint32_t dns_maximum_frame_length,
-    const std::uint16_t tcp_proxy_port) noexcept {
+    const std::uint16_t tcp_proxy_port,
+    const std::uint16_t tcp_proxy_ipv6_port) noexcept {
     if (process_ == nullptr || !assigned_ || payload_installed_ || injected_ ||
         initialization_started_) {
         return ProcessStatus::kInvalidState;
@@ -175,11 +176,11 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
                             dns_response_handle == nullptr &&
                             dns_authentication_key == nullptr &&
                             dns_maximum_frame_length == 0 &&
-                            tcp_proxy_port == 0;
+                            tcp_proxy_port == 0 && tcp_proxy_ipv6_port == 0;
     if (!dns_absent) {
         if (dns_request_handle == nullptr || dns_response_handle == nullptr ||
             dns_authentication_key == nullptr || dns_maximum_frame_length < 68 ||
-            tcp_proxy_port == 0) {
+            tcp_proxy_port == 0 || tcp_proxy_ipv6_port == 0) {
             return ProcessStatus::kInvalidRuntimePayload;
         }
         for (const HANDLE handle : {dns_request_handle, dns_response_handle}) {
@@ -229,6 +230,7 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
         payload.dns_authentication_key = *dns_authentication_key;
         payload.dns_maximum_frame_length = dns_maximum_frame_length;
         payload.tcp_proxy_port = tcp_proxy_port;
+        payload.tcp_proxy_ipv6_port = tcp_proxy_ipv6_port;
     }
     auto encoded = protocol::EncodeRuntimePayload(payload);
     protocol::RuntimePayload checked{};

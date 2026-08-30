@@ -366,6 +366,7 @@ bool InstallDescendantRuntime(
     child_payload.dns_maximum_frame_length = 0;
     child_payload.dns_authentication_key.fill(0);
     child_payload.tcp_proxy_port = 0;
+    child_payload.tcp_proxy_ipv6_port = 0;
     auto encoded = protocol::EncodeRuntimePayload(child_payload);
     if (!DetourCopyPayloadToProcess(
             process_information->hProcess, protocol::kRuntimePayloadGuid,

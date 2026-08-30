@@ -71,7 +71,8 @@ class SuspendedProcess final {
         HANDLE dns_response_handle = nullptr,
         const std::array<std::uint8_t, 32>* dns_authentication_key = nullptr,
         std::uint32_t dns_maximum_frame_length = 0,
-        std::uint16_t tcp_proxy_port = 0) noexcept;
+        std::uint16_t tcp_proxy_port = 0,
+        std::uint16_t tcp_proxy_ipv6_port = 0) noexcept;
     ProcessStatus Inject(std::string_view dll_path) noexcept;
     ProcessStatus BeginHookInitialization() noexcept;
     ProcessStatus ReleaseAfterReady() noexcept;
