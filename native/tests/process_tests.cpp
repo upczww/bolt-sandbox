@@ -184,7 +184,7 @@ bool ReadFilesystemViolation(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 34) {
+    if (argument_count != 35) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -587,6 +587,42 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED) {
         return 134;
     }
+    WIN32_FIND_DATAW find_data_w{};
+    HANDLE find = FindFirstFileW(arguments[34], &find_data_w);
+    if (find != INVALID_HANDLE_VALUE || GetLastError() != ERROR_ACCESS_DENIED) {
+        if (find != INVALID_HANDLE_VALUE) {
+            FindClose(find);
+        }
+        return 135;
+    }
+    const std::string ansi_denied_wildcard = AnsiPath(arguments[34]);
+    WIN32_FIND_DATAA find_data_a{};
+    find = ansi_denied_wildcard.empty()
+               ? INVALID_HANDLE_VALUE
+               : FindFirstFileA(ansi_denied_wildcard.c_str(), &find_data_a);
+    if (find != INVALID_HANDLE_VALUE || GetLastError() != ERROR_ACCESS_DENIED) {
+        if (find != INVALID_HANDLE_VALUE) {
+            FindClose(find);
+        }
+        return 136;
+    }
+    find = FindFirstFileExW(
+        arguments[34], FindExInfoBasic, &find_data_w, FindExSearchNameMatch, nullptr, 0);
+    if (find != INVALID_HANDLE_VALUE || GetLastError() != ERROR_ACCESS_DENIED) {
+        if (find != INVALID_HANDLE_VALUE) {
+            FindClose(find);
+        }
+        return 137;
+    }
+    find = FindFirstFileExA(
+        ansi_denied_wildcard.c_str(), FindExInfoBasic, &find_data_a,
+        FindExSearchNameMatch, nullptr, 0);
+    if (find != INVALID_HANDLE_VALUE || GetLastError() != ERROR_ACCESS_DENIED) {
+        if (find != INVALID_HANDLE_VALUE) {
+            FindClose(find);
+        }
+        return 138;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -660,6 +696,7 @@ bool RunProcessTests() {
         denied_junction_target / L"hardlink-escape.txt";
     const std::filesystem::path forbidden_junction =
         allowed_root / L"forbidden-junction";
+    const std::filesystem::path denied_wildcard = denied_root / L"*";
     if (!std::filesystem::create_directories(denied_junction_target, filesystem_error) ||
         filesystem_error) {
         return false;
@@ -873,7 +910,8 @@ bool RunProcessTests() {
                                       HandleText(read_only_mapping_handle) + L" \"" +
                                       alias_hardlink_destination.wstring() + L"\" \"" +
                                       forbidden_junction.wstring() + L"\" \"" +
-                                      denied_junction_target.wstring() + L"\"";
+                                      denied_junction_target.wstring() + L"\" \"" +
+                                      denied_wildcard.wstring() + L"\"";
     const HANDLE inherited[] = {
         allowed, policy.handle(), event_client, release, denied_disposition_handle,
         denied_truncate_handle, denied_mapping_handle, read_only_mapping_handle};
@@ -1065,7 +1103,23 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
-            denied_junction_target.wstring(), 39);
+            denied_junction_target.wstring(), 39) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_wildcard.wstring(), 40) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_wildcard.wstring(), 41) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_wildcard.wstring(), 42) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_wildcard.wstring(), 43);
     DWORD exit_code = 0;
     CloseHandle(denied_disposition_handle);
     CloseHandle(denied_truncate_handle);
