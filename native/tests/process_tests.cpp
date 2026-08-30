@@ -181,7 +181,7 @@ bool ReadFilesystemViolation(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 24) {
+    if (argument_count != 26) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -366,6 +366,37 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         return 116;
     }
     CloseHandle(rename_handle);
+    const HANDLE allowed_disposition_handle = CreateFileW(
+        arguments[24], DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    FILE_DISPOSITION_INFO disposition{TRUE};
+    if (allowed_disposition_handle == INVALID_HANDLE_VALUE ||
+        !SetFileInformationByHandle(
+            allowed_disposition_handle, FileDispositionInfo, &disposition,
+            sizeof(disposition))) {
+        if (allowed_disposition_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(allowed_disposition_handle);
+        }
+        return 117;
+    }
+    CloseHandle(allowed_disposition_handle);
+
+    const auto denied_disposition_handle =
+        reinterpret_cast<HANDLE>(_wcstoui64(arguments[25], nullptr, 10));
+    if (SetFileInformationByHandle(
+            denied_disposition_handle, FileDispositionInfo, &disposition,
+            sizeof(disposition)) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 118;
+    }
+    FILE_DISPOSITION_INFO_EX disposition_ex{FILE_DISPOSITION_FLAG_DELETE};
+    if (SetFileInformationByHandle(
+            denied_disposition_handle, FileDispositionInfoEx, &disposition_ex,
+            sizeof(disposition_ex)) ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return 119;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -416,6 +447,10 @@ bool RunProcessTests() {
         allowed_root / L"handle-rename-source.txt";
     const std::filesystem::path denied_handle_rename_destination =
         denied_root / L"handle-rename-destination.txt";
+    const std::filesystem::path allowed_disposition_path =
+        allowed_root / L"handle-delete.txt";
+    const std::filesystem::path denied_disposition_path =
+        denied_root / L"handle-delete.txt";
     if (!std::filesystem::create_directories(denied_junction_target, filesystem_error) ||
         filesystem_error) {
         return false;
@@ -476,6 +511,8 @@ bool RunProcessTests() {
     DeleteFileW(allowed_replace_target.c_str());
     DeleteFileW(allowed_handle_rename_source.c_str());
     DeleteFileW(denied_handle_rename_destination.c_str());
+    DeleteFileW(allowed_disposition_path.c_str());
+    DeleteFileW(denied_disposition_path.c_str());
     const HANDLE delete_fixture = CreateFileW(
         denied_delete_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -508,6 +545,18 @@ bool RunProcessTests() {
     }
     constexpr std::string_view handle_rename_nonce = "handle-rename-source";
     if (!WriteFixture(allowed_handle_rename_source, handle_rename_nonce)) {
+        return false;
+    }
+    constexpr std::string_view disposition_nonce = "handle-delete";
+    if (!WriteFixture(allowed_disposition_path, disposition_nonce) ||
+        !WriteFixture(denied_disposition_path, disposition_nonce)) {
+        return false;
+    }
+    const HANDLE denied_disposition_handle = CreateFileW(
+        denied_disposition_path.c_str(), DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &inheritable, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (denied_disposition_handle == INVALID_HANDLE_VALUE) {
         return false;
     }
     constexpr std::string_view copy_nonce = "bolt-copy-nonce";
@@ -550,8 +599,11 @@ bool RunProcessTests() {
                                       alias_move_destination.wstring() + L"\" \"" +
                                       allowed_replace_target.wstring() + L"\" \"" +
                                       allowed_handle_rename_source.wstring() + L"\" \"" +
-                                      denied_handle_rename_destination.wstring() + L"\"";
-    const HANDLE inherited[] = {allowed, policy.handle(), event_client, release};
+                                      denied_handle_rename_destination.wstring() + L"\" \"" +
+                                      allowed_disposition_path.wstring() + L"\" " +
+                                      HandleText(denied_disposition_handle);
+    const HANDLE inherited[] = {
+        allowed, policy.handle(), event_client, release, denied_disposition_handle};
     bolt::common::ProcessLaunchOptions options{
         executable,
         command_line,
@@ -688,8 +740,17 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kRename,
-            denied_handle_rename_destination.wstring(), 26);
+            denied_handle_rename_destination.wstring(), 26) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kDelete,
+            denied_disposition_path.wstring(), 27) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kDelete,
+            denied_disposition_path.wstring(), 28);
     DWORD exit_code = 0;
+    CloseHandle(denied_disposition_handle);
     const bool exact_exit = process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
                             violation_events &&
                             exit_code == 0 &&
@@ -713,7 +774,9 @@ bool RunProcessTests() {
                             !std::filesystem::exists(denied_alias_move_target) &&
                             ReadFixture(allowed_replace_target) == replace_target_nonce &&
                             ReadFixture(allowed_handle_rename_source) == handle_rename_nonce &&
-                            !std::filesystem::exists(denied_handle_rename_destination);
+                            !std::filesystem::exists(denied_handle_rename_destination) &&
+                            !std::filesystem::exists(allowed_disposition_path) &&
+                            ReadFixture(denied_disposition_path) == disposition_nonce;
     CloseHandle(allowed);
     CloseHandle(denied);
     if (event_client != INVALID_HANDLE_VALUE) {
@@ -730,6 +793,7 @@ bool RunProcessTests() {
     DeleteFileW(allowed_alias_move_source.c_str());
     DeleteFileW(allowed_replace_target.c_str());
     DeleteFileW(allowed_handle_rename_source.c_str());
+    DeleteFileW(denied_disposition_path.c_str());
     std::filesystem::remove_all(test_root, filesystem_error);
     if (!exact_exit) {
         return false;
