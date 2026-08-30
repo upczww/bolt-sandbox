@@ -184,7 +184,10 @@ reports denied calls as `Write`, and preserves the prior compression state.
 Directory enumeration begins with BuildXL's `FindFirstFileW/A` and
 `FindFirstFileExW/A` function families. All four entries share a metadata
 authorization decision and report denied searches as `Enumerate` before any
-search handle or directory entry can be returned.
+search handle or directory entry can be returned. The adapter resolves the
+wildcard's parent directory and rechecks the reconstructed final search path,
+so an allowed junction cannot expose names from a denied directory while the
+wildcard leaf retains its original meaning.
 
 Direct `NtQueryDirectoryFile` reuses BuildXL's exact function type, while
 `NtQueryDirectoryFileEx` supplies the newer native signature absent from the

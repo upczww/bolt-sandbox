@@ -526,13 +526,36 @@ bool ReadReparseTarget(
     return !target.empty();
 }
 
+bool ResolveParentFinalIdentity(
+    const wchar_t* path,
+    std::wstring& resolved_path) noexcept;
+
 bool AuthorizeEnumeration(const wchar_t* path) noexcept {
     const auto* policy = g_policy.get();
-    const auto evaluation =
+    const auto text_evaluation =
         policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(path, Access::kMetadata);
-    if (evaluation.decision == Decision::kDeny) {
+    if (text_evaluation.decision == Decision::kDeny) {
         ReportDenied(
-            protocol::FilesystemOperation::kEnumerate, EvaluatedPath(evaluation, path));
+            protocol::FilesystemOperation::kEnumerate,
+            EvaluatedPath(text_evaluation, path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    std::wstring resolved_path;
+    if (!ResolveParentFinalIdentity(
+            EvaluatedPath(text_evaluation, path), resolved_path)) {
+        ReportDenied(
+            protocol::FilesystemOperation::kEnumerate,
+            EvaluatedPath(text_evaluation, path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    const auto final_evaluation =
+        policy->Evaluate(resolved_path.c_str(), Access::kMetadata);
+    if (final_evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            protocol::FilesystemOperation::kEnumerate,
+            EvaluatedPath(final_evaluation, resolved_path.c_str()));
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
     }
