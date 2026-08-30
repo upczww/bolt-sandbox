@@ -10,8 +10,8 @@ use bolt_sandbox::{
     ChildInjectionFailure, ChildInjectionFailureReason, ChildProcessPolicy, FilesystemOperation,
     FilesystemPolicy, FilesystemViolation, IpCidr, MAX_TIMEOUT, MIN_TIMEOUT, NetworkAllowList,
     NetworkPolicy, NetworkTarget, NetworkViolation, PortRange, ProcessExit, ProcessExitReason,
-    RecoveryPolicy, RegistryPolicy, RequestField, SandboxError, SandboxEvent, SandboxPolicy,
-    SandboxRequest,
+    ProcessOperation, ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField,
+    SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest,
 };
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {
@@ -97,10 +97,15 @@ fn req_013_typed_security_events_are_public_without_native_status_types() {
         child_process_id: 8,
         reason: ChildInjectionFailureReason::InjectionFailed,
     });
+    let process = SandboxEvent::ProcessViolation(ProcessViolation {
+        process_id: 7,
+        operation: ProcessOperation::CreateWithToken,
+    });
 
     assert!(matches!(filesystem, SandboxEvent::FilesystemViolation(_)));
     assert!(matches!(network, SandboxEvent::NetworkViolation(_)));
     assert!(matches!(child, SandboxEvent::ChildInjectionFailed(_)));
+    assert!(matches!(process, SandboxEvent::ProcessViolation(_)));
 }
 
 #[test]

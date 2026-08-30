@@ -74,6 +74,24 @@ bool RunEventFrameTests() {
         return false;
     }
 
+    constexpr std::array<std::uint8_t, 29> process_golden = {
+        0x42, 0x4C, 0x54, 0x31, 0x01, 0x00, 0x08, 0x00,
+        0x05, 0x00, 0x00, 0x00, 0x69, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0xF2, 0x27, 0xEE, 0x7B,
+        0x04, 0x03, 0x02, 0x01, 0x00,
+    };
+    std::array<std::uint8_t, process_golden.size()> process_frame{};
+    std::size_t process_length = 0;
+    if (bolt::protocol::EncodeProcessViolationFrame(
+            0x01020304U,
+            bolt::protocol::ProcessOperation::kCreateWithToken, 105,
+            process_frame.data(), process_frame.size(), process_length) !=
+            bolt::protocol::FrameEncodeStatus::kSuccess ||
+        process_length != process_frame.size() ||
+        process_frame != process_golden) {
+        return false;
+    }
+
     std::wstring maximum_path(32'767, L'x');
     std::array<std::uint8_t, 1> too_small{};
     return bolt::protocol::FilesystemViolationFrameLength(maximum_path.c_str()) ==

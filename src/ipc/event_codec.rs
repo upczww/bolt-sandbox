@@ -474,7 +474,8 @@ mod tests {
     use crate::{
         ChildInjectionFailure, ChildInjectionFailureReason, FilesystemOperation,
         FilesystemViolation, NetworkOperation, NetworkTarget, NetworkViolation, ProcessExit,
-        ProcessExitReason, RecoveryArtifact, RegistryOperation, RegistryViolation, SandboxEvent,
+        ProcessExitReason, ProcessOperation, ProcessViolation, RecoveryArtifact,
+        RegistryOperation, RegistryViolation, SandboxEvent,
         ipc::framing::{self, ProtocolError},
     };
 
@@ -527,6 +528,10 @@ mod tests {
                 parent_process_id: 105,
                 child_process_id: 106,
                 reason: ChildInjectionFailureReason::HandshakeFailed,
+            }),
+            SandboxEvent::ProcessViolation(ProcessViolation {
+                process_id: 107,
+                operation: ProcessOperation::CreateWithLogon,
             }),
         ];
 
