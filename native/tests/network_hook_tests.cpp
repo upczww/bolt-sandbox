@@ -709,7 +709,7 @@ bool RunNetworkHookTests() {
 }
 
 int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 5) {
+    if (argument_count != 4) {
         return 210;
     }
     WSADATA winsock{};
@@ -739,13 +739,13 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
             : SOCKET_ERROR;
     sockaddr_in connected_peer{};
     int connected_peer_length = sizeof(connected_peer);
-    const bool connected_through_proxy = connect_status == 0 &&
+    const bool peer_is_original_target = connect_status == 0 &&
         getpeername(
             allowed_socket, reinterpret_cast<sockaddr*>(&connected_peer),
             &connected_peer_length) == 0 &&
         connected_peer.sin_family == AF_INET &&
         ntohs(connected_peer.sin_port) ==
-            static_cast<std::uint16_t>(_wtoi(arguments[4]));
+            static_cast<std::uint16_t>(_wtoi(arguments[3]));
     ADDRINFOW wide_hints{};
     wide_hints.ai_family = AF_INET;
     wide_hints.ai_socktype = SOCK_STREAM;
@@ -857,6 +857,12 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
         CloseHandle(dns_ex_event);
     }
     closesocket(allowed_socket);
+    sockaddr_in closed_peer{};
+    int closed_peer_length = sizeof(closed_peer);
+    const int closed_peer_status = getpeername(
+        allowed_socket, reinterpret_cast<sockaddr*>(&closed_peer),
+        &closed_peer_length);
+    const int closed_peer_error = WSAGetLastError();
     closesocket(denied_socket);
     closesocket(allowed_udp);
     WSACleanup();
@@ -866,8 +872,12 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
     if (connect_status != 0) {
         return 221;
     }
-    if (!connected_through_proxy) {
+    if (!peer_is_original_target) {
         return 233;
+    }
+    if (closed_peer_status != SOCKET_ERROR ||
+        closed_peer_error != WSAENOTSOCK) {
+        return 234;
     }
     if (wide_resolve_status != 0) {
         return 224;
@@ -1007,8 +1017,7 @@ bool RunNetworkAllowListTests() {
     const auto hook_path = std::filesystem::path(executable).parent_path() / hook_name;
     const std::wstring command_line = L"\"" + executable +
         L"\" --network-allow-list-child " + allowed_domain_w + L" " +
-        std::to_wstring(port) + L" " +
-        std::to_wstring(dns_proxy->tcp_proxy_port());
+        std::to_wstring(port);
     const HANDLE inherited[] = {
         policy.handle(), event_client, release,
         dns_proxy->request_write_handle(), dns_proxy->response_read_handle()};
