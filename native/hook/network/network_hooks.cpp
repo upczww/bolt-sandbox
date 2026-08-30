@@ -14,6 +14,7 @@
 #include "hook/network/dns_proxy_client_channel.h"
 #include "hook/network/dns_proxy_handle_transport.h"
 #include "hook/network/high_level_hooks.h"
+#include "hook/network/socket_target_table.h"
 #include "hook/network/tcp_proxy_client.h"
 #include "protocol/runtime_payload.h"
 
@@ -50,10 +51,13 @@ using DnsQueryExFunction = decltype(&DnsQueryEx);
 using DnsFreeFunction = decltype(&DnsFree);
 using SendToFunction = decltype(&sendto);
 using WsaSendToFunction = decltype(&WSASendTo);
+using GetPeerNameFunction = decltype(&getpeername);
+using CloseSocketFunction = decltype(&closesocket);
 
 std::unique_ptr<NetworkPolicy> g_policy;
 std::unique_ptr<DnsBindingTable> g_dns_bindings;
 std::unique_ptr<DnsProxyClientChannel> g_dns_channel;
+std::unique_ptr<SocketTargetTable> g_socket_targets;
 std::array<std::uint8_t, 16> g_dns_session_id{};
 protocol::DnsProxySession g_tcp_proxy_session{};
 std::uint16_t g_tcp_proxy_port = 0;
@@ -93,6 +97,8 @@ DnsQueryExFunction g_dns_query_ex = DnsQueryEx;
 DnsFreeFunction g_dns_free = DnsFree;
 SendToFunction g_send_to = sendto;
 WsaSendToFunction g_wsa_send_to = WSASendTo;
+GetPeerNameFunction g_get_peer_name = getpeername;
+CloseSocketFunction g_close_socket = closesocket;
 constexpr GUID kConnectExGuid = WSAID_CONNECTEX;
 constexpr std::uint64_t kSyntheticAddressInfoMagic = 0x424c544144445231ULL;
 
@@ -537,6 +543,46 @@ bool ReadEndpoint(
     return false;
 }
 
+bool WriteEndpoint(
+    const protocol::NetworkEndpoint& endpoint,
+    sockaddr* const address,
+    int* const address_length) noexcept {
+    if (address == nullptr || address_length == nullptr) {
+        WSASetLastError(WSAEFAULT);
+        return false;
+    }
+    __try {
+        const int required =
+            endpoint.family == protocol::NetworkAddressFamily::kIpv4
+                ? static_cast<int>(sizeof(sockaddr_in))
+                : static_cast<int>(sizeof(sockaddr_in6));
+        if (*address_length < required) {
+            *address_length = required;
+            WSASetLastError(WSAEFAULT);
+            return false;
+        }
+        if (endpoint.family == protocol::NetworkAddressFamily::kIpv4) {
+            sockaddr_in value{};
+            value.sin_family = AF_INET;
+            value.sin_port = htons(endpoint.port);
+            std::memcpy(&value.sin_addr, endpoint.address.data(), 4);
+            std::memcpy(address, &value, sizeof(value));
+        } else {
+            sockaddr_in6 value{};
+            value.sin6_family = AF_INET6;
+            value.sin6_port = htons(endpoint.port);
+            std::memcpy(&value.sin6_addr, endpoint.address.data(), 16);
+            std::memcpy(address, &value, sizeof(value));
+        }
+        *address_length = required;
+        WSASetLastError(0);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        WSASetLastError(WSAEFAULT);
+        return false;
+    }
+}
+
 
 bool DenyConnect(
     const sockaddr* address,
@@ -619,6 +665,14 @@ bool TryProxyConnect(
         g_tcp_proxy_closed = true;
     }
     if (status == TcpProxyClientStatus::kConnected) {
+        if (g_socket_targets == nullptr ||
+            g_socket_targets->Upsert(
+                static_cast<std::uintptr_t>(socket), endpoint) !=
+                SocketTargetStatus::kSuccess) {
+            shutdown(socket, SD_BOTH);
+            WSASetLastError(WSAENOBUFS);
+            return true;
+        }
         result = 0;
         WSASetLastError(0);
         return true;
@@ -1223,6 +1277,35 @@ int WSAAPI DetouredWsaSendTo(
         destination_length, overlapped, completion_routine);
 }
 
+int WSAAPI DetouredGetPeerName(
+    const SOCKET socket,
+    sockaddr* const address,
+    int* const address_length) noexcept {
+    protocol::NetworkEndpoint endpoint{};
+    if (g_socket_targets != nullptr &&
+        g_socket_targets->Lookup(
+            static_cast<std::uintptr_t>(socket), endpoint)) {
+        return WriteEndpoint(endpoint, address, address_length) ? 0
+                                                               : SOCKET_ERROR;
+    }
+    return g_get_peer_name(socket, address, address_length);
+}
+
+int WSAAPI DetouredCloseSocket(const SOCKET socket) noexcept {
+    protocol::NetworkEndpoint endpoint{};
+    const bool tracked = g_socket_targets != nullptr &&
+        g_socket_targets->Lookup(
+            static_cast<std::uintptr_t>(socket), endpoint);
+    if (tracked) {
+        g_socket_targets->Remove(static_cast<std::uintptr_t>(socket));
+    }
+    const int status = g_close_socket(socket);
+    if (status == SOCKET_ERROR && tracked) {
+        g_socket_targets->Upsert(static_cast<std::uintptr_t>(socket), endpoint);
+    }
+    return status;
+}
+
 }  // namespace
 
 bool DenyHighLevelConnection(const char* server) noexcept {
@@ -1267,9 +1350,14 @@ HookInstallStatus InstallNetworkHooks(
     }
     std::unique_ptr<DnsBindingTable> bindings;
     std::unique_ptr<DnsProxyClientChannel> channel;
+    std::unique_ptr<SocketTargetTable> socket_targets;
     const bool dns_configured = runtime.dns_request_handle != 0;
     if (dns_configured) {
         if (DnsBindingTable::Create(256, bindings) != BindingStatus::kSuccess) {
+            return HookInstallStatus::kInvalidPolicy;
+        }
+        if (SocketTargetTable::Create(256, socket_targets) !=
+            SocketTargetStatus::kSuccess) {
             return HookInstallStatus::kInvalidPolicy;
         }
         std::unique_ptr<DnsProxyHandleTransport> transport;
@@ -1351,6 +1439,12 @@ HookInstallStatus InstallNetworkHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_wsa_send_to),
             reinterpret_cast<PVOID>(DetouredWsaSendTo)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_get_peer_name),
+            reinterpret_cast<PVOID>(DetouredGetPeerName)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_close_socket),
+            reinterpret_cast<PVOID>(DetouredCloseSocket)) != NO_ERROR ||
         !AttachWinHttpHooks() || !AttachWinInetHooks() ||
         DetourTransactionCommit() != NO_ERROR) {
         DetourTransactionAbort();
@@ -1364,6 +1458,7 @@ HookInstallStatus InstallNetworkHooks(
     g_tcp_proxy_closed = false;
     g_dns_bindings = std::move(bindings);
     g_dns_channel = std::move(channel);
+    g_socket_targets = std::move(socket_targets);
     g_policy = std::move(policy);
     return HookInstallStatus::kSuccess;
 }
