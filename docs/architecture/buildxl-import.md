@@ -62,8 +62,9 @@ opens as reads, all mutation or unknown rights as writes, and classifies
 `CREATE_NEW`, `CREATE_ALWAYS`, and `OPEN_ALWAYS` as creates. Unknown creation
 dispositions fail closed as writes.
 
-The first adapted BuildXL operation-family hook is `CopyFileW`. It evaluates
-the source as read and the destination as write before invoking Windows,
+The first adapted BuildXL operation-family hooks are `CopyFileW` and
+`CopyFileExW`. They share one source/destination authorization path that
+evaluates the source as read and the destination as write before invoking Windows,
 reports the denied side through `EventSink`, and invalidates the destination
 path cache on an allowed call. Unlike BuildXL's build-observation-oriented
 post-call source check, Bolt performs both checks before the call so a denied

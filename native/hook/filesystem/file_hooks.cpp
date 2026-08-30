@@ -33,6 +33,7 @@ MoveFileExWFunction g_move_file_ex_w = MoveFileExW;
 using CreateHardLinkWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRIBUTES);
 CreateHardLinkWFunction g_create_hard_link_w = CreateHardLinkW;
 CopyFileW_t g_copy_file_w = CopyFileW;
+CopyFileExW_t g_copy_file_ex_w = CopyFileExW;
 
 void ReportDenied(
     const protocol::FilesystemOperation operation,
@@ -44,6 +45,26 @@ const wchar_t* EvaluatedPath(
     const PolicyEvaluation& evaluation,
     const wchar_t* fallback) noexcept {
     return evaluation.normalized_path.empty() ? fallback : evaluation.normalized_path.c_str();
+}
+
+bool AuthorizeCopy(const wchar_t* existing_path, const wchar_t* new_path) noexcept {
+    const auto* policy = g_policy.get();
+    const auto source =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(existing_path, Access::kRead);
+    const auto destination =
+        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(new_path, Access::kWrite);
+    if (source.decision == Decision::kDeny || destination.decision == Decision::kDeny) {
+        const bool source_denied = source.decision == Decision::kDeny;
+        ReportDenied(
+            source_denied ? protocol::FilesystemOperation::kRead
+                          : protocol::FilesystemOperation::kCreate,
+            source_denied ? EvaluatedPath(source, existing_path)
+                          : EvaluatedPath(destination, new_path));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
+    InvalidateResolvedPathForMutation(EvaluatedPath(destination, new_path), false);
+    return true;
 }
 
 HANDLE WINAPI DetouredCreateFileW(
@@ -174,23 +195,24 @@ BOOL WINAPI DetouredCopyFileW(
     const LPCWSTR existing_path,
     const LPCWSTR new_path,
     const BOOL fail_if_exists) noexcept {
-    const auto* policy = g_policy.get();
-    const auto source =
-        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(existing_path, Access::kRead);
-    const auto destination =
-        policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(new_path, Access::kWrite);
-    if (source.decision == Decision::kDeny || destination.decision == Decision::kDeny) {
-        const bool source_denied = source.decision == Decision::kDeny;
-        ReportDenied(
-            source_denied ? protocol::FilesystemOperation::kRead
-                          : protocol::FilesystemOperation::kCreate,
-            source_denied ? EvaluatedPath(source, existing_path)
-                          : EvaluatedPath(destination, new_path));
-        SetLastError(ERROR_ACCESS_DENIED);
+    if (!AuthorizeCopy(existing_path, new_path)) {
         return FALSE;
     }
-    InvalidateResolvedPathForMutation(EvaluatedPath(destination, new_path), false);
     return g_copy_file_w(existing_path, new_path, fail_if_exists);
+}
+
+BOOL WINAPI DetouredCopyFileExW(
+    const LPCWSTR existing_path,
+    const LPCWSTR new_path,
+    const LPPROGRESS_ROUTINE progress_routine,
+    const LPVOID data,
+    const LPBOOL cancel,
+    const DWORD copy_flags) noexcept {
+    if (!AuthorizeCopy(existing_path, new_path)) {
+        return FALSE;
+    }
+    return g_copy_file_ex_w(
+        existing_path, new_path, progress_routine, data, cancel, copy_flags);
 }
 
 }  // namespace
@@ -231,6 +253,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_copy_file_w),
             reinterpret_cast<PVOID>(DetouredCopyFileW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_copy_file_ex_w),
+            reinterpret_cast<PVOID>(DetouredCopyFileExW)) != NO_ERROR ||
         DetourTransactionCommit() != NO_ERROR) {
         DetourTransactionAbort();
         return HookInstallStatus::kTransactionFailed;
