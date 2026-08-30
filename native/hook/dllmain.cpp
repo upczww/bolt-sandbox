@@ -3,6 +3,7 @@
 #include "protocol/runtime_payload.h"
 #include "protocol/version.h"
 #include "hook/filesystem/file_hooks.h"
+#include "hook/event_sink.h"
 
 #include <cstdint>
 
@@ -52,6 +53,11 @@ bool InitializeRuntime() noexcept {
     }
 
     const HANDLE policy_handle = HandleFromWire(payload.policy_handle);
+    const HANDLE event_handle = HandleFromWire(payload.event_handle);
+    if (bolt::hook::InitializeEventSink(event_handle) !=
+        bolt::hook::EventSinkStatus::kSuccess) {
+        return false;
+    }
     const auto* policy = static_cast<const std::uint8_t*>(
         MapViewOfFile(policy_handle, FILE_MAP_READ, 0, 0, payload.policy_length));
     if (policy == nullptr) {
@@ -66,7 +72,7 @@ bool InitializeRuntime() noexcept {
 
     const auto ready = bolt::protocol::EncodeReadyFrame(payload.handshake_nonce);
     InterlockedExchange(&g_runtime_initialized, 1);
-    if (!WriteExact(HandleFromWire(payload.event_handle), ready.data(), ready.size())) {
+    if (!WriteExact(event_handle, ready.data(), ready.size())) {
         InterlockedExchange(&g_runtime_initialized, 0);
         return false;
     }
@@ -81,6 +87,11 @@ bool InitializeRuntime() noexcept {
 
 extern "C" __declspec(dllexport) BOOL BoltSandboxRuntimeInitialized() noexcept {
     return InterlockedCompareExchange(&g_runtime_initialized, 1, 1) == 1;
+}
+
+extern "C" __declspec(dllexport) BOOL BoltSandboxFlushEvents(
+    const DWORD timeout_milliseconds) noexcept {
+    return bolt::hook::WaitForEventSinkIdle(timeout_milliseconds) ? TRUE : FALSE;
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) noexcept {

@@ -2,6 +2,7 @@
 
 #include "hook/filesystem/filesystem_policy.h"
 #include "hook/filesystem/path_cache.h"
+#include "hook/event_sink.h"
 
 #include <memory>
 
@@ -40,6 +41,12 @@ Access ClassifyAccess(const DWORD desired_access, const DWORD creation_dispositi
     return desired_access == 0 ? Access::kMetadata : Access::kRead;
 }
 
+void ReportDenied(
+    const protocol::FilesystemOperation operation,
+    const wchar_t* path) noexcept {
+    static_cast<void>(hook::TryReportFilesystemViolation(operation, path));
+}
+
 HANDLE WINAPI DetouredCreateFileW(
     const LPCWSTR filename,
     const DWORD desired_access,
@@ -51,6 +58,16 @@ HANDLE WINAPI DetouredCreateFileW(
     const auto* policy = g_policy.get();
     const auto access = ClassifyAccess(desired_access, creation_disposition);
     if (policy == nullptr || policy->Decide(filename, access) == Decision::kDeny) {
+        const auto operation = creation_disposition == CREATE_NEW ||
+                                       creation_disposition == CREATE_ALWAYS ||
+                                       creation_disposition == OPEN_ALWAYS
+                                   ? protocol::FilesystemOperation::kCreate
+                                   : access == Access::kWrite
+                                         ? protocol::FilesystemOperation::kWrite
+                                         : access == Access::kMetadata
+                                               ? protocol::FilesystemOperation::kMetadata
+                                               : protocol::FilesystemOperation::kRead;
+        ReportDenied(operation, filename);
         SetLastError(ERROR_ACCESS_DENIED);
         return INVALID_HANDLE_VALUE;
     }
@@ -67,6 +84,7 @@ HANDLE WINAPI DetouredCreateFileW(
 BOOL WINAPI DetouredDeleteFileW(const LPCWSTR filename) noexcept {
     const auto* policy = g_policy.get();
     if (policy == nullptr || policy->Decide(filename, Access::kWrite) == Decision::kDeny) {
+        ReportDenied(protocol::FilesystemOperation::kDelete, filename);
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
@@ -79,6 +97,7 @@ BOOL WINAPI DetouredCreateDirectoryW(
     const LPSECURITY_ATTRIBUTES security_attributes) noexcept {
     const auto* policy = g_policy.get();
     if (policy == nullptr || policy->Decide(path, Access::kWrite) == Decision::kDeny) {
+        ReportDenied(protocol::FilesystemOperation::kCreate, path);
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
@@ -89,6 +108,7 @@ BOOL WINAPI DetouredCreateDirectoryW(
 BOOL WINAPI DetouredRemoveDirectoryW(const LPCWSTR path) noexcept {
     const auto* policy = g_policy.get();
     if (policy == nullptr || policy->Decide(path, Access::kWrite) == Decision::kDeny) {
+        ReportDenied(protocol::FilesystemOperation::kDelete, path);
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
@@ -106,6 +126,7 @@ BOOL WINAPI DetouredMoveFileExW(
     if (policy == nullptr ||
         policy->Decide(existing_path, Access::kWrite) == Decision::kDeny ||
         (new_path != nullptr && policy->Decide(new_path, Access::kWrite) == Decision::kDeny)) {
+        ReportDenied(protocol::FilesystemOperation::kRename, existing_path);
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
@@ -123,6 +144,7 @@ BOOL WINAPI DetouredCreateHardLinkW(
     const auto* policy = g_policy.get();
     if (policy == nullptr || policy->Decide(existing_path, Access::kRead) == Decision::kDeny ||
         policy->Decide(new_path, Access::kWrite) == Decision::kDeny) {
+        ReportDenied(protocol::FilesystemOperation::kCreate, new_path);
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }

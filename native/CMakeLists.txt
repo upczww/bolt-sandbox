@@ -108,6 +108,7 @@ target_link_libraries(bolt-sandbox-common PRIVATE bolt-sandbox-detours)
 target_link_libraries(bolt-sandbox-common PRIVATE bolt-sandbox-protocol)
 
 add_library(bolt-sandbox-filesystem STATIC
+    hook/event_sink.cpp
     hook/filesystem/file_hooks.cpp
     hook/filesystem/filesystem_policy.cpp
     hook/filesystem/path_cache.cpp

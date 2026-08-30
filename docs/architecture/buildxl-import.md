@@ -60,7 +60,12 @@ must never become Bolt runtime inputs or outputs.
 Bolt-owned adapters replace these coupled seams:
 
 - `PolicyView` maps the authenticated Bolt policy payload to access decisions.
-- `EventSink` maps hook outcomes to Bolt events and backpressure behavior.
+- `EventSink` maps hook outcomes to Bolt events and backpressure behavior. Its
+  current filesystem implementation uses 64 preallocated records, assigns
+  monotonic sequences after the Ready frame, and performs pipe writes on a
+  dedicated worker. Hook calls only attempt a bounded enqueue and never wait
+  for the pipe consumer; an explicit bounded drain is available for orderly
+  process shutdown.
 - Process injection and lifecycle adapters map Bolt execution state without a
   BuildXL scheduler, build graph, or C# host.
 
