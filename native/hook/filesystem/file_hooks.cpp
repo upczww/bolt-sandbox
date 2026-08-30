@@ -1,5 +1,6 @@
 #include "hook/filesystem/file_hooks.h"
 
+#include "hook/filesystem/access_classifier.h"
 #include "hook/filesystem/filesystem_policy.h"
 #include "hook/filesystem/path_cache.h"
 #include "hook/event_sink.h"
@@ -30,17 +31,6 @@ MoveFileExWFunction g_move_file_ex_w = MoveFileExW;
 using CreateHardLinkWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRIBUTES);
 CreateHardLinkWFunction g_create_hard_link_w = CreateHardLinkW;
 
-Access ClassifyAccess(const DWORD desired_access, const DWORD creation_disposition) noexcept {
-    constexpr DWORD write_access = GENERIC_WRITE | FILE_WRITE_DATA | FILE_APPEND_DATA |
-                                   FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | DELETE |
-                                   WRITE_DAC | WRITE_OWNER;
-    if ((desired_access & write_access) != 0 || creation_disposition == CREATE_NEW ||
-        creation_disposition == CREATE_ALWAYS || creation_disposition == TRUNCATE_EXISTING) {
-        return Access::kWrite;
-    }
-    return desired_access == 0 ? Access::kMetadata : Access::kRead;
-}
-
 void ReportDenied(
     const protocol::FilesystemOperation operation,
     const wchar_t* path) noexcept {
@@ -56,22 +46,13 @@ HANDLE WINAPI DetouredCreateFileW(
     const DWORD flags_and_attributes,
     const HANDLE template_file) noexcept {
     const auto* policy = g_policy.get();
-    const auto access = ClassifyAccess(desired_access, creation_disposition);
-    if (policy == nullptr || policy->Decide(filename, access) == Decision::kDeny) {
-        const auto operation = creation_disposition == CREATE_NEW ||
-                                       creation_disposition == CREATE_ALWAYS ||
-                                       creation_disposition == OPEN_ALWAYS
-                                   ? protocol::FilesystemOperation::kCreate
-                                   : access == Access::kWrite
-                                         ? protocol::FilesystemOperation::kWrite
-                                         : access == Access::kMetadata
-                                               ? protocol::FilesystemOperation::kMetadata
-                                               : protocol::FilesystemOperation::kRead;
-        ReportDenied(operation, filename);
+    const auto request = ClassifyCreateFileRequest(desired_access, creation_disposition);
+    if (policy == nullptr || policy->Decide(filename, request.access) == Decision::kDeny) {
+        ReportDenied(request.operation, filename);
         SetLastError(ERROR_ACCESS_DENIED);
         return INVALID_HANDLE_VALUE;
     }
-    if (access == Access::kWrite) {
+    if (request.access == Access::kWrite) {
         InvalidateResolvedPathForMutation(filename, false);
     }
     return g_create_file_w(

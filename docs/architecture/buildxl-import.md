@@ -50,6 +50,13 @@ upstream `ResolvedPathCache` before create, delete, directory mutation, move,
 and hard-link calls. Directory and move invalidation conservatively removes
 cached descendants, matching BuildXL's defense against stale reparse targets.
 
+Create/open classification is a Bolt-owned compatibility seam derived from
+BuildXL's `WantsWriteAccess`, `WantsReadAccess`, and probe-only split. It treats
+attribute/EA/security/synchronization-only opens as metadata, execution/content
+opens as reads, all mutation or unknown rights as writes, and classifies
+`CREATE_NEW`, `CREATE_ALWAYS`, and `OPEN_ALWAYS` as creates. Unknown creation
+dispositions fail closed as writes.
+
 The remaining vendored files are not yet members of a Bolt build target. They
 are activated only after a failing behavior or compile-contract test defines
 the required boundary. In particular, `DataTypes`, `PolicySearch`,
