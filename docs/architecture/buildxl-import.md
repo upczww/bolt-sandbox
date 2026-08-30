@@ -128,6 +128,16 @@ rename similarly preflight the complete source/destination lists, including
 `FOF_MULTIDESTFILES`, through the existing two-sided BuildXL-derived policy
 funnels before allowing any Shell side effect.
 
+Explorer-compatible `IFileOperation` copy, move, rename, and delete are covered
+by injected x86/x64 integration probes. Windows Shell reaches the existing
+CreateFile, copy, move, handle-write, and delete funnels, so Bolt does not add a
+parallel COM hook. Allowed operations complete, read-only destinations and
+sources retain their original state, and every emitted frame remains bounded,
+checksummed, ordered, process-attributed, and classified by the first denying
+filesystem seam. Shell may also attempt cache and recent-item maintenance; those
+out-of-policy side effects remain denied and auditable rather than being granted
+as hidden compatibility exceptions.
+
 BuildXL's vendored `ReplaceFileW` hook currently contains a policy TODO and
 only invalidates its cache. Bolt therefore keeps the upstream signature and
 scope pattern but supplies the architecture-required fail-closed adapter:
@@ -440,11 +450,12 @@ strictly stronger requests pass through, while valid requests that omit a
 mandatory extension-point or image-load bit are rejected and recorded as
 `MitigationWeakening`.
 
-The next slices are:
-
-1. Activate access classification and handle overlay behind `PolicyView`.
-2. Activate filesystem detours by operation family and route reports through
-   `EventSink`.
+The access classifier, handle operations, filesystem detours, process
+inheritance, and `EventSink` paths described above are active. Additional
+vendored code is linked only when a failing behavior or compile-contract test
+demonstrates a missing runtime dependency; wrapper coverage that already
+converges on an active lower-level seam is proven with integration probes rather
+than a duplicate hook.
 
 The rest of `Public/Src/Sandbox/Windows` is deliberately not copied. It
 contains BuildXL build definitions and unit-test infrastructure, a separate

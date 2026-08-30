@@ -22,11 +22,14 @@ each architecture obligation to its catalog evidence, while the
 ## Status
 
 Implementation includes the trusted Rust request, policy, IPC, launch-preparation,
-and lifecycle boundaries. The native build now produces an x64 fail-closed
-launcher plus x86 and x64 hook DLL shells sharing a versioned policy protocol.
-Native policy envelopes are length-, version-, SHA-256-, and structure-validated.
-Process creation, injection, Job Object control, and enforcement hooks remain to
-be implemented.
+and lifecycle boundaries. The native build produces an x64 fail-closed launcher
+plus x86 and x64 hook DLLs sharing a versioned policy protocol. Native policy
+envelopes are length-, version-, SHA-256-, and structure-validated. Suspended
+process injection, architecture-matched descendant inheritance, Job Object
+lifecycle control, required process mitigations, and the BuildXL-adapted
+filesystem enforcement families are implemented and under acceptance hardening.
+Native network, registry, recovery, packaging, and production-hardening work
+remains.
 
 ## Development
 
