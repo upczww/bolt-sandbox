@@ -703,6 +703,54 @@ bool RunInheritUserAclTest(
     return passed;
 }
 
+bool RunPathFormsTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const std::filesystem::path& test_root,
+    std::uint64_t& ordinal) {
+    const auto allowed = test_root / L"path-forms-allowed";
+    const auto denied = test_root / L"path-forms-denied";
+    std::error_code error;
+    if (!std::filesystem::create_directories(allowed, error) || error ||
+        !std::filesystem::create_directories(denied, error) || error ||
+        !WriteFixture(denied / L"base.txt", "denied")) {
+        return false;
+    }
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const std::vector<bolt::tests::FilesystemRule> rules = {
+        {bolt::tests::FilesystemRuleKind::kReadWrite, allowed},
+        {bolt::tests::FilesystemRuleKind::kDeny, denied},
+    };
+    RaceProcess process;
+    const bool started =
+        start != nullptr &&
+        process.Start(
+            executable, hook_path, rules, L"path-forms", test_root, {}, start,
+            ordinal++);
+    const bool released =
+        started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
+    const bool exited = released && process.WaitForExit();
+    const bool passed =
+        exited && ReadFixture(allowed / L"relative.txt") == "relative" &&
+        ReadFixture(allowed / L"base.txt:stream") == "stream" &&
+        ReadFixture(allowed / L"unicode-\u00e9.txt") == "composed" &&
+        ReadFixture(allowed / L"unicode-e\u0301.txt") == "decomposed" &&
+        !std::filesystem::exists(allowed / L"delete-on-close.tmp") &&
+        ReadFixture(denied / L"base.txt") == "denied";
+    if (start != nullptr) {
+        CloseHandle(start);
+    }
+    if (!passed) {
+        std::fprintf(
+            stderr, "path forms failed: exit=%lu\n",
+            static_cast<unsigned long>(process.exit_code()));
+    }
+    return passed;
+}
+
 }  // namespace
 
 int RunFilesystemRaceChild(
@@ -892,6 +940,153 @@ int RunFilesystemRaceChild(
             }
             return 313;
         }
+    } else if (mode == L"path-forms") {
+        const std::filesystem::path root(arguments[3]);
+        const auto allowed = root / L"path-forms-allowed";
+        const auto denied = root / L"path-forms-denied";
+        if (!SetCurrentDirectoryW(allowed.c_str()) ||
+            !CreateDirectoryW(L"nested", nullptr)) {
+            return 314;
+        }
+        const auto write_text = [](const wchar_t* path, const char* text) {
+            const HANDLE file = CreateFileW(
+                path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (file == INVALID_HANDLE_VALUE) {
+                return false;
+            }
+            DWORD written = 0;
+            const bool wrote = WriteFile(
+                                   file, text,
+                                   static_cast<DWORD>(std::strlen(text)), &written,
+                                   nullptr) != FALSE &&
+                               written == std::strlen(text);
+            CloseHandle(file);
+            return wrote;
+        };
+        const auto can_read = [](const wchar_t* path) {
+            const HANDLE file = CreateFileW(
+                path, GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (file == INVALID_HANDLE_VALUE) {
+                return false;
+            }
+            CloseHandle(file);
+            return true;
+        };
+        if (!write_text(L".\\relative.txt", "relative") ||
+            !can_read(L"nested\\..\\relative.txt") ||
+            !can_read(L".//nested\\..//relative.txt")) {
+            return 315;
+        }
+        const std::wstring drive_relative =
+            allowed.root_name().wstring() + L"relative.txt";
+        if (!can_read(drive_relative.c_str()) ||
+            !can_read(L"relative.txt... ")) {
+            return 316;
+        }
+        const std::wstring allowed_extended = L"\\\\?\\" +
+                                              (allowed / L"relative.txt").wstring();
+        if (!can_read(allowed_extended.c_str())) {
+            return 317;
+        }
+        const std::wstring denied_extended =
+            L"\\\\?\\" + (denied / L"base.txt").wstring();
+        SetLastError(ERROR_SUCCESS);
+        if (can_read(denied_extended.c_str()) ||
+            GetLastError() != ERROR_ACCESS_DENIED) {
+            return 318;
+        }
+        if (!write_text(L"base.txt", "base") ||
+            !write_text(L"base.txt:stream", "stream")) {
+            return 319;
+        }
+        SetLastError(ERROR_SUCCESS);
+        const HANDLE denied_stream = CreateFileW(
+            (denied / L"base.txt:stream").c_str(), GENERIC_READ | GENERIC_WRITE,
+            0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (denied_stream != INVALID_HANDLE_VALUE ||
+            GetLastError() != ERROR_ACCESS_DENIED) {
+            if (denied_stream != INVALID_HANDLE_VALUE) {
+                CloseHandle(denied_stream);
+            }
+            return 320;
+        }
+        if (!write_text(L"unicode-\u00e9.txt", "composed") ||
+            !write_text(L"unicode-e\u0301.txt", "decomposed")) {
+            return 321;
+        }
+        const HANDLE temporary = CreateFileW(
+            L"delete-on-close.tmp", GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+        if (temporary == INVALID_HANDLE_VALUE) {
+            return 322;
+        }
+        CloseHandle(temporary);
+        SetLastError(ERROR_SUCCESS);
+        const HANDLE denied_temporary = CreateFileW(
+            (denied / L"delete-on-close.tmp").c_str(),
+            GENERIC_READ | GENERIC_WRITE | DELETE, 0, nullptr, CREATE_ALWAYS,
+            FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+        if (denied_temporary != INVALID_HANDLE_VALUE ||
+            GetLastError() != ERROR_ACCESS_DENIED) {
+            if (denied_temporary != INVALID_HANDLE_VALUE) {
+                CloseHandle(denied_temporary);
+            }
+            return 323;
+        }
+        const HANDLE backup_directory = CreateFileW(
+            allowed.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (backup_directory == INVALID_HANDLE_VALUE) {
+            return 324;
+        }
+        CloseHandle(backup_directory);
+        for (const wchar_t* pseudo_file : {
+                 L"NUL", L"CONOUT$", L"\\\\.\\pipe\\bolt-arbitrary"}) {
+            SetLastError(ERROR_SUCCESS);
+            const HANDLE pseudo = CreateFileW(
+                pseudo_file, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (pseudo != INVALID_HANDLE_VALUE ||
+                GetLastError() != ERROR_ACCESS_DENIED) {
+                if (pseudo != INVALID_HANDLE_VALUE) {
+                    CloseHandle(pseudo);
+                }
+                return 325;
+            }
+        }
+        const std::wstring pipe_name =
+            L"\\\\.\\pipe\\bolt-arbitrary-" +
+            std::to_wstring(GetCurrentProcessId());
+        SetLastError(ERROR_SUCCESS);
+        const HANDLE arbitrary_pipe = CreateNamedPipeW(
+            pipe_name.c_str(), PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 1'024, 1'024,
+            0, nullptr);
+        if (arbitrary_pipe != INVALID_HANDLE_VALUE ||
+            GetLastError() != ERROR_ACCESS_DENIED) {
+            if (arbitrary_pipe != INVALID_HANDLE_VALUE) {
+                CloseHandle(arbitrary_pipe);
+            }
+            return 326;
+        }
+        const std::wstring mailslot_name =
+            L"\\\\.\\mailslot\\bolt-arbitrary-" +
+            std::to_wstring(GetCurrentProcessId());
+        SetLastError(ERROR_SUCCESS);
+        const HANDLE arbitrary_mailslot = CreateMailslotW(
+            mailslot_name.c_str(), 0, MAILSLOT_WAIT_FOREVER, nullptr);
+        if (arbitrary_mailslot != INVALID_HANDLE_VALUE ||
+            GetLastError() != ERROR_ACCESS_DENIED) {
+            if (arbitrary_mailslot != INVALID_HANDLE_VALUE) {
+                CloseHandle(arbitrary_mailslot);
+            }
+            return 327;
+        }
     } else {
         return 298;
     }
@@ -931,7 +1126,8 @@ bool RunFilesystemRaceTests() {
         RunPolicySemanticsTest(
             executable, hook_path, test_root, ordinal) &&
         RunInheritUserAclTest(
-            executable, hook_path, test_root, ordinal);
+            executable, hook_path, test_root, ordinal) &&
+        RunPathFormsTest(executable, hook_path, test_root, ordinal);
     std::filesystem::remove_all(test_root, error);
     if (!passed) {
         std::fprintf(stderr, "filesystem race fixture failed\n");
