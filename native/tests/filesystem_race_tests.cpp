@@ -65,6 +65,21 @@ std::wstring HandleText(const HANDLE handle) {
     return std::to_wstring(reinterpret_cast<std::uintptr_t>(handle));
 }
 
+std::filesystem::path EnvironmentPath(const wchar_t* name) {
+    const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+    if (required == 0) {
+        return {};
+    }
+    std::wstring value(required, L'\0');
+    const DWORD written = GetEnvironmentVariableW(
+        name, value.data(), static_cast<DWORD>(value.size()));
+    if (written == 0 || written >= value.size()) {
+        return {};
+    }
+    value.resize(written);
+    return std::filesystem::path(value);
+}
+
 std::wstring PipeName(const std::uint64_t ordinal) {
     const std::uint64_t high = 0x7261'6365'0000'0000ULL ^ ordinal;
     const std::uint64_t low =
@@ -887,6 +902,121 @@ bool RunPathFormsTest(
     if (!passed) {
         std::fprintf(
             stderr, "path forms failed: exit=%lu\n",
+            static_cast<unsigned long>(process.exit_code()));
+    }
+    return passed;
+}
+
+bool RunUncPathTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    std::uint64_t& ordinal) {
+    const auto fixture_root = EnvironmentPath(L"BOLT_TEST_UNC_ROOT");
+    if (fixture_root.empty()) {
+        std::fprintf(stderr, "filesystem capability BOLT_TEST_UNC_ROOT=not_present\n");
+        return true;
+    }
+    const auto test_root = fixture_root /
+                           (L"bolt-sandbox-unc-" +
+                            std::to_wstring(GetCurrentProcessId()));
+    const auto allowed = test_root / L"allowed";
+    const auto denied = test_root / L"denied";
+    std::error_code error;
+    std::filesystem::remove_all(test_root, error);
+    error.clear();
+    if (!std::filesystem::create_directories(allowed, error) || error ||
+        !std::filesystem::create_directories(denied, error) || error ||
+        !WriteFixture(denied / L"protected.txt", "protected")) {
+        return false;
+    }
+
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const std::vector<bolt::tests::FilesystemRule> rules = {
+        {bolt::tests::FilesystemRuleKind::kReadWrite, allowed},
+        {bolt::tests::FilesystemRuleKind::kDeny, denied},
+    };
+    RaceProcess process;
+    const bool started =
+        start != nullptr &&
+        process.Start(
+            executable, hook_path, rules, L"unc-paths", test_root, {}, start,
+            ordinal++);
+    const bool released =
+        started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
+    const bool exited = released && process.WaitForExit();
+    const bool passed =
+        exited && ReadFixture(allowed / L"plain.txt") == "extended" &&
+        !std::filesystem::exists(denied / L"blocked.txt") &&
+        ReadFixture(denied / L"protected.txt") == "protected";
+    if (start != nullptr) {
+        CloseHandle(start);
+    }
+    std::filesystem::remove_all(test_root, error);
+    if (!passed) {
+        std::fprintf(
+            stderr, "UNC path capability failed: exit=%lu\n",
+            static_cast<unsigned long>(process.exit_code()));
+    }
+    return passed;
+}
+
+bool RunCaseSensitivePathTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    std::uint64_t& ordinal) {
+    const auto fixture_root =
+        EnvironmentPath(L"BOLT_TEST_CASE_SENSITIVE_ROOT");
+    if (fixture_root.empty()) {
+        std::fprintf(
+            stderr,
+            "filesystem capability BOLT_TEST_CASE_SENSITIVE_ROOT=not_present\n");
+        return true;
+    }
+    const auto test_root = fixture_root /
+                           (L"bolt-sandbox-case-" +
+                            std::to_wstring(GetCurrentProcessId()));
+    const auto allowed = test_root / L"PolicyTarget.txt";
+    const auto denied = test_root / L"policytarget.txt";
+    std::error_code error;
+    std::filesystem::remove_all(test_root, error);
+    error.clear();
+    if (!std::filesystem::create_directories(test_root, error) || error ||
+        !WriteFixture(allowed, "allowed") ||
+        !WriteFixture(denied, "denied") ||
+        ReadFixture(allowed) == ReadFixture(denied)) {
+        return false;
+    }
+
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const std::vector<bolt::tests::FilesystemRule> rules = {
+        {bolt::tests::FilesystemRuleKind::kReadWrite, allowed},
+        {bolt::tests::FilesystemRuleKind::kDeny, denied},
+    };
+    RaceProcess process;
+    const bool started =
+        start != nullptr &&
+        process.Start(
+            executable, hook_path, rules, L"case-sensitive-paths", test_root,
+            {}, start, ordinal++);
+    const bool released =
+        started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
+    const bool exited = released && process.WaitForExit();
+    const bool passed =
+        exited && ReadFixture(allowed) == "Allowed" &&
+        ReadFixture(denied) == "denied";
+    if (start != nullptr) {
+        CloseHandle(start);
+    }
+    std::filesystem::remove_all(test_root, error);
+    if (!passed) {
+        std::fprintf(
+            stderr, "case-sensitive path capability failed: exit=%lu\n",
             static_cast<unsigned long>(process.exit_code()));
     }
     return passed;
@@ -1783,6 +1913,8 @@ bool RunFilesystemRaceTests() {
         RunInheritUserAclTest(
             executable, hook_path, test_root, ordinal) &&
         RunPathFormsTest(executable, hook_path, test_root, ordinal) &&
+        RunUncPathTest(executable, hook_path, ordinal) &&
+        RunCaseSensitivePathTest(executable, hook_path, ordinal) &&
         RunExistingSymlinkTest(executable, hook_path, ordinal) &&
         RunJunctionSwapTest(executable, hook_path, test_root, ordinal) &&
         RunReparseFailureTest(executable, hook_path, test_root, ordinal) &&
