@@ -706,8 +706,15 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
         static_cast<FILE_INFORMATION_CLASS>(19);
     constexpr FILE_INFORMATION_CLASS file_end_of_file_information =
         static_cast<FILE_INFORMATION_CLASS>(20);
-    if (information_class != file_allocation_information &&
-        information_class != file_end_of_file_information) {
+    constexpr FILE_INFORMATION_CLASS file_disposition_information =
+        static_cast<FILE_INFORMATION_CLASS>(13);
+    constexpr FILE_INFORMATION_CLASS file_disposition_information_ex =
+        static_cast<FILE_INFORMATION_CLASS>(64);
+    const bool is_truncation = information_class == file_allocation_information ||
+                               information_class == file_end_of_file_information;
+    const bool is_disposition = information_class == file_disposition_information ||
+                                information_class == file_disposition_information_ex;
+    if (!is_truncation && !is_disposition) {
         return g_zw_set_information_file(
             file, io_status, information, information_size, information_class);
     }
@@ -715,6 +722,30 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
     if (scope.Detoured_IsDisabled()) {
         return g_zw_set_information_file(
             file, io_status, information, information_size, information_class);
+    }
+
+    if (is_disposition) {
+        bool requests_delete = false;
+        if (information_class == file_disposition_information) {
+            if (information == nullptr || information_size < sizeof(FILE_DISPOSITION_INFO)) {
+                return g_zw_set_information_file(
+                    file, io_status, information, information_size, information_class);
+            }
+            requests_delete =
+                static_cast<const FILE_DISPOSITION_INFO*>(information)->DeleteFile != FALSE;
+        } else {
+            if (information == nullptr || information_size < sizeof(FILE_DISPOSITION_INFO_EX)) {
+                return g_zw_set_information_file(
+                    file, io_status, information, information_size, information_class);
+            }
+            requests_delete =
+                (static_cast<const FILE_DISPOSITION_INFO_EX*>(information)->Flags &
+                 FILE_DISPOSITION_FLAG_DELETE) != 0;
+        }
+        if (!requests_delete) {
+            return g_zw_set_information_file(
+                file, io_status, information, information_size, information_class);
+        }
     }
 
     constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
@@ -732,7 +763,8 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
                                 : policy->Evaluate(source_path.c_str(), Access::kWrite);
     if (evaluation.decision == Decision::kDeny) {
         ReportDenied(
-            protocol::FilesystemOperation::kWrite,
+            is_disposition ? protocol::FilesystemOperation::kDelete
+                           : protocol::FilesystemOperation::kWrite,
             EvaluatedPath(evaluation, source_path.c_str()));
         if (io_status != nullptr) {
             io_status->Status = status_access_denied;
