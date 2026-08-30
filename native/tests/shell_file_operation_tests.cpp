@@ -151,59 +151,93 @@ std::uint64_t ReadU64(const std::uint8_t* bytes) {
     return value;
 }
 
-bool ReadFilesystemViolation(
+struct FilesystemViolation {
+    bolt::protocol::FilesystemOperation operation;
+    std::wstring path;
+};
+
+bool ReadFilesystemViolations(
     const HANDLE event_pipe,
     const std::uint32_t process_id,
+    std::vector<FilesystemViolation>& violations) {
+    violations.clear();
+    std::uint64_t expected_sequence = 1;
+    for (;;) {
+        std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
+        DWORD first_read = 0;
+        const BOOL header_read = ReadFile(
+            event_pipe, header.data(), static_cast<DWORD>(header.size()),
+            &first_read, nullptr);
+        if (!header_read) {
+            const DWORD error = GetLastError();
+            if (error == ERROR_BROKEN_PIPE) {
+                return !violations.empty();
+            }
+            if (error != ERROR_MORE_DATA || first_read != header.size()) {
+                return false;
+            }
+        }
+        if (first_read == 0 || first_read > header.size() ||
+            (first_read < header.size() &&
+             !ReadExact(
+                 event_pipe, header.data() + first_read,
+                 header.size() - first_read))) {
+            return false;
+        }
+
+        const std::size_t payload_length = ReadU32(header.data() + 8);
+        if (ReadU16(header.data() + 6) != 2 || payload_length < 9 ||
+            payload_length > 9 +
+                                 bolt::protocol::kMaximumEventPathCodeUnits *
+                                     sizeof(wchar_t) ||
+            ReadU64(header.data() + 12) != expected_sequence) {
+            return false;
+        }
+        std::vector<std::uint8_t> frame(header.size() + payload_length);
+        std::copy(header.begin(), header.end(), frame.begin());
+        if (!ReadExact(
+                event_pipe, frame.data() + header.size(), payload_length) ||
+            ReadU32(frame.data() + 24) != process_id || frame[28] > 6) {
+            return false;
+        }
+        const std::size_t path_length = ReadU32(frame.data() + 29);
+        if (path_length == 0 ||
+            33 + path_length * sizeof(wchar_t) != frame.size()) {
+            return false;
+        }
+
+        std::wstring path(path_length, L'\0');
+        std::memcpy(
+            path.data(), frame.data() + 33,
+            path_length * sizeof(wchar_t));
+        const auto operation =
+            static_cast<bolt::protocol::FilesystemOperation>(frame[28]);
+        std::vector<std::uint8_t> expected(frame.size());
+        std::size_t written = 0;
+        if (bolt::protocol::EncodeFilesystemViolationFrame(
+                process_id, operation, path.c_str(), expected_sequence,
+                expected.data(), expected.size(), written) !=
+                bolt::protocol::FrameEncodeStatus::kSuccess ||
+            written != expected.size() || expected != frame) {
+            return false;
+        }
+        violations.push_back({operation, std::move(path)});
+        ++expected_sequence;
+    }
+}
+
+bool ContainsViolation(
+    const std::vector<FilesystemViolation>& violations,
     const bolt::protocol::FilesystemOperation operation,
-    const std::filesystem::path& path,
-    const std::uint64_t sequence) {
-    std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
-    if (!ReadExact(event_pipe, header.data(), header.size())) {
-        return false;
-    }
-    const std::size_t payload_length = ReadU32(header.data() + 8);
-    const std::size_t frame_length = header.size() + payload_length;
-    std::vector<std::uint8_t> actual(frame_length);
-    std::copy(header.begin(), header.end(), actual.begin());
-    if (!ReadExact(
-            event_pipe, actual.data() + header.size(),
-            frame_length - header.size())) {
-        return false;
-    }
-    const std::size_t expected_frame_length =
-        bolt::protocol::FilesystemViolationFrameLength(path.c_str());
-    std::vector<std::uint8_t> expected(expected_frame_length);
-    std::size_t written = 0;
-    const bool matches = bolt::protocol::EncodeFilesystemViolationFrame(
-               process_id, operation, path.c_str(), sequence,
-               expected.data(), expected.size(), written) ==
-               bolt::protocol::FrameEncodeStatus::kSuccess &&
-           written == expected.size() && actual == expected;
-    if (!matches && frame_length >= bolt::protocol::kEventHeaderLength + 9) {
-        const std::size_t actual_path_length = ReadU32(actual.data() + 29);
-        std::wstring actual_path;
-        if (33 + actual_path_length * sizeof(wchar_t) <= actual.size()) {
-            actual_path.resize(actual_path_length);
-            std::memcpy(
-                actual_path.data(), actual.data() + 33,
-                actual_path_length * sizeof(wchar_t));
-        }
-        std::string narrow_path;
-        narrow_path.reserve(actual_path.size());
-        for (const wchar_t code_unit : actual_path) {
-            narrow_path.push_back(
-                code_unit <= 0x7f ? static_cast<char>(code_unit) : '?');
-        }
-        std::fprintf(
-            stderr,
-            "IFileOperation event mismatch: kind=%u sequence=%llu operation=%u path=%s payload=%zu expected=%zu\n",
-            static_cast<unsigned>(ReadU16(actual.data() + 6)),
-            static_cast<unsigned long long>(ReadU64(actual.data() + 12)),
-            static_cast<unsigned>(actual[28]), narrow_path.c_str(),
-            payload_length,
-            expected_frame_length - bolt::protocol::kEventHeaderLength);
-    }
-    return matches;
+    const std::filesystem::path& path) {
+    return std::any_of(
+        violations.begin(), violations.end(),
+        [&](const FilesystemViolation& violation) {
+            return violation.operation == operation &&
+                   CompareStringOrdinal(
+                       violation.path.c_str(), -1, path.c_str(), -1, TRUE) ==
+                       CSTR_EQUAL;
+        });
 }
 
 bool CreateShellItem(
@@ -459,24 +493,27 @@ bool RunShellFileOperationTests() {
 
     const auto child_process_id =
         static_cast<std::uint32_t>(GetProcessId(process.process_handle()));
+    std::vector<FilesystemViolation> violations;
     const bool events_ok =
         child_ok && child_process_id != 0 &&
-        ReadFilesystemViolation(
-            event_pipe.handle(), child_process_id,
+        ReadFilesystemViolations(
+            event_pipe.handle(), child_process_id, violations) &&
+        ContainsViolation(
+            violations,
             bolt::protocol::FilesystemOperation::kCreate,
-            read_only_root / L"denied-copy.txt", 1) &&
-        ReadFilesystemViolation(
-            event_pipe.handle(), child_process_id,
+            read_only_root / L"denied-copy.txt") &&
+        ContainsViolation(
+            violations,
             bolt::protocol::FilesystemOperation::kRename,
-            read_only_root / L"denied-move.txt", 2) &&
-        ReadFilesystemViolation(
-            event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRename,
-            denied_rename_source, 3) &&
-        ReadFilesystemViolation(
-            event_pipe.handle(), child_process_id,
+            read_only_root / L"denied-move.txt") &&
+        ContainsViolation(
+            violations,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_rename_source) &&
+        ContainsViolation(
+            violations,
             bolt::protocol::FilesystemOperation::kDelete,
-            denied_delete_source, 4);
+            denied_delete_source);
 
     const bool side_effects_ok =
         std::filesystem::exists(allowed_root / L"allowed-copy.txt") &&
@@ -503,6 +540,18 @@ bool RunShellFileOperationTests() {
             static_cast<unsigned long>(exit_code),
             events_ok ? "valid" : "invalid",
             side_effects_ok ? "valid" : "invalid");
+        for (const auto& violation : violations) {
+            std::string narrow_path;
+            narrow_path.reserve(violation.path.size());
+            for (const wchar_t code_unit : violation.path) {
+                narrow_path.push_back(
+                    code_unit <= 0x7f ? static_cast<char>(code_unit) : '?');
+            }
+            std::fprintf(
+                stderr, "  operation=%u path=%s\n",
+                static_cast<unsigned>(violation.operation),
+                narrow_path.c_str());
+        }
     }
     return child_ok && events_ok && side_effects_ok;
 }
