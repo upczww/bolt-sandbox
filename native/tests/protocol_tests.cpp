@@ -26,8 +26,10 @@ bool RunPolicyMappingTests();
 bool RunRuntimePayloadTests();
 bool RunBuildXlTreeTests();
 bool RunFilesystemPolicyTests();
+bool RunFilesystemRaceTests();
 bool RunShellFileOperationTests();
 int RunProcessChild(int argument_count, wchar_t** arguments);
+int RunFilesystemRaceChild(int argument_count, wchar_t** arguments);
 int RunShellFileOperationChild(int argument_count, wchar_t** arguments);
 int RunInheritedProcessParent(int argument_count, wchar_t** arguments);
 int RunInheritedProcessLeaf(int argument_count, wchar_t** arguments);
@@ -92,6 +94,10 @@ bool hook_exports_matching_protocol(const std::filesystem::path& directory) {
 
 int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--filesystem-race-tests") {
+        return RunFilesystemRaceTests() ? 0 : 1;
+    }
+    if (argument_count == 2 &&
         std::wstring(arguments[1]) == L"--shell-file-operation-tests") {
         return RunShellFileOperationTests() ? 0 : 1;
     }
@@ -101,6 +107,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--process-child") {
         return RunProcessChild(argument_count, arguments);
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--filesystem-race-child") {
+        return RunFilesystemRaceChild(argument_count, arguments);
     }
     if (argument_count >= 2 &&
         std::wstring(arguments[1]) == L"--shell-file-operation-child") {
@@ -161,6 +171,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunShellFileOperationTests()) {
         return 14;
+    }
+    if (!RunFilesystemRaceTests()) {
+        return 15;
     }
     return 0;
 }

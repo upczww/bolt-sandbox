@@ -148,6 +148,16 @@ remain usable, but the existing handle-I/O seam resolves the duplicate's final
 identity, denies the write with zero transferred bytes, emits `Write`, and
 preserves file content.
 
+Cross-process filesystem races are exercised with independent injected
+processes, policies, event pipes, and process identities synchronized by an
+inherited event barrier. In the write race, a `read_write` process repeatedly
+updates byte zero while a `read_only` process targets byte one; the final `AO`
+content proves that no denied partial write landed, and all 32 denials carry the
+denied actor's PID. In the rename/delete race, the allowed rename completes and
+the denied delete cannot remove either identity. These operations converge on
+the existing path and handle funnels, so no global filesystem lock or parallel
+race-specific hook is added.
+
 BuildXL's vendored `ReplaceFileW` hook currently contains a policy TODO and
 only invalidates its cache. Bolt therefore keeps the upstream signature and
 scope pattern but supplies the architecture-required fail-closed adapter:
