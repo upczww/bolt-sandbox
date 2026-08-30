@@ -51,6 +51,9 @@ using CreateFileMappingAFunction = HANDLE(WINAPI*)(
     HANDLE, LPSECURITY_ATTRIBUTES, DWORD, DWORD, DWORD, LPCSTR);
 CreateFileMappingWFunction g_create_file_mapping_w = CreateFileMappingW;
 CreateFileMappingAFunction g_create_file_mapping_a = CreateFileMappingA;
+using NtCreateSectionFunction = NTSTATUS(NTAPI*)(
+    PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PLARGE_INTEGER, ULONG, ULONG, HANDLE);
+NtCreateSectionFunction g_nt_create_section = nullptr;
 using CreateHardLinkWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRIBUTES);
 CreateHardLinkWFunction g_create_hard_link_w = CreateHardLinkW;
 CopyFileW_t g_copy_file_w = CopyFileW;
@@ -308,7 +311,7 @@ bool TryGetHandlePath(const HANDLE handle, std::wstring& path) noexcept {
 }
 
 bool AuthorizeFileMapping(const HANDLE file, const DWORD protection) noexcept {
-    if (file == INVALID_HANDLE_VALUE) {
+    if (file == nullptr || file == INVALID_HANDLE_VALUE) {
         return true;
     }
     std::wstring source_path;
@@ -768,6 +771,32 @@ HANDLE WINAPI DetouredCreateFileMappingA(
         file, security_attributes, protection, maximum_size_high, maximum_size_low, name);
 }
 
+NTSTATUS NTAPI DetouredNtCreateSection(
+    const PHANDLE section,
+    const ACCESS_MASK desired_access,
+    const POBJECT_ATTRIBUTES object_attributes,
+    const PLARGE_INTEGER maximum_size,
+    const ULONG protection,
+    const ULONG allocation_attributes,
+    const HANDLE file) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled() || file == nullptr || file == INVALID_HANDLE_VALUE) {
+        return g_nt_create_section(
+            section, desired_access, object_attributes, maximum_size, protection,
+            allocation_attributes, file);
+    }
+    if (!AuthorizeFileMapping(file, protection)) {
+        if (section != nullptr) {
+            *section = nullptr;
+        }
+        constexpr NTSTATUS status_access_denied = static_cast<NTSTATUS>(0xC0000022UL);
+        return status_access_denied;
+    }
+    return g_nt_create_section(
+        section, desired_access, object_attributes, maximum_size, protection,
+        allocation_attributes, file);
+}
+
 NTSTATUS NTAPI DetouredZwSetInformationFile(
     const HANDLE file,
     const PIO_STATUS_BLOCK io_status,
@@ -1090,7 +1119,9 @@ HookInstallStatus InstallFileHooks(
         GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CopyFile2"));
     g_zw_set_information_file = reinterpret_cast<ZwSetInformationFile_t>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "ZwSetInformationFile"));
-    if (g_zw_set_information_file == nullptr) {
+    g_nt_create_section = reinterpret_cast<NtCreateSectionFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateSection"));
+    if (g_zw_set_information_file == nullptr || g_nt_create_section == nullptr) {
         return HookInstallStatus::kTransactionFailed;
     }
     if (DetourTransactionBegin() != NO_ERROR) {
@@ -1151,6 +1182,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_file_mapping_a),
             reinterpret_cast<PVOID>(DetouredCreateFileMappingA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_create_section),
+            reinterpret_cast<PVOID>(DetouredNtCreateSection)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_zw_set_information_file),
             reinterpret_cast<PVOID>(DetouredZwSetInformationFile)) != NO_ERROR ||

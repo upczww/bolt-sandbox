@@ -114,7 +114,9 @@ BuildXL's vendored headers still mark `CreateFileMapping*` as a TODO. Bolt's
 adapter therefore reuses final handle identity rather than importing incomplete
 logic: `CreateFileMappingW/A` require write access for `PAGE_READWRITE` and
 `PAGE_EXECUTE_READWRITE`, and read access for read-only or copy-on-write file
-mappings. Anonymous page-file mappings retain native behavior.
+mappings. The same classifier is attached directly to `NtCreateSection` for
+native callers. Anonymous page-file mappings and sections retain native
+behavior.
 
 For textually allowed copy, move, and replace operation paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,
