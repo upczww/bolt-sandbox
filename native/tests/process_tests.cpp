@@ -1981,6 +1981,109 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         return 258;
     }
 
+    struct NtFileLinkInformation {
+        BOOLEAN replace_if_exists;
+        HANDLE root_directory;
+        ULONG file_name_length;
+        WCHAR file_name[1];
+    };
+    struct NtFileLinkInformationEx {
+        ULONG flags;
+        HANDLE root_directory;
+        ULONG file_name_length;
+        WCHAR file_name[1];
+    };
+    const auto make_link_information = [](const std::wstring& nt_path) {
+        const std::size_t name_bytes = nt_path.size() * sizeof(wchar_t);
+        std::vector<std::uint8_t> buffer(
+            offsetof(NtFileLinkInformation, file_name) + name_bytes);
+        auto* information = reinterpret_cast<NtFileLinkInformation*>(buffer.data());
+        information->replace_if_exists = FALSE;
+        information->root_directory = nullptr;
+        information->file_name_length = static_cast<ULONG>(name_bytes);
+        std::memcpy(information->file_name, nt_path.data(), name_bytes);
+        return buffer;
+    };
+    const auto make_link_information_ex = [](const std::wstring& nt_path) {
+        const std::size_t name_bytes = nt_path.size() * sizeof(wchar_t);
+        std::vector<std::uint8_t> buffer(
+            offsetof(NtFileLinkInformationEx, file_name) + name_bytes);
+        auto* information = reinterpret_cast<NtFileLinkInformationEx*>(buffer.data());
+        information->flags = 0;
+        information->root_directory = nullptr;
+        information->file_name_length = static_cast<ULONG>(name_bytes);
+        std::memcpy(information->file_name, nt_path.data(), name_bytes);
+        return buffer;
+    };
+    constexpr FILE_INFORMATION_CLASS file_link_information =
+        static_cast<FILE_INFORMATION_CLASS>(11);
+    constexpr FILE_INFORMATION_CLASS file_link_information_ex =
+        static_cast<FILE_INFORMATION_CLASS>(72);
+    const std::wstring allowed_link_path = std::wstring(arguments[16]) + L".native-link";
+    const std::wstring allowed_link_ex_path =
+        std::wstring(arguments[16]) + L".native-link-ex";
+    const std::wstring denied_link_path = std::wstring(arguments[17]) + L".native-link";
+    const std::wstring denied_link_ex_path =
+        std::wstring(arguments[17]) + L".native-link-ex";
+    auto allowed_link_information =
+        make_link_information(L"\\??\\" + allowed_link_path);
+    auto allowed_link_information_ex =
+        make_link_information_ex(L"\\??\\" + allowed_link_ex_path);
+    const HANDLE allowed_link_source = CreateFileW(
+        arguments[28], FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    IO_STATUS_BLOCK allowed_link_status{};
+    IO_STATUS_BLOCK allowed_link_ex_status{};
+    if (allowed_link_source == INVALID_HANDLE_VALUE ||
+        zw_set_information_file(
+            allowed_link_source, &allowed_link_status, allowed_link_information.data(),
+            static_cast<ULONG>(allowed_link_information.size()), file_link_information) < 0 ||
+        zw_set_information_file(
+            allowed_link_source, &allowed_link_ex_status, allowed_link_information_ex.data(),
+            static_cast<ULONG>(allowed_link_information_ex.size()),
+            file_link_information_ex) < 0) {
+        if (allowed_link_source != INVALID_HANDLE_VALUE) {
+            CloseHandle(allowed_link_source);
+        }
+        return 259;
+    }
+    CloseHandle(allowed_link_source);
+    if (GetFileAttributesW(allowed_link_path.c_str()) == INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(allowed_link_ex_path.c_str()) == INVALID_FILE_ATTRIBUTES ||
+        !DeleteFileW(allowed_link_path.c_str()) ||
+        !DeleteFileW(allowed_link_ex_path.c_str())) {
+        return 260;
+    }
+
+    auto denied_link_information =
+        make_link_information(L"\\??\\" + denied_link_path);
+    auto denied_link_information_ex =
+        make_link_information_ex(L"\\??\\" + denied_link_ex_path);
+    IO_STATUS_BLOCK denied_link_status{};
+    denied_link_status.Status = 0;
+    denied_link_status.Information = 123;
+    IO_STATUS_BLOCK denied_link_ex_status{};
+    denied_link_ex_status.Status = 0;
+    denied_link_ex_status.Information = 123;
+    const NTSTATUS denied_link_result = zw_set_information_file(
+        denied_disposition_handle, &denied_link_status, denied_link_information.data(),
+        static_cast<ULONG>(denied_link_information.size()), file_link_information);
+    const NTSTATUS denied_link_ex_result = zw_set_information_file(
+        denied_disposition_handle, &denied_link_ex_status,
+        denied_link_information_ex.data(),
+        static_cast<ULONG>(denied_link_information_ex.size()), file_link_information_ex);
+    if (denied_link_result != status_access_denied ||
+        denied_link_status.Status != status_access_denied ||
+        denied_link_status.Information != 0 ||
+        denied_link_ex_result != status_access_denied ||
+        denied_link_ex_status.Status != status_access_denied ||
+        denied_link_ex_status.Information != 0 ||
+        GetFileAttributesW(denied_link_path.c_str()) != INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(denied_link_ex_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        return 261;
+    }
+
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -2622,6 +2725,14 @@ bool RunProcessTests() {
     const std::filesystem::path allowed_copy_destination = allowed_root / L"copy-destination.txt";
     const std::filesystem::path missing_copy_source = allowed_root / L"missing-source.txt";
     const std::filesystem::path missing_copy_destination = allowed_root / L"missing-destination.txt";
+    const std::filesystem::path allowed_native_link =
+        missing_copy_source.wstring() + L".native-link";
+    const std::filesystem::path allowed_native_link_ex =
+        missing_copy_source.wstring() + L".native-link-ex";
+    const std::filesystem::path denied_native_link =
+        missing_copy_destination.wstring() + L".native-link";
+    const std::filesystem::path denied_native_link_ex =
+        missing_copy_destination.wstring() + L".native-link-ex";
     const std::filesystem::path denied_junction_target = denied_root / L"junction-target";
     const std::filesystem::path denied_alias_target = denied_junction_target / L"protected.txt";
     const std::filesystem::path allowed_junction = allowed_root / L"junction";
@@ -2730,6 +2841,10 @@ bool RunProcessTests() {
     DeleteFileW(allowed_copy_destination.c_str());
     DeleteFileW(missing_copy_source.c_str());
     DeleteFileW(missing_copy_destination.c_str());
+    DeleteFileW(allowed_native_link.c_str());
+    DeleteFileW(allowed_native_link_ex.c_str());
+    DeleteFileW(denied_native_link.c_str());
+    DeleteFileW(denied_native_link_ex.c_str());
     DeleteFileW(allowed_replace_target.c_str());
     DeleteFileW(allowed_handle_rename_source.c_str());
     DeleteFileW(denied_handle_rename_destination.c_str());
@@ -3480,7 +3595,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_mapping_path.wstring(), 109);
+            denied_mapping_path.wstring(), 109) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_disposition_path.wstring(), 110) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_disposition_path.wstring(), 111);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
@@ -3529,6 +3652,10 @@ bool RunProcessTests() {
                             ReadFixture(allowed_copy_destination) == copy_nonce &&
                             !std::filesystem::exists(missing_copy_source) &&
                             !std::filesystem::exists(missing_copy_destination) &&
+                            !std::filesystem::exists(allowed_native_link) &&
+                            !std::filesystem::exists(allowed_native_link_ex) &&
+                            !std::filesystem::exists(denied_native_link) &&
+                            !std::filesystem::exists(denied_native_link_ex) &&
                             ReadFixture(denied_alias_target) == protected_nonce &&
                             GetFileAttributesW(denied_alias_target.c_str()) ==
                                 denied_alias_attributes_before &&
