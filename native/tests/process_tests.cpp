@@ -1031,6 +1031,42 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
         GetLastError() != ERROR_ACCESS_DENIED || denied_write_bytes != 0) {
         return 179;
     }
+    using NtReadWriteFileFunction = NTSTATUS(NTAPI*)(
+        HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
+        PLARGE_INTEGER, PULONG);
+    const auto nt_read_file = reinterpret_cast<NtReadWriteFileFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtReadFile"));
+    const auto nt_write_file = reinterpret_cast<NtReadWriteFileFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtWriteFile"));
+    if (!SetFilePointerEx(
+            denied_mapping_file, file_start, nullptr, FILE_BEGIN)) {
+        return 180;
+    }
+    std::array<char, 4> denied_nt_read_buffer = {'y', 'y', 'y', 'y'};
+    io_status.Status = 0;
+    io_status.Information = 123;
+    if (nt_read_file == nullptr ||
+        nt_read_file(
+            denied_mapping_file, nullptr, nullptr, nullptr, &io_status,
+            denied_nt_read_buffer.data(),
+            static_cast<ULONG>(denied_nt_read_buffer.size()), nullptr, nullptr) !=
+            status_access_denied ||
+        io_status.Status != status_access_denied || io_status.Information != 0 ||
+        denied_nt_read_buffer != std::array<char, 4>{'y', 'y', 'y', 'y'}) {
+        return 181;
+    }
+    io_status.Status = 0;
+    io_status.Information = 123;
+    std::array<char, 4> denied_nt_write_buffer = forbidden_write;
+    if (nt_write_file == nullptr ||
+        nt_write_file(
+            denied_mapping_file, nullptr, nullptr, nullptr, &io_status,
+            denied_nt_write_buffer.data(),
+            static_cast<ULONG>(denied_nt_write_buffer.size()), nullptr, nullptr) !=
+            status_access_denied ||
+        io_status.Status != status_access_denied || io_status.Information != 0) {
+        return 182;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1714,7 +1750,15 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_mapping_path.wstring(), 79);
+            denied_mapping_path.wstring(), 79) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_mapping_path.wstring(), 80) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kWrite,
+            denied_mapping_path.wstring(), 81);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
