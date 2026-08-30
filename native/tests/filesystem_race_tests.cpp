@@ -481,13 +481,18 @@ class RaceProcess final {
         return ResetEvent(ready_) != FALSE;
     }
 
-    bool WaitForExit() {
-        if (process_.Wait(10'000) != bolt::common::ProcessStatus::kSuccess) {
+    bool WaitForExit(const DWORD timeout_milliseconds = 10'000) {
+        if (process_.Wait(timeout_milliseconds) !=
+            bolt::common::ProcessStatus::kSuccess) {
             return false;
         }
         return process_.ExitCode(exit_code_) ==
                    bolt::common::ProcessStatus::kSuccess &&
                exit_code_ == 0;
+    }
+
+    bool Terminate(const DWORD exit_code) {
+        return job_.Terminate(exit_code) == bolt::common::JobStatus::kSuccess;
     }
 
     HANDLE event_pipe() const {
@@ -1059,6 +1064,91 @@ bool RunCaseInsensitiveCollisionRejectionTest(
             static_cast<unsigned long>(process.exit_code()));
     }
     return rejected;
+}
+
+bool RunVolumeGuidAliasTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const std::filesystem::path& test_root,
+    std::uint64_t& ordinal) {
+    const auto allowed = test_root / L"volume-guid-allowed.txt";
+    const auto denied = test_root / L"volume-guid-denied.txt";
+    if (!WriteFixture(allowed, "allowed-volume") ||
+        !WriteFixture(denied, "denied-volume")) {
+        return false;
+    }
+    const std::wstring mount_point = test_root.root_path().wstring();
+    std::array<wchar_t, 64> volume_name{};
+    if (mount_point.empty() ||
+        !GetVolumeNameForVolumeMountPointW(
+            mount_point.c_str(), volume_name.data(),
+            static_cast<DWORD>(volume_name.size()))) {
+        return false;
+    }
+    const auto volume_alias = [&](const std::filesystem::path& path) {
+        const auto relative = path.lexically_relative(test_root.root_path());
+        return std::filesystem::path(volume_name.data()) / relative;
+    };
+    const auto allowed_alias = volume_alias(allowed);
+    const auto denied_alias = volume_alias(denied);
+
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const HANDLE stage_mapping = CreateFileMappingW(
+        INVALID_HANDLE_VALUE, &inheritable, PAGE_READWRITE, 0, sizeof(LONG),
+        nullptr);
+    auto* stage = stage_mapping == nullptr
+                      ? nullptr
+                      : static_cast<volatile LONG*>(MapViewOfFile(
+                            stage_mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+                            sizeof(LONG)));
+    if (stage != nullptr) {
+        InterlockedExchange(stage, 0);
+    }
+    const std::vector<bolt::tests::FilesystemRule> rules = {
+        {bolt::tests::FilesystemRuleKind::kReadOnly,
+         std::filesystem::path(executable).root_path()},
+        {bolt::tests::FilesystemRuleKind::kReadOnly, allowed},
+        {bolt::tests::FilesystemRuleKind::kDeny, denied},
+    };
+    RaceProcess process;
+    const bool started =
+        start != nullptr && stage_mapping != nullptr && stage != nullptr &&
+        process.Start(
+            executable, hook_path, rules, L"volume-guid-aliases",
+            allowed_alias, denied_alias, start, ordinal++, stage_mapping);
+    const bool released =
+        started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
+    const bool exited = released && process.WaitForExit(3'000);
+    const LONG final_stage = stage == nullptr ? -1 : InterlockedCompareExchange(
+                                                      stage, 0, 0);
+    if (released && !exited) {
+        process.Terminate(0xF016);
+    }
+    const bool passed =
+        exited && final_stage == 4 &&
+        PipeContainsViolationForPath(
+            process.event_pipe(), bolt::protocol::FilesystemOperation::kRead,
+            denied);
+    if (stage != nullptr) {
+        UnmapViewOfFile(const_cast<LONG*>(stage));
+    }
+    if (stage_mapping != nullptr) {
+        CloseHandle(stage_mapping);
+    }
+    if (start != nullptr) {
+        CloseHandle(start);
+    }
+    if (!passed) {
+        std::fprintf(
+            stderr,
+            "volume GUID alias failed: exit=%lu stage=%ld started=%d released=%d\n",
+            static_cast<unsigned long>(process.exit_code()), final_stage,
+            started ? 1 : 0, released ? 1 : 0);
+    }
+    return passed;
 }
 
 bool RunExistingSymlinkTest(
@@ -1642,6 +1732,44 @@ int RunFilesystemRaceChild(
             }
             return 327;
         }
+    } else if (mode == L"volume-guid-aliases") {
+        const std::filesystem::path allowed(arguments[3]);
+        const std::filesystem::path denied(arguments[4]);
+        const HANDLE stage_mapping = reinterpret_cast<HANDLE>(
+            _wcstoui64(arguments[7], nullptr, 10));
+        auto* stage = static_cast<volatile LONG*>(MapViewOfFile(
+            stage_mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+            sizeof(LONG)));
+        if (stage == nullptr) {
+            return 364;
+        }
+        InterlockedExchange(stage, 1);
+        const HANDLE allowed_file = CreateFileW(
+            allowed.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        InterlockedExchange(stage, 2);
+        if (allowed_file == INVALID_HANDLE_VALUE) {
+            UnmapViewOfFile(const_cast<LONG*>(stage));
+            return 365;
+        }
+        CloseHandle(allowed_file);
+        InterlockedExchange(stage, 3);
+        SetLastError(ERROR_SUCCESS);
+        const HANDLE denied_file = CreateFileW(
+            denied.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const DWORD denied_error = GetLastError();
+        InterlockedExchange(stage, 4);
+        UnmapViewOfFile(const_cast<LONG*>(stage));
+        if (denied_file != INVALID_HANDLE_VALUE) {
+            CloseHandle(denied_file);
+            return 366;
+        }
+        if (denied_error != ERROR_ACCESS_DENIED) {
+            return 367;
+        }
     } else if (mode == L"unc-paths") {
         const std::filesystem::path root(arguments[3]);
         const auto allowed_file = root / L"allowed" / L"plain.txt";
@@ -2057,6 +2185,8 @@ bool RunFilesystemRaceTests() {
         RunUncPathTest(executable, hook_path, ordinal) &&
         RunCaseSensitivePathTest(executable, hook_path, ordinal) &&
         RunCaseInsensitiveCollisionRejectionTest(
+            executable, hook_path, test_root, ordinal) &&
+        RunVolumeGuidAliasTest(
             executable, hook_path, test_root, ordinal) &&
         RunExistingSymlinkTest(executable, hook_path, ordinal) &&
         RunJunctionSwapTest(executable, hook_path, test_root, ordinal) &&
