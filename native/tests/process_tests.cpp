@@ -221,7 +221,7 @@ void CALLBACK IoCompletionProbe(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 38) {
+    if (argument_count != 39) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -1388,6 +1388,21 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     if (!nt_notification_ex_denied) {
         return 205;
     }
+    FILE_ID_DESCRIPTOR denied_file_id{};
+    denied_file_id.dwSize = sizeof(denied_file_id);
+    denied_file_id.Type = FileIdType;
+    denied_file_id.FileId.QuadPart =
+        static_cast<LONGLONG>(_wcstoui64(arguments[38], nullptr, 10));
+    const HANDLE id_opened_file = OpenFileById(
+        notification_directory, &denied_file_id, FILE_GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, 0);
+    if (id_opened_file != INVALID_HANDLE_VALUE ||
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        if (id_opened_file != INVALID_HANDLE_VALUE) {
+            CloseHandle(id_opened_file);
+        }
+        return 206;
+    }
     const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
         GetProcAddress(hook, "BoltSandboxFlushEvents"));
     if (flush_events == nullptr || !flush_events(5'000)) {
@@ -1691,6 +1706,27 @@ bool RunProcessTests() {
         CloseHandle(denied_directory_handle);
         return false;
     }
+    BY_HANDLE_FILE_INFORMATION denied_id_information{};
+    if (!GetFileInformationByHandle(
+            denied_mapping_handle, &denied_id_information)) {
+        return false;
+    }
+    const std::uint64_t denied_file_id =
+        (static_cast<std::uint64_t>(denied_id_information.nFileIndexHigh) << 32) |
+        denied_id_information.nFileIndexLow;
+    FILE_ID_DESCRIPTOR denied_id_probe_descriptor{};
+    denied_id_probe_descriptor.dwSize = sizeof(denied_id_probe_descriptor);
+    denied_id_probe_descriptor.Type = FileIdType;
+    denied_id_probe_descriptor.FileId.QuadPart =
+        static_cast<LONGLONG>(denied_file_id);
+    const HANDLE denied_id_probe = OpenFileById(
+        denied_directory_handle, &denied_id_probe_descriptor,
+        FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, 0);
+    if (denied_id_probe == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    CloseHandle(denied_id_probe);
     constexpr std::string_view copy_nonce = "bolt-copy-nonce";
     if (!WriteFixture(allowed_copy_source, copy_nonce)) {
         DeleteFileW(denied_delete_path.c_str());
@@ -1756,7 +1792,8 @@ bool RunProcessTests() {
                                       denied_wildcard.wstring() + L"\" \"" +
                                       denied_event_name + L"\" " +
                                       HandleText(denied_directory_handle) + L" " +
-                                      HandleText(denied_overlapped_handle);
+                                      HandleText(denied_overlapped_handle) + L" " +
+                                      std::to_wstring(denied_file_id);
     const HANDLE inherited[] = {
         allowed, policy.handle(), event_client, release, denied_disposition_handle,
         denied_truncate_handle, denied_mapping_handle, read_only_mapping_handle,
@@ -2197,7 +2234,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kEnumerate,
-            denied_root.wstring(), 101);
+            denied_root.wstring(), 101) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_mapping_path.wstring(), 102);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
