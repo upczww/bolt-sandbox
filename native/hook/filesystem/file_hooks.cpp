@@ -28,11 +28,15 @@ namespace bolt::filesystem {
 namespace {
 
 std::unique_ptr<FilesystemPolicy> g_policy;
-constexpr LONG kRequiredFilesystemHookCount = 70;
+constexpr LONG kRequiredFilesystemHookCount = 74;
 volatile LONG g_installed_file_hook_count = 0;
 
 CreateFileW_t g_create_file_w = CreateFileW;
 CreateFileA_t g_create_file_a = CreateFileA;
+decltype(&CreateNamedPipeW) g_create_named_pipe_w = CreateNamedPipeW;
+decltype(&CreateNamedPipeA) g_create_named_pipe_a = CreateNamedPipeA;
+decltype(&CreateMailslotW) g_create_mailslot_w = CreateMailslotW;
+decltype(&CreateMailslotA) g_create_mailslot_a = CreateMailslotA;
 DeleteFileW_t g_delete_file_w = DeleteFileW;
 DeleteFileA_t g_delete_file_a = DeleteFileA;
 using CreateDirectoryWFunction = BOOL(WINAPI*)(LPCWSTR, LPSECURITY_ATTRIBUTES);
@@ -1971,6 +1975,84 @@ NTSTATUS NTAPI DetouredNtWriteFile(
     return status_access_denied;
 }
 
+HANDLE WINAPI DetouredCreateNamedPipeW(
+    const LPCWSTR name,
+    const DWORD open_mode,
+    const DWORD pipe_mode,
+    const DWORD maximum_instances,
+    const DWORD output_buffer_size,
+    const DWORD input_buffer_size,
+    const DWORD default_timeout,
+    const LPSECURITY_ATTRIBUTES security_attributes) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_named_pipe_w(
+            name, open_mode, pipe_mode, maximum_instances, output_buffer_size,
+            input_buffer_size, default_timeout, security_attributes);
+    }
+    ReportDenied(protocol::FilesystemOperation::kCreate, name);
+    SetLastError(ERROR_ACCESS_DENIED);
+    return INVALID_HANDLE_VALUE;
+}
+
+HANDLE WINAPI DetouredCreateNamedPipeA(
+    const LPCSTR name,
+    const DWORD open_mode,
+    const DWORD pipe_mode,
+    const DWORD maximum_instances,
+    const DWORD output_buffer_size,
+    const DWORD input_buffer_size,
+    const DWORD default_timeout,
+    const LPSECURITY_ATTRIBUTES security_attributes) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_named_pipe_a(
+            name, open_mode, pipe_mode, maximum_instances, output_buffer_size,
+            input_buffer_size, default_timeout, security_attributes);
+    }
+    std::wstring wide_name;
+    if (!ConvertAnsiPath(name, wide_name)) {
+        wide_name = L"<invalid-named-pipe>";
+    }
+    ReportDenied(protocol::FilesystemOperation::kCreate, wide_name.c_str());
+    SetLastError(ERROR_ACCESS_DENIED);
+    return INVALID_HANDLE_VALUE;
+}
+
+HANDLE WINAPI DetouredCreateMailslotW(
+    const LPCWSTR name,
+    const DWORD maximum_message_size,
+    const DWORD read_timeout,
+    const LPSECURITY_ATTRIBUTES security_attributes) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_mailslot_w(
+            name, maximum_message_size, read_timeout, security_attributes);
+    }
+    ReportDenied(protocol::FilesystemOperation::kCreate, name);
+    SetLastError(ERROR_ACCESS_DENIED);
+    return INVALID_HANDLE_VALUE;
+}
+
+HANDLE WINAPI DetouredCreateMailslotA(
+    const LPCSTR name,
+    const DWORD maximum_message_size,
+    const DWORD read_timeout,
+    const LPSECURITY_ATTRIBUTES security_attributes) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_mailslot_a(
+            name, maximum_message_size, read_timeout, security_attributes);
+    }
+    std::wstring wide_name;
+    if (!ConvertAnsiPath(name, wide_name)) {
+        wide_name = L"<invalid-mailslot>";
+    }
+    ReportDenied(protocol::FilesystemOperation::kCreate, wide_name.c_str());
+    SetLastError(ERROR_ACCESS_DENIED);
+    return INVALID_HANDLE_VALUE;
+}
+
 HANDLE WINAPI DetouredCreateFileW(
     const LPCWSTR filename,
     const DWORD desired_access,
@@ -3119,6 +3201,18 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_nt_open_file),
             reinterpret_cast<PVOID>(DetouredNtOpenFile)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_create_named_pipe_w),
+            reinterpret_cast<PVOID>(DetouredCreateNamedPipeW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_create_named_pipe_a),
+            reinterpret_cast<PVOID>(DetouredCreateNamedPipeA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_create_mailslot_w),
+            reinterpret_cast<PVOID>(DetouredCreateMailslotW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_create_mailslot_a),
+            reinterpret_cast<PVOID>(DetouredCreateMailslotA)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_file_w),
             reinterpret_cast<PVOID>(DetouredCreateFileW)) != NO_ERROR ||

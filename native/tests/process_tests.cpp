@@ -586,7 +586,7 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     const auto installed_filesystem_hook_count =
         reinterpret_cast<InstalledFilesystemHookCountFunction>(
             GetProcAddress(hook, "BoltSandboxInstalledFilesystemHookCount"));
-    constexpr std::uint32_t required_filesystem_hook_count = 70;
+    constexpr std::uint32_t required_filesystem_hook_count = 74;
     const bool copy_file_2_present =
         GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CopyFile2") != nullptr;
     const std::uint32_t expected_filesystem_hook_count =
