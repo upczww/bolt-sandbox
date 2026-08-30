@@ -1038,11 +1038,18 @@ bool RunNetworkAllowListTests() {
             bolt::protocol::ReadyFrameStatus::kSuccess &&
         process.ReleaseAfterReady() == bolt::common::ProcessStatus::kSuccess;
     const bool waited = process.Wait(5'000) == bolt::common::ProcessStatus::kSuccess;
+    const SOCKET accepted = waited ? accept(listener, nullptr, nullptr)
+                                   : INVALID_SOCKET;
+    if (accepted != INVALID_SOCKET) {
+        shutdown(accepted, SD_BOTH);
+        closesocket(accepted);
+    }
     dns_proxy->CloseClientHandles();
     DWORD exit_code = 0;
     const bool proxy_waited =
         dns_proxy->Wait(5'000) == bolt::network::DnsProxyProcessStatus::kSuccess;
-    const bool passed = ready_ok && waited && proxy_waited &&
+    const bool passed = ready_ok && waited && accepted != INVALID_SOCKET &&
+        proxy_waited &&
         process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess && exit_code == 0;
     closesocket(listener);
     CloseHandle(release);

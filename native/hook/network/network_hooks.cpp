@@ -1,5 +1,6 @@
 #include "hook/network/network_hooks.h"
 
+#define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <windows.h>
@@ -13,10 +14,12 @@
 #include "hook/network/dns_proxy_client_channel.h"
 #include "hook/network/dns_proxy_handle_transport.h"
 #include "hook/network/high_level_hooks.h"
+#include "hook/network/tcp_proxy_client.h"
 #include "protocol/runtime_payload.h"
 
 #include <cstring>
 #include <array>
+#include <limits>
 #include <memory>
 #include <utility>
 
@@ -52,6 +55,19 @@ std::unique_ptr<NetworkPolicy> g_policy;
 std::unique_ptr<DnsBindingTable> g_dns_bindings;
 std::unique_ptr<DnsProxyClientChannel> g_dns_channel;
 std::array<std::uint8_t, 16> g_dns_session_id{};
+protocol::DnsProxySession g_tcp_proxy_session{};
+std::uint16_t g_tcp_proxy_port = 0;
+std::uint64_t g_tcp_proxy_next_sequence = 1;
+bool g_tcp_proxy_closed = false;
+SRWLOCK g_tcp_proxy_lock = SRWLOCK_INIT;
+
+class TcpProxyLock final {
+  public:
+    TcpProxyLock() noexcept { AcquireSRWLockExclusive(&g_tcp_proxy_lock); }
+    ~TcpProxyLock() noexcept { ReleaseSRWLockExclusive(&g_tcp_proxy_lock); }
+    TcpProxyLock(const TcpProxyLock&) = delete;
+    TcpProxyLock& operator=(const TcpProxyLock&) = delete;
+};
 
 HANDLE HandleFromWire(const std::uint64_t value) noexcept {
     return reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(value));
@@ -531,28 +547,84 @@ bool DenyConnect(
     }
     protocol::NetworkEndpoint endpoint{};
     const bool endpoint_valid = ReadEndpoint(address, address_length, endpoint);
-    if (policy != nullptr && policy->mode() == Mode::kAllowList && endpoint_valid &&
-        policy->DecidePort(endpoint.port) == Decision::kAllow) {
-        const AddressFamily family =
-            endpoint.family == protocol::NetworkAddressFamily::kIpv4
-                ? AddressFamily::kIpv4
-                : AddressFamily::kIpv6;
-        const std::size_t length = family == AddressFamily::kIpv4 ? 4 : 16;
-        if (policy->DecideAddress(family, endpoint.address.data(), length) ==
-                Decision::kAllow ||
-            (g_dns_bindings != nullptr &&
-             g_dns_bindings->IsEndpointAuthorized(
-                 g_dns_session_id, GetCurrentProcessId(), family,
-                 endpoint.address.data(), length, endpoint.port,
-                 GetTickCount64()))) {
-            return false;
-        }
-    }
     if (endpoint_valid) {
         hook::TryReportNetworkViolation(
             protocol::NetworkOperation::kConnect, endpoint);
     }
     WSASetLastError(WSAEACCES);
+    return true;
+}
+
+bool TryProxyConnect(
+    const SOCKET socket,
+    const sockaddr* const address,
+    const int address_length,
+    int& result) noexcept {
+    result = SOCKET_ERROR;
+    const auto* policy = g_policy.get();
+    if (policy == nullptr || policy->mode() != Mode::kAllowList ||
+        g_tcp_proxy_port == 0) {
+        return false;
+    }
+    protocol::NetworkEndpoint endpoint{};
+    if (!ReadEndpoint(address, address_length, endpoint) ||
+        policy->DecidePort(endpoint.port) != Decision::kAllow) {
+        return false;
+    }
+    const AddressFamily family =
+        endpoint.family == protocol::NetworkAddressFamily::kIpv4
+            ? AddressFamily::kIpv4
+            : AddressFamily::kIpv6;
+    const std::size_t endpoint_length =
+        family == AddressFamily::kIpv4 ? 4 : 16;
+    std::array<char, protocol::kMaximumEventDomainBytes + 1U> domain{};
+    const bool explicit_address =
+        policy->DecideAddress(
+            family, endpoint.address.data(), endpoint_length) ==
+        Decision::kAllow;
+    const bool bound_domain = !explicit_address && g_dns_bindings != nullptr &&
+        g_dns_bindings->FindAuthorizedDomain(
+            g_dns_session_id, GetCurrentProcessId(), family,
+            endpoint.address.data(), endpoint_length, endpoint.port,
+            GetTickCount64(), domain.data(), domain.size());
+    if (!explicit_address && !bound_domain) {
+        return false;
+    }
+
+    TcpProxyLock guard;
+    if (g_tcp_proxy_closed) {
+        WSASetLastError(WSAENETDOWN);
+        return true;
+    }
+    std::uint32_t network_error = 0;
+    const auto status = ConnectTcpSocketThroughProxy(
+        socket, g_connect, g_tcp_proxy_port, g_tcp_proxy_session,
+        g_tcp_proxy_next_sequence, GetCurrentProcessId(), family,
+        endpoint.address.data(), endpoint_length, endpoint.port,
+        bound_domain ? domain.data() : nullptr, network_error);
+    const bool authenticated_response =
+        status == TcpProxyClientStatus::kConnected ||
+        status == TcpProxyClientStatus::kDenied ||
+        status == TcpProxyClientStatus::kConnectFailed ||
+        status == TcpProxyClientStatus::kProxyFailure;
+    if (authenticated_response) {
+        if (g_tcp_proxy_next_sequence ==
+            std::numeric_limits<std::uint64_t>::max()) {
+            g_tcp_proxy_closed = true;
+        } else {
+            ++g_tcp_proxy_next_sequence;
+        }
+    } else if (status != TcpProxyClientStatus::kProxyConnectFailed &&
+               status != TcpProxyClientStatus::kInvalidArgument) {
+        g_tcp_proxy_closed = true;
+    }
+    if (status == TcpProxyClientStatus::kConnected) {
+        result = 0;
+        WSASetLastError(0);
+        return true;
+    }
+    WSASetLastError(
+        network_error == 0 ? WSAENETDOWN : static_cast<int>(network_error));
     return true;
 }
 
@@ -589,6 +661,10 @@ int WSAAPI DetouredConnect(
     const SOCKET socket,
     const sockaddr* address,
     const int address_length) noexcept {
+    int proxy_result = SOCKET_ERROR;
+    if (TryProxyConnect(socket, address, address_length, proxy_result)) {
+        return proxy_result;
+    }
     if (DenyConnect(address, address_length)) {
         return SOCKET_ERROR;
     }
@@ -603,6 +679,12 @@ int WSAAPI DetouredWsaConnect(
     LPWSABUF callee_data,
     LPQOS socket_qos,
     LPQOS group_qos) noexcept {
+    int proxy_result = SOCKET_ERROR;
+    if (caller_data == nullptr && callee_data == nullptr && socket_qos == nullptr &&
+        group_qos == nullptr &&
+        TryProxyConnect(socket, address, address_length, proxy_result)) {
+        return proxy_result;
+    }
     if (DenyConnect(address, address_length)) {
         return SOCKET_ERROR;
     }
@@ -1275,6 +1357,11 @@ HookInstallStatus InstallNetworkHooks(
         return HookInstallStatus::kTransactionFailed;
     }
     g_dns_session_id = runtime.handshake_nonce;
+    g_tcp_proxy_session.nonce = runtime.handshake_nonce;
+    g_tcp_proxy_session.authentication_key = runtime.dns_authentication_key;
+    g_tcp_proxy_port = runtime.tcp_proxy_port;
+    g_tcp_proxy_next_sequence = 1;
+    g_tcp_proxy_closed = false;
     g_dns_bindings = std::move(bindings);
     g_dns_channel = std::move(channel);
     g_policy = std::move(policy);
