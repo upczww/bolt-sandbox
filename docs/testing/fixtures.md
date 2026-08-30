@@ -16,6 +16,18 @@ not be placed on its command line or in its environment.
   `sensitive`, with unique marker contents and links crossing every boundary.
 - Every mutating operation writes a nonce so stale state cannot satisfy an
   assertion. Teardown verifies resolved paths stay under the test root.
+- Optional host capabilities are supplied only to the test harness through
+  `BOLT_TEST_UNC_ROOT` and `BOLT_TEST_CASE_SENSITIVE_ROOT`. The first value is
+  an existing writable UNC share root; the second is an existing local
+  directory with `FILE_CS_FLAG_CASE_SENSITIVE_DIR` enabled. Missing variables
+  are recorded as `not_present` and do not silently substitute a local path.
+- When either capability variable is present, the fixture validates the real
+  capability before claiming evidence. UNC tests compare ordinary `\\server`
+  and extended `\\?\UNC\server` aliases and verify share-side contents.
+  Case-sensitive tests create two existing targets that differ only by case,
+  require distinct file IDs, and verify that an allow rule for one identity
+  cannot authorize the denied identity. The same conflicting policy must be
+  rejected on a case-insensitive directory.
 
 ## Process fixtures
 
