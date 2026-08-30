@@ -98,6 +98,12 @@ clear disposition pass through unchanged. Unsupported or malformed mutation
 identities fail closed, while unrelated file information classes retain native
 Windows behavior.
 
+Bolt also detours Win32 `SetEndOfFile` directly so an inherited or duplicated
+write handle cannot bypass path policy. The adapter resolves the handle's final
+identity, requires write access, reports denied truncation as `Write`, and only
+then invokes the real API. BuildXL's lower-level `ZwSetInformationFile` seam
+remains the required boundary for direct NT callers and is tracked separately.
+
 For textually allowed copy, move, and replace operation paths, Bolt resolves the nearest existing ancestor
 through the real `CreateFileW` trampoline and `GetFinalPathNameByHandleW`,
 appends any absent suffix, then evaluates the fully resolved source and

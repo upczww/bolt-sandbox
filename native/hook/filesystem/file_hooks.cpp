@@ -42,6 +42,8 @@ MoveFileTransactedA_t g_move_file_transacted_a = MoveFileTransactedA;
 ReplaceFileW_t g_replace_file_w = ReplaceFileW;
 ReplaceFileA_t g_replace_file_a = ReplaceFileA;
 SetFileInformationByHandle_t g_set_file_information_by_handle = SetFileInformationByHandle;
+using SetEndOfFileFunction = BOOL(WINAPI*)(HANDLE);
+SetEndOfFileFunction g_set_end_of_file = SetEndOfFile;
 using CreateHardLinkWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRIBUTES);
 CreateHardLinkWFunction g_create_hard_link_w = CreateHardLinkW;
 CopyFileW_t g_copy_file_w = CopyFileW;
@@ -668,6 +670,31 @@ BOOL WINAPI DetouredSetFileInformationByHandle(
         file, information_class, information, information_size);
 }
 
+BOOL WINAPI DetouredSetEndOfFile(const HANDLE file) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_set_end_of_file(file);
+    }
+    std::wstring source_path;
+    if (!TryGetHandlePath(file, source_path)) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    const auto* policy = g_policy.get();
+    const auto evaluation = policy == nullptr
+                                ? PolicyEvaluation{}
+                                : policy->Evaluate(source_path.c_str(), Access::kWrite);
+    if (evaluation.decision == Decision::kDeny) {
+        ReportDenied(
+            protocol::FilesystemOperation::kWrite,
+            EvaluatedPath(evaluation, source_path.c_str()));
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, source_path.c_str()), false);
+    return g_set_end_of_file(file);
+}
+
 // Mirrors BuildXL's two-sided hard-link check: reading the existing object and
 // writing the new directory entry are separate policy decisions.
 BOOL WINAPI DetouredCreateHardLinkW(
@@ -897,6 +924,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_set_file_information_by_handle),
             reinterpret_cast<PVOID>(DetouredSetFileInformationByHandle)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_set_end_of_file),
+            reinterpret_cast<PVOID>(DetouredSetEndOfFile)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_hard_link_w),
             reinterpret_cast<PVOID>(DetouredCreateHardLinkW)) != NO_ERROR ||
