@@ -4,6 +4,7 @@
 #include "protocol/version.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <limits>
 #include <new>
 #include <string>
@@ -199,7 +200,38 @@ bool Contains(
                components.begin(), EqualIgnoreCase);
 }
 
+void NormalizeWow64View(
+    const RegistryHive hive,
+    std::vector<std::wstring>& components) {
+    std::size_t redirected_index = components.size();
+    if (hive == RegistryHive::kClassesRoot &&
+        !components.empty() &&
+        EqualIgnoreCase(components[0], L"Wow6432Node")) {
+        redirected_index = 0;
+    } else if (
+        hive == RegistryHive::kLocalMachine &&
+        components.size() >= 2 &&
+        EqualIgnoreCase(components[0], L"Software") &&
+        EqualIgnoreCase(components[1], L"Wow6432Node")) {
+        redirected_index = 1;
+    } else if (
+        (hive == RegistryHive::kLocalMachine ||
+         hive == RegistryHive::kCurrentUser) &&
+        components.size() >= 3 &&
+        EqualIgnoreCase(components[0], L"Software") &&
+        EqualIgnoreCase(components[1], L"Classes") &&
+        EqualIgnoreCase(components[2], L"Wow6432Node")) {
+        redirected_index = 2;
+    }
+    if (redirected_index < components.size()) {
+        components.erase(
+            components.begin() +
+            static_cast<std::ptrdiff_t>(redirected_index));
+    }
+}
+
 bool ParseRelativeKey(
+    const RegistryHive hive,
     const wchar_t* relative_key,
     std::vector<std::wstring>& components) {
     components.clear();
@@ -230,6 +262,7 @@ bool ParseRelativeKey(
         components.push_back(std::move(component));
         offset = end == std::wstring::npos ? value.size() : end + 1;
     }
+    NormalizeWow64View(hive, components);
     return true;
 }
 
@@ -316,6 +349,7 @@ RegistryPolicyLoadStatus RegistryPolicy::Load(
                 encoded_length += value.size() + 1;
                 rule.components.push_back(std::move(value));
             }
+            NormalizeWow64View(rule.hive, rule.components);
             for (const auto& existing : implementation->rules) {
                 if (!SameRoot(existing, rule)) {
                     continue;
@@ -354,7 +388,7 @@ RegistryDecision RegistryPolicy::Decide(
     }
     try {
         std::vector<std::wstring> components;
-        if (!ParseRelativeKey(relative_key, components)) {
+        if (!ParseRelativeKey(hive, relative_key, components)) {
             return RegistryDecision::kDeny;
         }
         const Rule* deepest = nullptr;
@@ -387,7 +421,7 @@ bool RegistryPolicy::MayTraverse(
     }
     try {
         std::vector<std::wstring> components;
-        if (!ParseRelativeKey(relative_key, components)) {
+        if (!ParseRelativeKey(hive, relative_key, components)) {
             return false;
         }
         return std::any_of(

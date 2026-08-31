@@ -19,6 +19,9 @@ bool RunRegistryPolicyTests() {
         {bolt::tests::RegistryRuleKind::kInheritUser,
          bolt::tests::RegistryHive::kLocalMachine,
          {"Software", "Compatibility"}},
+        {bolt::tests::RegistryRuleKind::kReadOnly,
+         bolt::tests::RegistryHive::kLocalMachine,
+         {"Software", "Vendor"}},
     };
     const auto payload = bolt::tests::SealPolicy(
         {}, bolt::tests::ChildProcessPolicyKind::kInherit,
@@ -59,6 +62,14 @@ bool RunRegistryPolicyTests() {
         policy->Decide(
             Hive::kLocalMachine, L"Software\\Compatibility\\Legacy",
             Access::kWrite) != Decision::kInheritUser ||
+        policy->Decide(
+            Hive::kLocalMachine,
+            L"Software\\Wow6432Node\\Vendor\\Product",
+            Access::kRead) != Decision::kAllow ||
+        policy->Decide(
+            Hive::kLocalMachine,
+            L"Software\\Wow6432Node\\Vendor\\Product",
+            Access::kWrite) != Decision::kDeny ||
         policy->Decide(Hive::kCurrentUser, L"Outside", Access::kRead) !=
             Decision::kDeny ||
         policy->Decide(

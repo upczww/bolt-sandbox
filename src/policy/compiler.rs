@@ -773,10 +773,9 @@ impl NormalizedRegistryKey {
             }
         };
 
-        let normalized = Self {
-            hive,
-            components: parts[component_offset..].to_vec(),
-        };
+        let mut components = parts[component_offset..].to_vec();
+        normalize_wow64_registry_view(hive, &mut components);
+        let normalized = Self { hive, components };
         if normalized.encoded_length() > MAX_REGISTRY_KEY_CODE_UNITS {
             return Err(invalid_registry_policy(InvalidRequestReason::TooLarge));
         }
@@ -804,6 +803,39 @@ impl NormalizedRegistryKey {
                 .iter()
                 .map(|component| 1 + component.encode_utf16().count())
                 .sum::<usize>()
+    }
+}
+
+fn normalize_wow64_registry_view(hive: RegistryHive, components: &mut Vec<String>) {
+    let redirected_index = match hive {
+        RegistryHive::ClassesRoot
+            if components
+                .first()
+                .is_some_and(|value| value == "WOW6432NODE") =>
+        {
+            Some(0)
+        }
+        RegistryHive::LocalMachine
+            if components.first().is_some_and(|value| value == "SOFTWARE")
+                && components
+                    .get(1)
+                    .is_some_and(|value| value == "WOW6432NODE") =>
+        {
+            Some(1)
+        }
+        RegistryHive::LocalMachine | RegistryHive::CurrentUser
+            if components.first().is_some_and(|value| value == "SOFTWARE")
+                && components.get(1).is_some_and(|value| value == "CLASSES")
+                && components
+                    .get(2)
+                    .is_some_and(|value| value == "WOW6432NODE") =>
+        {
+            Some(2)
+        }
+        _ => None,
+    };
+    if let Some(index) = redirected_index {
+        components.remove(index);
     }
 }
 
@@ -1951,6 +1983,38 @@ mod tests {
                 RegistryAccess::Read,
             ),
             RegistryDecision::Allow
+        );
+    }
+
+    #[test]
+    fn reg_011_wow64_views_share_one_policy_identity() {
+        let mut policy = SandboxPolicy::default();
+        policy
+            .registry
+            .read_only
+            .push(r"HKLM\Software\Vendor".into());
+        policy
+            .registry
+            .read_only
+            .push(r"HKLM\Software\Wow6432Node\Vendor".into());
+
+        let compiled = compile(&policy, Path::new(r"C:\work\project"))
+            .expect("equivalent WOW64 registry views must compile");
+
+        assert_eq!(compiled.registry.read_only_rule_count(), 1);
+        assert_eq!(
+            compiled.registry.decide(
+                r"HKLM\Software\Wow6432Node\Vendor\Product",
+                RegistryAccess::Read,
+            ),
+            RegistryDecision::Allow
+        );
+        assert_eq!(
+            compiled.registry.decide(
+                r"HKLM\Software\Wow6432Node\Vendor\Product",
+                RegistryAccess::Write,
+            ),
+            RegistryDecision::Deny
         );
     }
 

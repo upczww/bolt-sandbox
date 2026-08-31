@@ -61,6 +61,40 @@ bool CreateKeyWithValue(
     return written == ERROR_SUCCESS;
 }
 
+bool CreateKeyWithValueInView(
+    const std::wstring& path,
+    const REGSAM view,
+    const wchar_t* const value_name,
+    const wchar_t* const value) {
+    HKEY key = nullptr;
+    DWORD disposition = 0;
+    const LSTATUS created = RegCreateKeyExW(
+        HKEY_CURRENT_USER, path.c_str(), 0, nullptr, 0,
+        KEY_ALL_ACCESS | view, nullptr, &key, &disposition);
+    if (created != ERROR_SUCCESS) {
+        return false;
+    }
+    const LSTATUS written = RegSetValueExW(
+        key, value_name, 0, REG_SZ,
+        reinterpret_cast<const BYTE*>(value),
+        static_cast<DWORD>((std::wcslen(value) + 1) * sizeof(wchar_t)));
+    RegCloseKey(key);
+    return written == ERROR_SUCCESS;
+}
+
+void DeleteKeyTreeInView(
+    const std::wstring& path,
+    const REGSAM view) {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(
+            HKEY_CURRENT_USER, path.c_str(), 0,
+            KEY_ALL_ACCESS | view, &key) == ERROR_SUCCESS) {
+        RegDeleteTreeW(key, nullptr);
+        RegCloseKey(key);
+    }
+    RegDeleteKeyExW(HKEY_CURRENT_USER, path.c_str(), view, 0);
+}
+
 std::vector<std::string> Components(
     const DWORD process_id,
     const char* const leaf) {
@@ -76,6 +110,14 @@ std::vector<std::string> Components(
     return {
         "SOFTWARE", "BOLTSANDBOXREGISTRYTESTS",
         std::to_string(process_id), parent, leaf};
+}
+
+std::vector<std::string> ClassComponents(
+    const DWORD process_id,
+    const char* const leaf) {
+    return {
+        "SOFTWARE", "CLASSES", "BOLTSANDBOXREGISTRYTESTS",
+        std::to_string(process_id), leaf};
 }
 
 bool ReadExact(
@@ -225,6 +267,11 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     const std::wstring allowed = root + L"\\Allowed";
     const std::wstring inherited = root + L"\\Inherited";
     const std::wstring outside = root + L"\\Outside";
+    const std::wstring root_id =
+        root.substr(root.find_last_of(L'\\') + 1);
+    const std::wstring wow64_read_only =
+        L"Software\\Classes\\BoltSandboxRegistryTests\\" + root_id +
+        L"\\Wow64ReadOnly";
     const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     using NtRenameKeyFunction = LONG(NTAPI*)(HANDLE, PUNICODE_STRING);
     const auto nt_rename_key = reinterpret_cast<NtRenameKeyFunction>(
@@ -322,6 +369,40 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
         ? 0
         : nt_rename_key(read_key, &renamed_read_only_name);
     RegCloseKey(read_key);
+
+    bool wow64_views_read = true;
+    std::array<LSTATUS, 2> wow64_write_statuses{};
+    const std::array<REGSAM, 2> wow64_views = {
+        KEY_WOW64_32KEY, KEY_WOW64_64KEY};
+    for (std::size_t index = 0; index < wow64_views.size(); ++index) {
+        HKEY view_key = nullptr;
+        wchar_t view_value[16]{};
+        DWORD view_bytes = sizeof(view_value);
+        DWORD view_type = 0;
+        const LSTATUS view_open = RegOpenKeyExW(
+            HKEY_CURRENT_USER, wow64_read_only.c_str(), 0,
+            KEY_READ | wow64_views[index], &view_key);
+        const LSTATUS view_query = view_open == ERROR_SUCCESS
+            ? RegQueryValueExW(
+                  view_key, L"Seed", nullptr, &view_type,
+                  reinterpret_cast<BYTE*>(view_value), &view_bytes)
+            : view_open;
+        wow64_views_read = wow64_views_read &&
+            view_open == ERROR_SUCCESS &&
+            view_query == ERROR_SUCCESS &&
+            view_type == REG_SZ && std::wstring(view_value) == L"seed";
+        if (view_key != nullptr) {
+            RegCloseKey(view_key);
+        }
+        HKEY view_write_key = nullptr;
+        wow64_write_statuses[index] = RegOpenKeyExW(
+            HKEY_CURRENT_USER, wow64_read_only.c_str(), 0,
+            KEY_SET_VALUE | wow64_views[index], &view_write_key);
+        if (view_write_key != nullptr) {
+            RegCloseKey(view_write_key);
+            wow64_views_read = false;
+        }
+    }
 
     HKEY denied_key = nullptr;
     const LSTATUS denied_open = RegOpenKeyExW(
@@ -478,6 +559,11 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     if (!value_enumerated || !key_enumerated) {
         return 716;
     }
+    if (!wow64_views_read ||
+        wow64_write_statuses[0] != ERROR_ACCESS_DENIED ||
+        wow64_write_statuses[1] != ERROR_ACCESS_DENIED) {
+        return 720;
+    }
     if (read_only_write_open != ERROR_ACCESS_DENIED || write_intent != nullptr) {
         return 702;
     }
@@ -538,7 +624,14 @@ bool RunRegistryHookTests() {
     const std::wstring root =
         L"Software\\BoltSandboxRegistryTests\\" +
         std::to_wstring(process_id);
+    const std::wstring wow64_root =
+        L"Software\\Classes\\BoltSandboxRegistryTests\\" +
+        std::to_wstring(process_id);
+    const std::wstring wow64_read_only =
+        wow64_root + L"\\Wow64ReadOnly";
     RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
+    DeleteKeyTreeInView(wow64_root, KEY_WOW64_32KEY);
+    DeleteKeyTreeInView(wow64_root, KEY_WOW64_64KEY);
     const bool prepared =
         CreateKeyWithValue(root + L"\\ReadOnly", L"Seed", L"seed") &&
         CreateKeyWithValue(
@@ -547,9 +640,15 @@ bool RunRegistryHookTests() {
             root + L"\\Broad\\Sensitive", L"Seed", L"secret") &&
         CreateKeyWithValue(root + L"\\Allowed", L"Seed", L"seed") &&
         CreateKeyWithValue(root + L"\\Inherited", L"Seed", L"seed") &&
-        CreateKeyWithValue(root + L"\\Outside", L"Seed", L"outside");
+        CreateKeyWithValue(root + L"\\Outside", L"Seed", L"outside") &&
+        CreateKeyWithValueInView(
+            wow64_read_only, KEY_WOW64_32KEY, L"Seed", L"seed") &&
+        CreateKeyWithValueInView(
+            wow64_read_only, KEY_WOW64_64KEY, L"Seed", L"seed");
     if (!prepared) {
         RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
+        DeleteKeyTreeInView(wow64_root, KEY_WOW64_32KEY);
+        DeleteKeyTreeInView(wow64_root, KEY_WOW64_64KEY);
         return false;
     }
     HKEY inherited_denied_handle = nullptr;
@@ -581,6 +680,9 @@ bool RunRegistryHookTests() {
         {bolt::tests::RegistryRuleKind::kInheritUser,
          bolt::tests::RegistryHive::kCurrentUser,
          Components(process_id, "INHERITED")},
+        {bolt::tests::RegistryRuleKind::kReadOnly,
+         bolt::tests::RegistryHive::kCurrentUser,
+         ClassComponents(process_id, "WOW64READONLY")},
     };
     const std::wstring executable = CurrentExecutable();
     const auto payload = bolt::tests::SealPolicy(
@@ -687,6 +789,10 @@ bool RunRegistryHookTests() {
         {bolt::protocol::RegistryOperation::kRename,
          CanonicalCurrentUserKey(root + L"\\RenamedReadOnly")},
         {bolt::protocol::RegistryOperation::kOpen,
+         CanonicalCurrentUserKey(wow64_read_only)},
+        {bolt::protocol::RegistryOperation::kOpen,
+         CanonicalCurrentUserKey(wow64_read_only)},
+        {bolt::protocol::RegistryOperation::kOpen,
          CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
         {bolt::protocol::RegistryOperation::kOpen,
          CanonicalCurrentUserKey(root + L"\\Outside")},
@@ -748,5 +854,7 @@ bool RunRegistryHookTests() {
     event_pipe.Close();
     RegCloseKey(inherited_denied_handle);
     RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
+    DeleteKeyTreeInView(wow64_root, KEY_WOW64_32KEY);
+    DeleteKeyTreeInView(wow64_root, KEY_WOW64_64KEY);
     return passed;
 }
