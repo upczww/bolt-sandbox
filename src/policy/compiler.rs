@@ -1896,6 +1896,37 @@ mod tests {
     }
 
     #[test]
+    fn reg_default_compatibility_grants_are_explicit_and_narrow() {
+        let compiled = compile(
+            &SandboxPolicy::default(),
+            Path::new(r"C:\work\project"),
+        )
+        .expect("default compatibility registry grants must compile");
+
+        for key in [
+            r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager",
+            r"HKLM\SYSTEM\CurrentControlSet\Services\WinSock2\Parameters",
+            r"HKLM\SOFTWARE\Microsoft\OLE",
+            r"HKLM\SOFTWARE\Microsoft\AppModel\Lookaside\machine",
+            r"HKLM\SOFTWARE\Microsoft\AppModel\Lookaside\user",
+            r"HKCU\Software\Classes\Local Settings",
+        ] {
+            assert_eq!(
+                compiled.registry.decide(key, RegistryAccess::Read),
+                RegistryDecision::InheritUser,
+                "{key}"
+            );
+        }
+        assert_eq!(
+            compiled.registry.decide(
+                r"HKLM\SOFTWARE\Microsoft\AppModel\Unrelated",
+                RegistryAccess::Read,
+            ),
+            RegistryDecision::Deny
+        );
+    }
+
+    #[test]
     fn pol_020_malformed_registry_roots_are_rejected() {
         for key in [
             "",
