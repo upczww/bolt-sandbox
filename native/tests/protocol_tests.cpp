@@ -24,6 +24,7 @@ static_assert(bolt::protocol::kPolicyMaximumBodyLength == 1'048'576);
 
 bool RunPolicyPayloadTests();
 bool RunJobTests();
+bool RunLauncherStartupTests();
 bool RunStreamTests();
 int RunDualStreamWriter(int argument_count, wchar_t** arguments);
 int RunJobTreeParent(int argument_count, wchar_t** arguments);
@@ -571,6 +572,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunJobTests()) {
         return 5;
+    }
+    if (!RunLauncherStartupTests()) {
+        return 18;
     }
     if (!RunStreamTests()) {
         return 16;

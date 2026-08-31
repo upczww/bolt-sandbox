@@ -1,5 +1,5 @@
 const MAGIC: [u8; 4] = *b"BLT1";
-pub(super) const PROTOCOL_VERSION: u16 = 1;
+pub(crate) const PROTOCOL_VERSION: u16 = 1;
 pub(super) const HEADER_LENGTH: usize = 24;
 const VERSION_OFFSET: usize = 4;
 const KIND_OFFSET: usize = 6;

@@ -52,9 +52,7 @@ pub(super) enum TransportError {
     Read(io::ErrorKind),
 }
 
-pub(super) fn read_frame(
-    reader: &mut impl Read,
-) -> Result<Option<TransportFrame>, TransportError> {
+pub(super) fn read_frame(reader: &mut impl Read) -> Result<Option<TransportFrame>, TransportError> {
     let mut header = [0_u8; HEADER_LENGTH];
     let mut header_read = 0;
     while header_read != header.len() {

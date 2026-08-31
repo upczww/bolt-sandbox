@@ -150,6 +150,24 @@ pub struct ExecutionHandle {
 }
 
 impl ExecutionHandle {
+    pub(crate) fn new(
+        process_id: u32,
+        stdout: Receiver<Vec<u8>>,
+        stderr: Receiver<Vec<u8>>,
+        events: Receiver<SandboxEvent>,
+        cancel: Sender<()>,
+        completion: Receiver<Result<ExecutionResult, SandboxError>>,
+    ) -> Self {
+        Self {
+            process_id,
+            stdout: Some(ByteStream { receiver: stdout }),
+            stderr: Some(ByteStream { receiver: stderr }),
+            events: Some(EventStream { receiver: events }),
+            cancel,
+            completion,
+        }
+    }
+
     #[must_use]
     pub fn process_id(&self) -> u32 {
         self.process_id

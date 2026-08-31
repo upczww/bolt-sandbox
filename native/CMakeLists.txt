@@ -135,6 +135,8 @@ add_library(bolt-sandbox-protocol STATIC
     protocol/dns_proxy_protocol.cpp
     protocol/tcp_proxy_protocol.cpp
     protocol/event_frame.cpp
+    protocol/launcher_startup.cpp
+    protocol/launcher_transport.cpp
     protocol/policy_payload.cpp
     protocol/runtime_payload.cpp
 )
@@ -244,6 +246,11 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 8)
         launcher/main.cpp
     )
     bolt_native_warnings(bolt-sandbox-launcher)
+    target_include_directories(bolt-sandbox-launcher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(bolt-sandbox-launcher PRIVATE
+        bolt-sandbox-common
+        bolt-sandbox-protocol
+    )
 
     add_executable(bolt-sandbox-dns-proxy
         dns_proxy/main.cpp
@@ -285,6 +292,7 @@ add_executable(bolt-sandbox-native-tests
     tests/filesystem_policy_tests.cpp
     tests/filesystem_race_tests.cpp
     tests/job_tests.cpp
+    tests/launcher_startup_tests.cpp
     tests/named_pipe_tests.cpp
     tests/network_policy_tests.cpp
     tests/registry_policy_tests.cpp

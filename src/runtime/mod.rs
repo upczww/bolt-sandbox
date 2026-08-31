@@ -13,6 +13,17 @@ mod components;
     reason = "event channel driver is connected to the Windows named-pipe reader later"
 )]
 mod event_channel;
+mod launcher_adapter;
+#[allow(
+    dead_code,
+    reason = "launcher stdio protocol is connected to the native adapter next"
+)]
+mod launcher_protocol;
+#[allow(
+    dead_code,
+    reason = "multiplexed launcher frames are connected after the native transport lands"
+)]
+mod launcher_transport;
 #[allow(
     dead_code,
     reason = "runtime lifecycle is connected to Windows process and Job Object adapters later"
@@ -47,9 +58,9 @@ pub(crate) fn start_execution(
     request: SandboxRequest,
     credential_names: &[OsString],
     component_root: &Path,
-    _stream_capacity: usize,
+    stream_capacity: usize,
 ) -> Result<ExecutionHandle, SandboxError> {
-    let _prepared = preparation::prepare_launch(&request, credential_names, component_root)
+    let prepared = preparation::prepare_launch(&request, credential_names, component_root)
         .map_err(|error| match error {
             preparation::LaunchPreparationError::Request(error) => error,
             preparation::LaunchPreparationError::ProgramOpen
@@ -76,7 +87,5 @@ pub(crate) fn start_execution(
             }
         })?;
     drop(request);
-    Err(SandboxError::InitializationFailed {
-        stage: InitializationStage::LauncherAdapter,
-    })
+    launcher_adapter::start(&prepared, stream_capacity)
 }

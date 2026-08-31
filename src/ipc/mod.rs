@@ -8,7 +8,7 @@ pub(crate) mod event_codec;
     dead_code,
     reason = "private protocol encoder is wired into the launcher IPC transport in the next phase"
 )]
-mod framing;
+pub(crate) mod framing;
 mod handshake;
 #[allow(
     dead_code,
