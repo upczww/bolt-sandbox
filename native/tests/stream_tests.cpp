@@ -1,3 +1,5 @@
+#include "common/suspended_process.h"
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -173,27 +175,37 @@ bool RunStreamTests() {
     HANDLE stdout_write = nullptr;
     HANDLE stderr_read = nullptr;
     HANDLE stderr_write = nullptr;
+    const HANDLE stdin_read = CreateFileW(
+        L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        &inheritable, OPEN_EXISTING, 0, nullptr);
     if (!CreatePipe(&stdout_read, &stdout_write, &inheritable, 4'096) ||
         !CreatePipe(&stderr_read, &stderr_write, &inheritable, 4'096) ||
         !SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0) ||
-        !SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0)) {
+        !SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0) ||
+        stdin_read == INVALID_HANDLE_VALUE) {
         return false;
     }
     const std::wstring executable = CurrentExecutable();
     std::wstring command = L"\"" + executable + L"\" --dual-stream-writer " +
                            std::to_wstring(kStreamBytes);
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    startup.dwFlags = STARTF_USESTDHANDLES;
-    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-    startup.hStdOutput = stdout_write;
-    startup.hStdError = stderr_write;
-    PROCESS_INFORMATION process{};
+    const HANDLE inherited[] = {stdin_read, stdout_write, stderr_write};
+    const bolt::common::ProcessLaunchOptions options{
+        executable,
+        command,
+        {},
+        nullptr,
+        inherited,
+        std::size(inherited),
+        0,
+        stdin_read,
+        stdout_write,
+        stderr_write};
+    bolt::common::SuspendedProcess process;
     const bool created = !executable.empty() &&
-                         CreateProcessW(
-                             executable.c_str(), command.data(), nullptr,
-                             nullptr, TRUE, 0, nullptr, nullptr, &startup,
-                             &process) != FALSE;
+        bolt::common::SuspendedProcess::Create(options, process) ==
+            bolt::common::ProcessStatus::kSuccess &&
+        ResumeThread(process.thread_handle()) != static_cast<DWORD>(-1);
+    CloseHandle(stdin_read);
     CloseHandle(stdout_write);
     CloseHandle(stderr_write);
     if (!created) {
@@ -207,20 +219,18 @@ bool RunStreamTests() {
     stderr_bytes.reserve(kStreamBytes);
     std::thread stdout_reader(DrainPipe, stdout_read, std::ref(stdout_bytes));
     std::thread stderr_reader(DrainPipe, stderr_read, std::ref(stderr_bytes));
-    const DWORD wait = WaitForSingleObject(process.hProcess, 10'000);
+    const DWORD wait = WaitForSingleObject(process.process_handle(), 10'000);
     if (wait != WAIT_OBJECT_0) {
-        TerminateProcess(process.hProcess, 314);
+        TerminateProcess(process.process_handle(), 314);
     }
     stdout_reader.join();
     stderr_reader.join();
     DWORD exit_code = 0;
     const bool passed =
         wait == WAIT_OBJECT_0 &&
-        GetExitCodeProcess(process.hProcess, &exit_code) != FALSE &&
+        GetExitCodeProcess(process.process_handle(), &exit_code) != FALSE &&
         exit_code == 0 && MatchesPattern(stdout_bytes, false) &&
         MatchesPattern(stderr_bytes, true);
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
     CloseHandle(stdout_read);
     CloseHandle(stderr_read);
     return passed && RunDroppedReceiverTest();
