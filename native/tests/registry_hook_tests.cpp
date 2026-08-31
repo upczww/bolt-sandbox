@@ -413,12 +413,14 @@ bool KeyMissing(const std::wstring& key_path) {
 }  // namespace
 
 int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 4) {
+    if (argument_count != 5) {
         return 700;
     }
     const std::wstring root = arguments[2];
     const auto inherited_denied = reinterpret_cast<HKEY>(
         static_cast<std::uintptr_t>(_wcstoui64(arguments[3], nullptr, 10)));
+    const auto inherited_read_only = reinterpret_cast<HKEY>(
+        static_cast<std::uintptr_t>(_wcstoui64(arguments[4], nullptr, 10)));
     const std::wstring read_only = root + L"\\ReadOnly";
     const std::wstring denied = root + L"\\Broad\\Sensitive";
     const std::wstring allowed = root + L"\\Allowed";
@@ -561,6 +563,45 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
             RegCloseKey(view_write_key);
             wow64_views_read = false;
         }
+    }
+
+    HANDLE duplicated_read_only = nullptr;
+    const bool duplicated = DuplicateHandle(
+        GetCurrentProcess(), inherited_read_only, GetCurrentProcess(),
+        &duplicated_read_only, KEY_ALL_ACCESS, FALSE, 0) != FALSE;
+    wchar_t duplicated_value[16]{};
+    DWORD duplicated_value_bytes = sizeof(duplicated_value);
+    DWORD duplicated_value_type = 0;
+    const LSTATUS duplicated_query = duplicated
+        ? RegQueryValueExW(
+              static_cast<HKEY>(duplicated_read_only), L"Seed", nullptr,
+              &duplicated_value_type,
+              reinterpret_cast<BYTE*>(duplicated_value),
+              &duplicated_value_bytes)
+        : ERROR_INVALID_HANDLE;
+    const wchar_t duplicated_changed[] = L"duplicated";
+    const LSTATUS duplicated_set = duplicated
+        ? RegSetValueExW(
+              static_cast<HKEY>(duplicated_read_only), L"Seed", 0, REG_SZ,
+              reinterpret_cast<const BYTE*>(duplicated_changed),
+              sizeof(duplicated_changed))
+        : ERROR_INVALID_HANDLE;
+    const LSTATUS duplicated_delete = duplicated
+        ? RegDeleteValueW(
+              static_cast<HKEY>(duplicated_read_only), L"Seed")
+        : ERROR_INVALID_HANDLE;
+    wchar_t duplicated_rename_text[] = L"DuplicatedReadOnly";
+    UNICODE_STRING duplicated_rename_name{};
+    duplicated_rename_name.Buffer = duplicated_rename_text;
+    duplicated_rename_name.Length = static_cast<USHORT>(
+        std::wcslen(duplicated_rename_text) * sizeof(wchar_t));
+    duplicated_rename_name.MaximumLength = duplicated_rename_name.Length;
+    const LONG duplicated_rename =
+        duplicated && nt_rename_key != nullptr
+        ? nt_rename_key(duplicated_read_only, &duplicated_rename_name)
+        : 0;
+    if (duplicated_read_only != nullptr) {
+        CloseHandle(duplicated_read_only);
     }
 
     HKEY denied_key = nullptr;
@@ -730,6 +771,14 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
         wow64_write_statuses[1] != ERROR_ACCESS_DENIED) {
         return 720;
     }
+    if (!duplicated || duplicated_query != ERROR_SUCCESS ||
+        duplicated_value_type != REG_SZ ||
+        std::wstring(duplicated_value) != L"seed" ||
+        duplicated_set != ERROR_ACCESS_DENIED ||
+        duplicated_delete != ERROR_ACCESS_DENIED ||
+        duplicated_rename != static_cast<LONG>(0xC0000022L)) {
+        return 722;
+    }
     if (read_only_write_open != ERROR_ACCESS_DENIED || write_intent != nullptr) {
         return 702;
     }
@@ -835,14 +884,24 @@ bool RunRegistryHookTests() {
         return false;
     }
     HKEY inherited_denied_handle = nullptr;
+    HKEY inherited_read_only_handle = nullptr;
     if (RegOpenKeyExW(
             HKEY_CURRENT_USER, (root + L"\\Broad\\Sensitive").c_str(), 0,
             KEY_ALL_ACCESS, &inherited_denied_handle) != ERROR_SUCCESS ||
         SetHandleInformation(
             inherited_denied_handle, HANDLE_FLAG_INHERIT,
+            HANDLE_FLAG_INHERIT) == FALSE ||
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER, (root + L"\\ReadOnly").c_str(), 0,
+            KEY_ALL_ACCESS, &inherited_read_only_handle) != ERROR_SUCCESS ||
+        SetHandleInformation(
+            inherited_read_only_handle, HANDLE_FLAG_INHERIT,
             HANDLE_FLAG_INHERIT) == FALSE) {
         if (inherited_denied_handle != nullptr) {
             RegCloseKey(inherited_denied_handle);
+        }
+        if (inherited_read_only_handle != nullptr) {
+            RegCloseKey(inherited_read_only_handle);
         }
         RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
         return false;
@@ -914,9 +973,12 @@ bool RunRegistryHookTests() {
     const std::wstring command =
         L"\"" + executable + L"\" --registry-hook-child \"" + root +
         L"\" " + HandleText(reinterpret_cast<std::uintptr_t>(
-                       inherited_denied_handle));
+                       inherited_denied_handle)) +
+        L" " + HandleText(reinterpret_cast<std::uintptr_t>(
+                     inherited_read_only_handle));
     const HANDLE inherited_handles[] = {
-        policy.handle(), event_client, release, inherited_denied_handle};
+        policy.handle(), event_client, release, inherited_denied_handle,
+        inherited_read_only_handle};
     const bolt::common::ProcessLaunchOptions options{
         executable, command, L"", nullptr, inherited_handles,
         std::size(inherited_handles), 0};
@@ -975,6 +1037,12 @@ bool RunRegistryHookTests() {
          CanonicalCurrentUserKey(wow64_read_only)},
         {bolt::protocol::RegistryOperation::kOpen,
          CanonicalCurrentUserKey(wow64_read_only)},
+        {bolt::protocol::RegistryOperation::kSetValue,
+         CanonicalCurrentUserKey(root + L"\\ReadOnly")},
+        {bolt::protocol::RegistryOperation::kDelete,
+         CanonicalCurrentUserKey(root + L"\\ReadOnly")},
+        {bolt::protocol::RegistryOperation::kRename,
+         CanonicalCurrentUserKey(root + L"\\DuplicatedReadOnly")},
         {bolt::protocol::RegistryOperation::kOpen,
          CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
         {bolt::protocol::RegistryOperation::kOpen,
@@ -1016,6 +1084,7 @@ bool RunRegistryHookTests() {
     const bool side_effects_ok =
         ValueEquals(root + L"\\ReadOnly", L"Seed", L"seed") &&
         KeyMissing(root + L"\\ReadOnly\\BlockedChild") &&
+        KeyMissing(root + L"\\DuplicatedReadOnly") &&
         !KeyMissing(root + L"\\ReadOnly") &&
         ValueEquals(
             root + L"\\Broad\\Sensitive", L"Seed", L"secret") &&
@@ -1038,6 +1107,7 @@ bool RunRegistryHookTests() {
     CloseHandle(release);
     event_pipe.Close();
     RegCloseKey(inherited_denied_handle);
+    RegCloseKey(inherited_read_only_handle);
     DeleteRegistrySymbolicLink(link_to_sensitive);
     RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
     DeleteKeyTreeInView(wow64_root, KEY_WOW64_32KEY);
