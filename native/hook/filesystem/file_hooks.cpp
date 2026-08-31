@@ -2956,9 +2956,14 @@ BOOL WINAPI DetouredMoveFileExW(
     if (scope.Detoured_IsDisabled()) {
         return g_move_file_ex_w(existing_path, new_path, flags);
     }
-    return AuthorizeMove(existing_path, new_path)
-               ? g_move_file_ex_w(existing_path, new_path, flags)
-               : FALSE;
+    if (!AuthorizeMove(existing_path, new_path)) {
+        return FALSE;
+    }
+    if ((flags & MOVEFILE_REPLACE_EXISTING) != 0) {
+        recovery::BackupPath(
+            new_path, protocol::RecoveryOperation::kRename);
+    }
+    return g_move_file_ex_w(existing_path, new_path, flags);
 }
 
 BOOL WINAPI DetouredMoveFileExA(
@@ -2976,6 +2981,10 @@ BOOL WINAPI DetouredMoveFileExA(
         !AuthorizeMove(existing_wide.c_str(), new_wide.c_str())) {
         return FALSE;
     }
+    if ((flags & MOVEFILE_REPLACE_EXISTING) != 0) {
+        recovery::BackupPath(
+            new_wide.c_str(), protocol::RecoveryOperation::kRename);
+    }
     return g_move_file_ex_w(existing_wide.c_str(), new_wide.c_str(), flags);
 }
 
@@ -2990,10 +2999,15 @@ BOOL WINAPI DetouredMoveFileWithProgressW(
         return g_move_file_with_progress_w(
             existing_path, new_path, progress_routine, data, flags);
     }
-    return AuthorizeMove(existing_path, new_path)
-               ? g_move_file_with_progress_w(
-                     existing_path, new_path, progress_routine, data, flags)
-               : FALSE;
+    if (!AuthorizeMove(existing_path, new_path)) {
+        return FALSE;
+    }
+    if ((flags & MOVEFILE_REPLACE_EXISTING) != 0) {
+        recovery::BackupPath(
+            new_path, protocol::RecoveryOperation::kRename);
+    }
+    return g_move_file_with_progress_w(
+        existing_path, new_path, progress_routine, data, flags);
 }
 
 BOOL WINAPI DetouredMoveFileWithProgressA(
@@ -3013,6 +3027,10 @@ BOOL WINAPI DetouredMoveFileWithProgressA(
         !ConvertAnsiPath(new_path, new_wide) ||
         !AuthorizeMove(existing_wide.c_str(), new_wide.c_str())) {
         return FALSE;
+    }
+    if ((flags & MOVEFILE_REPLACE_EXISTING) != 0) {
+        recovery::BackupPath(
+            new_wide.c_str(), protocol::RecoveryOperation::kRename);
     }
     return g_move_file_with_progress_w(
         existing_wide.c_str(), new_wide.c_str(), progress_routine, data, flags);
@@ -3071,10 +3089,14 @@ BOOL WINAPI DetouredReplaceFileW(
         return g_replace_file_w(
             replaced_path, replacement_path, backup_path, flags, exclude, reserved);
     }
-    return AuthorizeReplace(replaced_path, replacement_path, backup_path)
-               ? g_replace_file_w(
-                     replaced_path, replacement_path, backup_path, flags, exclude, reserved)
-               : FALSE;
+    if (!AuthorizeReplace(replaced_path, replacement_path, backup_path)) {
+        return FALSE;
+    }
+    recovery::BackupPath(
+        replaced_path, protocol::RecoveryOperation::kReplace);
+    return g_replace_file_w(
+        replaced_path, replacement_path, backup_path, flags, exclude,
+        reserved);
 }
 
 BOOL WINAPI DetouredReplaceFileA(
@@ -3100,6 +3122,8 @@ BOOL WINAPI DetouredReplaceFileA(
             backup_path == nullptr ? nullptr : backup_wide.c_str())) {
         return FALSE;
     }
+    recovery::BackupPath(
+        replaced_wide.c_str(), protocol::RecoveryOperation::kReplace);
     return g_replace_file_w(
         replaced_wide.c_str(), replacement_wide.c_str(),
         backup_path == nullptr ? nullptr : backup_wide.c_str(), flags, exclude, reserved);
