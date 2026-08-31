@@ -98,7 +98,7 @@ fn read_exact_payload(reader: &mut impl Read, payload: &mut [u8]) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{self, Cursor, Read};
 
     use super::*;
 
@@ -159,6 +159,25 @@ mod tests {
         assert_eq!(
             read_frame(&mut Cursor::new(encoded(3, &[1, 2, 3])[..14].to_vec())),
             Err(TransportError::TruncatedPayload)
+        );
+    }
+
+    struct BrokenPipe;
+
+    impl Read for BrokenPipe {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+    }
+
+    #[test]
+    fn transport_treats_windows_pipe_close_as_clean_eof_only_between_frames() {
+        assert_eq!(read_frame(&mut BrokenPipe), Ok(None));
+
+        let mut partial_then_broken = Cursor::new(b"BLX1".to_vec()).chain(BrokenPipe);
+        assert_eq!(
+            read_frame(&mut partial_then_broken),
+            Err(TransportError::Read(io::ErrorKind::BrokenPipe))
         );
     }
 }
