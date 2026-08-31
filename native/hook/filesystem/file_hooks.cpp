@@ -32,7 +32,7 @@ namespace bolt::filesystem {
 namespace {
 
 std::unique_ptr<FilesystemPolicy> g_policy;
-constexpr LONG kRequiredFilesystemHookCount = 76;
+constexpr LONG kRequiredFilesystemHookCount = 78;
 volatile LONG g_installed_file_hook_count = 0;
 
 CreateFileW_t g_create_file_w = CreateFileW;
@@ -200,6 +200,8 @@ using SHFileOperationAFunction = int(WINAPI*)(LPSHFILEOPSTRUCTA);
 SHFileOperationWFunction g_sh_file_operation_w = SHFileOperationW;
 SHFileOperationAFunction g_sh_file_operation_a = SHFileOperationA;
 decltype(&CoCreateInstance) g_co_create_instance = CoCreateInstance;
+decltype(&CoCreateInstanceEx) g_co_create_instance_ex = CoCreateInstanceEx;
+decltype(&CoGetClassObject) g_co_get_class_object = CoGetClassObject;
 using ReadFileFunction = BOOL(WINAPI*)(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
 using WriteFileFunction = BOOL(WINAPI*)(
     HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);
@@ -1823,6 +1825,14 @@ HRESULT WINAPI DetouredCoCreateInstance(
     const DWORD context,
     REFIID interface_id,
     void** const output) noexcept {
+    if ((context & (CLSCTX_LOCAL_SERVER | CLSCTX_REMOTE_SERVER)) != 0) {
+        hook::TryReportProcessViolation(
+            protocol::ProcessOperation::kExternalDelegation);
+        if (output != nullptr) {
+            *output = nullptr;
+        }
+        return E_ACCESSDENIED;
+    }
     const HRESULT status =
         g_co_create_instance(class_id, outer, context, interface_id, output);
     if (FAILED(status) || output == nullptr || *output == nullptr ||
@@ -1858,6 +1868,46 @@ HRESULT WINAPI DetouredCoCreateInstance(
     }
     *output = static_cast<IFileOperation*>(wrapped);
     return S_OK;
+}
+
+HRESULT WINAPI DetouredCoCreateInstanceEx(
+    REFCLSID class_id,
+    IUnknown* const outer,
+    const DWORD context,
+    COSERVERINFO* const server,
+    const DWORD query_count,
+    MULTI_QI* const queries) noexcept {
+    if ((context & (CLSCTX_LOCAL_SERVER | CLSCTX_REMOTE_SERVER)) != 0) {
+        hook::TryReportProcessViolation(
+            protocol::ProcessOperation::kExternalDelegation);
+        if (queries != nullptr) {
+            for (DWORD index = 0; index < query_count; ++index) {
+                queries[index].pItf = nullptr;
+                queries[index].hr = E_ACCESSDENIED;
+            }
+        }
+        return E_ACCESSDENIED;
+    }
+    return g_co_create_instance_ex(
+        class_id, outer, context, server, query_count, queries);
+}
+
+HRESULT WINAPI DetouredCoGetClassObject(
+    REFCLSID class_id,
+    const DWORD context,
+    LPVOID reserved,
+    REFIID interface_id,
+    LPVOID* const output) noexcept {
+    if ((context & (CLSCTX_LOCAL_SERVER | CLSCTX_REMOTE_SERVER)) != 0) {
+        hook::TryReportProcessViolation(
+            protocol::ProcessOperation::kExternalDelegation);
+        if (output != nullptr) {
+            *output = nullptr;
+        }
+        return E_ACCESSDENIED;
+    }
+    return g_co_get_class_object(
+        class_id, context, reserved, interface_id, output);
 }
 
 HANDLE WINAPI DetouredFindFirstFileW(
@@ -3939,6 +3989,12 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_co_create_instance),
             reinterpret_cast<PVOID>(DetouredCoCreateInstance)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_co_create_instance_ex),
+            reinterpret_cast<PVOID>(DetouredCoCreateInstanceEx)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_co_get_class_object),
+            reinterpret_cast<PVOID>(DetouredCoGetClassObject)) != NO_ERROR ||
         (g_copy_file_2 != nullptr &&
          DetourAttach(
              reinterpret_cast<PVOID*>(&g_copy_file_2),

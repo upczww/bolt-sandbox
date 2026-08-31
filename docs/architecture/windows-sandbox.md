@@ -409,6 +409,13 @@ request before image resolution or child creation, clears caller-visible
 process outputs, and emits a typed `Breakaway` process violation. Direct
 `NtCreateUserProcess` breakaway flags follow the same rule.
 
+Out-of-process COM activation is an external delegation boundary. The hook
+rejects `CLSCTX_LOCAL_SERVER` and `CLSCTX_REMOTE_SERVER` uniformly through
+`CoCreateInstance`, `CoCreateInstanceEx`, and `CoGetClassObject`, clears every
+caller-visible interface output, and emits a path-free `ExternalDelegation`
+event. In-process COM remains available, including the policy-wrapped
+`IFileOperation` path.
+
 Injected processes also intercept `SetInformationJobObject`. A Job whose process
 list contains the current confined process cannot be reconfigured, even if a
 caller obtains a handle with `JOB_OBJECT_SET_ATTRIBUTES`; the attempt returns
