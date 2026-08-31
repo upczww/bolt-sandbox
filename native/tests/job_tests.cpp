@@ -50,7 +50,9 @@ std::wstring HandleText(const HANDLE handle) {
     return std::to_wstring(reinterpret_cast<std::uintptr_t>(handle));
 }
 
-bool RunJobTreeTermination(const bool close_job) {
+bool RunJobTreeTermination(
+    const bool close_job,
+    const bool repeat_termination = false) {
     SECURITY_ATTRIBUTES inheritable{};
     inheritable.nLength = sizeof(inheritable);
     inheritable.bInheritHandle = TRUE;
@@ -102,17 +104,29 @@ bool RunJobTreeTermination(const bool close_job) {
         WaitForSingleObject(ready, 5'000) == WAIT_OBJECT_0;
     const DWORD descendant_id =
         static_cast<DWORD>(InterlockedCompareExchange(child_id, 0, 0));
-    const HANDLE descendant = descendant_id == 0
-                                  ? nullptr
-                                  : OpenProcess(SYNCHRONIZE, FALSE, descendant_id);
+    const HANDLE descendant =
+        descendant_id == 0
+            ? nullptr
+            : OpenProcess(
+                  SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                  descendant_id);
     const bool requested =
         started && descendant != nullptr &&
         (close_job
              ? (job.Close(), true)
-             : job.Terminate(293) == bolt::common::JobStatus::kSuccess);
+             : job.Terminate(293) == bolt::common::JobStatus::kSuccess &&
+                   (!repeat_termination ||
+                    job.Terminate(293) == bolt::common::JobStatus::kSuccess));
     const bool stopped =
         requested && WaitForSingleObject(parent.hProcess, 5'000) == WAIT_OBJECT_0 &&
         WaitForSingleObject(descendant, 5'000) == WAIT_OBJECT_0;
+    DWORD parent_exit_code = 0;
+    DWORD descendant_exit_code = 0;
+    const bool exact_termination =
+        close_job ||
+        (stopped && GetExitCodeProcess(parent.hProcess, &parent_exit_code) &&
+         GetExitCodeProcess(descendant, &descendant_exit_code) &&
+         parent_exit_code == 293 && descendant_exit_code == 293);
     if (!stopped && parent.hProcess != nullptr) {
         TerminateProcess(parent.hProcess, 294);
     }
@@ -123,7 +137,7 @@ bool RunJobTreeTermination(const bool close_job) {
     UnmapViewOfFile(const_cast<LONG*>(child_id));
     CloseHandle(mapping);
     CloseHandle(ready);
-    return stopped;
+    return stopped && exact_termination;
 }
 
 bool RunIgnoredGracefulTermination() {
@@ -173,11 +187,35 @@ bool RunIgnoredGracefulTermination() {
 }
 
 bool RunSingleProcessTimeout() {
-    return false;
+    bolt::common::ExecutionJob job;
+    PROCESS_INFORMATION process{};
+    const bool started =
+        bolt::common::ExecutionJob::Create(job) ==
+            bolt::common::JobStatus::kSuccess &&
+        CreateSuspendedJobChild(process) &&
+        job.Assign(process.hProcess) == bolt::common::JobStatus::kSuccess &&
+        ResumeThread(process.hThread) != static_cast<DWORD>(-1);
+    const bool timed_out =
+        started && WaitForSingleObject(process.hProcess, 100) == WAIT_TIMEOUT;
+    const bool terminated =
+        timed_out &&
+        job.Terminate(408) == bolt::common::JobStatus::kSuccess &&
+        job.Terminate(408) == bolt::common::JobStatus::kSuccess &&
+        WaitForSingleObject(process.hProcess, 5'000) == WAIT_OBJECT_0;
+    DWORD exit_code = 0;
+    const bool exact_exit =
+        terminated && GetExitCodeProcess(process.hProcess, &exit_code) &&
+        exit_code == 408;
+    if (!terminated && process.hProcess != nullptr) {
+        TerminateProcess(process.hProcess, 409);
+        WaitForSingleObject(process.hProcess, 5'000);
+    }
+    CloseProcessInformation(process);
+    return exact_exit;
 }
 
 bool RunIdempotentCancellationTree() {
-    return false;
+    return RunJobTreeTermination(false, true);
 }
 
 }  // namespace
