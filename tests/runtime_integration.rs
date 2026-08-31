@@ -1,16 +1,19 @@
 use std::{
     collections::BTreeMap,
     ffi::OsString,
+    fs,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
 use bolt_sandbox::{
-    ExecutionTerminal, InfrastructureFailure, ProcessExitReason, ReceiverLoss, Sandbox,
-    SandboxConfig, SandboxEvent, SandboxPolicy, SandboxRequest,
+    ExecutionTerminal, InfrastructureFailure, ProcessExitReason, ReceiverLoss, RecoveryLimits,
+    RecoveryPolicy, Sandbox, SandboxConfig, SandboxEvent, SandboxPolicy, SandboxRequest,
 };
 
 const STREAM_BYTES: usize = 256 * 1_024;
+static NEXT_RECOVERY_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn life_012_public_runtime_transports_arbitrary_binary_stdout_and_stderr() {
@@ -252,4 +255,81 @@ fn ipc_014_event_channel_loss_terminates_job_without_waiting_for_timeout() {
         result.terminal,
         ExecutionTerminal::Infrastructure(InfrastructureFailure::EventChannelLost)
     );
+}
+
+#[test]
+fn rec_001_allowed_delete_is_backed_up_and_indexed_before_mutation() {
+    let Some((sandbox, component_root)) = configured_sandbox() else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let fixture_root = std::env::temp_dir().join(format!(
+        "bolt-sandbox-recovery-{}-{fixture_id}",
+        std::process::id()
+    ));
+    let work = fixture_root.join("work");
+    let recovery = fixture_root.join("recovery");
+    fs::create_dir_all(&work).expect("work directory must be created");
+    fs::create_dir_all(&recovery).expect("recovery directory must be created");
+    let source = work.join("delete-me.bin");
+    let expected = b"recoverable-content";
+    fs::write(&source, expected).expect("source fixture must be written");
+
+    let mut policy = SandboxPolicy::default();
+    policy.recovery = RecoveryPolicy::Enabled(RecoveryLimits {
+        directory: recovery.clone(),
+        maximum_bytes: 1_048_576,
+        maximum_items: 16,
+    });
+    let mut handle = sandbox
+        .start(SandboxRequest {
+            program: component_root.join("bolt-sandbox-native-tests.exe"),
+            arguments: vec![
+                OsString::from("--recovery-delete-fixture"),
+                source.as_os_str().to_os_string(),
+            ],
+            cwd: work,
+            environment: BTreeMap::new(),
+            policy,
+            timeout: Some(Duration::from_secs(5)),
+        })
+        .expect("recovery fixture must start");
+    let stdout = handle.take_stdout().expect("stdout is available");
+    let stderr = handle.take_stderr().expect("stderr is available");
+    let events = handle.take_events().expect("events are available");
+    let (_stdout, _stderr, events, result) = collect_execution(handle, stdout, stderr, events);
+
+    assert!(!source.exists());
+    let recovered = recovery_files(&recovery);
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(
+        fs::read(&recovered[0]).expect("backup must be readable"),
+        expected
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        SandboxEvent::RecoveryArtifactCreated(artifact)
+            if artifact.original_path == source && artifact.byte_count == expected.len() as u64
+    )));
+    assert!(matches!(
+        result.terminal,
+        ExecutionTerminal::Process(ref exit) if exit.exit_code == Some(0)
+    ));
+    fs::remove_dir_all(fixture_root).expect("recovery fixture must clean up");
+}
+
+fn recovery_files(root: &Path) -> Vec<PathBuf> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory).expect("recovery directory must be readable") {
+            let path = entry.expect("recovery entry must be readable").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files
 }

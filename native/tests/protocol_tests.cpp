@@ -31,6 +31,7 @@ int RunDescendantDualStreamWriter(int argument_count, wchar_t** arguments);
 int RunBlockingStreamFixture(int argument_count);
 int RunCorruptEventFixture(int argument_count);
 int RunDroppedEventChannelFixture(int argument_count);
+int RunRecoveryDeleteFixture(int argument_count, wchar_t** arguments) noexcept;
 int RunJobTreeParent(int argument_count, wchar_t** arguments);
 int RunIgnoreGracefulChild(int argument_count, wchar_t** arguments);
 bool RunNamedPipeTests();
@@ -518,6 +519,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count >= 2 &&
         std::wstring(arguments[1]) == L"--drop-event-channel-fixture") {
         return RunDroppedEventChannelFixture(argument_count);
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--recovery-delete-fixture") {
+        return RunRecoveryDeleteFixture(argument_count, arguments);
     }
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--stream-tests") {
         return RunStreamTests() ? 0 : 1;
