@@ -172,29 +172,6 @@ extern "C" __declspec(dllexport) BOOL BoltSandboxFlushEvents(
     return bolt::hook::WaitForEventSinkIdle(timeout_milliseconds) ? TRUE : FALSE;
 }
 
-extern "C" __declspec(dllexport) std::uint32_t
-BoltSandboxLastRegistryDenialReason() noexcept {
-    return bolt::registry::LastRegistryDenialReason();
-}
-
-extern "C" __declspec(dllexport) std::uint32_t
-BoltSandboxLastRegistryDenialDetails() noexcept {
-    return bolt::registry::LastRegistryDenialDetails();
-}
-
-extern "C" __declspec(dllexport) BOOL
-BoltSandboxLastRegistryDenialMatchesSuffix(const wchar_t* suffix) noexcept {
-    return bolt::registry::LastRegistryDenialMatchesSuffix(suffix) ? TRUE
-                                                                   : FALSE;
-}
-
-extern "C" __declspec(dllexport) std::uint32_t
-BoltSandboxCopyLastRegistryDenialName(
-    wchar_t* output,
-    const std::uint32_t capacity) noexcept {
-    return bolt::registry::CopyLastRegistryDenialName(output, capacity);
-}
-
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) noexcept {
     static_cast<void>(reserved);
     if (reason == DLL_PROCESS_ATTACH) {

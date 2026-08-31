@@ -56,36 +56,6 @@ bool CreateKeyWithValue(
     return written == ERROR_SUCCESS;
 }
 
-std::wstring NativeKeyName(const std::wstring& path) {
-    HKEY key = nullptr;
-    if (RegOpenKeyExW(
-            HKEY_CURRENT_USER, path.c_str(), 0, KEY_READ, &key) !=
-        ERROR_SUCCESS) {
-        return {};
-    }
-    using NtQueryKeyFunction = LONG(NTAPI*)(
-        HANDLE, ULONG, PVOID, ULONG, PULONG);
-    const auto query = reinterpret_cast<NtQueryKeyFunction>(GetProcAddress(
-        GetModuleHandleW(L"ntdll.dll"), "NtQueryKey"));
-    ULONG required = 0;
-    if (query == nullptr) {
-        RegCloseKey(key);
-        return {};
-    }
-    query(key, 3, nullptr, 0, &required);
-    std::vector<std::uint8_t> buffer(required);
-    const LONG status = query(
-        key, 3, buffer.data(), required, &required);
-    RegCloseKey(key);
-    if (status < 0 || required < sizeof(ULONG)) {
-        return {};
-    }
-    const ULONG bytes = *reinterpret_cast<const ULONG*>(buffer.data());
-    return std::wstring(
-        reinterpret_cast<const wchar_t*>(buffer.data() + sizeof(ULONG)),
-        bytes / sizeof(wchar_t));
-}
-
 std::vector<std::string> Components(
     const DWORD process_id,
     const char* const leaf) {
@@ -94,69 +64,10 @@ std::vector<std::string> Components(
         std::to_string(process_id), leaf};
 }
 
-int RegistryReadFailureCode(
-    const wchar_t* diagnostic_path,
-    const std::wstring& expected_suffix,
-    const LSTATUS open_status,
-    const LSTATUS query_status) {
-    if (open_status == ERROR_SUCCESS) {
-        return query_status == ERROR_SUCCESS ? 713 : 712;
-    }
-    const HMODULE hook = GetModuleHandleW(
-#if defined(_WIN64)
-        L"bolt-sandbox-x64.dll"
-#else
-        L"bolt-sandbox-x86.dll"
-#endif
-    );
-    const auto denial_reason = hook == nullptr
-        ? nullptr
-        : reinterpret_cast<std::uint32_t (*)()>(GetProcAddress(
-              hook, "BoltSandboxLastRegistryDenialReason"));
-    const auto denial_details = hook == nullptr
-        ? nullptr
-        : reinterpret_cast<std::uint32_t (*)()>(GetProcAddress(
-              hook, "BoltSandboxLastRegistryDenialDetails"));
-    const auto denial_matches = hook == nullptr
-        ? nullptr
-        : reinterpret_cast<BOOL (*)(const wchar_t*)>(GetProcAddress(
-              hook, "BoltSandboxLastRegistryDenialMatchesSuffix"));
-    const auto copy_denial_name = hook == nullptr
-        ? nullptr
-        : reinterpret_cast<std::uint32_t (*)(wchar_t*, std::uint32_t)>(
-              GetProcAddress(hook, "BoltSandboxCopyLastRegistryDenialName"));
-    if (copy_denial_name != nullptr) {
-        std::array<wchar_t, 1'024> denied_name{};
-        const std::uint32_t denied_length = copy_denial_name(
-            denied_name.data(),
-            static_cast<std::uint32_t>(denied_name.size()));
-        const HANDLE diagnostic = CreateFileW(
-            diagnostic_path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (diagnostic != INVALID_HANDLE_VALUE) {
-            DWORD written = 0;
-            WriteFile(
-                diagnostic, denied_name.data(),
-                denied_length * sizeof(wchar_t), &written, nullptr);
-            CloseHandle(diagnostic);
-        }
-    }
-    return denial_reason == nullptr
-               ? 711
-               : denial_details == nullptr
-                     ? 720 + static_cast<int>(denial_reason())
-                     : 1'000 + 100 * static_cast<int>(denial_reason()) +
-                           static_cast<int>(denial_details()) +
-                           (denial_matches != nullptr &&
-                                    denial_matches(expected_suffix.c_str())
-                                ? 10'000
-                                : 0);
-}
-
 }  // namespace
 
 int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 4) {
+    if (argument_count != 3) {
         return 700;
     }
     const std::wstring root = arguments[2];
@@ -184,8 +95,10 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
         RegCloseKey(read_key);
     }
     if (!read_allowed) {
-        return RegistryReadFailureCode(
-            arguments[3], read_only, read_open_status, read_query_status);
+        if (read_open_status != ERROR_SUCCESS) {
+            return 711;
+        }
+        return read_query_status == ERROR_SUCCESS ? 713 : 712;
     }
 
     HKEY write_intent = nullptr;
@@ -235,66 +148,6 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
         RegCloseKey(inherited_key);
     }
 
-    if (!read_allowed) {
-        if (read_open_status != ERROR_SUCCESS) {
-            const HMODULE hook = GetModuleHandleW(
-#if defined(_WIN64)
-                L"bolt-sandbox-x64.dll"
-#else
-                L"bolt-sandbox-x86.dll"
-#endif
-            );
-            const auto denial_reason = hook == nullptr
-                ? nullptr
-                : reinterpret_cast<std::uint32_t (*)()>(GetProcAddress(
-                      hook, "BoltSandboxLastRegistryDenialReason"));
-            const auto denial_details = hook == nullptr
-                ? nullptr
-                : reinterpret_cast<std::uint32_t (*)()>(GetProcAddress(
-                      hook, "BoltSandboxLastRegistryDenialDetails"));
-            const auto denial_matches = hook == nullptr
-                ? nullptr
-                : reinterpret_cast<BOOL (*)(const wchar_t*)>(GetProcAddress(
-                      hook,
-                      "BoltSandboxLastRegistryDenialMatchesSuffix"));
-            const auto copy_denial_name = hook == nullptr
-                ? nullptr
-                : reinterpret_cast<std::uint32_t (*)(wchar_t*, std::uint32_t)>(
-                      GetProcAddress(
-                          hook, "BoltSandboxCopyLastRegistryDenialName"));
-            if (copy_denial_name != nullptr) {
-                std::array<wchar_t, 1'024> denied_name{};
-                const std::uint32_t denied_length = copy_denial_name(
-                    denied_name.data(),
-                    static_cast<std::uint32_t>(denied_name.size()));
-                const HANDLE diagnostic = CreateFileW(
-                    arguments[3], GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                    FILE_ATTRIBUTE_NORMAL, nullptr);
-                if (diagnostic != INVALID_HANDLE_VALUE) {
-                    DWORD written = 0;
-                    WriteFile(
-                        diagnostic, denied_name.data(),
-                        denied_length * sizeof(wchar_t), &written, nullptr);
-                    CloseHandle(diagnostic);
-                }
-            }
-            return denial_reason == nullptr
-                       ? 711
-                       : denial_details == nullptr
-                             ? 720 + static_cast<int>(denial_reason())
-                             : 1'000 +
-                                   100 * static_cast<int>(denial_reason()) +
-                                   static_cast<int>(denial_details()) +
-                                   (denial_matches != nullptr &&
-                                            denial_matches(read_only.c_str())
-                                        ? 10'000
-                                        : 0);
-        }
-        if (read_query_status != ERROR_SUCCESS) {
-            return 712;
-        }
-        return 713;
-    }
     if (read_only_write_open != ERROR_ACCESS_DENIED || write_intent != nullptr) {
         return 702;
     }
@@ -329,12 +182,6 @@ bool RunRegistryHookTests() {
         RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
         return false;
     }
-    const std::wstring native_read_only =
-        NativeKeyName(root + L"\\ReadOnly");
-    std::fwprintf(
-        stderr, L"registry fixture native path: %ls\n",
-        native_read_only.c_str());
-
     const std::vector<bolt::tests::RegistryRule> registry_rules = {
         {bolt::tests::RegistryRuleKind::kReadOnly,
          bolt::tests::RegistryHive::kCurrentUser,
@@ -398,11 +245,6 @@ bool RunRegistryHookTests() {
         std::filesystem::path(executable).parent_path() / hook_name;
     const std::wstring command =
         L"\"" + executable + L"\" --registry-hook-child \"" + root +
-        L"\" \"" +
-        (std::filesystem::temp_directory_path() /
-         (L"bolt-registry-diagnostic-" + std::to_wstring(process_id) +
-          L".txt"))
-            .wstring() +
         L"\"";
     const HANDLE inherited_handles[] = {
         policy.handle(), event_client, release};
@@ -449,26 +291,6 @@ bool RunRegistryHookTests() {
             "registry hook fixture failed: initialized=%d ready=%d exit=%lu\n",
             initialized ? 1 : 0, ready_ok ? 1 : 0,
             static_cast<unsigned long>(exit_code));
-        const auto diagnostic_path =
-            std::filesystem::temp_directory_path() /
-            (L"bolt-registry-diagnostic-" + std::to_wstring(process_id) +
-             L".txt");
-        const HANDLE diagnostic = CreateFileW(
-            diagnostic_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (diagnostic != INVALID_HANDLE_VALUE) {
-            std::array<wchar_t, 1'024> denied_name{};
-            DWORD bytes = 0;
-            ReadFile(
-                diagnostic, denied_name.data(),
-                static_cast<DWORD>((denied_name.size() - 1) * sizeof(wchar_t)),
-                &bytes, nullptr);
-            CloseHandle(diagnostic);
-            std::fwprintf(
-                stderr, L"registry denied native path: %ls\n",
-                denied_name.data());
-            DeleteFileW(diagnostic_path.c_str());
-        }
     }
     process.Close();
     CloseHandle(release);

@@ -69,11 +69,6 @@ NtCloseFunction g_nt_close = nullptr;
 std::unique_ptr<RegistryPolicy> g_policy;
 std::wstring g_current_user_prefix;
 std::wstring g_active_control_set;
-thread_local std::uint32_t g_last_denial_reason = 0;
-thread_local std::uint32_t g_last_denial_hive = 0xff;
-thread_local std::uint32_t g_last_denial_access = 0xff;
-thread_local std::uint32_t g_last_information_class = 0xff;
-thread_local std::wstring g_last_denial_name;
 
 bool NtSuccess(const NTSTATUS status) noexcept {
     return status >= 0;
@@ -134,25 +129,6 @@ bool WriteNullHandle(PHANDLE output) noexcept {
     }
     __try {
         *output = nullptr;
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-bool CopyWideToUser(
-    const wchar_t* const source,
-    const std::size_t length,
-    wchar_t* const output,
-    const std::uint32_t capacity) noexcept {
-    if (source == nullptr || output == nullptr || length >= capacity) {
-        return false;
-    }
-    __try {
-        for (std::size_t index = 0; index < length; ++index) {
-            output[index] = source[index];
-        }
-        output[length] = L'\0';
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -387,7 +363,6 @@ bool DecideNativeName(
     if (!MapNativeName(name, hive, relative) || g_policy == nullptr) {
         return false;
     }
-    g_last_denial_hive = static_cast<std::uint32_t>(hive);
     decision = g_policy->Decide(hive, relative.c_str(), access);
     return true;
 }
@@ -426,29 +401,6 @@ bool AllowedHandle(const HANDLE key, const RegistryAccess access) {
     return QueryHandleName(key, name) && AllowedNativeName(name, access);
 }
 
-void RecordHandleDenial(
-    const HANDLE key,
-    const std::uint32_t reason,
-    const RegistryAccess access) noexcept {
-    g_last_denial_reason = reason;
-    g_last_denial_access = static_cast<std::uint32_t>(access);
-    try {
-        std::wstring name;
-        if (QueryHandleName(key, name)) {
-            RegistryHive hive{};
-            std::wstring relative;
-            if (MapNativeName(name, hive, relative)) {
-                g_last_denial_hive = static_cast<std::uint32_t>(hive);
-            }
-            g_last_denial_name = std::move(name);
-        } else {
-            g_last_denial_name.clear();
-        }
-    } catch (...) {
-        g_last_denial_name.clear();
-    }
-}
-
 template <typename OpenCall>
 NTSTATUS GuardOpen(
     PHANDLE key,
@@ -457,26 +409,17 @@ NTSTATUS GuardOpen(
     OpenCall&& call) {
     std::wstring requested;
     const RegistryAccess access = AccessForMask(desired_access);
-    g_last_denial_access = static_cast<std::uint32_t>(access);
     if (!ReadObjectAttributesName(attributes, requested)) {
-        g_last_denial_reason = 1;
         WriteNullHandle(key);
         return kStatusAccessDenied;
     }
     RegistryDecision requested_decision = RegistryDecision::kDeny;
     if (!DecideNativeName(requested, access, requested_decision)) {
-        g_last_denial_reason = 2;
         WriteNullHandle(key);
         return kStatusAccessDenied;
     }
     if (requested_decision == RegistryDecision::kDeny &&
         !AllowedNativeOpen(requested, access)) {
-        g_last_denial_reason = 4;
-        try {
-            g_last_denial_name = requested;
-        } catch (...) {
-            g_last_denial_name.clear();
-        }
         WriteNullHandle(key);
         return kStatusAccessDenied;
     }
@@ -492,12 +435,6 @@ NTSTATUS GuardOpen(
     if (QueryHandleName(opened, final_name) &&
         AllowedNativeOpen(final_name, access)) {
         return status;
-    }
-    g_last_denial_reason = 3;
-    try {
-        g_last_denial_name = final_name;
-    } catch (...) {
-        g_last_denial_name.clear();
     }
     g_nt_close(opened);
     WriteNullHandle(key);
@@ -557,8 +494,6 @@ NTSTATUS NTAPI DetouredNtQueryKey(
                   AllowedNativeOpen(name, RegistryAccess::kRead);
     }
     if (!allowed) {
-        g_last_information_class = information_class;
-        RecordHandleDenial(key, 5, RegistryAccess::kRead);
         return kStatusAccessDenied;
     }
     return g_nt_query_key(
@@ -573,7 +508,6 @@ NTSTATUS NTAPI DetouredNtQueryValueKey(
     const ULONG length,
     PULONG result_length) {
     if (!AllowedHandle(key, RegistryAccess::kRead)) {
-        RecordHandleDenial(key, 6, RegistryAccess::kRead);
         return kStatusAccessDenied;
     }
     return g_nt_query_value_key(
@@ -589,7 +523,6 @@ NTSTATUS NTAPI DetouredNtEnumerateKey(
     const ULONG length,
     PULONG result_length) {
     if (!AllowedHandle(key, RegistryAccess::kEnumerate)) {
-        RecordHandleDenial(key, 7, RegistryAccess::kEnumerate);
         return kStatusAccessDenied;
     }
     return g_nt_enumerate_key(
@@ -604,7 +537,6 @@ NTSTATUS NTAPI DetouredNtEnumerateValueKey(
     const ULONG length,
     PULONG result_length) {
     if (!AllowedHandle(key, RegistryAccess::kEnumerate)) {
-        RecordHandleDenial(key, 8, RegistryAccess::kEnumerate);
         return kStatusAccessDenied;
     }
     return g_nt_enumerate_value_key(
@@ -746,48 +678,6 @@ RegistryHookInstallStatus InstallRegistryHooks(
     g_active_control_set = std::move(active_control_set);
     g_policy = std::move(policy);
     return RegistryHookInstallStatus::kSuccess;
-}
-
-std::uint32_t LastRegistryDenialReason() noexcept {
-    return g_last_denial_reason;
-}
-
-std::uint32_t LastRegistryDenialDetails() noexcept {
-    return (g_last_denial_hive & 0xffU) |
-           ((g_last_denial_access & 0xffU) << 8U) |
-           ((g_last_information_class & 0xffU) << 16U);
-}
-
-bool LastRegistryDenialMatchesSuffix(const wchar_t* const suffix) noexcept {
-    if (suffix == nullptr) {
-        return false;
-    }
-    try {
-        const std::wstring expected(suffix);
-        return g_last_denial_name.size() >= expected.size() &&
-               CompareStringOrdinal(
-                   g_last_denial_name.data() +
-                       (g_last_denial_name.size() - expected.size()),
-                   static_cast<int>(expected.size()), expected.data(),
-                   static_cast<int>(expected.size()), TRUE) == CSTR_EQUAL;
-    } catch (...) {
-        return false;
-    }
-}
-
-std::uint32_t CopyLastRegistryDenialName(
-    wchar_t* const output,
-    const std::uint32_t capacity) noexcept {
-    if (output == nullptr || capacity == 0 ||
-        g_last_denial_name.size() >= capacity) {
-        return 0;
-    }
-    if (!CopyWideToUser(
-            g_last_denial_name.data(), g_last_denial_name.size(), output,
-            capacity)) {
-        return 0;
-    }
-    return static_cast<std::uint32_t>(g_last_denial_name.size());
 }
 
 }  // namespace bolt::registry
