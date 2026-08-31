@@ -64,6 +64,65 @@ std::vector<std::string> Components(
         std::to_string(process_id), leaf};
 }
 
+bool ReadExact(
+    const HANDLE pipe,
+    std::uint8_t* bytes,
+    const std::size_t length) {
+    std::size_t offset = 0;
+    while (offset < length) {
+        DWORD read = 0;
+        if (!ReadFile(
+                pipe, bytes + offset,
+                static_cast<DWORD>(length - offset), &read, nullptr) ||
+            read == 0) {
+            return false;
+        }
+        offset += read;
+    }
+    return true;
+}
+
+bool ReadRegistryViolationWithin(
+    const HANDLE pipe,
+    const std::uint32_t process_id,
+    const std::uint64_t sequence,
+    const bolt::protocol::RegistryOperation operation,
+    const std::string& key,
+    const DWORD timeout_milliseconds) {
+    const ULONGLONG deadline = GetTickCount64() + timeout_milliseconds;
+    const std::size_t length =
+        bolt::protocol::RegistryViolationFrameLength(key.c_str());
+    while (GetTickCount64() < deadline) {
+        DWORD available = 0;
+        if (PeekNamedPipe(
+                pipe, nullptr, 0, nullptr, &available, nullptr) &&
+            available >= length) {
+            std::vector<std::uint8_t> actual(length);
+            std::vector<std::uint8_t> expected(length);
+            std::size_t written = 0;
+            return ReadExact(pipe, actual.data(), actual.size()) &&
+                bolt::protocol::EncodeRegistryViolationFrame(
+                    process_id, operation, key.c_str(), sequence,
+                    expected.data(), expected.size(), written) ==
+                    bolt::protocol::FrameEncodeStatus::kSuccess &&
+                written == expected.size() && actual == expected;
+        }
+        Sleep(10);
+    }
+    return false;
+}
+
+std::string CanonicalCurrentUserKey(const std::wstring& relative) {
+    std::string key = "HKEY_CURRENT_USER\\";
+    for (const wchar_t value : relative) {
+        if (value > 0x7f) {
+            return {};
+        }
+        key.push_back(static_cast<char>(value));
+    }
+    return key;
+}
+
 }  // namespace
 
 int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
@@ -163,7 +222,21 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     if (!write_allowed) {
         return 705;
     }
-    return inherit_user_allowed ? 0 : 706;
+    if (!inherit_user_allowed) {
+        return 706;
+    }
+    const HMODULE hook = GetModuleHandleW(
+#if defined(_WIN64)
+        L"bolt-sandbox-x64.dll"
+#else
+        L"bolt-sandbox-x86.dll"
+#endif
+    );
+    const auto flush_events = hook == nullptr
+        ? nullptr
+        : reinterpret_cast<BOOL (*)(DWORD)>(
+              GetProcAddress(hook, "BoltSandboxFlushEvents"));
+    return flush_events != nullptr && flush_events(2'000) ? 0 : 707;
 }
 
 bool RunRegistryHookTests() {
@@ -281,16 +354,33 @@ bool RunRegistryHookTests() {
         process.ReleaseAfterReady() ==
             bolt::common::ProcessStatus::kSuccess;
     DWORD exit_code = 0;
-    const bool passed = ready_ok &&
+    const bool child_passed = ready_ok &&
         process.Wait(3'000) == bolt::common::ProcessStatus::kSuccess &&
         process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
         exit_code == 0;
+    const auto child_process_id = static_cast<std::uint32_t>(
+        GetProcessId(process.process_handle()));
+    const bool events_passed = child_passed && child_process_id != 0 &&
+        ReadRegistryViolationWithin(
+            event_pipe.handle(), child_process_id, 1,
+            bolt::protocol::RegistryOperation::kOpen,
+            CanonicalCurrentUserKey(root + L"\\ReadOnly"), 1'000) &&
+        ReadRegistryViolationWithin(
+            event_pipe.handle(), child_process_id, 2,
+            bolt::protocol::RegistryOperation::kOpen,
+            CanonicalCurrentUserKey(root + L"\\Denied"), 1'000) &&
+        ReadRegistryViolationWithin(
+            event_pipe.handle(), child_process_id, 3,
+            bolt::protocol::RegistryOperation::kOpen,
+            CanonicalCurrentUserKey(root + L"\\Outside"), 1'000);
+    const bool passed = child_passed && events_passed;
     if (!passed) {
         std::fprintf(
             stderr,
-            "registry hook fixture failed: initialized=%d ready=%d exit=%lu\n",
+            "registry hook fixture failed: initialized=%d ready=%d exit=%lu "
+            "events=%d\n",
             initialized ? 1 : 0, ready_ok ? 1 : 0,
-            static_cast<unsigned long>(exit_code));
+            static_cast<unsigned long>(exit_code), events_passed ? 1 : 0);
     }
     process.Close();
     CloseHandle(release);
