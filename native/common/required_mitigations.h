@@ -1,0 +1,16 @@
+#pragma once
+
+#include <cstdint>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+namespace bolt::common {
+
+inline constexpr std::uint64_t kRequiredCreationMitigationPolicy =
+    PROCESS_CREATION_MITIGATION_POLICY_EXTENSION_POINT_DISABLE_ALWAYS_ON |
+    PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_NO_REMOTE_ALWAYS_ON |
+    PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON |
+    PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_PREFER_SYSTEM32_ALWAYS_ON;
+
+}  // namespace bolt::common

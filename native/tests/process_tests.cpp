@@ -2797,6 +2797,15 @@ int RunEntryMarkerChild(const int argument_count, wchar_t** arguments) {
     return SetEvent(marker) ? 0 : 338;
 }
 
+int RunCreationMitigationChild(const int argument_count, wchar_t** arguments) {
+    if (argument_count != 3 || !HasRequiredProcessMitigations()) {
+        return 340;
+    }
+    const HANDLE marker = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[2], nullptr, 10));
+    return SetEvent(marker) ? 0 : 341;
+}
+
 int RunNestedProcess(const int argument_count, wchar_t** arguments) {
     if (argument_count != 4) {
         return 288;
@@ -4154,7 +4163,17 @@ bool RunCompatibilityToolTests(
         {L"cargo", L"BOLT_TEST_CARGO", L"cargo.exe"},
         {L"powershell", L"BOLT_TEST_POWERSHELL", L"powershell.exe"},
     }};
+    std::array<wchar_t, 32> filter{};
+    const DWORD filter_length = GetEnvironmentVariableW(
+        L"BOLT_TEST_COMPATIBILITY_FILTER", filter.data(),
+        static_cast<DWORD>(filter.size()));
     for (std::size_t index = 0; index < tools.size(); ++index) {
+        if (filter_length != 0 && filter_length < filter.size() &&
+            CompareStringOrdinal(
+                filter.data(), -1, tools[index].kind, -1, TRUE) !=
+                CSTR_EQUAL) {
+            continue;
+        }
         const auto tool_path = FindCompatibilityTool(
             tools[index].environment, tools[index].executable);
         if (tool_path.empty()) {
@@ -4268,6 +4287,39 @@ bool RunInjectionFailureBeforeEntryTest(
            absent_before_cleanup && terminated && never_entered;
 }
 
+bool RunCreationMitigationTest(const std::wstring& executable) {
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE marker = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    if (marker == nullptr) {
+        return false;
+    }
+    const std::wstring command =
+        L"\"" + executable + L"\" --creation-mitigation-child " +
+        HandleText(marker);
+    const HANDLE inherited[] = {marker};
+    const bolt::common::ProcessLaunchOptions options{
+        executable, command, L"", nullptr, inherited, std::size(inherited), 0};
+    bolt::common::ExecutionJob job;
+    bolt::common::SuspendedProcess process;
+    const bool created =
+        bolt::common::ExecutionJob::Create(job) ==
+            bolt::common::JobStatus::kSuccess &&
+        bolt::common::SuspendedProcess::Create(options, process) ==
+            bolt::common::ProcessStatus::kSuccess &&
+        process.AssignTo(job) == bolt::common::ProcessStatus::kSuccess &&
+        ResumeThread(process.thread_handle()) != static_cast<DWORD>(-1);
+    const bool entered =
+        created && WaitForSingleObject(marker, 5'000) == WAIT_OBJECT_0 &&
+        process.Wait(5'000) == bolt::common::ProcessStatus::kSuccess;
+    if (!entered) {
+        static_cast<void>(job.Terminate(342));
+    }
+    CloseHandle(marker);
+    return entered;
+}
+
 }  // namespace
 
 bool RunProcessTests() {
@@ -4377,6 +4429,9 @@ bool RunProcessTests() {
         return false;
     }
     const std::wstring executable = CurrentExecutable();
+    if (!RunCreationMitigationTest(executable)) {
+        return false;
+    }
     if (!RunInjectionFailureBeforeEntryTest(executable, test_root)) {
         return false;
     }

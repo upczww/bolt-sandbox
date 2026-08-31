@@ -1,6 +1,7 @@
 #include "hook/process/process_hooks.h"
 #include "hook/process/native_process_abi.h"
 #include "hook/event_sink.h"
+#include "common/required_mitigations.h"
 
 #include "protocol/policy_payload.h"
 #include "protocol/runtime_payload.h"
@@ -54,6 +55,51 @@ bool g_runtime_configured = false;
 protocol::RuntimePayload g_runtime_payload{};
 std::string g_hook_dll_path;
 std::vector<std::uint8_t> g_policy_payload;
+
+template <typename StartupInfo, typename ExtendedStartupInfo>
+class MitigatedStartupInfo final {
+  public:
+    bool Initialize(const StartupInfo* const source) noexcept {
+        if (source == nullptr) {
+            return false;
+        }
+        SIZE_T bytes = 0;
+        InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+        try {
+            storage_.resize(bytes);
+        } catch (...) {
+            return false;
+        }
+        extended_.StartupInfo = *source;
+        extended_.StartupInfo.cb = sizeof(ExtendedStartupInfo);
+        extended_.lpAttributeList =
+            reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage_.data());
+        mitigation_policy_ = common::kRequiredCreationMitigationPolicy;
+        if (!InitializeProcThreadAttributeList(
+                extended_.lpAttributeList, 1, 0, &bytes) ||
+            !UpdateProcThreadAttribute(
+                extended_.lpAttributeList, 0,
+                PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &mitigation_policy_,
+                sizeof(mitigation_policy_), nullptr, nullptr)) {
+            extended_.lpAttributeList = nullptr;
+            return false;
+        }
+        return true;
+    }
+
+    ~MitigatedStartupInfo() noexcept {
+        if (extended_.lpAttributeList != nullptr) {
+            DeleteProcThreadAttributeList(extended_.lpAttributeList);
+        }
+    }
+
+    StartupInfo* get() noexcept { return &extended_.StartupInfo; }
+
+  private:
+    ExtendedStartupInfo extended_{};
+    std::vector<std::uint8_t> storage_;
+    std::uint64_t mitigation_policy_ = 0;
+};
 
 bool CreateReadOnlyPolicyMapping(HANDLE& output) noexcept {
     output = nullptr;
@@ -682,10 +728,20 @@ BOOL WINAPI DetouredCreateProcessW(
     if (process_information == nullptr || !g_runtime_configured) {
         return DenyChildCreation(process_information);
     }
+    MitigatedStartupInfo<STARTUPINFOW, STARTUPINFOEXW> mitigated_startup;
+    LPSTARTUPINFOW selected_startup = startup_information;
+    DWORD selected_flags = creation_flags | CREATE_SUSPENDED;
+    if ((creation_flags & EXTENDED_STARTUPINFO_PRESENT) == 0) {
+        if (!mitigated_startup.Initialize(startup_information)) {
+            return DenyChildCreation(process_information);
+        }
+        selected_startup = mitigated_startup.get();
+        selected_flags |= EXTENDED_STARTUPINFO_PRESENT;
+    }
     if (!g_create_process_w(
             application_name, command_line, process_attributes, thread_attributes,
-            inherit_handles, creation_flags | CREATE_SUSPENDED, environment,
-            current_directory, startup_information, process_information)) {
+            inherit_handles, selected_flags, environment, current_directory,
+            selected_startup, process_information)) {
         return FALSE;
     }
     return CompleteInheritedCreation(creation_flags, process_information) ? TRUE : FALSE;
@@ -721,10 +777,20 @@ BOOL WINAPI DetouredCreateProcessA(
     if (process_information == nullptr || !g_runtime_configured) {
         return DenyChildCreation(process_information);
     }
+    MitigatedStartupInfo<STARTUPINFOA, STARTUPINFOEXA> mitigated_startup;
+    LPSTARTUPINFOA selected_startup = startup_information;
+    DWORD selected_flags = creation_flags | CREATE_SUSPENDED;
+    if ((creation_flags & EXTENDED_STARTUPINFO_PRESENT) == 0) {
+        if (!mitigated_startup.Initialize(startup_information)) {
+            return DenyChildCreation(process_information);
+        }
+        selected_startup = mitigated_startup.get();
+        selected_flags |= EXTENDED_STARTUPINFO_PRESENT;
+    }
     if (!g_create_process_a(
             application_name, command_line, process_attributes, thread_attributes,
-            inherit_handles, creation_flags | CREATE_SUSPENDED, environment,
-            current_directory, startup_information, process_information)) {
+            inherit_handles, selected_flags, environment, current_directory,
+            selected_startup, process_information)) {
         return FALSE;
     }
     return CompleteInheritedCreation(creation_flags, process_information) ? TRUE : FALSE;
@@ -790,9 +856,9 @@ BOOL WINAPI DetouredCreateProcessAsUserW(
     }
     if (!g_create_process_as_user_w(
             token, application_name, command_line, process_attributes,
-            thread_attributes, inherit_handles, creation_flags | CREATE_SUSPENDED,
-            environment, current_directory, startup_information,
-            process_information)) {
+            thread_attributes, inherit_handles,
+            creation_flags | CREATE_SUSPENDED, environment, current_directory,
+            startup_information, process_information)) {
         return FALSE;
     }
     return CompleteInheritedCreation(creation_flags, process_information) ? TRUE : FALSE;
@@ -829,9 +895,9 @@ BOOL WINAPI DetouredCreateProcessAsUserA(
     }
     if (!g_create_process_as_user_a(
             token, application_name, command_line, process_attributes,
-            thread_attributes, inherit_handles, creation_flags | CREATE_SUSPENDED,
-            environment, current_directory, startup_information,
-            process_information)) {
+            thread_attributes, inherit_handles,
+            creation_flags | CREATE_SUSPENDED, environment, current_directory,
+            startup_information, process_information)) {
         return FALSE;
     }
     return CompleteInheritedCreation(creation_flags, process_information) ? TRUE : FALSE;

@@ -640,8 +640,14 @@ Mandatory defense-in-depth:
 - Keep dangerous host capabilities behind brokered APIs.
 
 The initial compatibility-safe process mitigation profile is applied inside
-every injected target after the complete hook set is installed but before
-`Ready` or descendant readiness is signaled. The required irreversible bits
+the creation attribute list for the initial target and supported
+`CreateProcessW/A` descendants before any image code is loaded. The hook verifies the same profile
+after the complete hook set is installed but before `Ready` or descendant
+readiness is signaled; token-changing and native process APIs retain this
+pre-Ready fail-closed verification when Windows cannot accept the owned
+creation attribute list. Caller-owned opaque `STARTUPINFOEX` attribute lists are
+preserved byte-for-byte and receive the same pre-Ready verification rather than
+being rebuilt with dropped attributes. The required irreversible bits
 are:
 
 - legacy extension-point disablement; and

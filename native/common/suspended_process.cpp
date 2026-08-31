@@ -1,4 +1,5 @@
 #include "common/suspended_process.h"
+#include "common/required_mitigations.h"
 
 #include "protocol/policy_payload.h"
 #include "protocol/runtime_payload.h"
@@ -15,21 +16,31 @@ namespace {
 class AttributeList final {
   public:
     bool Initialize(const HANDLE* handles, const std::size_t count) noexcept {
+        const DWORD attribute_count = count == 0 ? 1 : 2;
         SIZE_T bytes = 0;
-        InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+        InitializeProcThreadAttributeList(
+            nullptr, attribute_count, 0, &bytes);
         try {
             storage_.resize(bytes);
         } catch (...) {
             return false;
         }
         list_ = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage_.data());
-        if (!InitializeProcThreadAttributeList(list_, 1, 0, &bytes)) {
+        if (!InitializeProcThreadAttributeList(
+                list_, attribute_count, 0, &bytes)) {
             list_ = nullptr;
             return false;
         }
+        mitigation_policy_ = kRequiredCreationMitigationPolicy;
         if (!UpdateProcThreadAttribute(
-                list_, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                const_cast<HANDLE*>(handles), count * sizeof(HANDLE), nullptr, nullptr)) {
+                list_, 0, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+                &mitigation_policy_, sizeof(mitigation_policy_), nullptr,
+                nullptr) ||
+            (count != 0 &&
+             !UpdateProcThreadAttribute(
+                 list_, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                 const_cast<HANDLE*>(handles), count * sizeof(HANDLE), nullptr,
+                 nullptr))) {
             DeleteProcThreadAttributeList(list_);
             list_ = nullptr;
             return false;
@@ -48,6 +59,7 @@ class AttributeList final {
   private:
     std::vector<std::uint8_t> storage_;
     LPPROC_THREAD_ATTRIBUTE_LIST list_ = nullptr;
+    std::uint64_t mitigation_policy_ = 0;
 };
 
 bool ValidateInheritedHandles(const ProcessLaunchOptions& options) noexcept {
@@ -105,12 +117,11 @@ ProcessStatus SuspendedProcess::Create(
     AttributeList attributes;
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
-    if (options.inherited_handle_count != 0) {
-        if (!attributes.Initialize(options.inherited_handles, options.inherited_handle_count)) {
-            return ProcessStatus::kAttributeListFailed;
-        }
-        startup.lpAttributeList = attributes.get();
+    if (!attributes.Initialize(
+            options.inherited_handles, options.inherited_handle_count)) {
+        return ProcessStatus::kAttributeListFailed;
     }
+    startup.lpAttributeList = attributes.get();
 
     DWORD flags = options.creation_flags | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
     if (options.environment != nullptr) {
