@@ -484,3 +484,64 @@ fn rec_003_replace_and_overwrite_rename_preserve_destroyed_objects() {
     ));
     fs::remove_dir_all(fixture_root).expect("replace fixture must clean up");
 }
+
+#[test]
+fn rec_019_target_cannot_write_directly_to_recovery_channel() {
+    let Some((sandbox, component_root)) = configured_sandbox() else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let fixture_root = std::env::temp_dir().join(format!(
+        "bolt-sandbox-recovery-authority-{}-{fixture_id}",
+        std::process::id()
+    ));
+    let work = fixture_root.join("work");
+    let outside = fixture_root.join("outside");
+    let recovery = fixture_root.join("recovery");
+    fs::create_dir_all(&work).expect("work directory must be created");
+    fs::create_dir_all(&outside).expect("outside directory must be created");
+    fs::create_dir_all(&recovery).expect("recovery directory must be created");
+    let secret = outside.join("not-authorized.bin");
+    fs::write(&secret, b"outside-secret").expect("outside fixture must be written");
+    let policy = SandboxPolicy {
+        recovery: RecoveryPolicy::Enabled(RecoveryLimits {
+            directory: recovery.clone(),
+            maximum_bytes: 1_048_576,
+            maximum_items: 16,
+        }),
+        ..SandboxPolicy::default()
+    };
+    let mut handle = sandbox
+        .start(SandboxRequest {
+            program: component_root.join("bolt-sandbox-native-tests.exe"),
+            arguments: vec![
+                OsString::from("--unauthorized-recovery-request-fixture"),
+                secret.as_os_str().to_os_string(),
+            ],
+            cwd: work,
+            environment: BTreeMap::new(),
+            policy,
+            timeout: Some(Duration::from_secs(5)),
+        })
+        .expect("authority fixture must start");
+    let stdout = handle.take_stdout().expect("stdout is available");
+    let stderr = handle.take_stderr().expect("stderr is available");
+    let events = handle.take_events().expect("events are available");
+    let (_stdout, _stderr, events, result) = collect_execution(handle, stdout, stderr, events);
+
+    assert_eq!(
+        fs::read(&secret).expect("outside source must remain"),
+        b"outside-secret"
+    );
+    assert!(recovery_files(&recovery).is_empty());
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, SandboxEvent::RecoveryArtifactCreated(_)))
+    );
+    assert!(matches!(
+        result.terminal,
+        ExecutionTerminal::Process(ref exit) if exit.exit_code == Some(346)
+    ));
+    fs::remove_dir_all(fixture_root).expect("authority fixture must clean up");
+}

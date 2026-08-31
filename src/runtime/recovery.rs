@@ -154,6 +154,71 @@ fn display_path(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{SandboxPolicy, policy::compiler};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn rec_018_coordinator_rejects_source_without_write_authority() {
+        let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "bolt-recovery-authority-unit-{}-{id}",
+            std::process::id()
+        ));
+        let work = root.join("work");
+        let outside = root.join("outside");
+        let store = root.join("store");
+        fs::create_dir_all(&work).expect("work must be created");
+        fs::create_dir_all(&outside).expect("outside must be created");
+        fs::create_dir_all(&store).expect("store must be created");
+        let secret = outside.join("secret.bin");
+        fs::write(&secret, b"secret").expect("secret fixture must be written");
+        let compiled = compiler::compile(&SandboxPolicy::default(), &work)
+            .expect("default policy must compile");
+        let configuration = PreparedRecovery {
+            directory: store.clone(),
+            maximum_bytes: 1_024,
+            maximum_items: 4,
+            filesystem: compiled.filesystem,
+        };
+        let mut coordinator = RecoveryCoordinator::new(Some(&configuration), &[0xA5; 16])
+            .expect("coordinator must initialize")
+            .expect("recovery must be enabled");
+        let outcome = coordinator.backup(&RecoveryRequest {
+            request_id: 1,
+            process_id: 42,
+            operation: RecoveryOperation::Delete,
+            path: secret,
+        });
+
+        assert_eq!(outcome.artifact_id, None);
+        assert!(outcome.event.is_none());
+        assert!(recovery_files_for_test(&store).is_empty());
+        fs::remove_dir_all(root).expect("fixture must clean up");
+    }
+
+    fn recovery_files_for_test(root: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        for entry in fs::read_dir(root).expect("store must be readable") {
+            let path = entry.expect("entry must be readable").path();
+            if path.is_dir() {
+                files.extend(
+                    fs::read_dir(path)
+                        .expect("execution store must be readable")
+                        .map(|entry| entry.expect("artifact must be readable").path()),
+                );
+            } else {
+                files.push(path);
+            }
+        }
+        files
+    }
+}
+
 impl Drop for RecoveryCoordinator {
     fn drop(&mut self) {
         if self.used_items == 0 {

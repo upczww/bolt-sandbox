@@ -34,6 +34,7 @@ int RunDroppedEventChannelFixture(int argument_count);
 int RunRecoveryDeleteFixture(int argument_count, wchar_t** arguments) noexcept;
 int RunRecoveryTruncateFixture(int argument_count, wchar_t** arguments) noexcept;
 int RunRecoveryReplaceRenameFixture(int argument_count, wchar_t** arguments) noexcept;
+int RunUnauthorizedRecoveryRequestFixture(int argument_count, wchar_t** arguments) noexcept;
 int RunJobTreeParent(int argument_count, wchar_t** arguments);
 int RunIgnoreGracefulChild(int argument_count, wchar_t** arguments);
 bool RunNamedPipeTests();
@@ -533,6 +534,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count >= 2 &&
         std::wstring(arguments[1]) == L"--recovery-replace-rename-fixture") {
         return RunRecoveryReplaceRenameFixture(argument_count, arguments);
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--unauthorized-recovery-request-fixture") {
+        return RunUnauthorizedRecoveryRequestFixture(argument_count, arguments);
     }
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--stream-tests") {
         return RunStreamTests() ? 0 : 1;
