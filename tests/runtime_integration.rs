@@ -6,8 +6,8 @@ use std::{
 };
 
 use bolt_sandbox::{
-    ExecutionTerminal, ProcessExitReason, ReceiverLoss, Sandbox, SandboxConfig, SandboxEvent,
-    SandboxPolicy, SandboxRequest,
+    ExecutionTerminal, InfrastructureFailure, ProcessExitReason, ReceiverLoss, Sandbox,
+    SandboxConfig, SandboxEvent, SandboxPolicy, SandboxRequest,
 };
 
 const STREAM_BYTES: usize = 256 * 1_024;
@@ -204,4 +204,52 @@ fn terminal_reasons(events: &[SandboxEvent]) -> Vec<ProcessExitReason> {
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn ipc_025_corrupt_event_terminates_and_drains_without_fabricated_exit() {
+    let Some((sandbox, component_root)) = configured_sandbox() else {
+        return;
+    };
+    let mut request = blocking_request(&component_root, Some(Duration::from_secs(5)));
+    request.arguments = vec![OsString::from("--corrupt-event-fixture")];
+    let mut handle = sandbox
+        .start(request)
+        .expect("corruption fixture must start");
+    let stdout = handle.take_stdout().expect("stdout is available");
+    let stderr = handle.take_stderr().expect("stderr is available");
+    let events = handle.take_events().expect("events are available");
+    let (stdout, stderr, events, result) = collect_execution(handle, stdout, stderr, events);
+
+    assert_pattern(&stdout, false);
+    assert!(stderr.is_empty());
+    assert!(terminal_reasons(&events).is_empty());
+    assert_eq!(
+        result.terminal,
+        ExecutionTerminal::Infrastructure(InfrastructureFailure::ProtocolIntegrity)
+    );
+}
+
+#[test]
+fn ipc_014_event_channel_loss_terminates_job_without_waiting_for_timeout() {
+    let Some((sandbox, component_root)) = configured_sandbox() else {
+        return;
+    };
+    let mut request = blocking_request(&component_root, Some(Duration::from_secs(5)));
+    request.arguments = vec![OsString::from("--drop-event-channel-fixture")];
+    let mut handle = sandbox
+        .start(request)
+        .expect("event channel loss fixture must start");
+    let stdout = handle.take_stdout().expect("stdout is available");
+    let stderr = handle.take_stderr().expect("stderr is available");
+    let events = handle.take_events().expect("events are available");
+    let (stdout, stderr, events, result) = collect_execution(handle, stdout, stderr, events);
+
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    assert!(terminal_reasons(&events).is_empty());
+    assert_eq!(
+        result.terminal,
+        ExecutionTerminal::Infrastructure(InfrastructureFailure::EventChannelLost)
+    );
 }

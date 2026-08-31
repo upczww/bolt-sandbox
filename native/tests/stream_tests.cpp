@@ -1,4 +1,6 @@
 #include "common/suspended_process.h"
+#include "protocol/event_frame.h"
+#include "protocol/runtime_payload.h"
 
 #include <algorithm>
 #include <array>
@@ -11,6 +13,8 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+
+#include <detours.h>
 
 namespace {
 
@@ -218,6 +222,81 @@ int RunBlockingStreamFixture(const int argument_count) {
     WaitForSingleObject(never, INFINITE);
     CloseHandle(never);
     return 322;
+}
+
+int RunCorruptEventFixture(const int argument_count) {
+    if (argument_count != 2 ||
+        !WritePattern(
+            GetStdHandle(STD_OUTPUT_HANDLE), kStreamBytes, false)) {
+        return 323;
+    }
+    DWORD payload_length = 0;
+    const auto* encoded = static_cast<const std::uint8_t*>(
+        DetourFindPayloadEx(
+            bolt::protocol::kRuntimePayloadGuid, &payload_length));
+    bolt::protocol::RuntimePayload payload{};
+    if (bolt::protocol::DecodeRuntimePayload(
+            encoded, payload_length, payload) !=
+        bolt::protocol::RuntimePayloadStatus::kSuccess) {
+        return 324;
+    }
+    std::array<
+        std::uint8_t, bolt::protocol::kProcessViolationFrameLength>
+        corrupted{};
+    std::size_t written_frame = 0;
+    if (bolt::protocol::EncodeProcessViolationFrame(
+            GetCurrentProcessId(),
+            bolt::protocol::ProcessOperation::kExternalDelegation, 999,
+            corrupted.data(), corrupted.size(), written_frame) !=
+            bolt::protocol::FrameEncodeStatus::kSuccess ||
+        written_frame != corrupted.size()) {
+        return 325;
+    }
+    corrupted.back() ^= 0x80;
+    DWORD written = 0;
+    const HANDLE event_handle = reinterpret_cast<HANDLE>(
+        static_cast<std::uintptr_t>(payload.event_handle));
+    if (!WriteFile(
+            event_handle, corrupted.data(),
+            static_cast<DWORD>(corrupted.size()), &written, nullptr) ||
+        written != static_cast<DWORD>(corrupted.size())) {
+        return 326;
+    }
+    const HANDLE never = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (never == nullptr) {
+        return 327;
+    }
+    WaitForSingleObject(never, INFINITE);
+    CloseHandle(never);
+    return 328;
+}
+
+int RunDroppedEventChannelFixture(const int argument_count) {
+    if (argument_count != 2) {
+        return 329;
+    }
+    DWORD payload_length = 0;
+    const auto* encoded = static_cast<const std::uint8_t*>(
+        DetourFindPayloadEx(
+            bolt::protocol::kRuntimePayloadGuid, &payload_length));
+    bolt::protocol::RuntimePayload payload{};
+    if (bolt::protocol::DecodeRuntimePayload(
+            encoded, payload_length, payload) !=
+        bolt::protocol::RuntimePayloadStatus::kSuccess) {
+        return 330;
+    }
+    const HANDLE event_handle = reinterpret_cast<HANDLE>(
+        static_cast<std::uintptr_t>(payload.event_handle));
+    if (!CloseHandle(event_handle)) {
+        return 331;
+    }
+    const HANDLE never = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (never == nullptr) {
+        return 332;
+    }
+    WaitForSingleObject(never, INFINITE);
+    CloseHandle(never);
+    return 333;
 }
 
 bool RunStreamTests() {
