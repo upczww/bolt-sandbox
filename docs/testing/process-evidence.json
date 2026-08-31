@@ -50,6 +50,6 @@
     {"id":"LIFE-013","status":"covered","evidence":[{"file":"src/runtime/streams.rs","anchor":"fn life_013_eof_is_committed_once_without_affecting_other_streams"}]},
     {"id":"LIFE-014","status":"covered","evidence":[{"file":"src/runtime/lifecycle.rs","anchor":"fn life_014_exact_tick_tie_prefers_cancellation_then_timeout_then_exit"},{"file":"src/runtime/lifecycle.rs","anchor":"fn life_014_terminal_event_must_match_the_committed_timeout_cause"}]},
     {"id":"LIFE-015","status":"covered","evidence":[{"file":"src/runtime/lifecycle.rs","anchor":"fn life_015_deadline_uses_inclusive_monotonic_instant_boundary"}]},
-    {"id":"LIFE-016","status":"partial","reason":"Receiver loss and drain/discard behavior are unit-tested, but a real target with dropped receivers has no final handle-leak assertion.","evidence":[{"file":"src/runtime/lifecycle.rs","anchor":"fn life_016_completion_flags_each_lost_receiver_without_cancelling"},{"file":"src/runtime/streams.rs","anchor":"fn life_016_disconnect_discards_buffered_and_future_bytes"}]}
+    {"id":"LIFE-016","status":"covered","evidence":[{"file":"src/runtime/lifecycle.rs","anchor":"fn life_016_completion_flags_each_lost_receiver_without_cancelling"},{"file":"src/runtime/streams.rs","anchor":"fn life_016_disconnect_discards_buffered_and_future_bytes"},{"file":"native/tests/stream_tests.cpp","anchor":"RunDroppedReceiverTest("},{"file":"native/tests/stream_tests.cpp","anchor":"handles_after == handles_before"}]}
   ]
 }

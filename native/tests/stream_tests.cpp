@@ -81,7 +81,70 @@ bool MatchesPattern(
 }
 
 bool RunDroppedReceiverTest() {
-    return false;
+    DWORD handles_before = 0;
+    if (!GetProcessHandleCount(GetCurrentProcess(), &handles_before)) {
+        return false;
+    }
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    HANDLE stdout_read = nullptr;
+    HANDLE stdout_write = nullptr;
+    HANDLE stderr_read = nullptr;
+    HANDLE stderr_write = nullptr;
+    const auto close_if_valid = [](const HANDLE handle) {
+        if (handle != nullptr && handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle);
+        }
+    };
+    if (!CreatePipe(&stdout_read, &stdout_write, &inheritable, 4'096) ||
+        !CreatePipe(&stderr_read, &stderr_write, &inheritable, 4'096) ||
+        !SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0) ||
+        !SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0)) {
+        close_if_valid(stdout_read);
+        close_if_valid(stdout_write);
+        close_if_valid(stderr_read);
+        close_if_valid(stderr_write);
+        return false;
+    }
+    const std::wstring executable = CurrentExecutable();
+    std::wstring command = L"\"" + executable + L"\" --dual-stream-writer " +
+                           std::to_wstring(kStreamBytes);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = stdout_write;
+    startup.hStdError = stderr_write;
+    PROCESS_INFORMATION process{};
+    const bool created = !executable.empty() &&
+                         CreateProcessW(
+                             executable.c_str(), command.data(), nullptr,
+                             nullptr, TRUE, 0, nullptr, nullptr, &startup,
+                             &process) != FALSE;
+    CloseHandle(stdout_write);
+    CloseHandle(stderr_write);
+    CloseHandle(stdout_read);
+    CloseHandle(stderr_read);
+    if (!created) {
+        return false;
+    }
+    const DWORD wait = WaitForSingleObject(process.hProcess, 5'000);
+    if (wait != WAIT_OBJECT_0) {
+        TerminateProcess(process.hProcess, 315);
+        WaitForSingleObject(process.hProcess, 5'000);
+    }
+    DWORD exit_code = 0;
+    const bool exited_on_disconnect =
+        wait == WAIT_OBJECT_0 &&
+        GetExitCodeProcess(process.hProcess, &exit_code) != FALSE &&
+        exit_code == 313;
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    DWORD handles_after = 0;
+    return exited_on_disconnect &&
+           GetProcessHandleCount(GetCurrentProcess(), &handles_after) &&
+           handles_after == handles_before;
 }
 
 }  // namespace
