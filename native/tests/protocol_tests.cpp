@@ -478,6 +478,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
         Sleep(INFINITE);
         return 0;
     }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--job-tests") {
+        return RunJobTests() ? 0 : 1;
+    }
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--job-tree-parent") {
         return RunJobTreeParent(argument_count, arguments);
     }

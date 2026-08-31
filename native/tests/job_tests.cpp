@@ -172,6 +172,14 @@ bool RunIgnoredGracefulTermination() {
     return forced;
 }
 
+bool RunSingleProcessTimeout() {
+    return false;
+}
+
+bool RunIdempotentCancellationTree() {
+    return false;
+}
+
 }  // namespace
 
 int RunJobTreeParent(const int argument_count, wchar_t** arguments) {
@@ -263,5 +271,6 @@ bool RunJobTests() {
            terminate_job.Terminate(92) == bolt::common::JobStatus::kSuccess &&
            terminate_job.Terminate(92) == bolt::common::JobStatus::kSuccess &&
            RunJobTreeTermination(true) && RunJobTreeTermination(false) &&
-           RunIgnoredGracefulTermination();
+           RunIgnoredGracefulTermination() && RunSingleProcessTimeout() &&
+           RunIdempotentCancellationTree();
 }
