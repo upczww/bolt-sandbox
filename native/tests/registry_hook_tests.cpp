@@ -450,6 +450,30 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     const auto nt_delete_value_key =
         reinterpret_cast<NtDeleteValueKeyFunction>(
             GetProcAddress(ntdll, "NtDeleteValueKey"));
+    using NtQueryKeyFunction = LONG(NTAPI*)(
+        HANDLE, ULONG, PVOID, ULONG, PULONG);
+    const auto nt_query_key = reinterpret_cast<NtQueryKeyFunction>(
+        GetProcAddress(ntdll, "NtQueryKey"));
+    using NtQueryValueKeyFunction = LONG(NTAPI*)(
+        HANDLE, PUNICODE_STRING, ULONG, PVOID, ULONG, PULONG);
+    const auto nt_query_value_key =
+        reinterpret_cast<NtQueryValueKeyFunction>(
+            GetProcAddress(ntdll, "NtQueryValueKey"));
+    using NtEnumerateKeyFunction = LONG(NTAPI*)(
+        HANDLE, ULONG, ULONG, PVOID, ULONG, PULONG);
+    const auto nt_enumerate_key =
+        reinterpret_cast<NtEnumerateKeyFunction>(
+            GetProcAddress(ntdll, "NtEnumerateKey"));
+    using NtEnumerateValueKeyFunction = LONG(NTAPI*)(
+        HANDLE, ULONG, ULONG, PVOID, ULONG, PULONG);
+    const auto nt_enumerate_value_key =
+        reinterpret_cast<NtEnumerateValueKeyFunction>(
+            GetProcAddress(ntdll, "NtEnumerateValueKey"));
+    using NtSetValueKeyFunction = LONG(NTAPI*)(
+        HANDLE, PUNICODE_STRING, ULONG, ULONG, PVOID, ULONG);
+    const auto nt_set_value_key =
+        reinterpret_cast<NtSetValueKeyFunction>(
+            GetProcAddress(ntdll, "NtSetValueKey"));
 
     HKEY read_key = nullptr;
     wchar_t value[16]{};
@@ -685,6 +709,42 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     if (denied_blocked_child != nullptr) {
         RegCloseKey(denied_blocked_child);
     }
+    std::array<std::uint8_t, 256> native_information{};
+    ULONG native_result_length = 0;
+    const LONG direct_denied_query_key = nt_query_key == nullptr
+        ? 0
+        : nt_query_key(
+              inherited_denied, 0, native_information.data(),
+              static_cast<ULONG>(native_information.size()),
+              &native_result_length);
+    const LONG direct_denied_query_value =
+        nt_query_value_key == nullptr
+        ? 0
+        : nt_query_value_key(
+              inherited_denied, &denied_value_name, 2,
+              native_information.data(),
+              static_cast<ULONG>(native_information.size()),
+              &native_result_length);
+    const LONG direct_denied_enumerate_key =
+        nt_enumerate_key == nullptr
+        ? 0
+        : nt_enumerate_key(
+              inherited_denied, 0, 0, native_information.data(),
+              static_cast<ULONG>(native_information.size()),
+              &native_result_length);
+    const LONG direct_denied_enumerate_value =
+        nt_enumerate_value_key == nullptr
+        ? 0
+        : nt_enumerate_value_key(
+              inherited_denied, 0, 0, native_information.data(),
+              static_cast<ULONG>(native_information.size()),
+              &native_result_length);
+    const LONG direct_denied_set_value = nt_set_value_key == nullptr
+        ? 0
+        : nt_set_value_key(
+              inherited_denied, &denied_value_name, 0, REG_SZ,
+              const_cast<wchar_t*>(changed),
+              static_cast<ULONG>(sizeof(changed)));
 
     HKEY current_user = nullptr;
     const LSTATUS current_user_status =
@@ -816,7 +876,13 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
         inherited_denied_rename != static_cast<LONG>(0xC0000022L) ||
         inherited_denied_create != static_cast<LONG>(0xC0000022L) ||
         denied_blocked_child != nullptr ||
-        denied_blocked_disposition != 99) {
+        denied_blocked_disposition != 99 ||
+        direct_denied_query_key != static_cast<LONG>(0xC0000022L) ||
+        direct_denied_query_value != static_cast<LONG>(0xC0000022L) ||
+        direct_denied_enumerate_key != static_cast<LONG>(0xC0000022L) ||
+        direct_denied_enumerate_value !=
+            static_cast<LONG>(0xC0000022L) ||
+        direct_denied_set_value != static_cast<LONG>(0xC0000022L)) {
         return 718;
     }
     if (direct_denied_open != static_cast<LONG>(0xC0000022L) ||
@@ -1064,6 +1130,16 @@ bool RunRegistryHookTests() {
         {bolt::protocol::RegistryOperation::kCreate,
          CanonicalCurrentUserKey(
              root + L"\\Broad\\Sensitive\\BlockedChild")},
+        {bolt::protocol::RegistryOperation::kQuery,
+         CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
+        {bolt::protocol::RegistryOperation::kQuery,
+         CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
+        {bolt::protocol::RegistryOperation::kEnumerate,
+         CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
+        {bolt::protocol::RegistryOperation::kEnumerate,
+         CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
+        {bolt::protocol::RegistryOperation::kSetValue,
+         CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
         {bolt::protocol::RegistryOperation::kOpen,
          CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
     };
