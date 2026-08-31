@@ -59,6 +59,8 @@ enum class RegistryRuleKind : std::uint8_t {
     kReadOnly = 1,
     kInheritUser = 2,
     kReadWrite = 3,
+    kReadOnlyKey = 4,
+    kHideKey = 5,
 };
 
 enum class RegistryHive : std::uint8_t {

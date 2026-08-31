@@ -23,6 +23,7 @@ enum class RegistryAccess : std::uint8_t {
 enum class RegistryDecision : std::uint8_t {
     kAllow,
     kDeny,
+    kNotFound,
     kInheritUser,
 };
 

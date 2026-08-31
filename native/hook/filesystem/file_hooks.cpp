@@ -4,6 +4,7 @@
 #include "hook/filesystem/final_path_resolver.h"
 #include "hook/filesystem/filesystem_policy.h"
 #include "hook/filesystem/path_cache.h"
+#include "hook/filesystem/safe_device.h"
 #include "hook/event_sink.h"
 #include "hook/process/process_hooks.h"
 
@@ -19,9 +20,11 @@
 #include <new>
 #include <string>
 #include <utility>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <winternl.h>
 #include <winioctl.h>
 #include <shellapi.h>
 #include <shobjidl.h>
@@ -82,63 +85,80 @@ NtCloseFunction g_nt_close = nullptr;
 using GetMappedFileNameWFunction = DWORD(WINAPI*)(HANDLE, LPVOID, LPWSTR, DWORD);
 GetMappedFileNameWFunction g_get_mapped_file_name_w = nullptr;
 
-struct AnonymousSectionEntry {
-    bool occupied = false;
+enum class SectionCapability : std::uint8_t {
+    kNone,
+    kAnonymous,
+    kAuthorizedFile,
+};
+
+struct SectionCapabilityEntry {
+    SectionCapability capability = SectionCapability::kNone;
     HANDLE handle = nullptr;
 };
 
-constexpr std::size_t kAnonymousSectionCapacity = 256;
-SRWLOCK g_anonymous_section_lock = SRWLOCK_INIT;
-std::array<AnonymousSectionEntry, kAnonymousSectionCapacity>
-    g_anonymous_sections{};
+constexpr std::size_t kSectionCapabilityCapacity = 2'048;
+SRWLOCK g_section_capability_lock = SRWLOCK_INIT;
+std::array<SectionCapabilityEntry, kSectionCapabilityCapacity>
+    g_section_capabilities{};
+std::size_t g_section_capability_count = 0;
 
-bool TrackAnonymousSection(const HANDLE handle) noexcept {
+bool TrackSectionCapability(
+    const HANDLE handle,
+    const SectionCapability capability) noexcept {
     if (handle == nullptr || handle == INVALID_HANDLE_VALUE) {
         return false;
     }
-    AcquireSRWLockExclusive(&g_anonymous_section_lock);
-    AnonymousSectionEntry* available = nullptr;
-    for (auto& entry : g_anonymous_sections) {
-        if (entry.occupied && entry.handle == handle) {
-            ReleaseSRWLockExclusive(&g_anonymous_section_lock);
+    AcquireSRWLockExclusive(&g_section_capability_lock);
+    for (std::size_t index = 0; index < g_section_capability_count; ++index) {
+        auto& entry = g_section_capabilities[index];
+        if (entry.handle == handle) {
+            entry.capability = capability;
+            ReleaseSRWLockExclusive(&g_section_capability_lock);
             return true;
         }
-        if (!entry.occupied && available == nullptr) {
-            available = &entry;
-        }
     }
-    if (available != nullptr) {
-        available->occupied = true;
-        available->handle = handle;
+    if (g_section_capability_count == g_section_capabilities.size()) {
+        ReleaseSRWLockExclusive(&g_section_capability_lock);
+        return false;
     }
-    ReleaseSRWLockExclusive(&g_anonymous_section_lock);
-    return available != nullptr;
+    auto& available =
+        g_section_capabilities[g_section_capability_count++];
+    available.capability = capability;
+    available.handle = handle;
+    ReleaseSRWLockExclusive(&g_section_capability_lock);
+    return true;
 }
 
-void UntrackAnonymousSection(const HANDLE handle) noexcept {
+void UntrackSectionCapability(const HANDLE handle) noexcept {
     if (handle == nullptr || handle == INVALID_HANDLE_VALUE) {
         return;
     }
-    AcquireSRWLockExclusive(&g_anonymous_section_lock);
-    for (auto& entry : g_anonymous_sections) {
-        if (entry.occupied && entry.handle == handle) {
-            entry = {};
+    AcquireSRWLockExclusive(&g_section_capability_lock);
+    for (std::size_t index = 0; index < g_section_capability_count; ++index) {
+        if (g_section_capabilities[index].handle == handle) {
+            --g_section_capability_count;
+            g_section_capabilities[index] =
+                g_section_capabilities[g_section_capability_count];
+            g_section_capabilities[g_section_capability_count] = {};
             break;
         }
     }
-    ReleaseSRWLockExclusive(&g_anonymous_section_lock);
+    ReleaseSRWLockExclusive(&g_section_capability_lock);
 }
 
-bool IsTrackedAnonymousSection(const HANDLE handle) noexcept {
-    AcquireSRWLockShared(&g_anonymous_section_lock);
+bool HasSectionCapability(
+    const HANDLE handle,
+    const SectionCapability capability) noexcept {
+    AcquireSRWLockShared(&g_section_capability_lock);
     bool found = false;
-    for (const auto& entry : g_anonymous_sections) {
-        if (entry.occupied && entry.handle == handle) {
+    for (std::size_t index = 0; index < g_section_capability_count; ++index) {
+        const auto& entry = g_section_capabilities[index];
+        if (entry.capability == capability && entry.handle == handle) {
             found = true;
             break;
         }
     }
-    ReleaseSRWLockShared(&g_anonymous_section_lock);
+    ReleaseSRWLockShared(&g_section_capability_lock);
     return found;
 }
 DeviceIoControl_t g_device_io_control = DeviceIoControl;
@@ -571,11 +591,78 @@ bool NativeCreateFilePath(
     return true;
 }
 
+bool TryConvertDevicePathToDosPath(
+    const std::wstring& device_path,
+    std::wstring& dos_path) noexcept;
+
+bool TryGetNtObjectPath(const HANDLE handle, std::wstring& path) noexcept {
+    using NtQueryObjectFunction = NTSTATUS(NTAPI*)(
+        HANDLE, ULONG, PVOID, ULONG, PULONG);
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto query_object =
+        ntdll == nullptr
+            ? nullptr
+            : reinterpret_cast<NtQueryObjectFunction>(
+                  GetProcAddress(ntdll, "NtQueryObject"));
+    if (query_object == nullptr) {
+        return false;
+    }
+    constexpr ULONG object_name_information = 1;
+    constexpr ULONG maximum_name_information = 128 * 1'024;
+    ULONG required = 0;
+    query_object(
+        handle, object_name_information, nullptr, 0, &required);
+    if (required < sizeof(UNICODE_STRING) ||
+        required > maximum_name_information) {
+        return false;
+    }
+    std::vector<std::uint8_t> storage;
+    try {
+        storage.resize(required);
+    } catch (...) {
+        return false;
+    }
+    if (query_object(
+            handle, object_name_information, storage.data(), required,
+            &required) < 0) {
+        return false;
+    }
+    const auto* information =
+        reinterpret_cast<const UNICODE_STRING*>(storage.data());
+    if (information->Buffer == nullptr || information->Length == 0 ||
+        information->Length % sizeof(wchar_t) != 0) {
+        return false;
+    }
+    const auto storage_begin =
+        reinterpret_cast<std::uintptr_t>(storage.data());
+    const auto storage_end = storage_begin + storage.size();
+    const auto name_begin =
+        reinterpret_cast<std::uintptr_t>(information->Buffer);
+    const auto name_end = name_begin + information->Length;
+    if (name_begin < storage_begin || name_end < name_begin ||
+        name_end > storage_end) {
+        return false;
+    }
+    std::wstring device_path;
+    try {
+        device_path.assign(
+            information->Buffer,
+            information->Length / sizeof(wchar_t));
+    } catch (...) {
+        return false;
+    }
+    return TryConvertDevicePathToDosPath(device_path, path);
+}
+
 bool TryGetHandlePath(const HANDLE handle, std::wstring& path) noexcept {
+    if (IsNullDeviceHandle(handle)) {
+        path = L"NUL";
+        return true;
+    }
     constexpr DWORD flags = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS;
     const DWORD required = GetFinalPathNameByHandleW(handle, nullptr, 0, flags);
     if (required == 0) {
-        return false;
+        return TryGetNtObjectPath(handle, path);
     }
     try {
         path.assign(required, L'\0');
@@ -587,7 +674,7 @@ bool TryGetHandlePath(const HANDLE handle, std::wstring& path) noexcept {
         GetFinalPathNameByHandleW(handle, path.data(), static_cast<DWORD>(path.size()), flags);
     if (written == 0 || written >= path.size()) {
         path.clear();
-        return false;
+        return TryGetNtObjectPath(handle, path);
     }
     path.resize(written);
     return true;
@@ -763,7 +850,8 @@ bool TryGetSectionPath(const HANDLE section, std::wstring& path) noexcept {
 }
 
 bool AuthorizeSectionMapping(const HANDLE section, const ULONG protection) noexcept {
-    if (IsTrackedAnonymousSection(section)) {
+    if (HasSectionCapability(section, SectionCapability::kAnonymous) ||
+        HasSectionCapability(section, SectionCapability::kAuthorizedFile)) {
         return true;
     }
     std::wstring source_path;
@@ -935,6 +1023,10 @@ bool AuthorizeEnumeration(const wchar_t* path) noexcept {
 bool ResolveParentFinalIdentity(
     const wchar_t* path,
     std::wstring& resolved_path) noexcept {
+    if (IsNullDevicePath(path)) {
+        resolved_path = L"NUL";
+        return true;
+    }
     try {
         const std::filesystem::path candidate{path};
         const auto parent = candidate.parent_path();
@@ -2641,6 +2733,15 @@ HANDLE WINAPI DetouredCreateFileW(
             filename, desired_access, share_mode, security_attributes, creation_disposition,
             flags_and_attributes, template_file);
     }
+    if (IsConsoleDevicePath(filename)) {
+        if (process::AllowsIsolatedConsole()) {
+            return g_create_file_w(
+                filename, desired_access, share_mode, security_attributes,
+                creation_disposition, flags_and_attributes, template_file);
+        }
+        SetLastError(ERROR_FILE_NOT_FOUND);
+        return INVALID_HANDLE_VALUE;
+    }
     const auto request = ClassifyCreateFileRequest(desired_access, creation_disposition);
     if (!AuthorizeCreateFile(filename, request, flags_and_attributes)) {
         return INVALID_HANDLE_VALUE;
@@ -2682,7 +2783,19 @@ HANDLE WINAPI DetouredCreateFileA(
     }
     std::wstring filename_wide;
     const auto request = ClassifyCreateFileRequest(desired_access, creation_disposition);
-    if (!ConvertAnsiPath(filename, filename_wide) ||
+    if (!ConvertAnsiPath(filename, filename_wide)) {
+        return INVALID_HANDLE_VALUE;
+    }
+    if (IsConsoleDevicePath(filename_wide.c_str())) {
+        if (process::AllowsIsolatedConsole()) {
+            return g_create_file_a(
+                filename, desired_access, share_mode, security_attributes,
+                creation_disposition, flags_and_attributes, template_file);
+        }
+        SetLastError(ERROR_FILE_NOT_FOUND);
+        return INVALID_HANDLE_VALUE;
+    }
+    if (
         !AuthorizeCreateFile(
             filename_wide.c_str(), request, flags_and_attributes)) {
         return INVALID_HANDLE_VALUE;
@@ -3089,13 +3202,19 @@ HANDLE WINAPI DetouredCreateFileMappingW(
         maximum_size_low, name);
     if (mapping != nullptr) {
         if (file == nullptr || file == INVALID_HANDLE_VALUE) {
-            if (!TrackAnonymousSection(mapping)) {
+            if (!TrackSectionCapability(
+                    mapping, SectionCapability::kAnonymous)) {
                 CloseHandle(mapping);
                 SetLastError(ERROR_NOT_ENOUGH_MEMORY);
                 return nullptr;
             }
         } else {
-            UntrackAnonymousSection(mapping);
+            if (!TrackSectionCapability(
+                    mapping, SectionCapability::kAuthorizedFile)) {
+                CloseHandle(mapping);
+                SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+                return nullptr;
+            }
         }
     }
     return mapping;
@@ -3121,13 +3240,19 @@ HANDLE WINAPI DetouredCreateFileMappingA(
         maximum_size_low, name);
     if (mapping != nullptr) {
         if (file == nullptr || file == INVALID_HANDLE_VALUE) {
-            if (!TrackAnonymousSection(mapping)) {
+            if (!TrackSectionCapability(
+                    mapping, SectionCapability::kAnonymous)) {
                 CloseHandle(mapping);
                 SetLastError(ERROR_NOT_ENOUGH_MEMORY);
                 return nullptr;
             }
         } else {
-            UntrackAnonymousSection(mapping);
+            if (!TrackSectionCapability(
+                    mapping, SectionCapability::kAuthorizedFile)) {
+                CloseHandle(mapping);
+                SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+                return nullptr;
+            }
         }
     }
     return mapping;
@@ -3167,7 +3292,8 @@ NTSTATUS NTAPI DetouredNtCreateSection(
             return status_invalid_handle;
         }
         if (anonymous) {
-            if (!TrackAnonymousSection(created)) {
+            if (!TrackSectionCapability(
+                    created, SectionCapability::kAnonymous)) {
                 g_nt_close(created);
                 ClearCreatedHandle(section);
                 constexpr NTSTATUS status_insufficient_resources =
@@ -3175,14 +3301,21 @@ NTSTATUS NTAPI DetouredNtCreateSection(
                 return status_insufficient_resources;
             }
         } else {
-            UntrackAnonymousSection(created);
+            if (!TrackSectionCapability(
+                    created, SectionCapability::kAuthorizedFile)) {
+                g_nt_close(created);
+                ClearCreatedHandle(section);
+                constexpr NTSTATUS status_insufficient_resources =
+                    static_cast<NTSTATUS>(0xC000009AUL);
+                return status_insufficient_resources;
+            }
         }
     }
     return status;
 }
 
 NTSTATUS NTAPI DetouredNtClose(const HANDLE handle) noexcept {
-    UntrackAnonymousSection(handle);
+    UntrackSectionCapability(handle);
     return g_nt_close(handle);
 }
 

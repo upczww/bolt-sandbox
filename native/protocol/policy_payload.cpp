@@ -248,7 +248,7 @@ bool ValidateRegistry(Reader& reader) noexcept {
         std::uint8_t kind = 0;
         std::uint8_t hive = 0;
         std::size_t components = 0;
-        if (!reader.ReadU8(kind) || kind > 3 || !reader.ReadU8(hive) || hive > 4 ||
+        if (!reader.ReadU8(kind) || kind > 5 || !reader.ReadU8(hive) || hive > 4 ||
             !reader.ReadCount(components)) {
             return false;
         }

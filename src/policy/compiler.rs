@@ -20,8 +20,26 @@ const MAX_TOTAL_FILESYSTEM_RULES: usize = 2_048;
 const MAX_FILESYSTEM_PATH_CODE_UNITS: usize = 32_767;
 const MAX_REGISTRY_RULES_PER_CATEGORY: usize = 1_024;
 const MAX_TOTAL_REGISTRY_RULES: usize = 2_048;
-const DEFAULT_REGISTRY_READ_ONLY_COMPATIBILITY_GRANTS: &[&str] =
-    &[r"HKCU\SOFTWARE\Classes", r"HKLM\SOFTWARE\Classes"];
+const DEFAULT_REGISTRY_READ_ONLY_COMPATIBILITY_GRANTS: &[&str] = &[
+    r"HKCU\SOFTWARE\Classes",
+    r"HKLM\SOFTWARE\Classes",
+    r"HKLM\SOFTWARE\dotnet\Setup\InstalledVersions",
+    r"HKLM\SYSTEM\CurrentControlSet\Control\Nls",
+    r"HKLM\SOFTWARE\Microsoft\AMSI",
+    r"HKLM\SOFTWARE\Policies\Microsoft\PowerShellCore",
+    r"HKCU\SOFTWARE\Policies\Microsoft\PowerShellCore",
+    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell",
+    r"HKCU\SOFTWARE\Policies\Microsoft\Windows\PowerShell",
+    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\Safer",
+    r"HKLM\SYSTEM\CurrentControlSet\Control\Srp",
+    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Server",
+    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Time Zones",
+];
+const DEFAULT_REGISTRY_EXACT_READ_ONLY_COMPATIBILITY_GRANTS: &[&str] = &[
+    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion",
+];
+const DEFAULT_REGISTRY_HIDDEN_COMPATIBILITY_KEYS: &[&str] = &[r"HKCU\Environment"];
 const DEFAULT_REGISTRY_COMPATIBILITY_GRANTS: &[&str] = &[
     r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager",
     r"HKLM\SYSTEM\CurrentControlSet\Services\WinSock2",
@@ -102,6 +120,8 @@ const DEFAULT_REGISTRY_COMPATIBILITY_GRANTS: &[&str] = &[
 ];
 const MAX_COMPILED_REGISTRY_RULES: usize = MAX_TOTAL_REGISTRY_RULES
     + DEFAULT_REGISTRY_READ_ONLY_COMPATIBILITY_GRANTS.len()
+    + DEFAULT_REGISTRY_EXACT_READ_ONLY_COMPATIBILITY_GRANTS.len()
+    + DEFAULT_REGISTRY_HIDDEN_COMPATIBILITY_KEYS.len()
     + DEFAULT_REGISTRY_COMPATIBILITY_GRANTS.len();
 const MAX_REGISTRY_KEY_CODE_UNITS: usize = 255;
 
@@ -595,6 +615,7 @@ pub(crate) enum RegistryAccess {
 pub(crate) enum RegistryDecision {
     Allow,
     Deny,
+    NotFound,
     InheritUser,
 }
 
@@ -618,7 +639,10 @@ impl CompiledRegistryPolicy {
         let matching_rules = self
             .rules
             .iter()
-            .filter(|rule| rule.root.contains(&key))
+            .filter(|rule| match rule.kind {
+                RegistryRuleKind::ReadOnlyKey | RegistryRuleKind::HideKey => rule.root == key,
+                _ => rule.root.contains(&key),
+            })
             .collect::<Vec<_>>();
         if matching_rules
             .iter()
@@ -658,6 +682,14 @@ fn compile_registry_policy(
     compiled.add_compatibility_rules(
         DEFAULT_REGISTRY_READ_ONLY_COMPATIBILITY_GRANTS,
         RegistryRuleKind::ReadOnly,
+    )?;
+    compiled.add_compatibility_rules(
+        DEFAULT_REGISTRY_EXACT_READ_ONLY_COMPATIBILITY_GRANTS,
+        RegistryRuleKind::ReadOnlyKey,
+    )?;
+    compiled.add_compatibility_rules(
+        DEFAULT_REGISTRY_HIDDEN_COMPATIBILITY_KEYS,
+        RegistryRuleKind::HideKey,
     )?;
     compiled.add_compatibility_rules(
         DEFAULT_REGISTRY_COMPATIBILITY_GRANTS,
@@ -761,6 +793,8 @@ struct RegistryRule {
 enum RegistryRuleKind {
     NoAccess,
     ReadOnly,
+    ReadOnlyKey,
+    HideKey,
     InheritUser,
     ReadWrite,
 }
@@ -771,6 +805,14 @@ impl RegistryRuleKind {
             Self::NoAccess => RegistryDecision::Deny,
             Self::ReadOnly => match access {
                 RegistryAccess::Read | RegistryAccess::Enumerate => RegistryDecision::Allow,
+                RegistryAccess::Write => RegistryDecision::Deny,
+            },
+            Self::ReadOnlyKey => match access {
+                RegistryAccess::Read | RegistryAccess::Enumerate => RegistryDecision::Allow,
+                RegistryAccess::Write => RegistryDecision::Deny,
+            },
+            Self::HideKey => match access {
+                RegistryAccess::Read | RegistryAccess::Enumerate => RegistryDecision::NotFound,
                 RegistryAccess::Write => RegistryDecision::Deny,
             },
             Self::InheritUser => RegistryDecision::InheritUser,
@@ -2078,34 +2120,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reg_default_compatibility_grants_are_explicit_and_narrow() {
-        let compiled = compile(&SandboxPolicy::default(), Path::new(r"C:\work\project"))
-            .expect("default compatibility registry grants must compile");
-
-        for &key in DEFAULT_REGISTRY_COMPATIBILITY_GRANTS {
-            let normalized_key = key.to_ascii_uppercase();
-            let classes_metadata = normalized_key.starts_with(r"HKCU\SOFTWARE\CLASSES")
-                || normalized_key.starts_with(r"HKLM\SOFTWARE\CLASSES");
-            assert_eq!(
-                compiled.registry.decide(key, RegistryAccess::Read),
-                if classes_metadata {
-                    RegistryDecision::Allow
-                } else {
-                    RegistryDecision::InheritUser
-                },
-                "read: {key}"
-            );
-            assert_eq!(
-                compiled.registry.decide(key, RegistryAccess::Write),
-                if classes_metadata {
-                    RegistryDecision::Deny
-                } else {
-                    RegistryDecision::InheritUser
-                },
-                "write: {key}"
-            );
-        }
+    fn assert_default_registry_metadata_rules(compiled: &CompiledPolicy) {
         for classes_root in [r"HKCU\SOFTWARE\Classes", r"HKLM\SOFTWARE\Classes"] {
             assert_eq!(
                 compiled
@@ -2120,6 +2135,107 @@ mod tests {
                 RegistryDecision::Deny
             );
         }
+        for runtime_metadata_root in [
+            r"HKLM\SOFTWARE\dotnet\Setup\InstalledVersions",
+            r"HKLM\SYSTEM\CurrentControlSet\Control\Nls",
+            r"HKLM\SOFTWARE\Microsoft\AMSI",
+            r"HKLM\SOFTWARE\Policies\Microsoft\PowerShellCore",
+            r"HKCU\SOFTWARE\Policies\Microsoft\PowerShellCore",
+            r"HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell",
+            r"HKCU\SOFTWARE\Policies\Microsoft\Windows\PowerShell",
+            r"HKLM\SOFTWARE\Policies\Microsoft\Windows\Safer",
+            r"HKLM\SYSTEM\CurrentControlSet\Control\Srp",
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Server",
+        ] {
+            assert_eq!(
+                compiled
+                    .registry
+                    .decide(runtime_metadata_root, RegistryAccess::Read),
+                RegistryDecision::Allow
+            );
+            assert_eq!(
+                compiled
+                    .registry
+                    .decide(runtime_metadata_root, RegistryAccess::Write),
+                RegistryDecision::Deny
+            );
+        }
+        for exact_metadata_key in DEFAULT_REGISTRY_EXACT_READ_ONLY_COMPATIBILITY_GRANTS {
+            assert_eq!(
+                compiled
+                    .registry
+                    .decide(exact_metadata_key, RegistryAccess::Read),
+                RegistryDecision::Allow
+            );
+            assert_eq!(
+                compiled
+                    .registry
+                    .decide(exact_metadata_key, RegistryAccess::Write),
+                RegistryDecision::Deny
+            );
+            assert_eq!(
+                compiled.registry.decide(
+                    &format!(r"{exact_metadata_key}\UnlistedSensitive"),
+                    RegistryAccess::Read,
+                ),
+                RegistryDecision::Deny
+            );
+        }
+        for hidden_key in DEFAULT_REGISTRY_HIDDEN_COMPATIBILITY_KEYS {
+            assert_eq!(
+                compiled.registry.decide(hidden_key, RegistryAccess::Read),
+                RegistryDecision::NotFound
+            );
+            assert_eq!(
+                compiled
+                    .registry
+                    .decide(hidden_key, RegistryAccess::Enumerate),
+                RegistryDecision::NotFound
+            );
+            assert_eq!(
+                compiled.registry.decide(hidden_key, RegistryAccess::Write),
+                RegistryDecision::Deny
+            );
+            assert_eq!(
+                compiled.registry.decide(
+                    &format!(r"{hidden_key}\UnlistedSensitive"),
+                    RegistryAccess::Read,
+                ),
+                RegistryDecision::Deny
+            );
+        }
+    }
+
+    #[test]
+    fn reg_default_compatibility_grants_are_explicit_and_narrow() {
+        let compiled = compile(&SandboxPolicy::default(), Path::new(r"C:\work\project"))
+            .expect("default compatibility registry grants must compile");
+
+        for &key in DEFAULT_REGISTRY_COMPATIBILITY_GRANTS {
+            let normalized_key = key.to_ascii_uppercase();
+            let read_only_metadata = DEFAULT_REGISTRY_READ_ONLY_COMPATIBILITY_GRANTS
+                .iter()
+                .any(|root| normalized_key.starts_with(&root.to_ascii_uppercase()));
+            assert_eq!(
+                compiled.registry.decide(key, RegistryAccess::Read),
+                if read_only_metadata {
+                    RegistryDecision::Allow
+                } else {
+                    RegistryDecision::InheritUser
+                },
+                "read: {key}"
+            );
+            assert_eq!(
+                compiled.registry.decide(key, RegistryAccess::Write),
+                if read_only_metadata {
+                    RegistryDecision::Deny
+                } else {
+                    RegistryDecision::InheritUser
+                },
+                "write: {key}"
+            );
+        }
+        assert_default_registry_metadata_rules(&compiled);
         assert_eq!(
             compiled.registry.decide(
                 r"HKLM\SOFTWARE\Microsoft\AppModel\Unrelated",
@@ -2255,6 +2371,12 @@ mod tests {
         let rules = match kind {
             RegistryRuleKind::NoAccess => &mut policy.registry.no_access,
             RegistryRuleKind::ReadOnly => &mut policy.registry.read_only,
+            RegistryRuleKind::ReadOnlyKey => {
+                unreachable!("exact read-only rules are trusted compatibility rules")
+            }
+            RegistryRuleKind::HideKey => {
+                unreachable!("hidden keys are trusted compatibility rules")
+            }
             RegistryRuleKind::InheritUser => &mut policy.registry.inherit_user,
             RegistryRuleKind::ReadWrite => &mut policy.registry.read_write,
         };

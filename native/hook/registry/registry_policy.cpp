@@ -18,7 +18,7 @@
 namespace bolt::registry {
 namespace {
 
-constexpr std::size_t kMaximumRegistryRules = 2'124;
+constexpr std::size_t kMaximumRegistryRules = 2'160;
 constexpr std::size_t kMaximumRegistryKeyCodeUnits = 255;
 
 enum class RuleKind : std::uint8_t {
@@ -26,6 +26,8 @@ enum class RuleKind : std::uint8_t {
     kReadOnly = 1,
     kInheritUser = 2,
     kReadWrite = 3,
+    kReadOnlyKey = 4,
+    kHideKey = 5,
 };
 
 struct Rule {
@@ -194,7 +196,10 @@ bool Contains(
     const RegistryHive hive,
     const std::vector<std::wstring>& components) noexcept {
     return rule.hive == hive &&
-           rule.components.size() <= components.size() &&
+           (rule.kind != RuleKind::kReadOnlyKey &&
+                    rule.kind != RuleKind::kHideKey
+                ? rule.components.size() <= components.size()
+                : rule.components.size() == components.size()) &&
            std::equal(
                rule.components.begin(), rule.components.end(),
                components.begin(), EqualIgnoreCase);
@@ -280,6 +285,14 @@ RegistryDecision DecisionFor(
             return RegistryDecision::kInheritUser;
         case RuleKind::kReadWrite:
             return RegistryDecision::kAllow;
+        case RuleKind::kReadOnlyKey:
+            return access == RegistryAccess::kWrite
+                       ? RegistryDecision::kDeny
+                       : RegistryDecision::kAllow;
+        case RuleKind::kHideKey:
+            return access == RegistryAccess::kWrite
+                       ? RegistryDecision::kDeny
+                       : RegistryDecision::kNotFound;
     }
     return RegistryDecision::kDeny;
 }
@@ -323,7 +336,7 @@ RegistryPolicyLoadStatus RegistryPolicy::Load(
             std::uint8_t kind = 0;
             std::uint8_t hive = 0;
             std::size_t component_count = 0;
-            if (!reader.ReadU8(kind) || kind > 3 || !reader.ReadU8(hive) ||
+            if (!reader.ReadU8(kind) || kind > 5 || !reader.ReadU8(hive) ||
                 hive > 4 || !reader.ReadU32(component_count) ||
                 component_count > kMaximumRegistryKeyCodeUnits) {
                 return RegistryPolicyLoadStatus::kInvalidRegistryPolicy;

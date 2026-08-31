@@ -141,6 +141,11 @@ denied `Cargo.toml`; the latter must fail and emit a path-matching violation for
 the exact tool PID. The fixture redirects cwd/TEMP/TMP to a disposable
 read-write root and disables optional .NET diagnostics rather than granting an
 arbitrary named-pipe capability.
+It supplies an EOF stdin pipe and isolated stdout/stderr files through an exact
+`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`; tools never share the host console. Cargo
+uses a valid minimal library manifest with `verify-project`, so the denied
+probe succeeds only when the manifest is actually unreadable. Wrapper tools
+may be pinned to their real executable for exact PID-bound event attribution.
 
 ## Observation schema
 

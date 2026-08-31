@@ -41,6 +41,7 @@ class DnsProxyProcess final {
 
     void CloseClientHandles() noexcept;
     DnsProxyProcessStatus Wait(DWORD timeout_milliseconds) noexcept;
+    bool ExitCode(DWORD& exit_code) const noexcept;
     HANDLE request_write_handle() const noexcept { return request_write_; }
     HANDLE response_read_handle() const noexcept { return response_read_; }
     std::uint16_t tcp_proxy_port() const noexcept { return tcp_proxy_port_; }

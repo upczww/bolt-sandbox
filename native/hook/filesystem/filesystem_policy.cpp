@@ -4,6 +4,7 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include "CanonicalizedPath.h"
+#include "hook/filesystem/safe_device.h"
 #include "protocol/policy_payload.h"
 #include "protocol/version.h"
 
@@ -430,6 +431,11 @@ PolicyEvaluation FilesystemPolicy::Evaluate(
     const Access access) const noexcept {
     PolicyEvaluation evaluation;
     if (path == nullptr || implementation_ == nullptr) {
+        return evaluation;
+    }
+    if (IsNullDevicePath(path)) {
+        evaluation.decision = Decision::kAllow;
+        evaluation.normalized_path = L"NUL";
         return evaluation;
     }
     try {

@@ -1,6 +1,7 @@
 #include "hook/filesystem/final_path_resolver.h"
 
 #include "hook/filesystem/path_cache.h"
+#include "hook/filesystem/safe_device.h"
 
 #include <cstddef>
 #include <filesystem>
@@ -18,6 +19,10 @@ bool ResolveFinalPathForPolicy(
     }
     if (path == nullptr || path[0] == L'\0' || open_path == nullptr) {
         return false;
+    }
+    if (IsNullDevicePath(path)) {
+        resolved_path = L"NUL";
+        return true;
     }
     try {
         std::filesystem::path candidate{path};

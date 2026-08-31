@@ -1,6 +1,7 @@
 #include "common/execution_job.h"
 #include "common/immutable_policy_mapping.h"
 #include "common/private_pipe.h"
+#include "common/required_mitigations.h"
 #include "common/suspended_process.h"
 #include "protocol/event_frame.h"
 #include "protocol/runtime_payload.h"
@@ -542,6 +543,32 @@ bool ReadAnyFilesystemViolationForPath(
         if (payload.size() < 9 || ReadU32(payload.data()) != process_id) {
             continue;
         }
+        const std::uint16_t kind =
+            static_cast<std::uint16_t>(header[6]) |
+            (static_cast<std::uint16_t>(header[7]) << 8U);
+        if (kind != 2) {
+            if (kind == 3) {
+                const std::size_t key_length = ReadU32(payload.data() + 5);
+                if (9 + key_length == payload.size()) {
+                    const std::string key(
+                        reinterpret_cast<const char*>(payload.data() + 9),
+                        key_length);
+                    std::fprintf(
+                        stderr,
+                        "compatibility unexpected registry violation: pid=%lu operation=%u key=%s\n",
+                        static_cast<unsigned long>(process_id),
+                        static_cast<unsigned int>(payload[4]), key.c_str());
+                }
+            } else {
+                std::fprintf(
+                    stderr,
+                    "compatibility unexpected event: pid=%lu kind=%u operation=%u\n",
+                    static_cast<unsigned long>(process_id),
+                    static_cast<unsigned int>(kind),
+                    static_cast<unsigned int>(payload[4]));
+            }
+            continue;
+        }
         const std::size_t path_length = ReadU32(payload.data() + 5);
         if (9 + path_length * sizeof(wchar_t) != payload.size()) {
             continue;
@@ -553,6 +580,13 @@ bool ReadAnyFilesystemViolationForPath(
         const bool matches = CompareStringOrdinal(
                                  path.c_str(), -1, expected_path.c_str(), -1,
                                  TRUE) == CSTR_EQUAL;
+        if (!matches) {
+            std::fwprintf(
+                stderr,
+                L"compatibility unexpected violation: pid=%lu operation=%u path=%ls\n",
+                static_cast<unsigned long>(process_id),
+                static_cast<unsigned int>(payload[4]), path.c_str());
+        }
         found = found || matches;
     }
 }
@@ -3085,7 +3119,7 @@ int RunParentExitFixture(const int argument_count, wchar_t** arguments) {
 }
 
 int RunCompatibilityParent(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 7) {
+    if (argument_count != 8) {
         return 315;
     }
     const HMODULE hook = GetModuleHandleW(arguments[2]);
@@ -3110,28 +3144,115 @@ int RunCompatibilityParent(const int argument_count, wchar_t** arguments) {
     SetEnvironmentVariableW(L"DOTNET_EnableDiagnostics", L"0");
     const HANDLE process_id_mapping = reinterpret_cast<HANDLE>(
         _wcstoui64(arguments[6], nullptr, 10));
+    const HANDLE child_stdin = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[7], nullptr, 10));
     auto* process_id = static_cast<volatile LONG*>(MapViewOfFile(
         process_id_mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
         sizeof(DWORD) * 2));
-    if (process_id == nullptr) {
+    DWORD child_stdin_flags = 0;
+    if (process_id == nullptr || child_stdin == nullptr ||
+        !GetHandleInformation(child_stdin, &child_stdin_flags)) {
         return 317;
     }
-    const auto run = [&](const std::wstring& parameters, const bool expect_success) {
+    static_cast<void>(child_stdin_flags);
+    const auto run = [&](const std::wstring& parameters,
+                         const bool expect_success,
+                         const std::size_t observation_index) {
         std::wstring command = L"\"" + tool + L"\" " + parameters;
-        STARTUPINFOW startup{};
-        startup.cb = sizeof(startup);
+        SECURITY_ATTRIBUTES stream_security{};
+        stream_security.nLength = sizeof(stream_security);
+        stream_security.bInheritHandle = TRUE;
+        const std::wstring observation_name =
+            kind + (expect_success ? L"-allowed" : L"-denied");
+        const auto stdout_path =
+            compatibility_work / (observation_name + L".stdout");
+        const auto stderr_path =
+            compatibility_work / (observation_name + L".stderr");
+        const HANDLE child_stdout = CreateFileW(
+            stdout_path.c_str(), GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_DELETE, &stream_security,
+            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const HANDLE child_stderr = CreateFileW(
+            stderr_path.c_str(), GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_DELETE, &stream_security,
+            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const auto close_streams = [&] {
+            for (const HANDLE handle :
+                 {child_stdout, child_stderr}) {
+                if (handle != nullptr && handle != INVALID_HANDLE_VALUE) {
+                    CloseHandle(handle);
+                }
+            }
+        };
+        if (child_stdout == INVALID_HANDLE_VALUE ||
+            child_stderr == INVALID_HANDLE_VALUE) {
+            const DWORD stream_error = GetLastError();
+            InterlockedExchange(
+                process_id + 1,
+                static_cast<LONG>(stream_error == ERROR_SUCCESS
+                                      ? ERROR_INVALID_HANDLE
+                                      : stream_error));
+            close_streams();
+            return false;
+        }
+        const HANDLE inherited_streams[] = {
+            child_stdin, child_stdout, child_stderr};
+        SIZE_T attribute_bytes = 0;
+        InitializeProcThreadAttributeList(nullptr, 2, 0, &attribute_bytes);
+        std::vector<std::uint8_t> attribute_storage(attribute_bytes);
+        auto* attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
+            attribute_storage.data());
+        std::uint64_t mitigation =
+            bolt::common::kRequiredCreationMitigationPolicy;
+        const bool attributes_initialized =
+            InitializeProcThreadAttributeList(
+                attributes, 2, 0, &attribute_bytes) != FALSE;
+        const bool attributes_ready = attributes_initialized &&
+            UpdateProcThreadAttribute(
+                attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                const_cast<HANDLE*>(inherited_streams),
+                sizeof(inherited_streams), nullptr, nullptr) != FALSE &&
+            UpdateProcThreadAttribute(
+                attributes, 0, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+                &mitigation, sizeof(mitigation), nullptr, nullptr) != FALSE;
+        if (!attributes_ready) {
+            const DWORD attribute_error = GetLastError();
+            InterlockedExchange(
+                process_id + 1,
+                static_cast<LONG>(attribute_error == ERROR_SUCCESS
+                                      ? ERROR_INVALID_PARAMETER
+                                      : attribute_error));
+            if (attributes_initialized) {
+                DeleteProcThreadAttributeList(attributes);
+            }
+            close_streams();
+            return false;
+        }
+        STARTUPINFOEXW startup{};
+        startup.StartupInfo.cb = sizeof(startup);
+        startup.StartupInfo.dwFlags =
+            STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        startup.StartupInfo.wShowWindow = SW_HIDE;
+        startup.StartupInfo.hStdInput = child_stdin;
+        startup.StartupInfo.hStdOutput = child_stdout;
+        startup.StartupInfo.hStdError = child_stderr;
+        startup.lpAttributeList = attributes;
         PROCESS_INFORMATION process{};
-        if (!CreateProcessW(
-                tool.c_str(), command.data(), nullptr, nullptr, FALSE,
-                0, nullptr, compatibility_work.c_str(), &startup,
-                &process)) {
-            const DWORD error = GetLastError();
+        const BOOL created = CreateProcessW(
+                tool.c_str(), command.data(), nullptr, nullptr, TRUE,
+                CREATE_NEW_CONSOLE | EXTENDED_STARTUPINFO_PRESENT, nullptr,
+                compatibility_work.c_str(), &startup.StartupInfo, &process);
+        const DWORD create_error = created ? ERROR_SUCCESS : GetLastError();
+        DeleteProcThreadAttributeList(attributes);
+        close_streams();
+        if (!created) {
             std::fwprintf(
                 stderr,
                 L"compatibility CreateProcessW failed: kind=%ls error=%lu command=%ls\n",
-                kind.c_str(), static_cast<unsigned long>(error),
+                kind.c_str(), static_cast<unsigned long>(create_error),
                 command.c_str());
-            InterlockedExchange(process_id + 1, static_cast<LONG>(error));
+            InterlockedExchange(
+                process_id + 1, static_cast<LONG>(create_error));
             return false;
         }
         InterlockedExchange(
@@ -3141,6 +3262,9 @@ int RunCompatibilityParent(const int argument_count, wchar_t** arguments) {
         const bool exited =
             wait == WAIT_OBJECT_0 &&
             GetExitCodeProcess(process.hProcess, &exit_code) != FALSE;
+        InterlockedExchange(
+            process_id + 2 + observation_index,
+            exited ? static_cast<LONG>(exit_code) : -1);
         if (!exited) {
             TerminateProcess(process.hProcess, 318);
         }
@@ -3149,6 +3273,14 @@ int RunCompatibilityParent(const int argument_count, wchar_t** arguments) {
         }
         if (expect_success && exited && exit_code == 0) {
             InterlockedExchange(process_id, 0);
+        }
+        if (!exited || (expect_success ? exit_code != 0 : exit_code == 0)) {
+            std::fwprintf(
+                stderr,
+                L"compatibility command mismatch: kind=%ls expected_success=%d wait=%lu exited=%d exit=%lu parameters=%ls\n",
+                kind.c_str(), expect_success ? 1 : 0,
+                static_cast<unsigned long>(wait), exited ? 1 : 0,
+                static_cast<unsigned long>(exit_code), parameters.c_str());
         }
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
@@ -3180,13 +3312,13 @@ int RunCompatibilityParent(const int argument_count, wchar_t** arguments) {
     } else if (kind == L"cargo") {
         allowed_parameters = L"--version";
         denied_parameters =
-            L"metadata --no-deps --format-version 1 --manifest-path \"" + denied +
-            L"\"";
+            L"verify-project --manifest-path \"" + denied + L"\"";
     } else {
         return 319;
     }
-    const bool passed = run(allowed_parameters, true) &&
-                        run(denied_parameters, false);
+    const bool passed = run(allowed_parameters, true, 0) &&
+                        run(denied_parameters, false, 1);
+    CloseHandle(child_stdin);
     UnmapViewOfFile(const_cast<LONG*>(process_id));
     return passed ? 0 : 320;
 }
@@ -3898,6 +4030,7 @@ struct ParentExitProbe {
 
 struct CompatibilityProbe {
     HANDLE process_id_mapping;
+    HANDLE stdin_read;
     volatile LONG* process_id;
     std::wstring denied_path;
     std::wstring tool_root;
@@ -4196,6 +4329,7 @@ bool RunInheritedProcessTest(
     }
     if (compatibility_probe != nullptr) {
         inherited.push_back(compatibility_probe->process_id_mapping);
+        inherited.push_back(compatibility_probe->stdin_read);
     }
     if (injection_failure_probe != nullptr) {
         inherited.push_back(injection_failure_probe->marker);
@@ -4270,17 +4404,29 @@ bool RunInheritedProcessTest(
             InterlockedCompareExchange(compatibility_probe->process_id, 0, 0));
         const DWORD tool_error = static_cast<DWORD>(InterlockedCompareExchange(
             compatibility_probe->process_id + 1, 0, 0));
-        if (tool_process_id == 0 || tool_error != 0) {
+        const LONG allowed_exit = InterlockedCompareExchange(
+            compatibility_probe->process_id + 2, 0, 0);
+        const LONG denied_exit = InterlockedCompareExchange(
+            compatibility_probe->process_id + 3, 0, 0);
+        if (tool_process_id == 0 || tool_error != 0 || allowed_exit != 0 ||
+            denied_exit == 0 || denied_exit == -2) {
             std::fprintf(
-                stderr, "compatibility probe pid=%lu error=%lu ready=%d\n",
+                stderr,
+                "compatibility probe pid=%lu error=%lu allowed_exit=%ld denied_exit=%ld ready=%d\n",
                 static_cast<unsigned long>(tool_process_id),
-                static_cast<unsigned long>(tool_error), ready_ok ? 1 : 0);
+                static_cast<unsigned long>(tool_error),
+                static_cast<long>(allowed_exit),
+                static_cast<long>(denied_exit), ready_ok ? 1 : 0);
         }
-        compatibility_event_ok =
-            ready_ok && tool_process_id != 0 &&
+        const bool denied_violation_observed =
+            tool_process_id != 0 &&
             ReadAnyFilesystemViolationForPath(
                 event_pipe.handle(), tool_process_id,
                 compatibility_probe->denied_path);
+        compatibility_event_ok =
+            ready_ok && tool_process_id != 0 && tool_error == 0 &&
+            allowed_exit == 0 && denied_exit != 0 && denied_exit != -2 &&
+            denied_violation_observed;
     }
     constexpr auto breakaway_operation =
         static_cast<bolt::protocol::ProcessOperation>(3);
@@ -4572,13 +4718,16 @@ bool RunCompatibilityToolTests(
     }
     const auto denied_directory = test_root / L"compatibility-denied";
     const auto denied_path = denied_directory / L"Cargo.toml";
+    const auto denied_library = denied_directory / L"lib.rs";
     const auto compatibility_work = test_root / L"compatibility-work";
     std::error_code error;
     if (!std::filesystem::create_directories(denied_directory, error) || error ||
         !std::filesystem::create_directories(compatibility_work, error) || error ||
         !WriteFixture(
             denied_path,
-            "[package]\nname='bolt-denied'\nversion='0.0.0'\n")) {
+            "[package]\nname='bolt-denied'\nversion='0.0.0'\n"
+            "[lib]\npath='lib.rs'\n") ||
+        !WriteFixture(denied_library, "pub fn fixture() {}\n")) {
         return false;
     }
     struct Tool {
@@ -4618,23 +4767,41 @@ bool RunCompatibilityToolTests(
         inheritable.bInheritHandle = TRUE;
         const HANDLE mapping = CreateFileMappingW(
             INVALID_HANDLE_VALUE, &inheritable, PAGE_READWRITE, 0,
-            sizeof(DWORD) * 2, nullptr);
+            sizeof(DWORD) * 4, nullptr);
         auto* process_id = mapping == nullptr
                                ? nullptr
                                : static_cast<volatile LONG*>(MapViewOfFile(
                                      mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0,
-                                     0, sizeof(DWORD) * 2));
-        if (mapping == nullptr || process_id == nullptr) {
+                                     0, sizeof(DWORD) * 4));
+        HANDLE stdin_read = nullptr;
+        HANDLE stdin_write = nullptr;
+        const bool stdin_ready =
+            CreatePipe(
+                &stdin_read, &stdin_write, &inheritable, 4'096) != FALSE &&
+            SetHandleInformation(
+                stdin_write, HANDLE_FLAG_INHERIT, 0) != FALSE;
+        if (stdin_write != nullptr) {
+            CloseHandle(stdin_write);
+            stdin_write = nullptr;
+        }
+        if (mapping == nullptr || process_id == nullptr || !stdin_ready ||
+            stdin_read == nullptr) {
+            if (stdin_read != nullptr) {
+                CloseHandle(stdin_read);
+            }
             return false;
         }
         InterlockedExchange(process_id, 0);
         InterlockedExchange(process_id + 1, 0);
+        InterlockedExchange(process_id + 2, -2);
+        InterlockedExchange(process_id + 3, -2);
         const std::wstring arguments =
             L"--compatibility-parent " + std::wstring(hook_name) + L" " +
             tools[index].kind + L" \"" + tool_path + L"\" \"" +
-            denied_path.wstring() + L"\" " + HandleText(mapping);
+            denied_path.wstring() + L"\" " + HandleText(mapping) + L" " +
+            HandleText(stdin_read);
         const CompatibilityProbe probe{
-            mapping, process_id, denied_path.wstring(),
+            mapping, stdin_read, process_id, denied_path.wstring(),
             std::filesystem::path(tool_path).parent_path().wstring()};
         const bool passed = RunInheritedProcessTest(
             executable, hook_path, hook_name,
@@ -4645,6 +4812,7 @@ bool RunCompatibilityToolTests(
             &probe);
         UnmapViewOfFile(const_cast<LONG*>(process_id));
         CloseHandle(mapping);
+        CloseHandle(stdin_read);
         if (!passed) {
             std::fwprintf(
                 stderr, L"compatibility tool failed: %ls (%ls)\n",
@@ -5883,8 +6051,6 @@ bool RunProcessTests() {
     if (!RunMitigationFailureTest(executable, hook_path, hook_name) ||
         !RunAssociationLaunchTest(executable, hook_path, hook_name) ||
         !RunUnicodeLaunchPathTest(executable, hook_path, hook_name, test_root) ||
-        !RunCompatibilityToolTests(
-            executable, hook_path, hook_name, test_root) ||
         !RunInheritedProcessTest(executable, hook_path, hook_name, pipe_name)) {
         return false;
     }
@@ -5982,6 +6148,11 @@ bool RunProcessTests() {
         std::filesystem::copy_options::overwrite_existing, filesystem_error);
     if (filesystem_error ||
         !std::filesystem::is_regular_file(opposite_executable)) {
+        std::filesystem::remove(staged_opposite_hook, filesystem_error);
+        return false;
+    }
+    if (!RunCompatibilityToolTests(
+            executable, hook_path, hook_name, test_root)) {
         std::filesystem::remove(staged_opposite_hook, filesystem_error);
         return false;
     }

@@ -892,27 +892,134 @@ int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
             short_extension_error != WSAEFAULT) {
             return 256;
         }
-        return 257;
+        if (sentinel_connect_ex == nullptr) {
+            return 257;
+        }
+        return 259;
     }
     if (!address_resolution_passed) {
+        if (ansi_resolve_status != WSAEACCES) {
+            return 30'000 + ansi_resolve_status;
+        }
+        if (ansi_resolve_error != WSAEACCES) {
+            return 31'000 + ansi_resolve_error;
+        }
+        if (wide_resolve_status != WSAEACCES) {
+            return 32'000 + wide_resolve_status;
+        }
+        if (wide_resolve_error != WSAEACCES) {
+            return 33'000 + wide_resolve_error;
+        }
         return 203;
     }
     if (!dns_query_passed) {
+        if (ansi_dns_status != ERROR_ACCESS_DENIED) {
+            return 34'000 + static_cast<int>(ansi_dns_status);
+        }
+        if (wide_dns_status != ERROR_ACCESS_DENIED) {
+            return 35'000 + static_cast<int>(wide_dns_status);
+        }
+        if (utf8_dns_status != ERROR_ACCESS_DENIED) {
+            return 36'000 + static_cast<int>(utf8_dns_status);
+        }
         return 205;
     }
     if (!datagram_passed) {
+        if (send_to_status != SOCKET_ERROR || send_to_error != WSAEACCES) {
+            return 270;
+        }
+        if (wsa_send_to_status != SOCKET_ERROR ||
+            wsa_send_to_error != WSAEACCES || datagram_bytes_sent != 99) {
+            return 271;
+        }
+        if (send_msg_extension_status != 0 ||
+            send_msg_extension_bytes != sizeof(send_msg) ||
+            send_msg == nullptr || send_msg_status != SOCKET_ERROR ||
+            send_msg_error != WSAEACCES || send_msg_bytes != 99) {
+            return 272;
+        }
+        if (extension_socket == INVALID_SOCKET) {
+            return 273;
+        }
+        if (unknown_extension_status != SOCKET_ERROR ||
+            unknown_extension_error != WSAEACCES ||
+            unknown_extension_bytes != 0 ||
+            unknown_function != reinterpret_cast<void*>(
+                                    static_cast<std::uintptr_t>(1))) {
+            return 274;
+        }
+        if (rio_extension_status != SOCKET_ERROR ||
+            rio_extension_error != WSAEACCES || rio_extension_bytes != 0) {
+            return 275;
+        }
         return 206;
     }
     if (!asynchronous_resolution_passed) {
+        if (asynchronous_resolve_status != WSAEACCES) {
+            return 37'000 + asynchronous_resolve_status;
+        }
+        if (asynchronous_resolve_error != WSAEACCES) {
+            return 38'000 + asynchronous_resolve_error;
+        }
+        if (!asynchronous_results_absent) {
+            return 276;
+        }
+        if (!lookup_handle_absent) {
+            return 277;
+        }
+        if (!lookup_not_completed) {
+            return 278;
+        }
         return 207;
     }
     if (!asynchronous_ansi_resolution_passed) {
+        if (asynchronous_ansi_status != WSAEACCES) {
+            return 39'000 + asynchronous_ansi_status;
+        }
+        if (asynchronous_ansi_error != WSAEACCES) {
+            return 40'000 + asynchronous_ansi_error;
+        }
+        if (!asynchronous_ansi_results_absent) {
+            return 279;
+        }
+        if (!ansi_lookup_handle_absent) {
+            return 280;
+        }
+        if (!ansi_lookup_not_completed) {
+            return 281;
+        }
         return 208;
     }
     if (!dns_query_ex_passed) {
+        if (dns_query_ex_status != ERROR_ACCESS_DENIED) {
+            return 41'000 + static_cast<int>(dns_query_ex_status);
+        }
+        if (dns_query_result.QueryStatus != ERROR_ACCESS_DENIED) {
+            return 285;
+        }
+        if (dns_query_result.QueryOptions != 0 ||
+            dns_query_result.pQueryRecords != nullptr ||
+            dns_query_result.Reserved != nullptr) {
+            return 286;
+        }
+        if (!dns_query_ex_not_completed || denied_cancel_status == ERROR_SUCCESS) {
+            return 287;
+        }
         return 209;
     }
     if (!high_level_network_passed) {
+        if (!win_http_connect.connection_denied ||
+            win_http_connect.error != ERROR_ACCESS_DENIED) {
+            return 282;
+        }
+        if (!win_inet_wide_connect.connection_denied ||
+            win_inet_wide_connect.error != ERROR_ACCESS_DENIED) {
+            return 283;
+        }
+        if (!win_inet_ansi_connect.connection_denied ||
+            win_inet_ansi_connect.error != ERROR_ACCESS_DENIED) {
+            return 284;
+        }
         return 240;
     }
     return events_flushed ? 0 : 204;
@@ -1832,6 +1939,11 @@ int RunNetworkAllowListLeaf(const int argument_count, wchar_t** arguments) {
         return 225;
     }
     if (extended_status != 0) {
+        std::fprintf(
+            stderr,
+            "GetAddrInfoExW failed: status=%d wsa=%d results=%p lookup=%p\n",
+            extended_status, WSAGetLastError(), extended_results,
+            extended_lookup);
         return 3'000 + extended_status;
     }
     if (extended_results == nullptr) {
@@ -2130,9 +2242,12 @@ bool RunNetworkAllowListTests() {
         L"bolt-sandbox-dns-proxy.exe";
 #else
     constexpr auto hook_name = L"bolt-sandbox-x86.dll";
+    const auto current_output_directory =
+        std::filesystem::path(executable).parent_path();
     const auto proxy_path =
-        std::filesystem::path(executable).parent_path().parent_path().parent_path() /
-        L"x64\\Debug\\bolt-sandbox-dns-proxy.exe";
+        current_output_directory.parent_path().parent_path() / L"x64" /
+        current_output_directory.filename() /
+        L"bolt-sandbox-dns-proxy.exe";
 #endif
     bolt::protocol::DnsProxySession dns_session{};
     dns_session.nonce = nonce;
@@ -2291,6 +2406,8 @@ bool RunNetworkAllowListTests() {
     const auto exit_status = process.ExitCode(exit_code);
     const bool proxy_waited =
         dns_proxy->Wait(5'000) == bolt::network::DnsProxyProcessStatus::kSuccess;
+    DWORD proxy_exit_code = 0;
+    const bool proxy_exit_observed = dns_proxy->ExitCode(proxy_exit_code);
     const bool passed = ready_ok && waited && accepted != INVALID_SOCKET &&
         ipv6_accepted != INVALID_SOCKET && proxy_waited &&
         connect_ex_accepted != INVALID_SOCKET &&
@@ -2326,7 +2443,7 @@ bool RunNetworkAllowListTests() {
             stderr,
             "allow-list fixture failed: port=%u ready=%d waited=%d proxy=%d "
             "http=%d inet=%d app_proxy=%d denied_proxy=%d "
-            "denied_final=%d exit=%lu\n",
+            "denied_final=%d exit=%lu proxy_exit=%lu proxy_observed=%d\n",
             port,
             ready_ok ? 1 : 0, waited ? 1 : 0, proxy_waited ? 1 : 0,
             win_http_served ? 1 : 0, win_inet_served ? 1 : 0,
@@ -2336,7 +2453,9 @@ bool RunNetworkAllowListTests() {
                 : 0,
             denied_proxy_connection == INVALID_SOCKET ? 1 : 0,
             denied_final_proxy_connection == INVALID_SOCKET ? 1 : 0,
-            static_cast<unsigned long>(exit_code));
+            static_cast<unsigned long>(exit_code),
+            static_cast<unsigned long>(proxy_exit_code),
+            proxy_exit_observed ? 1 : 0);
     }
     return passed;
 }

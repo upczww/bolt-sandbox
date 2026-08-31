@@ -250,7 +250,7 @@ fn validate_registry_body(reader: &mut BodyReader<'_>) -> Result<(), PolicyPaylo
         return Err(PolicyPayloadError::InvalidBody);
     }
     for _ in 0..rule_count {
-        if reader.read_u8()? > 3 || reader.read_u8()? > 4 {
+        if reader.read_u8()? > 5 || reader.read_u8()? > 4 {
             return Err(PolicyPayloadError::InvalidBody);
         }
         let component_count = reader.read_count()?;
@@ -441,6 +441,8 @@ fn encode_registry(
             RegistryRuleKind::ReadOnly => 1,
             RegistryRuleKind::InheritUser => 2,
             RegistryRuleKind::ReadWrite => 3,
+            RegistryRuleKind::ReadOnlyKey => 4,
+            RegistryRuleKind::HideKey => 5,
         })?;
         writer.write_u8(match rule.root.hive {
             RegistryHive::ClassesRoot => 0,
@@ -923,7 +925,7 @@ mod tests {
 
         let mut invalid_kind = Vec::new();
         push_u32(&mut invalid_kind, 1);
-        invalid_kind.extend_from_slice(&[4, 0]);
+        invalid_kind.extend_from_slice(&[6, 0]);
         push_u32(&mut invalid_kind, 0);
 
         let mut invalid_hive = Vec::new();

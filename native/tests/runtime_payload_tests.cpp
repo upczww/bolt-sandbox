@@ -22,6 +22,7 @@ bool RunRuntimePayloadTests() {
         bolt::protocol::RuntimeStartupFault::kMitigationFailure;
     expected.descendant_startup_fault =
         bolt::protocol::RuntimeStartupFault::kMitigationFailure;
+    expected.isolated_console = true;
 
     const auto encoded = bolt::protocol::EncodeRuntimePayload(expected);
     bolt::protocol::RuntimePayload decoded{};
@@ -43,6 +44,22 @@ bool RunRuntimePayloadTests() {
     if (bolt::protocol::DecodeRuntimePayload(
             invalid_startup_fault.data(), invalid_startup_fault.size(), decoded) !=
         bolt::protocol::RuntimePayloadStatus::kInvalidStartupFault) {
+        return false;
+    }
+    auto invalid_console_capability = encoded;
+    invalid_console_capability[126] = 2;
+    if (bolt::protocol::DecodeRuntimePayload(
+            invalid_console_capability.data(),
+            invalid_console_capability.size(), decoded) !=
+        bolt::protocol::RuntimePayloadStatus::kInvalidCapability) {
+        return false;
+    }
+    auto noncanonical_reserved = encoded;
+    noncanonical_reserved[127] = 1;
+    if (bolt::protocol::DecodeRuntimePayload(
+            noncanonical_reserved.data(), noncanonical_reserved.size(),
+            decoded) !=
+        bolt::protocol::RuntimePayloadStatus::kNonCanonicalReservedBytes) {
         return false;
     }
 

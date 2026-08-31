@@ -179,6 +179,12 @@ FreeAddrInfoExWFunction g_free_addr_info_ex_w = FreeAddrInfoExW;
 GetAddrInfoExAFunction g_get_addr_info_ex_a = GetAddrInfoExA;
 FreeAddrInfoExAFunction g_free_addr_info_ex_a = FreeAddrInfoExA;
 #pragma warning(pop)
+#if defined(_M_IX86)
+decltype(&WSAStartup) g_wsa_startup = WSAStartup;
+SRWLOCK g_winsock_entrypoint_lock = SRWLOCK_INIT;
+bool g_winsock_entrypoint_attempted = false;
+bool g_winsock_entrypoint_succeeded = false;
+#endif
 DnsQueryAFunction g_dns_query_a = DnsQuery_A;
 DnsQueryUtf8Function g_dns_query_utf8 = DnsQuery_UTF8;
 DnsQueryWFunction g_dns_query_w = DnsQuery_W;
@@ -215,6 +221,32 @@ INT WSAAPI DetouredWsaSendMsg(
     LPDWORD bytes_sent,
     LPWSAOVERLAPPED overlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE completion_routine) noexcept;
+
+int WSAAPI DetouredSendTo(
+    SOCKET socket,
+    const char* buffer,
+    int length,
+    int flags,
+    const sockaddr* destination,
+    int destination_length) noexcept;
+
+int WSAAPI DetouredWsaSendTo(
+    SOCKET socket,
+    LPWSABUF buffers,
+    DWORD buffer_count,
+    LPDWORD bytes_sent,
+    DWORD flags,
+    const sockaddr* destination,
+    int destination_length,
+    LPWSAOVERLAPPED overlapped,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE completion_routine) noexcept;
+
+int WSAAPI DetouredGetPeerName(
+    SOCKET socket,
+    sockaddr* address,
+    int* address_length) noexcept;
+
+int WSAAPI DetouredCloseSocket(SOCKET socket) noexcept;
 
 bool NetworkIsDenied() noexcept {
     const auto* policy = g_policy.get();
@@ -1465,13 +1497,18 @@ INT WSAAPI DetouredGetAddrInfoExW(
     std::array<char, protocol::kMaximumEventDomainBytes + 1U> domain{};
     std::uint16_t port = 0;
     protocol::DnsProxyQueryFamily family{};
-    if (policy != nullptr && policy->mode() == Mode::kAllowList &&
-        g_dns_channel != nullptr && CopyAsciiDomain(node_name, domain) &&
-        ParsePort(service_name, port) && ReadQueryFamily(hints, family)) {
+    const bool policy_allows_proxy =
+        policy != nullptr && policy->mode() == Mode::kAllowList;
+    const bool channel_present = g_dns_channel != nullptr;
+    const bool domain_valid = CopyAsciiDomain(node_name, domain);
+    const bool port_valid = ParsePort(service_name, port);
+    const bool family_valid = ReadQueryFamily(hints, family);
+    if (policy_allows_proxy && channel_present && domain_valid && port_valid &&
+        family_valid) {
         std::vector<protocol::DnsProxyAddress> addresses;
-        if (g_dns_channel->Resolve(
-                domain.data(), port, GetTickCount64(), &addresses, family) ==
-            DnsProxyChannelStatus::kSuccess) {
+        const auto channel_status = g_dns_channel->Resolve(
+            domain.data(), port, GetTickCount64(), &addresses, family);
+        if (channel_status == DnsProxyChannelStatus::kSuccess) {
             const INT build = BuildAddressInfoResults<ADDRINFOEXW>(
                 addresses, port, hints, results, 4);
             if (build == 0) {
@@ -1560,6 +1597,91 @@ void WSAAPI DetouredFreeAddrInfoExA(PADDRINFOEXA results) noexcept {
         g_free_addr_info_ex_a(results);
     }
 }
+
+#if defined(_M_IX86)
+bool PatchRelativeJump(
+    const PVOID entry,
+    const PVOID detour) noexcept {
+    if (entry == nullptr || detour == nullptr) {
+        return false;
+    }
+    const auto source = reinterpret_cast<std::uintptr_t>(entry);
+    const auto destination = reinterpret_cast<std::uintptr_t>(detour);
+    const auto displacement =
+        static_cast<std::int64_t>(destination) -
+        static_cast<std::int64_t>(source + 5U);
+    if (displacement < (std::numeric_limits<std::int32_t>::min)() ||
+        displacement > (std::numeric_limits<std::int32_t>::max)()) {
+        return false;
+    }
+    std::array<std::uint8_t, 5> jump{
+        0xE9, 0, 0, 0, 0};
+    const auto relative = static_cast<std::int32_t>(displacement);
+    std::memcpy(jump.data() + 1, &relative, sizeof(relative));
+    DWORD prior_protection = 0;
+    if (!VirtualProtect(
+            entry, jump.size(), PAGE_EXECUTE_READWRITE,
+            &prior_protection)) {
+        return false;
+    }
+    std::memcpy(entry, jump.data(), jump.size());
+    FlushInstructionCache(GetCurrentProcess(), entry, jump.size());
+    DWORD ignored = 0;
+    return VirtualProtect(
+               entry, jump.size(), prior_protection, &ignored) != FALSE;
+}
+
+bool RestoreWinsockEntrypoints() noexcept {
+    const HMODULE winsock = GetModuleHandleW(L"ws2_32.dll");
+    if (winsock == nullptr) {
+        return false;
+    }
+    struct Entrypoint {
+        const char* name;
+        PVOID detour;
+    };
+    const std::array<Entrypoint, 14> entrypoints = {{
+        {"socket", reinterpret_cast<PVOID>(DetouredSocket)},
+        {"WSASocketW", reinterpret_cast<PVOID>(DetouredWsaSocketW)},
+        {"WSASocketA", reinterpret_cast<PVOID>(DetouredWsaSocketA)},
+        {"connect", reinterpret_cast<PVOID>(DetouredConnect)},
+        {"WSAConnect", reinterpret_cast<PVOID>(DetouredWsaConnect)},
+        {"WSAIoctl", reinterpret_cast<PVOID>(DetouredWsaIoctl)},
+        {"getaddrinfo", reinterpret_cast<PVOID>(DetouredGetAddrInfoA)},
+        {"GetAddrInfoW", reinterpret_cast<PVOID>(DetouredGetAddrInfoW)},
+        {"GetAddrInfoExW", reinterpret_cast<PVOID>(DetouredGetAddrInfoExW)},
+        {"GetAddrInfoExA", reinterpret_cast<PVOID>(DetouredGetAddrInfoExA)},
+        {"sendto", reinterpret_cast<PVOID>(DetouredSendTo)},
+        {"WSASendTo", reinterpret_cast<PVOID>(DetouredWsaSendTo)},
+        {"getpeername", reinterpret_cast<PVOID>(DetouredGetPeerName)},
+        {"closesocket", reinterpret_cast<PVOID>(DetouredCloseSocket)},
+    }};
+    for (const auto& entrypoint : entrypoints) {
+        const PVOID entry = GetProcAddress(winsock, entrypoint.name);
+        if (!PatchRelativeJump(entry, entrypoint.detour)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int WSAAPI DetouredWsaStartup(
+    const WORD version,
+    LPWSADATA data) noexcept {
+    const int status = g_wsa_startup(version, data);
+    if (status != ERROR_SUCCESS) {
+        return status;
+    }
+    AcquireSRWLockExclusive(&g_winsock_entrypoint_lock);
+    if (!g_winsock_entrypoint_attempted) {
+        g_winsock_entrypoint_attempted = true;
+        g_winsock_entrypoint_succeeded = RestoreWinsockEntrypoints();
+    }
+    const bool succeeded = g_winsock_entrypoint_succeeded;
+    ReleaseSRWLockExclusive(&g_winsock_entrypoint_lock);
+    return succeeded ? ERROR_SUCCESS : WSASYSNOTREADY;
+}
+#endif
 
 DNS_STATUS WINAPI DetouredDnsQueryA(
     PCSTR name,
@@ -1926,6 +2048,11 @@ HookInstallStatus InstallNetworkHooks(
     if (DetourTransactionBegin() != NO_ERROR ||
         DetourUpdateThread(GetCurrentThread()) != NO_ERROR ||
         !AttachSocketCreationHooks() ||
+#if defined(_M_IX86)
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_wsa_startup),
+            reinterpret_cast<PVOID>(DetouredWsaStartup)) != NO_ERROR ||
+#endif
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_connect),
             reinterpret_cast<PVOID>(DetouredConnect)) != NO_ERROR ||

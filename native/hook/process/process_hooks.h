@@ -22,6 +22,8 @@ bool ConfigureProcessRuntime(
     const protocol::RuntimePayload& payload,
     const char* hook_dll_path) noexcept;
 
+bool AllowsIsolatedConsole() noexcept;
+
 ProcessHookPrepareStatus PrepareProcessHooks(
     const std::uint8_t* policy_payload,
     std::size_t policy_length) noexcept;

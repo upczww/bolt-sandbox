@@ -364,6 +364,13 @@ At minimum, cover:
 - Shell file operations used by PowerShell and Explorer-compatible tools.
 - Win32 and corresponding NT Native API paths.
 
+The stateless Windows `NUL` device is a distinct safe capability: exact DOS/NT
+aliases preserve discard/EOF behavior, while console, pipe, mailslot, and
+arbitrary device namespaces remain denied. `CONIN$`/`CONOUT$` are available
+only when a trusted creation request assigns a new isolated console; this
+capability is integrity-checked in the runtime payload and is never inferred
+from an executable name. Default redirected sessions expose no host console.
+
 Every path must be resolved and checked after normalization. Reparse-point and
 link targets must be validated to prevent escaping through an allowed path.
 
@@ -569,6 +576,12 @@ Registry support follows filesystem parity and uses explicit rules:
 - `inherit_user`: preserve normal user permissions for named compatibility keys.
 - `read_write`: permit normal user-authorized access to named keys.
 
+Trusted compatibility metadata additionally supports `read_only_key` for one
+exact key without granting descendants, and `hide_key` for privacy-preserving
+reads that emit a violation but return not-found; hidden-key writes still fail
+with access denied. This permits narrow OS version and runtime policy queries
+without exposing values such as the user's persistent environment.
+
 Protocol version 1 accepts at most 1,024 rules in each registry category and
 2,048 registry rules in total. A normalized absolute key name is limited to 255
 UTF-16 code units, matching the Windows registry key-name limit. Counts and
@@ -714,6 +727,13 @@ are rejected before reaching Windows when they omit any mandatory bit, and a
 typed `MitigationWeakening` process violation is emitted. Malformed buffers and
 all unrelated policy classes pass to Windows so native validation and compatible
 self-hardening semantics are preserved.
+
+The compatibility matrix runs every tool below this same mitigation profile
+with an exact standard-handle list, disposable redirected state, and a
+PID-bound denied probe. On x86, Winsock may restore selected export entrypoints
+while `WSAStartup` initializes provider dispatch; immediately after successful
+startup the hook rewrites those entrypoints back to the existing Detours
+trampolines, without a runtime Detours transaction.
 
 If resistance to malicious native binaries becomes a requirement, add an
 AppContainer/BaseContainer backend instead of attempting to make DLL hooks a

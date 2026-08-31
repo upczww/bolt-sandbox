@@ -36,6 +36,7 @@ struct RuntimePayload {
     std::uint16_t tcp_proxy_ipv6_port = 0;
     RuntimeStartupFault startup_fault = RuntimeStartupFault::kNone;
     RuntimeStartupFault descendant_startup_fault = RuntimeStartupFault::kNone;
+    bool isolated_console = false;
 
     bool operator==(const RuntimePayload& other) const noexcept {
         return target_process_id == other.target_process_id &&
@@ -50,7 +51,8 @@ struct RuntimePayload {
                tcp_proxy_port == other.tcp_proxy_port &&
                tcp_proxy_ipv6_port == other.tcp_proxy_ipv6_port &&
                startup_fault == other.startup_fault &&
-               descendant_startup_fault == other.descendant_startup_fault;
+               descendant_startup_fault == other.descendant_startup_fault &&
+               isolated_console == other.isolated_console;
     }
     bool operator!=(const RuntimePayload& other) const noexcept { return !(*this == other); }
 };
@@ -67,6 +69,7 @@ enum class RuntimePayloadStatus : std::uint8_t {
     kInvalidHandle,
     kInvalidDnsProxy,
     kInvalidStartupFault,
+    kInvalidCapability,
     kNonCanonicalReservedBytes,
 };
 

@@ -26,7 +26,8 @@ constexpr std::size_t kTcpProxyPortOffset = 120;
 constexpr std::size_t kTcpProxyIpv6PortOffset = 122;
 constexpr std::size_t kStartupFaultOffset = 124;
 constexpr std::size_t kDescendantStartupFaultOffset = 125;
-constexpr std::size_t kReservedOffset = 126;
+constexpr std::size_t kIsolatedConsoleOffset = 126;
+constexpr std::size_t kReservedOffset = 127;
 constexpr std::size_t kMinimumPolicyLength = kPolicyEnvelopeLength;
 constexpr std::size_t kMaximumPolicyLength = kPolicyEnvelopeLength + kPolicyMaximumBodyLength;
 
@@ -112,6 +113,7 @@ std::array<std::uint8_t, kRuntimePayloadLength> EncodeRuntimePayload(
         static_cast<std::uint8_t>(payload.startup_fault);
     encoded[kDescendantStartupFaultOffset] =
         static_cast<std::uint8_t>(payload.descendant_startup_fault);
+    encoded[kIsolatedConsoleOffset] = payload.isolated_console ? 1 : 0;
     return encoded;
 }
 
@@ -158,6 +160,10 @@ RuntimePayloadStatus DecodeRuntimePayload(
         static_cast<RuntimeStartupFault>(encoded[kStartupFaultOffset]);
     decoded.descendant_startup_fault = static_cast<RuntimeStartupFault>(
         encoded[kDescendantStartupFaultOffset]);
+    if (encoded[kIsolatedConsoleOffset] > 1) {
+        return RuntimePayloadStatus::kInvalidCapability;
+    }
+    decoded.isolated_console = encoded[kIsolatedConsoleOffset] != 0;
     if (decoded.target_process_id == 0) {
         return RuntimePayloadStatus::kInvalidProcessId;
     }
@@ -194,7 +200,7 @@ RuntimePayloadStatus DecodeRuntimePayload(
             RuntimeStartupFault::kMitigationFailure) {
         return RuntimePayloadStatus::kInvalidStartupFault;
     }
-    if (encoded[kReservedOffset] != 0 || encoded[kReservedOffset + 1] != 0) {
+    if (encoded[kReservedOffset] != 0) {
         return RuntimePayloadStatus::kNonCanonicalReservedBytes;
     }
     output = decoded;

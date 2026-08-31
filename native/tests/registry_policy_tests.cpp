@@ -22,6 +22,12 @@ bool RunRegistryPolicyTests() {
         {bolt::tests::RegistryRuleKind::kReadOnly,
          bolt::tests::RegistryHive::kLocalMachine,
          {"Software", "Vendor"}},
+        {bolt::tests::RegistryRuleKind::kReadOnlyKey,
+         bolt::tests::RegistryHive::kLocalMachine,
+         {"Software", "VersionMetadata"}},
+        {bolt::tests::RegistryRuleKind::kHideKey,
+         bolt::tests::RegistryHive::kCurrentUser,
+         {"HiddenMetadata"}},
     };
     const auto payload = bolt::tests::SealPolicy(
         {}, bolt::tests::ChildProcessPolicyKind::kInherit,
@@ -70,6 +76,25 @@ bool RunRegistryPolicyTests() {
             Hive::kLocalMachine,
             L"Software\\Wow6432Node\\Vendor\\Product",
             Access::kWrite) != Decision::kDeny ||
+        policy->Decide(
+            Hive::kLocalMachine, L"Software\\VersionMetadata",
+            Access::kRead) != Decision::kAllow ||
+        policy->Decide(
+            Hive::kLocalMachine, L"Software\\VersionMetadata",
+            Access::kWrite) != Decision::kDeny ||
+        policy->Decide(
+            Hive::kLocalMachine,
+            L"Software\\VersionMetadata\\Sensitive",
+            Access::kRead) != Decision::kDeny ||
+        policy->Decide(
+            Hive::kCurrentUser, L"HiddenMetadata",
+            Access::kRead) != Decision::kNotFound ||
+        policy->Decide(
+            Hive::kCurrentUser, L"HiddenMetadata",
+            Access::kWrite) != Decision::kDeny ||
+        policy->Decide(
+            Hive::kCurrentUser, L"HiddenMetadata\\Sensitive",
+            Access::kRead) != Decision::kDeny ||
         policy->Decide(Hive::kCurrentUser, L"Outside", Access::kRead) !=
             Decision::kDeny ||
         policy->Decide(

@@ -23,6 +23,8 @@ namespace {
 
 constexpr NTSTATUS kStatusAccessDenied =
     static_cast<NTSTATUS>(0xC0000022L);
+constexpr NTSTATUS kStatusObjectNameNotFound =
+    static_cast<NTSTATUS>(0xC0000034L);
 constexpr NTSTATUS kStatusBufferOverflow =
     static_cast<NTSTATUS>(0x80000005L);
 constexpr NTSTATUS kStatusBufferTooSmall =
@@ -450,6 +452,9 @@ bool AllowedNativeOpen(
         decision == RegistryDecision::kInheritUser) {
         return true;
     }
+    if (decision == RegistryDecision::kNotFound) {
+        return false;
+    }
     return access != RegistryAccess::kWrite &&
            g_policy->MayTraverse(hive, relative.c_str());
 }
@@ -557,6 +562,11 @@ NTSTATUS GuardOpen(
         ReportRegistryViolation(requested, operation);
         WriteNullHandle(key);
         return kStatusAccessDenied;
+    }
+    if (requested_decision == RegistryDecision::kNotFound) {
+        ReportRegistryViolation(requested, operation);
+        WriteNullHandle(key);
+        return kStatusObjectNameNotFound;
     }
     if (requested_decision == RegistryDecision::kDeny &&
         !AllowedNativeOpen(requested, access)) {

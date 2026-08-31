@@ -1721,16 +1721,47 @@ int RunFilesystemRaceChild(
             return 324;
         }
         CloseHandle(backup_directory);
-        for (const wchar_t* pseudo_file : {
-                 L"NUL", L"CONOUT$", L"\\\\.\\pipe\\bolt-arbitrary"}) {
+        for (const wchar_t* null_device : {L"NUL", L"\\\\.\\NUL"}) {
             SetLastError(ERROR_SUCCESS);
-            const HANDLE pseudo = CreateFileW(
-                pseudo_file, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+            const HANDLE null_handle = CreateFileW(
+                null_device, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (pseudo != INVALID_HANDLE_VALUE ||
-                GetLastError() != ERROR_ACCESS_DENIED) {
-                if (pseudo != INVALID_HANDLE_VALUE) {
-                    CloseHandle(pseudo);
+            const char discarded[] = "discarded";
+            DWORD written = 0;
+            std::array<char, 1> empty{};
+            DWORD read = 1;
+            const bool null_semantics =
+                null_handle != INVALID_HANDLE_VALUE &&
+                WriteFile(
+                    null_handle, discarded,
+                    static_cast<DWORD>(sizeof(discarded) - 1), &written,
+                    nullptr) != FALSE &&
+                written == sizeof(discarded) - 1 &&
+                ReadFile(null_handle, empty.data(), 1, &read, nullptr) != FALSE &&
+                read == 0;
+            if (null_handle != INVALID_HANDLE_VALUE) {
+                CloseHandle(null_handle);
+            }
+            if (!null_semantics) {
+                return 325;
+            }
+        }
+        for (const wchar_t* denied_device : {
+                 L"CONOUT$", L"\\\\.\\pipe\\bolt-arbitrary"}) {
+            SetLastError(ERROR_SUCCESS);
+            const HANDLE denied_handle = CreateFileW(
+                denied_device, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            const DWORD denied_error = GetLastError();
+            const bool console_unavailable =
+                CompareStringOrdinal(
+                    denied_device, -1, L"CONOUT$", -1, TRUE) == CSTR_EQUAL &&
+                denied_error == ERROR_FILE_NOT_FOUND;
+            if (denied_handle != INVALID_HANDLE_VALUE ||
+                (denied_error != ERROR_ACCESS_DENIED &&
+                 !console_unavailable)) {
+                if (denied_handle != INVALID_HANDLE_VALUE) {
+                    CloseHandle(denied_handle);
                 }
                 return 325;
             }

@@ -484,6 +484,9 @@ bool InstallDescendantRuntime(
     child_payload.startup_fault = g_runtime_payload.descendant_startup_fault;
     child_payload.descendant_startup_fault =
         protocol::RuntimeStartupFault::kNone;
+    child_payload.isolated_console =
+        g_runtime_payload.isolated_console ||
+        (caller_creation_flags & CREATE_NEW_CONSOLE) != 0;
     if (dns_proxy_configured) {
         child_payload.dns_request_handle =
             reinterpret_cast<std::uintptr_t>(remote_dns_request);
@@ -1236,6 +1239,10 @@ bool ConfigureProcessRuntime(
     g_runtime_payload = payload;
     g_runtime_configured = true;
     return true;
+}
+
+bool AllowsIsolatedConsole() noexcept {
+    return g_runtime_configured && g_runtime_payload.isolated_console;
 }
 
 ProcessHookPrepareStatus PrepareProcessHooks(

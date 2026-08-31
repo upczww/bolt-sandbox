@@ -101,7 +101,7 @@ and reason code—not merely identical serialized bytes.
 | FS-016 | Use `\??\`, `\\.\`, volume GUID, and NT device paths | Target resolves to the final volume path before policy evaluation |
 | FS-017 | Use an 8.3 short name alias for a denied target | Access is denied; event names the canonical target |
 | FS-018 | Open an alternate data stream under allowed and denied files | Decision follows the base file plus stream semantics; no alias escape |
-| FS-019 | Open reserved device names and arbitrary non-filesystem device paths for data access | Access is denied; device namespaces cannot inherit a filesystem path grant |
+| FS-019 | Open the stateless `NUL` device, other reserved device names, and arbitrary non-filesystem device paths | `NUL` preserves discard/EOF semantics; console, pipe, mailslot, and arbitrary device namespaces remain denied and cannot inherit a filesystem path grant |
 | FS-020 | Access a path containing Unicode normalization lookalikes | No textual normalization conflates distinct filesystem objects; final resolved target controls |
 | FS-021 | Symlink inside allowed root points inside same root | Authorized operation succeeds |
 | FS-022 | Symlink inside allowed root points outside/denied | Read and mutation through the link are denied |

@@ -260,6 +260,12 @@ DnsProxyProcessStatus DnsProxyProcess::Wait(const DWORD timeout) noexcept {
                : DnsProxyProcessStatus::kProcessFailed;
 }
 
+bool DnsProxyProcess::ExitCode(DWORD& exit_code) const noexcept {
+    exit_code = 0;
+    return process_ != nullptr &&
+           GetExitCodeProcess(process_, &exit_code) != FALSE;
+}
+
 void DnsProxyProcess::Close() noexcept {
     CloseClientHandles();
     if (process_ != nullptr) {
