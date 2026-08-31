@@ -646,6 +646,8 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
         reinterpret_cast<const BYTE*>(changed), sizeof(changed));
     const LSTATUS read_only_delete_value =
         RegDeleteValueW(read_key, L"Seed");
+    const LSTATUS read_only_delete_key =
+        RegDeleteKeyW(read_key, L"ExistingChild");
     HKEY blocked_child = nullptr;
     DWORD blocked_disposition = 99;
     wchar_t blocked_child_text[] = L"BlockedChild";
@@ -763,6 +765,13 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
         HKEY_CURRENT_USER, outside.c_str(), 0, KEY_READ, &outside_key);
     if (outside_key != nullptr) {
         RegCloseKey(outside_key);
+    }
+    HKEY outside_write_key = nullptr;
+    const LSTATUS outside_write_open = RegOpenKeyExW(
+        HKEY_CURRENT_USER, outside.c_str(), 0, KEY_SET_VALUE,
+        &outside_write_key);
+    if (outside_write_key != nullptr) {
+        RegCloseKey(outside_write_key);
     }
     HKEY linked_sensitive_key = nullptr;
     const LSTATUS linked_sensitive_open = RegOpenKeyExW(
@@ -1237,6 +1246,7 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     }
     if (read_only_set != ERROR_ACCESS_DENIED ||
         read_only_delete_value != ERROR_ACCESS_DENIED ||
+        read_only_delete_key != ERROR_ACCESS_DENIED ||
         read_only_create != static_cast<LONG>(0xC0000022L) ||
         blocked_child != nullptr ||
         blocked_disposition != 99 ||
@@ -1249,7 +1259,9 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     if (denied_key != nullptr) {
         return 715;
     }
-    if (outside_open != ERROR_ACCESS_DENIED || outside_key != nullptr) {
+    if (outside_open != ERROR_ACCESS_DENIED || outside_key != nullptr ||
+        outside_write_open != ERROR_ACCESS_DENIED ||
+        outside_write_key != nullptr) {
         return 704;
     }
     if (linked_sensitive_open != ERROR_ACCESS_DENIED ||
@@ -1557,6 +1569,9 @@ bool RunRegistryHookTests() {
          CanonicalCurrentUserKey(root + L"\\ReadOnly")},
         {bolt::protocol::RegistryOperation::kDelete,
          CanonicalCurrentUserKey(root + L"\\ReadOnly")},
+        {bolt::protocol::RegistryOperation::kOpen,
+         CanonicalCurrentUserKey(
+             root + L"\\ReadOnly\\ExistingChild")},
         {bolt::protocol::RegistryOperation::kCreate,
          CanonicalCurrentUserKey(root + L"\\ReadOnly\\BlockedChild")},
         {bolt::protocol::RegistryOperation::kRename,
@@ -1573,6 +1588,8 @@ bool RunRegistryHookTests() {
          CanonicalCurrentUserKey(root + L"\\DuplicatedReadOnly")},
         {bolt::protocol::RegistryOperation::kOpen,
          CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
+        {bolt::protocol::RegistryOperation::kOpen,
+         CanonicalCurrentUserKey(root + L"\\Outside")},
         {bolt::protocol::RegistryOperation::kOpen,
          CanonicalCurrentUserKey(root + L"\\Outside")},
         {bolt::protocol::RegistryOperation::kOpen,
@@ -1674,6 +1691,7 @@ bool RunRegistryHookTests() {
     const bool side_effects_ok =
         ValueEquals(root + L"\\ReadOnly", L"Seed", L"seed") &&
         KeyMissing(root + L"\\ReadOnly\\BlockedChild") &&
+        !KeyMissing(root + L"\\ReadOnly\\ExistingChild") &&
         KeyMissing(root + L"\\DuplicatedReadOnly") &&
         !KeyMissing(root + L"\\ReadOnly") &&
         ValueEquals(
