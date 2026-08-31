@@ -22,6 +22,7 @@ pub(super) enum TransportKind {
 pub(super) enum ControlKind {
     Cancel = 1,
     Timeout = 2,
+    ProtocolIntegrity = 3,
 }
 
 pub(super) fn write_control(writer: &mut impl Write, kind: ControlKind) -> io::Result<()> {

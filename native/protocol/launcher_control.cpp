@@ -26,7 +26,8 @@ std::uint16_t ReadU16(
 
 bool IsKnown(const LauncherControlKind kind) noexcept {
     return kind == LauncherControlKind::kCancel ||
-           kind == LauncherControlKind::kTimeout;
+           kind == LauncherControlKind::kTimeout ||
+           kind == LauncherControlKind::kProtocolIntegrity;
 }
 
 }  // namespace

@@ -11,6 +11,7 @@ inline constexpr std::size_t kLauncherControlLength = 8;
 enum class LauncherControlKind : std::uint16_t {
     kCancel = 1,
     kTimeout = 2,
+    kProtocolIntegrity = 3,
 };
 
 enum class LauncherControlStatus : std::uint8_t {

@@ -28,6 +28,7 @@
 namespace {
 
 constexpr DWORD kStartupTimeoutMilliseconds = 5'000;
+constexpr DWORD kEventClosureGraceMilliseconds = 100;
 constexpr std::size_t kStreamChunkLength = 4'096;
 
 void CloseIfValid(const HANDLE handle) noexcept {
@@ -174,12 +175,42 @@ void ForwardByteStream(
     writer.Write(eof_kind, nullptr, 0);
 }
 
+enum class EventForwardFailure : std::uint8_t {
+    kNone = 0,
+    kProtocolIntegrity = 1,
+    kChannelLost = 2,
+};
+
+void SignalEventFailure(
+    const HANDLE target_process,
+    const HANDLE signal,
+    std::atomic<EventForwardFailure>& failure,
+    const EventForwardFailure reason) noexcept {
+    if (reason == EventForwardFailure::kChannelLost &&
+        WaitForSingleObject(
+            target_process, kEventClosureGraceMilliseconds) ==
+            WAIT_OBJECT_0) {
+        return;
+    }
+    EventForwardFailure expected = EventForwardFailure::kNone;
+    if (failure.compare_exchange_strong(
+            expected, reason, std::memory_order_acq_rel)) {
+        SetEvent(signal);
+    }
+}
+
 void ForwardEventStream(
     const HANDLE input,
+    const HANDLE target_process,
+    const HANDLE failure_signal,
+    std::atomic<EventForwardFailure>& failure,
     TransportWriter& writer) noexcept {
     std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
     for (;;) {
         if (!ReadExact(input, header.data(), header.size())) {
+            SignalEventFailure(
+                target_process, failure_signal, failure,
+                EventForwardFailure::kChannelLost);
             break;
         }
         std::uint32_t payload_length = 0;
@@ -188,12 +219,18 @@ void ForwardEventStream(
         if (payload_length >
             bolt::protocol::kLauncherTransportMaximumPayload -
                 header.size()) {
+            SignalEventFailure(
+                target_process, failure_signal, failure,
+                EventForwardFailure::kProtocolIntegrity);
             break;
         }
         std::vector<std::uint8_t> frame;
         try {
             frame.resize(header.size() + payload_length);
         } catch (...) {
+            SignalEventFailure(
+                target_process, failure_signal, failure,
+                EventForwardFailure::kProtocolIntegrity);
             break;
         }
         std::copy(header.begin(), header.end(), frame.begin());
@@ -203,6 +240,9 @@ void ForwardEventStream(
             !writer.Write(
                 bolt::protocol::LauncherTransportKind::kEvent, frame.data(),
                 static_cast<std::uint32_t>(frame.size()))) {
+            SignalEventFailure(
+                target_process, failure_signal, failure,
+                EventForwardFailure::kProtocolIntegrity);
             break;
         }
     }
@@ -400,6 +440,10 @@ int RunDecodedSession(
     ControlReaderContext control{};
     control.input = GetStdHandle(STD_INPUT_HANDLE);
     control.signaled = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    const HANDLE event_failure_signal =
+        CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    std::atomic<EventForwardFailure> event_failure{
+        EventForwardFailure::kNone};
     const HANDLE control_thread =
         control.signaled == nullptr
             ? nullptr
@@ -407,6 +451,7 @@ int RunDecodedSession(
                   nullptr, 0, ReadControlFrame, &control, 0, nullptr);
     std::memcpy(acknowledgment.data() + 8, &process_id, sizeof(process_id));
     if (process_id == 0 || control_thread == nullptr ||
+        event_failure_signal == nullptr ||
         !WriteExact(
             GetStdHandle(STD_OUTPUT_HANDLE), acknowledgment.data(),
             acknowledgment.size())) {
@@ -414,6 +459,7 @@ int RunDecodedSession(
         process.Wait(5'000);
         StopControlReader(control_thread);
         CloseIfValid(control.signaled);
+        CloseIfValid(event_failure_signal);
         CloseHandle(stdout_read);
         CloseHandle(stderr_read);
         CloseHandle(release);
@@ -427,6 +473,7 @@ int RunDecodedSession(
         process.Wait(5'000);
         StopControlReader(control_thread);
         CloseHandle(control.signaled);
+        CloseHandle(event_failure_signal);
         CloseHandle(stdout_read);
         CloseHandle(stderr_read);
         CloseHandle(release);
@@ -447,7 +494,9 @@ int RunDecodedSession(
             bolt::protocol::LauncherTransportKind::kStderrEof,
             std::ref(writer));
         event_thread = std::thread(
-            ForwardEventStream, event_pipe.handle(), std::ref(writer));
+            ForwardEventStream, event_pipe.handle(), process.process_handle(),
+            event_failure_signal, std::ref(event_failure),
+            std::ref(writer));
     } catch (...) {
         job.Terminate(ERROR_NOT_ENOUGH_MEMORY);
         process.Wait(5'000);
@@ -466,6 +515,7 @@ int RunDecodedSession(
         }
         StopControlReader(control_thread);
         CloseHandle(control.signaled);
+        CloseHandle(event_failure_signal);
         CloseHandle(release);
         return ERROR_NOT_ENOUGH_MEMORY;
     }
@@ -479,13 +529,15 @@ int RunDecodedSession(
                   request.timeout_milliseconds,
                   static_cast<std::uint64_t>(INFINITE - 1)))
             : INFINITE;
-    const std::array<HANDLE, 2> wait_handles = {
-        process.process_handle(), control.signaled};
+    const std::array<HANDLE, 3> wait_handles = {
+        process.process_handle(), control.signaled, event_failure_signal};
     const DWORD wait_status = WaitForMultipleObjects(
         static_cast<DWORD>(wait_handles.size()), wait_handles.data(), FALSE,
         wait_milliseconds);
     std::uint8_t exit_reason = 0;
     bool has_exit_code = false;
+    bool infrastructure_failure = false;
+    EventForwardFailure infrastructure_reason = EventForwardFailure::kNone;
     DWORD exit_code = ERROR_PROCESS_ABORTED;
     if (wait_status == WAIT_TIMEOUT) {
         exit_reason = 2;
@@ -495,11 +547,24 @@ int RunDecodedSession(
         const auto control_kind = static_cast<
             bolt::protocol::LauncherControlKind>(
             control.kind.load(std::memory_order_acquire));
-        exit_reason =
-            control_kind == bolt::protocol::LauncherControlKind::kTimeout
-                ? 2
-                : 1;
-        job.Terminate(exit_reason == 2 ? 408 : ERROR_PROCESS_ABORTED);
+        if (control_kind ==
+            bolt::protocol::LauncherControlKind::kProtocolIntegrity) {
+            infrastructure_failure = true;
+            infrastructure_reason = EventForwardFailure::kProtocolIntegrity;
+        } else {
+            exit_reason =
+                control_kind == bolt::protocol::LauncherControlKind::kTimeout
+                    ? 2
+                    : 1;
+        }
+        job.Terminate(
+            exit_reason == 2 ? 408 : ERROR_PROCESS_ABORTED);
+        process.Wait(5'000);
+    } else if (wait_status == WAIT_OBJECT_0 + 2) {
+        infrastructure_failure = true;
+        infrastructure_reason =
+            event_failure.load(std::memory_order_acquire);
+        job.Terminate(ERROR_BROKEN_PIPE);
         process.Wait(5'000);
     } else if (
         wait_status == WAIT_OBJECT_0 &&
@@ -515,16 +580,27 @@ int RunDecodedSession(
     }
     StopControlReader(control_thread);
     CloseHandle(control.signaled);
+    CloseHandle(event_failure_signal);
     stdout_thread.join();
     stderr_thread.join();
     event_thread.join();
-    WriteProcessExit(
-        writer, process_id, exit_code, exit_reason, has_exit_code);
+    if (infrastructure_failure) {
+        const auto reason = static_cast<std::uint8_t>(infrastructure_reason);
+        writer.Write(
+            bolt::protocol::LauncherTransportKind::kInfrastructureFailure,
+            &reason, 1);
+    } else {
+        WriteProcessExit(
+            writer, process_id, exit_code, exit_reason, has_exit_code);
+    }
     writer.Write(
         bolt::protocol::LauncherTransportKind::kEventEof, nullptr, 0);
     CloseHandle(release);
     if (writer.failed()) {
         return ERROR_BROKEN_PIPE;
+    }
+    if (infrastructure_failure) {
+        return ERROR_INVALID_DATA;
     }
     if (exit_reason == 2) {
         return 408;

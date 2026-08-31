@@ -194,9 +194,22 @@ fn run_execution(
         match transport.recv_timeout(POLL_INTERVAL) {
             Ok(Ok(Some(frame))) => {
                 if state.dispatch(frame, stdout, stderr, events).is_err() {
-                    terminate_launcher(launcher);
-                    return state
-                        .infrastructure_result(crate::InfrastructureFailure::ProtocolIntegrity);
+                    let control_request = state
+                        .begin_infrastructure(LifecycleInfrastructureFailure::ProtocolIntegrity);
+                    let Ok(control_request) = control_request else {
+                        terminate_launcher(launcher);
+                        return state.infrastructure_result(
+                            crate::InfrastructureFailure::ProtocolIntegrity,
+                        );
+                    };
+                    if control_request.is_some_and(|kind| {
+                        launcher_transport::write_control(control, kind).is_err()
+                    }) {
+                        terminate_launcher(launcher);
+                        return state.infrastructure_result(
+                            crate::InfrastructureFailure::ProtocolIntegrity,
+                        );
+                    }
                 }
             }
             Ok(Ok(None)) => state.transport_eof = true,
@@ -235,6 +248,7 @@ struct TransportState {
     expected_process_id: u32,
     pending_process_exit: Option<ProcessExit>,
     outcome: Option<ExecutionResult>,
+    infrastructure_reported: bool,
     transport_eof: bool,
     launcher_exited: bool,
 }
@@ -247,6 +261,7 @@ impl TransportState {
             expected_process_id,
             pending_process_exit: None,
             outcome: None,
+            infrastructure_reported: false,
             transport_eof: false,
             launcher_exited: false,
         };
@@ -282,6 +297,26 @@ impl TransportState {
         }
     }
 
+    fn begin_infrastructure(
+        &mut self,
+        failure: LifecycleInfrastructureFailure,
+    ) -> Result<Option<ControlKind>, ()> {
+        let action = self
+            .lifecycle
+            .mark_infrastructure_failure(failure)
+            .map_err(|_| ())?;
+        match action {
+            LifecycleAction::TerminateJob(TerminationCause::Infrastructure(
+                LifecycleInfrastructureFailure::ProtocolIntegrity,
+            )) => Ok(Some(ControlKind::ProtocolIntegrity)),
+            LifecycleAction::TerminateJob(TerminationCause::Infrastructure(
+                LifecycleInfrastructureFailure::EventChannelLost,
+            ))
+            | LifecycleAction::None => Ok(None),
+            _ => Err(()),
+        }
+    }
+
     fn dispatch(
         &mut self,
         frame: TransportFrame,
@@ -289,6 +324,15 @@ impl TransportState {
         stderr: &SyncSender<Vec<u8>>,
         events: &SyncSender<SandboxEvent>,
     ) -> Result<(), ()> {
+        if frame.kind == TransportKind::Event
+            && matches!(
+                self.lifecycle.phase(),
+                LifecyclePhase::Terminating(TerminationCause::Infrastructure(_))
+                    | LifecyclePhase::Draining(TerminationCause::Infrastructure(_))
+            )
+        {
+            return Ok(());
+        }
         let action = match frame.kind {
             TransportKind::Stdout => {
                 self.send_bytes(stdout, frame.payload, ReceiverKind::Stdout)?;
@@ -321,11 +365,16 @@ impl TransportState {
             }
             TransportKind::EventEof => {
                 empty_eof(&frame.payload)?;
-                let process_exit = self.pending_process_exit.as_ref().ok_or(())?;
-                if send_bounded(events, SandboxEvent::ProcessExited(process_exit.clone())) {
-                    self.lifecycle
-                        .mark_receiver_lost(ReceiverKind::Events)
-                        .map_err(|_| ())?;
+                if !matches!(
+                    self.lifecycle.phase(),
+                    LifecyclePhase::Draining(TerminationCause::Infrastructure(_))
+                ) {
+                    let process_exit = self.pending_process_exit.as_ref().ok_or(())?;
+                    if send_bounded(events, SandboxEvent::ProcessExited(process_exit.clone())) {
+                        self.lifecycle
+                            .mark_receiver_lost(ReceiverKind::Events)
+                            .map_err(|_| ())?;
+                    }
                 }
                 self.lifecycle.mark_event_eof().map_err(|_| ())?
             }
@@ -347,8 +396,22 @@ impl TransportState {
                 self.pending_process_exit = Some(process_exit);
                 action
             }
-            TransportKind::InfrastructureFailure => return Err(()),
+            TransportKind::InfrastructureFailure => {
+                if self.infrastructure_reported {
+                    return Err(());
+                }
+                let failure = decode_infrastructure_failure(&frame.payload)?;
+                self.begin_infrastructure(failure)?;
+                if matches!(self.lifecycle.phase(), LifecyclePhase::Terminating(_)) {
+                    self.lifecycle.mark_job_terminated().map_err(|_| ())?
+                } else {
+                    LifecycleAction::None
+                }
+            }
         };
+        if frame.kind == TransportKind::InfrastructureFailure {
+            self.infrastructure_reported = true;
+        }
         self.apply_action(action)?;
         Ok(())
     }
@@ -496,6 +559,14 @@ fn decode_process_exit(payload: &[u8]) -> Result<ProcessExit, ()> {
         exit_code,
         reason,
     })
+}
+
+fn decode_infrastructure_failure(payload: &[u8]) -> Result<LifecycleInfrastructureFailure, ()> {
+    match payload {
+        [1] => Ok(LifecycleInfrastructureFailure::ProtocolIntegrity),
+        [2] => Ok(LifecycleInfrastructureFailure::EventChannelLost),
+        _ => Err(()),
+    }
 }
 
 fn encode_request(prepared: &PreparedLaunch) -> Result<Vec<u8>, SandboxError> {
