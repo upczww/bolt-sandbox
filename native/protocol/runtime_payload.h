@@ -12,6 +12,11 @@ inline constexpr std::size_t kRuntimePayloadLength = 128;
 inline constexpr GUID kRuntimePayloadGuid = {
     0x4f8a6d21, 0x91c7, 0x4bb7, {0xa6, 0x7e, 0x31, 0x57, 0x2b, 0xd9, 0x46, 0x10}};
 
+enum class RuntimeStartupFault : std::uint8_t {
+    kNone = 0,
+    kMitigationFailure = 1,
+};
+
 struct RuntimePayload {
     std::uint32_t target_process_id = 0;
     std::uint32_t policy_length = 0;
@@ -29,6 +34,8 @@ struct RuntimePayload {
     std::array<std::uint8_t, 32> dns_authentication_key{};
     std::uint16_t tcp_proxy_port = 0;
     std::uint16_t tcp_proxy_ipv6_port = 0;
+    RuntimeStartupFault startup_fault = RuntimeStartupFault::kNone;
+    RuntimeStartupFault descendant_startup_fault = RuntimeStartupFault::kNone;
 
     bool operator==(const RuntimePayload& other) const noexcept {
         return target_process_id == other.target_process_id &&
@@ -41,7 +48,9 @@ struct RuntimePayload {
                dns_maximum_frame_length == other.dns_maximum_frame_length &&
                dns_authentication_key == other.dns_authentication_key &&
                tcp_proxy_port == other.tcp_proxy_port &&
-               tcp_proxy_ipv6_port == other.tcp_proxy_ipv6_port;
+               tcp_proxy_ipv6_port == other.tcp_proxy_ipv6_port &&
+               startup_fault == other.startup_fault &&
+               descendant_startup_fault == other.descendant_startup_fault;
     }
     bool operator!=(const RuntimePayload& other) const noexcept { return !(*this == other); }
 };
@@ -57,6 +66,8 @@ enum class RuntimePayloadStatus : std::uint8_t {
     kInvalidPolicyLength,
     kInvalidHandle,
     kInvalidDnsProxy,
+    kInvalidStartupFault,
+    kNonCanonicalReservedBytes,
 };
 
 std::array<std::uint8_t, kRuntimePayloadLength> EncodeRuntimePayload(

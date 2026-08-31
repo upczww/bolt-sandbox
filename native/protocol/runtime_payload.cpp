@@ -24,6 +24,9 @@ constexpr std::size_t kDnsMaximumFrameOffset = 80;
 constexpr std::size_t kDnsKeyOffset = 88;
 constexpr std::size_t kTcpProxyPortOffset = 120;
 constexpr std::size_t kTcpProxyIpv6PortOffset = 122;
+constexpr std::size_t kStartupFaultOffset = 124;
+constexpr std::size_t kDescendantStartupFaultOffset = 125;
+constexpr std::size_t kReservedOffset = 126;
 constexpr std::size_t kMinimumPolicyLength = kPolicyEnvelopeLength;
 constexpr std::size_t kMaximumPolicyLength = kPolicyEnvelopeLength + kPolicyMaximumBodyLength;
 
@@ -105,6 +108,10 @@ std::array<std::uint8_t, kRuntimePayloadLength> EncodeRuntimePayload(
     WriteU16(
         encoded.data(), kTcpProxyIpv6PortOffset,
         payload.tcp_proxy_ipv6_port);
+    encoded[kStartupFaultOffset] =
+        static_cast<std::uint8_t>(payload.startup_fault);
+    encoded[kDescendantStartupFaultOffset] =
+        static_cast<std::uint8_t>(payload.descendant_startup_fault);
     return encoded;
 }
 
@@ -147,6 +154,10 @@ RuntimePayloadStatus DecodeRuntimePayload(
         decoded.dns_authentication_key.begin());
     decoded.tcp_proxy_port = ReadU16(encoded, kTcpProxyPortOffset);
     decoded.tcp_proxy_ipv6_port = ReadU16(encoded, kTcpProxyIpv6PortOffset);
+    decoded.startup_fault =
+        static_cast<RuntimeStartupFault>(encoded[kStartupFaultOffset]);
+    decoded.descendant_startup_fault = static_cast<RuntimeStartupFault>(
+        encoded[kDescendantStartupFaultOffset]);
     if (decoded.target_process_id == 0) {
         return RuntimePayloadStatus::kInvalidProcessId;
     }
@@ -177,6 +188,14 @@ RuntimePayloadStatus DecodeRuntimePayload(
                            !dns_key_zero;
     if (!dns_absent && !dns_valid) {
         return RuntimePayloadStatus::kInvalidDnsProxy;
+    }
+    if (decoded.startup_fault > RuntimeStartupFault::kMitigationFailure ||
+        decoded.descendant_startup_fault >
+            RuntimeStartupFault::kMitigationFailure) {
+        return RuntimePayloadStatus::kInvalidStartupFault;
+    }
+    if (encoded[kReservedOffset] != 0 || encoded[kReservedOffset + 1] != 0) {
+        return RuntimePayloadStatus::kNonCanonicalReservedBytes;
     }
     output = decoded;
     return RuntimePayloadStatus::kSuccess;

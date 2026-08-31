@@ -20,6 +20,7 @@ constexpr std::uint16_t kReadyKind = 1;
 constexpr std::uint16_t kFilesystemViolationKind = 2;
 constexpr std::uint16_t kRegistryViolationKind = 3;
 constexpr std::uint16_t kNetworkViolationKind = 4;
+constexpr std::uint16_t kChildInjectionFailureKind = 6;
 constexpr std::uint16_t kProcessViolationKind = 8;
 constexpr std::uint16_t kEventsDroppedKind = 9;
 constexpr std::size_t kFilesystemProcessIdOffset = kEventHeaderLength;
@@ -29,6 +30,11 @@ constexpr std::size_t kFilesystemPathOffset = kFilesystemPathLengthOffset + 4;
 constexpr std::size_t kProcessViolationProcessIdOffset = kEventHeaderLength;
 constexpr std::size_t kProcessViolationOperationOffset =
     kProcessViolationProcessIdOffset + 4;
+constexpr std::size_t kChildFailureParentProcessIdOffset = kEventHeaderLength;
+constexpr std::size_t kChildFailureChildProcessIdOffset =
+    kChildFailureParentProcessIdOffset + 4;
+constexpr std::size_t kChildFailureReasonOffset =
+    kChildFailureChildProcessIdOffset + 4;
 constexpr std::size_t kRegistryProcessIdOffset = kEventHeaderLength;
 constexpr std::size_t kRegistryOperationOffset = kRegistryProcessIdOffset + 4;
 constexpr std::size_t kRegistryKeyLengthOffset = kRegistryOperationOffset + 1;
@@ -265,6 +271,39 @@ std::size_t RegistryViolationFrameLength(const char* const key) noexcept {
     return length != 0 && length <= 4'096 && IsValidUtf8(key, length)
                ? kRegistryKeyOffset + length
                : 0;
+}
+
+FrameEncodeStatus EncodeChildInjectionFailureFrame(
+    const std::uint32_t parent_process_id,
+    const std::uint32_t child_process_id,
+    const ChildInjectionFailureReason reason,
+    const std::uint64_t sequence,
+    std::uint8_t* const output,
+    const std::size_t capacity,
+    std::size_t& written) noexcept {
+    written = 0;
+    if (output == nullptr || parent_process_id == 0 || child_process_id == 0 ||
+        sequence == 0) {
+        return FrameEncodeStatus::kInvalidArgument;
+    }
+    if (reason > ChildInjectionFailureReason::kMitigationFailed) {
+        return FrameEncodeStatus::kInvalidOperation;
+    }
+    if (capacity < kChildInjectionFailureFrameLength) {
+        return FrameEncodeStatus::kInsufficientBuffer;
+    }
+    std::fill_n(output, kChildInjectionFailureFrameLength, std::uint8_t{0});
+    std::copy(kMagic.begin(), kMagic.end(), output);
+    WriteU16(output, kVersionOffset, kProtocolVersion);
+    WriteU16(output, kKindOffset, kChildInjectionFailureKind);
+    WriteU32(output, kLengthOffset, 9);
+    WriteU64(output, kSequenceOffset, sequence);
+    WriteU32(output, kChildFailureParentProcessIdOffset, parent_process_id);
+    WriteU32(output, kChildFailureChildProcessIdOffset, child_process_id);
+    output[kChildFailureReasonOffset] = static_cast<std::uint8_t>(reason);
+    RewriteFrameChecksum(output, kChildInjectionFailureFrameLength);
+    written = kChildInjectionFailureFrameLength;
+    return FrameEncodeStatus::kSuccess;
 }
 
 FrameEncodeStatus EncodeRegistryViolationFrame(

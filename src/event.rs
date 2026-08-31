@@ -104,6 +104,7 @@ pub enum ChildInjectionFailureReason {
     PolicyUnavailable,
     InjectionFailed,
     HandshakeFailed,
+    MitigationFailed,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

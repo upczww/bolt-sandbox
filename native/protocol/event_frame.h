@@ -10,6 +10,8 @@ inline constexpr std::size_t kEventHeaderLength = 24;
 inline constexpr std::size_t kReadyNonceLength = 16;
 inline constexpr std::size_t kReadyFrameLength = kEventHeaderLength + kReadyNonceLength;
 inline constexpr std::size_t kProcessViolationFrameLength = kEventHeaderLength + 5;
+inline constexpr std::size_t kChildInjectionFailureFrameLength =
+    kEventHeaderLength + 9;
 inline constexpr std::size_t kIpv4NetworkViolationFrameLength = kEventHeaderLength + 12;
 inline constexpr std::size_t kIpv6NetworkViolationFrameLength = kEventHeaderLength + 24;
 inline constexpr std::size_t kEventsDroppedFrameLength = kEventHeaderLength + 12;
@@ -33,6 +35,14 @@ enum class ProcessOperation : std::uint8_t {
     kBreakaway = 3,
     kMitigationWeakening = 4,
     kExternalDelegation = 5,
+};
+
+enum class ChildInjectionFailureReason : std::uint8_t {
+    kUnsupportedArchitecture = 0,
+    kPolicyUnavailable = 1,
+    kInjectionFailed = 2,
+    kHandshakeFailed = 3,
+    kMitigationFailed = 4,
 };
 
 enum class RegistryOperation : std::uint8_t {
@@ -129,6 +139,15 @@ FrameEncodeStatus EncodeDomainNetworkViolationFrame(
     std::uint32_t process_id,
     NetworkOperation operation,
     const char* ascii_domain,
+    std::uint64_t sequence,
+    std::uint8_t* output,
+    std::size_t capacity,
+    std::size_t& written) noexcept;
+
+FrameEncodeStatus EncodeChildInjectionFailureFrame(
+    std::uint32_t parent_process_id,
+    std::uint32_t child_process_id,
+    ChildInjectionFailureReason reason,
     std::uint64_t sequence,
     std::uint8_t* output,
     std::size_t capacity,

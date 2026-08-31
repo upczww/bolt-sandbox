@@ -410,6 +410,7 @@ wire_enum!(
     ChildInjectionFailureReason::PolicyUnavailable => 1,
     ChildInjectionFailureReason::InjectionFailed => 2,
     ChildInjectionFailureReason::HandshakeFailed => 3,
+    ChildInjectionFailureReason::MitigationFailed => 4,
 );
 wire_enum!(
     ProcessOperation,
