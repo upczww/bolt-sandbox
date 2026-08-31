@@ -27,6 +27,7 @@ bool RunJobTests();
 bool RunLauncherStartupTests();
 bool RunStreamTests();
 int RunDualStreamWriter(int argument_count, wchar_t** arguments);
+int RunDescendantDualStreamWriter(int argument_count, wchar_t** arguments);
 int RunJobTreeParent(int argument_count, wchar_t** arguments);
 int RunIgnoreGracefulChild(int argument_count, wchar_t** arguments);
 bool RunNamedPipeTests();
@@ -498,6 +499,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--dual-stream-writer") {
         return RunDualStreamWriter(argument_count, arguments);
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--descendant-dual-stream-writer") {
+        return RunDescendantDualStreamWriter(argument_count, arguments);
     }
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--stream-tests") {
         return RunStreamTests() ? 0 : 1;

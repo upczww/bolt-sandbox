@@ -9,6 +9,15 @@ const STREAM_BYTES: usize = 256 * 1_024;
 
 #[test]
 fn life_012_public_runtime_transports_arbitrary_binary_stdout_and_stderr() {
+    assert_dual_stream_execution("--dual-stream-writer");
+}
+
+#[test]
+fn proc_002_descendant_inherits_generic_binary_stdout_and_stderr() {
+    assert_dual_stream_execution("--descendant-dual-stream-writer");
+}
+
+fn assert_dual_stream_execution(mode: &str) {
     let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
     else {
         return;
@@ -24,7 +33,7 @@ fn life_012_public_runtime_transports_arbitrary_binary_stdout_and_stderr() {
         .start(SandboxRequest {
             program,
             arguments: vec![
-                OsString::from("--dual-stream-writer"),
+                OsString::from(mode),
                 OsString::from(STREAM_BYTES.to_string()),
             ],
             cwd: component_root,

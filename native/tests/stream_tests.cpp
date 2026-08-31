@@ -167,6 +167,38 @@ int RunDualStreamWriter(const int argument_count, wchar_t** arguments) {
     return results[0] && results[1] ? 0 : 313;
 }
 
+int RunDescendantDualStreamWriter(
+    const int argument_count,
+    wchar_t** arguments) {
+    if (argument_count != 3 ||
+        std::wcstoull(arguments[2], nullptr, 10) != kStreamBytes) {
+        return 316;
+    }
+    const std::wstring executable = CurrentExecutable();
+    std::wstring command = L"\"" + executable +
+                           L"\" --dual-stream-writer " + arguments[2];
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (executable.empty() ||
+        !CreateProcessW(
+            executable.c_str(), command.data(), nullptr, nullptr, TRUE, 0,
+            nullptr, nullptr, &startup, &process)) {
+        return 317;
+    }
+    const DWORD wait = WaitForSingleObject(process.hProcess, 10'000);
+    DWORD exit_code = 318;
+    if (wait != WAIT_OBJECT_0 ||
+        !GetExitCodeProcess(process.hProcess, &exit_code)) {
+        TerminateProcess(process.hProcess, 318);
+        WaitForSingleObject(process.hProcess, 5'000);
+        exit_code = 318;
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return static_cast<int>(exit_code);
+}
+
 bool RunStreamTests() {
     SECURITY_ATTRIBUTES inheritable{};
     inheritable.nLength = sizeof(inheritable);
