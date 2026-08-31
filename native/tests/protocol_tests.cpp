@@ -490,6 +490,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--dual-stream-writer") {
         return RunDualStreamWriter(argument_count, arguments);
     }
+    if (argument_count == 2 && std::wstring(arguments[1]) == L"--stream-tests") {
+        return RunStreamTests() ? 0 : 1;
+    }
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--process-child") {
         return RunProcessChild(argument_count, arguments);
     }

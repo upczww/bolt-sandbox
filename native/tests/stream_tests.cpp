@@ -80,6 +80,10 @@ bool MatchesPattern(
     return true;
 }
 
+bool RunDroppedReceiverTest() {
+    return false;
+}
+
 }  // namespace
 
 int RunDualStreamWriter(const int argument_count, wchar_t** arguments) {
@@ -156,5 +160,5 @@ bool RunStreamTests() {
     CloseHandle(process.hProcess);
     CloseHandle(stdout_read);
     CloseHandle(stderr_read);
-    return passed;
+    return passed && RunDroppedReceiverTest();
 }
