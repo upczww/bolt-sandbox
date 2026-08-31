@@ -4539,9 +4539,10 @@ bool RunProcessTests() {
                                       denied_event_name + L"\" " +
                                       HandleText(denied_directory_handle) + L" " +
                                       HandleText(denied_overlapped_handle) + L" " +
-                                      std::to_wstring(denied_file_id) + L" " +
-                                      HandleText(inherited_allowed_section) + L" " +
-                                      HandleText(inherited_denied_section);
+                                       std::to_wstring(denied_file_id) + L" " +
+                                       HandleText(inherited_allowed_section) + L" " +
+                                       HandleText(inherited_denied_section) + L" " +
+                                       HandleText(policy.handle());
     const HANDLE inherited[] = {
         allowed, policy.handle(), event_client, release, denied_disposition_handle,
         denied_truncate_handle, denied_mapping_handle, read_only_mapping_handle,
