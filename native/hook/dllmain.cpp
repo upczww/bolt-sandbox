@@ -99,7 +99,14 @@ RuntimeInitializationStatus InitializeRuntime(const HINSTANCE instance) noexcept
         return failed();
     }
     const auto file_hook_status =
-        bolt::filesystem::InstallFileHooks(policy, payload.policy_length);
+        bolt::filesystem::InstallFileHooks(
+            policy, payload.policy_length,
+            payload.descendant_ready_handle == 0
+                ? GetStdHandle(STD_OUTPUT_HANDLE)
+                : nullptr,
+            payload.descendant_ready_handle == 0
+                ? GetStdHandle(STD_ERROR_HANDLE)
+                : nullptr);
     const auto network_hook_status =
         file_hook_status == bolt::filesystem::HookInstallStatus::kSuccess
             ? bolt::network::InstallNetworkHooks(

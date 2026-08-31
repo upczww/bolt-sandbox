@@ -1,4 +1,5 @@
 #include "protocol/launcher_startup.h"
+#include "protocol/launcher_transport.h"
 #include "protocol/event_frame.h"
 #include "protocol/policy_payload.h"
 
@@ -9,12 +10,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
 #include <limits>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
@@ -23,6 +27,13 @@
 namespace {
 
 constexpr DWORD kStartupTimeoutMilliseconds = 5'000;
+constexpr std::size_t kStreamChunkLength = 4'096;
+
+void CloseIfValid(const HANDLE handle) noexcept {
+    if (handle != nullptr && handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(handle);
+    }
+}
 
 bool ParseHandle(const wchar_t* const text, HANDLE& output) noexcept {
     if (text == nullptr || *text == L'\0' || *text == L'-') {
@@ -94,6 +105,126 @@ bool WriteExact(
     return true;
 }
 
+class TransportWriter final {
+  public:
+    explicit TransportWriter(const HANDLE output) noexcept : output_(output) {}
+
+    bool Write(
+        const bolt::protocol::LauncherTransportKind kind,
+        const std::uint8_t* const payload,
+        const std::uint32_t payload_length) noexcept {
+        std::array<
+            std::uint8_t, bolt::protocol::kLauncherTransportHeaderLength>
+            header{};
+        if (bolt::protocol::EncodeLauncherTransportHeader(
+                kind, payload_length, header) !=
+            bolt::protocol::LauncherTransportStatus::kSuccess) {
+            failed_.store(true, std::memory_order_release);
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        const bool written =
+            WriteExact(output_, header.data(), header.size()) &&
+            (payload_length == 0 ||
+             WriteExact(output_, payload, payload_length));
+        if (!written) {
+            failed_.store(true, std::memory_order_release);
+        }
+        return written;
+    }
+
+    bool failed() const noexcept {
+        return failed_.load(std::memory_order_acquire);
+    }
+
+  private:
+    HANDLE output_;
+    std::mutex mutex_;
+    std::atomic_bool failed_ = false;
+};
+
+bool CreateTargetPipe(HANDLE& read, HANDLE& write) noexcept {
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    return CreatePipe(&read, &write, &inheritable, kStreamChunkLength) &&
+           SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0);
+}
+
+void ForwardByteStream(
+    const HANDLE input,
+    const bolt::protocol::LauncherTransportKind data_kind,
+    const bolt::protocol::LauncherTransportKind eof_kind,
+    TransportWriter& writer) noexcept {
+    std::array<std::uint8_t, kStreamChunkLength> chunk{};
+    for (;;) {
+        DWORD read = 0;
+        if (!ReadFile(
+                input, chunk.data(), static_cast<DWORD>(chunk.size()), &read,
+                nullptr) ||
+            read == 0) {
+            break;
+        }
+        if (!writer.Write(data_kind, chunk.data(), read)) {
+            break;
+        }
+    }
+    CloseHandle(input);
+    writer.Write(eof_kind, nullptr, 0);
+}
+
+void ForwardEventStream(
+    const HANDLE input,
+    TransportWriter& writer) noexcept {
+    std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
+    for (;;) {
+        if (!ReadExact(input, header.data(), header.size())) {
+            break;
+        }
+        std::uint32_t payload_length = 0;
+        std::memcpy(
+            &payload_length, header.data() + 8, sizeof(payload_length));
+        if (payload_length >
+            bolt::protocol::kLauncherTransportMaximumPayload -
+                header.size()) {
+            break;
+        }
+        std::vector<std::uint8_t> frame;
+        try {
+            frame.resize(header.size() + payload_length);
+        } catch (...) {
+            break;
+        }
+        std::copy(header.begin(), header.end(), frame.begin());
+        if ((payload_length != 0 &&
+             !ReadExact(
+                 input, frame.data() + header.size(), payload_length)) ||
+            !writer.Write(
+                bolt::protocol::LauncherTransportKind::kEvent, frame.data(),
+                static_cast<std::uint32_t>(frame.size()))) {
+            break;
+        }
+    }
+}
+
+bool WriteProcessExit(
+    TransportWriter& writer,
+    const DWORD process_id,
+    const DWORD exit_code,
+    const std::uint8_t reason,
+    const bool has_exit_code) noexcept {
+    std::array<std::uint8_t, 10> payload{};
+    std::memcpy(payload.data(), &process_id, sizeof(process_id));
+    payload[4] = reason;
+    payload[5] = has_exit_code ? 1 : 0;
+    if (has_exit_code) {
+        std::memcpy(payload.data() + 6, &exit_code, sizeof(exit_code));
+    }
+    return writer.Write(
+        bolt::protocol::LauncherTransportKind::kProcessExit, payload.data(),
+        static_cast<std::uint32_t>(payload.size()));
+}
+
 std::wstring EventPipeName(
     const std::array<std::uint8_t, 16>& nonce) {
     constexpr wchar_t digits[] = L"0123456789abcdef";
@@ -149,20 +280,42 @@ int RunDecodedSession(
     SECURITY_ATTRIBUTES inheritable{};
     inheritable.nLength = sizeof(inheritable);
     inheritable.bInheritHandle = TRUE;
+    HANDLE stdout_read = nullptr;
+    HANDLE stdout_write = nullptr;
+    HANDLE stderr_read = nullptr;
+    HANDLE stderr_write = nullptr;
+    const HANDLE stdin_read = CreateFileW(
+        L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        &inheritable, OPEN_EXISTING, 0, nullptr);
+    if (stdin_read == INVALID_HANDLE_VALUE ||
+        !CreateTargetPipe(stdout_read, stdout_write) ||
+        !CreateTargetPipe(stderr_read, stderr_write)) {
+        CloseIfValid(stdin_read);
+        CloseIfValid(stdout_read);
+        CloseIfValid(stdout_write);
+        CloseIfValid(stderr_read);
+        CloseIfValid(stderr_write);
+        CloseHandle(release);
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
     const HANDLE event_client = CreateFileW(
         pipe_name.c_str(), FILE_WRITE_DATA, 0, &inheritable, OPEN_EXISTING, 0,
         nullptr);
     if (event_client == INVALID_HANDLE_VALUE ||
         event_pipe.Accept() != bolt::common::PipeStatus::kSuccess) {
-        if (event_client != INVALID_HANDLE_VALUE) {
-            CloseHandle(event_client);
-        }
+        CloseIfValid(event_client);
+        CloseHandle(stdin_read);
+        CloseHandle(stdout_read);
+        CloseHandle(stdout_write);
+        CloseHandle(stderr_read);
+        CloseHandle(stderr_write);
         CloseHandle(release);
         return ERROR_PIPE_NOT_CONNECTED;
     }
     std::wstring command(
         request.command_line.begin(), request.command_line.end() - 1);
-    const HANDLE inherited[] = {policy.handle(), event_client};
+    const HANDLE inherited[] = {
+        policy.handle(), event_client, stdin_read, stdout_write, stderr_write};
     bolt::common::ProcessLaunchOptions options{
         request.program,
         command,
@@ -170,7 +323,10 @@ int RunDecodedSession(
         const_cast<wchar_t*>(request.environment_block.data()),
         inherited,
         std::size(inherited),
-        0};
+        0,
+        stdin_read,
+        stdout_write,
+        stderr_write};
     bolt::common::SuspendedProcess process;
     std::string hook_path;
     const bool prepared = ToAnsiPath(request.hook_path, hook_path) &&
@@ -184,16 +340,20 @@ int RunDecodedSession(
         process.BeginHookInitialization() ==
             bolt::common::ProcessStatus::kSuccess;
     CloseHandle(event_client);
+    CloseHandle(stdin_read);
+    CloseHandle(stdout_write);
+    CloseHandle(stderr_write);
     std::array<std::uint8_t, bolt::protocol::kReadyFrameLength> ready{};
     const bool ready_ok = prepared &&
         ReadExact(event_pipe.handle(), ready.data(), ready.size()) &&
         bolt::protocol::ValidateReadyFrame(
             ready.data(), ready.size(), request.nonce) ==
-            bolt::protocol::ReadyFrameStatus::kSuccess &&
-        process.ReleaseAfterReady() == bolt::common::ProcessStatus::kSuccess;
+            bolt::protocol::ReadyFrameStatus::kSuccess;
     if (!ready_ok) {
         job.Terminate(ERROR_DLL_INIT_FAILED);
         process.Wait(5'000);
+        CloseHandle(stdout_read);
+        CloseHandle(stderr_read);
         CloseHandle(release);
         return ERROR_DLL_INIT_FAILED;
     }
@@ -207,8 +367,60 @@ int RunDecodedSession(
             acknowledgment.size())) {
         job.Terminate(ERROR_BROKEN_PIPE);
         process.Wait(5'000);
+        CloseHandle(stdout_read);
+        CloseHandle(stderr_read);
         CloseHandle(release);
         return ERROR_BROKEN_PIPE;
+    }
+    TransportWriter writer(GetStdHandle(STD_OUTPUT_HANDLE));
+    if (!writer.Write(
+            bolt::protocol::LauncherTransportKind::kEvent, ready.data(),
+            static_cast<std::uint32_t>(ready.size()))) {
+        job.Terminate(ERROR_BROKEN_PIPE);
+        process.Wait(5'000);
+        CloseHandle(stdout_read);
+        CloseHandle(stderr_read);
+        CloseHandle(release);
+        return ERROR_BROKEN_PIPE;
+    }
+    std::thread stdout_thread;
+    std::thread stderr_thread;
+    std::thread event_thread;
+    try {
+        stdout_thread = std::thread(
+            ForwardByteStream, stdout_read,
+            bolt::protocol::LauncherTransportKind::kStdout,
+            bolt::protocol::LauncherTransportKind::kStdoutEof,
+            std::ref(writer));
+        stderr_thread = std::thread(
+            ForwardByteStream, stderr_read,
+            bolt::protocol::LauncherTransportKind::kStderr,
+            bolt::protocol::LauncherTransportKind::kStderrEof,
+            std::ref(writer));
+        event_thread = std::thread(
+            ForwardEventStream, event_pipe.handle(), std::ref(writer));
+    } catch (...) {
+        job.Terminate(ERROR_NOT_ENOUGH_MEMORY);
+        process.Wait(5'000);
+        if (stdout_thread.joinable()) {
+            stdout_thread.join();
+        } else {
+            CloseIfValid(stdout_read);
+        }
+        if (stderr_thread.joinable()) {
+            stderr_thread.join();
+        } else {
+            CloseIfValid(stderr_read);
+        }
+        if (event_thread.joinable()) {
+            event_thread.join();
+        }
+        CloseHandle(release);
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    if (process.ReleaseAfterReady() !=
+        bolt::common::ProcessStatus::kSuccess) {
+        job.Terminate(ERROR_DLL_INIT_FAILED);
     }
     const DWORD wait_milliseconds =
         request.has_timeout
@@ -217,17 +429,41 @@ int RunDecodedSession(
                   static_cast<std::uint64_t>(INFINITE - 1)))
             : INFINITE;
     const auto wait_status = process.Wait(wait_milliseconds);
+    std::uint8_t exit_reason = 0;
+    bool has_exit_code = false;
+    DWORD exit_code = ERROR_PROCESS_ABORTED;
     if (wait_status == bolt::common::ProcessStatus::kWaitTimeout) {
+        exit_reason = 2;
         job.Terminate(408);
         process.Wait(5'000);
-        CloseHandle(release);
+    } else if (
+        wait_status == bolt::common::ProcessStatus::kSuccess &&
+        process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess) {
+        has_exit_code = true;
+        exit_reason =
+            (exit_code & 0xC000'0000U) == 0xC000'0000U ? 3 : 0;
+        job.Terminate(exit_code);
+    } else {
+        exit_reason = 1;
+        job.Terminate(ERROR_PROCESS_ABORTED);
+        process.Wait(5'000);
+    }
+    stdout_thread.join();
+    stderr_thread.join();
+    event_thread.join();
+    WriteProcessExit(
+        writer, process_id, exit_code, exit_reason, has_exit_code);
+    writer.Write(
+        bolt::protocol::LauncherTransportKind::kEventEof, nullptr, 0);
+    CloseHandle(release);
+    if (writer.failed()) {
+        return ERROR_BROKEN_PIPE;
+    }
+    if (exit_reason == 2) {
         return 408;
     }
-    DWORD exit_code = ERROR_PROCESS_ABORTED;
-    const bool exited = wait_status == bolt::common::ProcessStatus::kSuccess &&
-        process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess;
-    CloseHandle(release);
-    return exited ? static_cast<int>(exit_code) : ERROR_PROCESS_ABORTED;
+    return has_exit_code ? static_cast<int>(exit_code)
+                         : ERROR_PROCESS_ABORTED;
 }
 
 int RunStdioSession() noexcept {

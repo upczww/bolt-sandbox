@@ -61,6 +61,9 @@ pub(super) fn read_frame(reader: &mut impl Read) -> Result<Option<TransportFrame
             Ok(0) => return Err(TransportError::TruncatedHeader),
             Ok(count) => header_read += count,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if header_read == 0 && error.kind() == io::ErrorKind::BrokenPipe => {
+                return Ok(None);
+            }
             Err(error) => return Err(TransportError::Read(error.kind())),
         }
     }

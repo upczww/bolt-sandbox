@@ -1,13 +1,8 @@
-use std::{
-    collections::BTreeMap,
-    ffi::OsString,
-    path::PathBuf,
-    time::Duration,
-};
+use std::{collections::BTreeMap, ffi::OsString, path::PathBuf, time::Duration};
 
 use bolt_sandbox::{
-    ExecutionTerminal, ProcessExitReason, Sandbox, SandboxConfig, SandboxEvent, SandboxPolicy,
-    SandboxRequest,
+    ExecutionTerminal, ProcessExitReason, ReceiverLoss, Sandbox, SandboxConfig, SandboxEvent,
+    SandboxPolicy, SandboxRequest,
 };
 
 const STREAM_BYTES: usize = 256 * 1_024;
@@ -55,22 +50,19 @@ fn life_012_public_runtime_transports_arbitrary_binary_stdout_and_stderr() {
         .collect::<Vec<_>>();
     let result = handle.wait().expect("execution must complete");
 
-    eprintln!(
-        "stdout={} stderr={} events={events:?} result={result:?}",
-        stdout.len(),
-        stderr.len()
-    );
-
     assert_pattern(&stdout, false);
     assert_pattern(&stderr, true);
     assert_eq!(events.first(), Some(&SandboxEvent::Ready));
-    assert!(matches!(events.last(), Some(SandboxEvent::ProcessExited(_))));
+    assert!(matches!(
+        events.last(),
+        Some(SandboxEvent::ProcessExited(_))
+    ));
     assert!(matches!(
         result.terminal,
         ExecutionTerminal::Process(ref exit)
             if exit.exit_code == Some(0) && exit.reason == ProcessExitReason::Exited
     ));
-    assert_eq!(result.receiver_loss, Default::default());
+    assert_eq!(result.receiver_loss, ReceiverLoss::default());
 }
 
 fn assert_pattern(bytes: &[u8], stderr_stream: bool) {

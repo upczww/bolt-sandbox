@@ -11,6 +11,7 @@
 #include "DetouredFunctionTypes.h"
 #include "DetouredScope.h"
 
+#include <algorithm>
 #include <cstring>
 #include <cwchar>
 #include <array>
@@ -82,6 +83,9 @@ using NtQuerySectionFunction = NTSTATUS(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PUL
 NtQuerySectionFunction g_nt_query_section = nullptr;
 using NtCloseFunction = NTSTATUS(NTAPI*)(HANDLE);
 NtCloseFunction g_nt_close = nullptr;
+using NtCompareObjectsFunction = NTSTATUS(NTAPI*)(HANDLE, HANDLE);
+NtCompareObjectsFunction g_nt_compare_objects = nullptr;
+std::array<HANDLE, 2> g_trusted_standard_streams{};
 using GetMappedFileNameWFunction = DWORD(WINAPI*)(HANDLE, LPVOID, LPWSTR, DWORD);
 GetMappedFileNameWFunction g_get_mapped_file_name_w = nullptr;
 
@@ -2568,7 +2572,15 @@ BOOL WINAPI DetouredWriteFile(
         return g_write_file(
             file, buffer, bytes_to_write, bytes_written, overlapped);
     }
-    if (!AuthorizeHandleIo(
+    const bool trusted_stream = g_nt_compare_objects != nullptr &&
+        std::any_of(
+            g_trusted_standard_streams.begin(),
+            g_trusted_standard_streams.end(),
+            [file](const HANDLE trusted) {
+                return trusted != nullptr &&
+                    g_nt_compare_objects(file, trusted) >= 0;
+            });
+    if (!trusted_stream && !AuthorizeHandleIo(
             file, Access::kWrite, protocol::FilesystemOperation::kWrite)) {
         if (bytes_written != nullptr) {
             *bytes_written = 0;
@@ -2627,7 +2639,15 @@ NTSTATUS NTAPI DetouredNtWriteFile(
             file, event, apc_routine, apc_context, io_status, buffer,
             bytes_to_write, byte_offset, key);
     }
-    if (AuthorizeHandleIo(
+    const bool trusted_stream = g_nt_compare_objects != nullptr &&
+        std::any_of(
+            g_trusted_standard_streams.begin(),
+            g_trusted_standard_streams.end(),
+            [file](const HANDLE trusted) {
+                return trusted != nullptr &&
+                    g_nt_compare_objects(file, trusted) >= 0;
+            });
+    if (trusted_stream || AuthorizeHandleIo(
             file, Access::kWrite, protocol::FilesystemOperation::kWrite)) {
         return g_nt_write_file(
             file, event, apc_routine, apc_context, io_status, buffer,
@@ -3824,7 +3844,9 @@ BOOL WINAPI DetouredCopyFileTransactedA(
 
 HookInstallStatus InstallFileHooks(
     const std::uint8_t* policy_payload,
-    const std::size_t policy_length) noexcept {
+    const std::size_t policy_length,
+    const HANDLE trusted_stdout,
+    const HANDLE trusted_stderr) noexcept {
     if (g_policy != nullptr) {
         return HookInstallStatus::kTransactionFailed;
     }
@@ -3851,6 +3873,8 @@ HookInstallStatus InstallFileHooks(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySection"));
     g_nt_close = reinterpret_cast<NtCloseFunction>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtClose"));
+    g_nt_compare_objects = reinterpret_cast<NtCompareObjectsFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCompareObjects"));
     g_get_mapped_file_name_w = reinterpret_cast<GetMappedFileNameWFunction>(
         GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "K32GetMappedFileNameW"));
     g_nt_query_information_file = reinterpret_cast<NtQueryInformationFileFunction>(
@@ -3880,6 +3904,7 @@ HookInstallStatus InstallFileHooks(
     if (g_zw_set_information_file == nullptr || g_nt_create_section == nullptr ||
         g_nt_map_view_of_section == nullptr || g_nt_unmap_view_of_section == nullptr ||
         g_nt_query_section == nullptr || g_nt_close == nullptr ||
+        g_nt_compare_objects == nullptr ||
         g_get_mapped_file_name_w == nullptr ||
         g_nt_query_information_file == nullptr || g_nt_query_attributes_file == nullptr ||
         g_nt_query_full_attributes_file == nullptr || g_nt_query_directory_file == nullptr ||
@@ -3888,6 +3913,24 @@ HookInstallStatus InstallFileHooks(
         g_nt_open_file == nullptr || g_nt_notify_change_directory_file == nullptr ||
         g_nt_notify_change_directory_file_ex == nullptr) {
         return HookInstallStatus::kTransactionFailed;
+    }
+    const std::array<HANDLE, 2> standard_streams = {
+        trusted_stdout, trusted_stderr};
+    const bool redirected_streams = std::all_of(
+        standard_streams.begin(), standard_streams.end(),
+        [](const HANDLE stream) {
+            return stream != nullptr && stream != INVALID_HANDLE_VALUE &&
+                   GetFileType(stream) == FILE_TYPE_PIPE;
+        });
+    if (redirected_streams) {
+        for (std::size_t index = 0; index < standard_streams.size(); ++index) {
+            if (!DuplicateHandle(
+                    GetCurrentProcess(), standard_streams[index],
+                    GetCurrentProcess(), &g_trusted_standard_streams[index],
+                    0, FALSE, DUPLICATE_SAME_ACCESS)) {
+                return HookInstallStatus::kTransactionFailed;
+            }
+        }
     }
     if (DetourTransactionBegin() != NO_ERROR) {
         return HookInstallStatus::kTransactionFailed;
