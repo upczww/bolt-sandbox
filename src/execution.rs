@@ -81,6 +81,7 @@ pub enum InitializationStage {
     Policy,
     Identity,
     LauncherAdapter,
+    RecoveryCoordinator,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

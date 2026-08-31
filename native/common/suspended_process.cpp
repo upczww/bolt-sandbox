@@ -4,6 +4,7 @@
 #include "protocol/policy_payload.h"
 #include "protocol/runtime_payload.h"
 
+#include <algorithm>
 #include <limits>
 #include <string>
 #include <vector>
@@ -108,6 +109,24 @@ bool ValidateStandardHandles(const ProcessLaunchOptions& options) noexcept {
            IncludesHandle(options, options.standard_error);
 }
 
+bool ValidateRecoveryHandles(const ProcessLaunchOptions& options) noexcept {
+    const std::array<HANDLE, 4> handles = {
+        options.recovery_request, options.recovery_response,
+        options.recovery_mutex, options.recovery_counter};
+    const bool absent = std::all_of(
+        handles.begin(), handles.end(),
+        [](const HANDLE handle) { return handle == nullptr; });
+    if (absent) {
+        return true;
+    }
+    return std::all_of(
+        handles.begin(), handles.end(),
+        [&options](const HANDLE handle) {
+            return handle != nullptr && handle != INVALID_HANDLE_VALUE &&
+                   IncludesHandle(options, handle);
+        });
+}
+
 void CloseRemoteHandle(
     const HANDLE process,
     const HANDLE remote_handle) noexcept {
@@ -140,7 +159,8 @@ ProcessStatus SuspendedProcess::Create(
         return ProcessStatus::kUnsupportedFlags;
     }
     if (!ValidateInheritedHandles(options) ||
-        !ValidateStandardHandles(options)) {
+        !ValidateStandardHandles(options) ||
+        !ValidateRecoveryHandles(options)) {
         return ProcessStatus::kInvalidInheritedHandle;
     }
 
@@ -195,6 +215,10 @@ ProcessStatus SuspendedProcess::Create(
     output.release_event_ = nullptr;
     output.standard_output_ = options.standard_output;
     output.standard_error_ = options.standard_error;
+    output.recovery_request_ = options.recovery_request;
+    output.recovery_response_ = options.recovery_response;
+    output.recovery_mutex_ = options.recovery_mutex;
+    output.recovery_counter_ = options.recovery_counter;
     return ProcessStatus::kSuccess;
 }
 
@@ -343,6 +367,14 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
         reinterpret_cast<std::uintptr_t>(remote_sequence_mapping);
     payload.event_write_mutex_handle =
         reinterpret_cast<std::uintptr_t>(remote_sequence_mutex);
+    payload.recovery_request_handle =
+        reinterpret_cast<std::uintptr_t>(recovery_request_);
+    payload.recovery_response_handle =
+        reinterpret_cast<std::uintptr_t>(recovery_response_);
+    payload.recovery_mutex_handle =
+        reinterpret_cast<std::uintptr_t>(recovery_mutex_);
+    payload.recovery_counter_handle =
+        reinterpret_cast<std::uintptr_t>(recovery_counter_);
     if (!dns_absent) {
         payload.dns_request_handle =
             reinterpret_cast<std::uintptr_t>(dns_request_handle);
@@ -465,6 +497,10 @@ void SuspendedProcess::Close() noexcept {
     release_event_ = nullptr;
     standard_output_ = nullptr;
     standard_error_ = nullptr;
+    recovery_request_ = nullptr;
+    recovery_response_ = nullptr;
+    recovery_mutex_ = nullptr;
+    recovery_counter_ = nullptr;
     if (process != nullptr && !resumed) {
         TerminateProcess(process, ERROR_PROCESS_ABORTED);
     }

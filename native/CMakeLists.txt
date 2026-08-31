@@ -139,6 +139,7 @@ add_library(bolt-sandbox-protocol STATIC
     protocol/launcher_startup.cpp
     protocol/launcher_transport.cpp
     protocol/policy_payload.cpp
+    protocol/recovery_protocol.cpp
     protocol/runtime_payload.cpp
 )
 bolt_native_warnings(bolt-sandbox-protocol)
@@ -223,6 +224,7 @@ target_link_libraries(bolt-sandbox-registry PRIVATE
 
 add_library(bolt-sandbox-filesystem STATIC
     hook/event_sink.cpp
+    hook/recovery/recovery_client.cpp
     hook/filesystem/access_classifier.cpp
     hook/filesystem/final_path_resolver.cpp
     hook/filesystem/file_hooks.cpp

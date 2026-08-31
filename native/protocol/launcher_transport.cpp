@@ -12,7 +12,7 @@ constexpr std::array<std::uint8_t, 4> kMagic = {'B', 'L', 'X', '1'};
 
 bool IsKnownKind(const LauncherTransportKind kind) noexcept {
     return kind >= LauncherTransportKind::kStdout &&
-           kind <= LauncherTransportKind::kInfrastructureFailure;
+           kind <= LauncherTransportKind::kRecoveryRequest;
 }
 
 void WriteU16(

@@ -35,6 +35,8 @@ mod preparation;
     reason = "process observation is connected to the public execution handle later"
 )]
 mod process_observer;
+mod recovery;
+mod recovery_protocol;
 #[allow(
     dead_code,
     reason = "startup orchestration is connected to the native launcher adapter later"

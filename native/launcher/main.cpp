@@ -3,6 +3,7 @@
 #include "protocol/launcher_transport.h"
 #include "protocol/event_frame.h"
 #include "protocol/policy_payload.h"
+#include "protocol/recovery_protocol.h"
 
 #include "common/execution_job.h"
 #include "common/immutable_policy_mapping.h"
@@ -153,6 +154,70 @@ bool CreateTargetPipe(HANDLE& read, HANDLE& write) noexcept {
            SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0);
 }
 
+struct RecoveryChannels {
+    HANDLE request_read = nullptr;
+    HANDLE request_write = nullptr;
+    HANDLE response_read = nullptr;
+    HANDLE response_write = nullptr;
+    HANDLE mutex = nullptr;
+    HANDLE counter = nullptr;
+
+    ~RecoveryChannels() noexcept {
+        CloseIfValid(request_read);
+        CloseIfValid(request_write);
+        CloseIfValid(response_read);
+        CloseIfValid(response_write);
+        CloseIfValid(mutex);
+        CloseIfValid(counter);
+    }
+
+    bool Create(const bool enabled) noexcept {
+        if (!enabled) {
+            return true;
+        }
+        SECURITY_ATTRIBUTES inheritable{};
+        inheritable.nLength = sizeof(inheritable);
+        inheritable.bInheritHandle = TRUE;
+        if (!CreatePipe(
+                &request_read, &request_write, &inheritable, 4'096) ||
+            !SetHandleInformation(request_read, HANDLE_FLAG_INHERIT, 0) ||
+            !CreatePipe(
+                &response_read, &response_write, &inheritable, 4'096) ||
+            !SetHandleInformation(response_write, HANDLE_FLAG_INHERIT, 0)) {
+            return false;
+        }
+        mutex = CreateMutexW(&inheritable, FALSE, nullptr);
+        counter = CreateFileMappingW(
+            INVALID_HANDLE_VALUE, &inheritable, PAGE_READWRITE, 0,
+            sizeof(LONG64), nullptr);
+        auto* value = counter == nullptr
+                          ? nullptr
+                          : static_cast<volatile LONG64*>(MapViewOfFile(
+                                counter, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+                                sizeof(LONG64)));
+        if (mutex == nullptr || counter == nullptr || value == nullptr) {
+            if (value != nullptr) {
+                UnmapViewOfFile(const_cast<LONG64*>(value));
+            }
+            return false;
+        }
+        InterlockedExchange64(value, 0);
+        UnmapViewOfFile(const_cast<LONG64*>(value));
+        return true;
+    }
+
+    void CloseTargetEnds() noexcept {
+        CloseIfValid(request_write);
+        request_write = nullptr;
+        CloseIfValid(response_read);
+        response_read = nullptr;
+        CloseIfValid(mutex);
+        mutex = nullptr;
+        CloseIfValid(counter);
+        counter = nullptr;
+    }
+};
+
 void ForwardByteStream(
     const HANDLE input,
     const bolt::protocol::LauncherTransportKind data_kind,
@@ -248,6 +313,57 @@ void ForwardEventStream(
     }
 }
 
+void ForwardRecoveryRequests(
+    const HANDLE input,
+    TransportWriter& writer) noexcept {
+    for (;;) {
+        std::array<
+            std::uint8_t, bolt::protocol::kRecoveryRequestHeaderLength>
+            header{};
+        if (!ReadExact(input, header.data(), header.size())) {
+            return;
+        }
+        std::uint16_t version = 0;
+        std::uint16_t header_length = 0;
+        std::uint32_t total_length = 0;
+        std::uint32_t path_length = 0;
+        std::memcpy(&version, header.data() + 4, sizeof(version));
+        std::memcpy(
+            &header_length, header.data() + 6, sizeof(header_length));
+        std::memcpy(&total_length, header.data() + 8, sizeof(total_length));
+        std::memcpy(&path_length, header.data() + 12, sizeof(path_length));
+        const bool valid_header =
+            std::equal(
+                header.begin(), header.begin() + 4,
+                std::array<std::uint8_t, 4>{'B', 'R', 'Q', '1'}.begin()) &&
+            version == 1 &&
+            header_length == bolt::protocol::kRecoveryRequestHeaderLength &&
+            total_length >= bolt::protocol::kRecoveryRequestHeaderLength &&
+            total_length <= bolt::protocol::kRecoveryMaximumRequestLength &&
+            path_length != 0 && path_length <= 32'767 &&
+            total_length == bolt::protocol::kRecoveryRequestHeaderLength +
+                                path_length * sizeof(wchar_t);
+        if (!valid_header) {
+            return;
+        }
+        std::vector<std::uint8_t> request;
+        try {
+            request.resize(total_length);
+        } catch (...) {
+            return;
+        }
+        std::copy(header.begin(), header.end(), request.begin());
+        if (!ReadExact(
+                input, request.data() + header.size(),
+                request.size() - header.size()) ||
+            !writer.Write(
+                bolt::protocol::LauncherTransportKind::kRecoveryRequest,
+                request.data(), total_length)) {
+            return;
+        }
+    }
+}
+
 bool WriteProcessExit(
     TransportWriter& writer,
     const DWORD process_id,
@@ -269,28 +385,67 @@ bool WriteProcessExit(
 struct ControlReaderContext {
     HANDLE input = nullptr;
     HANDLE signaled = nullptr;
+    HANDLE recovery_response = nullptr;
     std::atomic<std::uint16_t> kind{0};
 };
 
 DWORD WINAPI ReadControlFrame(LPVOID parameter) noexcept {
     auto* context = static_cast<ControlReaderContext*>(parameter);
-    std::array<std::uint8_t, bolt::protocol::kLauncherControlLength> encoded{};
-    bolt::protocol::LauncherControlKind kind{};
-    const bool valid = context != nullptr &&
-        ReadExact(context->input, encoded.data(), encoded.size()) &&
-        bolt::protocol::DecodeLauncherControl(
-            encoded.data(), encoded.size(), kind) ==
-            bolt::protocol::LauncherControlStatus::kSuccess;
     if (context == nullptr) {
         return ERROR_INVALID_PARAMETER;
     }
+    for (;;) {
+        std::array<std::uint8_t, 4> magic{};
+        if (!ReadExact(context->input, magic.data(), magic.size())) {
+            break;
+        }
+        if (magic == std::array<std::uint8_t, 4>{'B', 'L', 'C', '1'}) {
+            std::array<std::uint8_t, bolt::protocol::kLauncherControlLength>
+                encoded{};
+            std::copy(magic.begin(), magic.end(), encoded.begin());
+            bolt::protocol::LauncherControlKind kind{};
+            if (!ReadExact(
+                    context->input, encoded.data() + magic.size(),
+                    encoded.size() - magic.size()) ||
+                bolt::protocol::DecodeLauncherControl(
+                    encoded.data(), encoded.size(), kind) !=
+                    bolt::protocol::LauncherControlStatus::kSuccess) {
+                break;
+            }
+            context->kind.store(
+                static_cast<std::uint16_t>(kind),
+                std::memory_order_release);
+            SetEvent(context->signaled);
+            return ERROR_SUCCESS;
+        }
+        if (magic == std::array<std::uint8_t, 4>{'B', 'R', 'P', '1'} &&
+            context->recovery_response != nullptr) {
+            std::array<
+                std::uint8_t, bolt::protocol::kRecoveryResponseLength>
+                response{};
+            std::copy(magic.begin(), magic.end(), response.begin());
+            bolt::protocol::RecoveryResponse decoded{};
+            if (!ReadExact(
+                    context->input, response.data() + magic.size(),
+                    response.size() - magic.size()) ||
+                bolt::protocol::DecodeRecoveryResponse(
+                    response.data(), response.size(), decoded) !=
+                    bolt::protocol::RecoveryProtocolStatus::kSuccess ||
+                !WriteExact(
+                    context->recovery_response, response.data(),
+                    response.size())) {
+                break;
+            }
+            continue;
+        }
+        break;
+    }
     context->kind.store(
-        valid ? static_cast<std::uint16_t>(kind)
-              : static_cast<std::uint16_t>(
-                    bolt::protocol::LauncherControlKind::kCancel),
+        static_cast<std::uint16_t>(
+            bolt::protocol::LauncherControlKind::kCancel),
         std::memory_order_release);
     SetEvent(context->signaled);
-    return valid ? ERROR_SUCCESS : ERROR_BROKEN_PIPE;
+    return ERROR_BROKEN_PIPE;
 }
 
 void StopControlReader(const HANDLE thread) noexcept {
@@ -361,12 +516,14 @@ int RunDecodedSession(
     HANDLE stdout_write = nullptr;
     HANDLE stderr_read = nullptr;
     HANDLE stderr_write = nullptr;
+    RecoveryChannels recovery_channels;
     const HANDLE stdin_read = CreateFileW(
         L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
         &inheritable, OPEN_EXISTING, 0, nullptr);
     if (stdin_read == INVALID_HANDLE_VALUE ||
         !CreateTargetPipe(stdout_read, stdout_write) ||
-        !CreateTargetPipe(stderr_read, stderr_write)) {
+        !CreateTargetPipe(stderr_read, stderr_write) ||
+        !recovery_channels.Create(request.recovery_enabled)) {
         CloseIfValid(stdin_read);
         CloseIfValid(stdout_read);
         CloseIfValid(stdout_write);
@@ -391,19 +548,30 @@ int RunDecodedSession(
     }
     std::wstring command(
         request.command_line.begin(), request.command_line.end() - 1);
-    const HANDLE inherited[] = {
+    std::array<HANDLE, 9> inherited = {
         policy.handle(), event_client, stdin_read, stdout_write, stderr_write};
+    std::size_t inherited_count = 5;
+    if (request.recovery_enabled) {
+        inherited[inherited_count++] = recovery_channels.request_write;
+        inherited[inherited_count++] = recovery_channels.response_read;
+        inherited[inherited_count++] = recovery_channels.mutex;
+        inherited[inherited_count++] = recovery_channels.counter;
+    }
     bolt::common::ProcessLaunchOptions options{
         request.program,
         command,
         request.cwd,
         const_cast<wchar_t*>(request.environment_block.data()),
-        inherited,
-        std::size(inherited),
+        inherited.data(),
+        inherited_count,
         0,
         stdin_read,
         stdout_write,
-        stderr_write};
+        stderr_write,
+        recovery_channels.request_write,
+        recovery_channels.response_read,
+        recovery_channels.mutex,
+        recovery_channels.counter};
     bolt::common::SuspendedProcess process;
     std::string hook_path;
     const bool prepared = ToAnsiPath(request.hook_path, hook_path) &&
@@ -420,6 +588,7 @@ int RunDecodedSession(
     CloseHandle(stdin_read);
     CloseHandle(stdout_write);
     CloseHandle(stderr_write);
+    recovery_channels.CloseTargetEnds();
     std::array<std::uint8_t, bolt::protocol::kReadyFrameLength> ready{};
     const bool ready_ok = prepared &&
         ReadExact(event_pipe.handle(), ready.data(), ready.size()) &&
@@ -439,6 +608,7 @@ int RunDecodedSession(
     const DWORD process_id = GetProcessId(process.process_handle());
     ControlReaderContext control{};
     control.input = GetStdHandle(STD_INPUT_HANDLE);
+    control.recovery_response = recovery_channels.response_write;
     control.signaled = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     const HANDLE event_failure_signal =
         CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -482,6 +652,7 @@ int RunDecodedSession(
     std::thread stdout_thread;
     std::thread stderr_thread;
     std::thread event_thread;
+    std::thread recovery_thread;
     try {
         stdout_thread = std::thread(
             ForwardByteStream, stdout_read,
@@ -497,6 +668,11 @@ int RunDecodedSession(
             ForwardEventStream, event_pipe.handle(), process.process_handle(),
             event_failure_signal, std::ref(event_failure),
             std::ref(writer));
+        if (request.recovery_enabled) {
+            recovery_thread = std::thread(
+                ForwardRecoveryRequests, recovery_channels.request_read,
+                std::ref(writer));
+        }
     } catch (...) {
         job.Terminate(ERROR_NOT_ENOUGH_MEMORY);
         process.Wait(5'000);
@@ -512,6 +688,9 @@ int RunDecodedSession(
         }
         if (event_thread.joinable()) {
             event_thread.join();
+        }
+        if (recovery_thread.joinable()) {
+            recovery_thread.join();
         }
         StopControlReader(control_thread);
         CloseHandle(control.signaled);
@@ -584,6 +763,9 @@ int RunDecodedSession(
     stdout_thread.join();
     stderr_thread.join();
     event_thread.join();
+    if (recovery_thread.joinable()) {
+        recovery_thread.join();
+    }
     if (infrastructure_failure) {
         const auto reason = static_cast<std::uint8_t>(infrastructure_reason);
         writer.Write(

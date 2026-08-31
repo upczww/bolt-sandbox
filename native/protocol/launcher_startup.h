@@ -21,6 +21,7 @@ struct LauncherStartRequest {
     bool has_timeout = false;
     std::uint64_t timeout_milliseconds = 0;
     std::array<std::uint8_t, 16> nonce{};
+    bool recovery_enabled = false;
 
     bool operator==(const LauncherStartRequest& other) const noexcept;
 };

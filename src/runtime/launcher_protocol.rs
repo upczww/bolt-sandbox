@@ -5,6 +5,7 @@ const HEADER_LENGTH: usize = 96;
 const DIGEST_OFFSET: usize = 64;
 const DIGEST_LENGTH: usize = 32;
 const FLAG_HAS_TIMEOUT: u32 = 1;
+const FLAG_RECOVERY_ENABLED: u32 = 2;
 const MAX_START_REQUEST_LENGTH: usize = 3 * 1_048_576;
 const MAX_PATH_CODE_UNITS: usize = 32_767;
 const MAX_COMMAND_CODE_UNITS: usize = 32_767;
@@ -21,6 +22,7 @@ pub(super) struct LauncherStartRequest<'a> {
     pub(super) hook_path: &'a [u16],
     pub(super) timeout_milliseconds: Option<u64>,
     pub(super) nonce: [u8; 16],
+    pub(super) recovery_enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,6 +47,7 @@ pub(super) struct DecodedLauncherStartRequest<'a> {
     pub(super) hook_path: Vec<u16>,
     pub(super) timeout_milliseconds: Option<u64>,
     pub(super) nonce: [u8; 16],
+    pub(super) recovery_enabled: bool,
 }
 
 pub(super) fn encode_start_request(
@@ -101,11 +104,15 @@ pub(super) fn encode_start_request(
     write_u32(
         &mut encoded,
         60,
-        if request.timeout_milliseconds.is_some() {
+        (if request.timeout_milliseconds.is_some() {
             FLAG_HAS_TIMEOUT
         } else {
             0
-        },
+        }) | (if request.recovery_enabled {
+            FLAG_RECOVERY_ENABLED
+        } else {
+            0
+        }),
     );
     append_utf16(&mut encoded, request.program);
     append_utf16(&mut encoded, request.cwd);
@@ -137,7 +144,7 @@ pub(super) fn decode_start_request(
         return Err(LauncherProtocolError::InvalidLength);
     }
     let flags = read_u32(encoded, 60)?;
-    if flags & !FLAG_HAS_TIMEOUT != 0 {
+    if flags & !(FLAG_HAS_TIMEOUT | FLAG_RECOVERY_ENABLED) != 0 {
         return Err(LauncherProtocolError::InvalidFlags);
     }
     if request_digest(encoded) != encoded[DIGEST_OFFSET..DIGEST_OFFSET + DIGEST_LENGTH] {
@@ -188,6 +195,7 @@ pub(super) fn decode_start_request(
         hook_path,
         timeout_milliseconds,
         nonce,
+        recovery_enabled: flags & FLAG_RECOVERY_ENABLED != 0,
     };
     validate_decoded(&decoded)?;
     Ok(decoded)
@@ -232,6 +240,7 @@ fn validate_decoded(
         hook_path: &request.hook_path,
         timeout_milliseconds: request.timeout_milliseconds,
         nonce: request.nonce,
+        recovery_enabled: request.recovery_enabled,
     })
 }
 
@@ -331,6 +340,7 @@ mod tests {
             hook_path: hook,
             timeout_milliseconds: Some(5_000),
             nonce: [0xA5; 16],
+            recovery_enabled: true,
         }
     }
 
@@ -362,6 +372,7 @@ mod tests {
         assert_eq!(decoded.hook_path, hook);
         assert_eq!(decoded.timeout_milliseconds, Some(5_000));
         assert_eq!(decoded.nonce, [0xA5; 16]);
+        assert!(decoded.recovery_enabled);
     }
 
     #[test]
@@ -389,7 +400,7 @@ mod tests {
         encoded[HEADER_LENGTH] ^= 1;
         let digest = request_digest(&encoded);
         encoded[DIGEST_OFFSET..DIGEST_OFFSET + DIGEST_LENGTH].copy_from_slice(&digest);
-        write_u32(&mut encoded, 60, 2);
+        write_u32(&mut encoded, 60, 4);
         let digest = request_digest(&encoded);
         encoded[DIGEST_OFFSET..DIGEST_OFFSET + DIGEST_LENGTH].copy_from_slice(&digest);
         assert_eq!(

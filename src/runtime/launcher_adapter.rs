@@ -22,6 +22,8 @@ use super::{
         TerminationCause, TriggerSet,
     },
     preparation::PreparedLaunch,
+    recovery::RecoveryCoordinator,
+    recovery_protocol,
 };
 
 const ACK_LENGTH: usize = 12;
@@ -33,6 +35,10 @@ pub(super) fn start(
     prepared: &PreparedLaunch,
     stream_capacity: usize,
 ) -> Result<ExecutionHandle, SandboxError> {
+    let recovery = RecoveryCoordinator::new(prepared.recovery(), prepared.handshake_nonce())
+        .map_err(|_| SandboxError::InitializationFailed {
+            stage: InitializationStage::RecoveryCoordinator,
+        })?;
     let (launcher, control, process_id, transport) = spawn_and_acknowledge(prepared)?;
     Ok(build_execution_handle(
         launcher,
@@ -42,6 +48,7 @@ pub(super) fn start(
         prepared.timeout(),
         stream_capacity,
         *prepared.handshake_nonce(),
+        recovery,
     ))
 }
 
@@ -92,6 +99,10 @@ fn spawn_and_acknowledge(
     Ok((launcher, stdin, process_id, transport))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the execution worker owns each native and public channel"
+)]
 fn build_execution_handle(
     mut launcher: Child,
     mut control: ChildStdin,
@@ -100,6 +111,7 @@ fn build_execution_handle(
     timeout: Option<Duration>,
     stream_capacity: usize,
     nonce: [u8; 16],
+    recovery: Option<RecoveryCoordinator>,
 ) -> ExecutionHandle {
     let chunk_slots = stream_capacity.div_ceil(4_096).max(1);
     let (stdout_sender, stdout_receiver) = mpsc::sync_channel(chunk_slots);
@@ -121,6 +133,7 @@ fn build_execution_handle(
             &stdout_sender,
             &stderr_sender,
             &event_sender,
+            recovery,
         );
         let _ = completion_sender.send(Ok(result));
     });
@@ -172,6 +185,7 @@ fn run_execution(
     stdout: &SyncSender<Vec<u8>>,
     stderr: &SyncSender<Vec<u8>>,
     events: &SyncSender<SandboxEvent>,
+    mut recovery: Option<RecoveryCoordinator>,
 ) -> ExecutionResult {
     let started = Instant::now();
     let deadline = timeout.and_then(|limit| MonotonicDeadline::new(started, limit));
@@ -193,6 +207,23 @@ fn run_execution(
         }
         match transport.recv_timeout(POLL_INTERVAL) {
             Ok(Ok(Some(frame))) => {
+                if frame.kind == TransportKind::RecoveryRequest {
+                    if process_recovery_request(
+                        &frame.payload,
+                        recovery.as_mut(),
+                        control,
+                        &mut state,
+                        events,
+                    )
+                    .is_err()
+                    {
+                        terminate_launcher(launcher);
+                        return state.infrastructure_result(
+                            crate::InfrastructureFailure::ProtocolIntegrity,
+                        );
+                    }
+                    continue;
+                }
                 if state.dispatch(frame, stdout, stderr, events).is_err() {
                     let control_request = state
                         .begin_infrastructure(LifecycleInfrastructureFailure::ProtocolIntegrity);
@@ -408,11 +439,25 @@ impl TransportState {
                     LifecycleAction::None
                 }
             }
+            TransportKind::RecoveryRequest => return Err(()),
         };
         if frame.kind == TransportKind::InfrastructureFailure {
             self.infrastructure_reported = true;
         }
         self.apply_action(action)?;
+        Ok(())
+    }
+
+    fn publish_event(
+        &mut self,
+        events: &SyncSender<SandboxEvent>,
+        event: SandboxEvent,
+    ) -> Result<(), ()> {
+        if send_bounded(events, event) {
+            self.lifecycle
+                .mark_receiver_lost(ReceiverKind::Events)
+                .map_err(|_| ())?;
+        }
         Ok(())
     }
 
@@ -481,6 +526,28 @@ impl TransportState {
             self.infrastructure_result(crate::InfrastructureFailure::ProtocolIntegrity)
         })
     }
+}
+
+fn process_recovery_request(
+    encoded: &[u8],
+    recovery: Option<&mut RecoveryCoordinator>,
+    control: &mut ChildStdin,
+    state: &mut TransportState,
+    events: &SyncSender<SandboxEvent>,
+) -> Result<(), ()> {
+    let request = recovery_protocol::decode_request(encoded).map_err(|_| ())?;
+    let recovery = recovery.ok_or(())?;
+    let outcome = recovery.backup(&request);
+    if let Some(event) = outcome.event {
+        state.publish_event(events, event)?;
+    }
+    recovery_protocol::write_response(
+        control,
+        request.request_id,
+        outcome.artifact_id,
+        outcome.byte_count,
+    )
+    .map_err(|_| ())
 }
 
 fn send_bounded<T>(sender: &SyncSender<T>, value: T) -> bool {
@@ -587,6 +654,7 @@ fn encode_request(prepared: &PreparedLaunch) -> Result<Vec<u8>, SandboxError> {
         hook_path: &hook,
         timeout_milliseconds,
         nonce: *prepared.handshake_nonce(),
+        recovery_enabled: prepared.recovery().is_some(),
     })
     .map_err(|_| initialization_failure())
 }

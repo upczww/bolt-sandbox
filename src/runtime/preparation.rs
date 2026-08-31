@@ -12,7 +12,7 @@ use super::components::{ComponentOpenError, OpenedComponents, open_components};
 use crate::{
     SandboxError, SandboxRequest,
     ipc::identity::ExecutionIdentity,
-    policy::compiler::{self, payload},
+    policy::compiler::{self, CompiledRecoveryPolicy, payload},
     request,
 };
 
@@ -28,6 +28,14 @@ pub(super) struct PreparedLaunch {
     timeout: Option<Duration>,
     execution_identity: ExecutionIdentity,
     components: OpenedComponents,
+    recovery: Option<PreparedRecovery>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PreparedRecovery {
+    pub(super) directory: PathBuf,
+    pub(super) maximum_bytes: u64,
+    pub(super) maximum_items: u32,
 }
 
 impl PreparedLaunch {
@@ -90,6 +98,10 @@ impl PreparedLaunch {
     pub(super) const fn hook_component_handle(&self) -> &File {
         self.components.hook_handle()
     }
+
+    pub(super) const fn recovery(&self) -> Option<&PreparedRecovery> {
+        self.recovery.as_ref()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -133,6 +145,14 @@ fn prepare_launch_with_identity_factory(
         .map_err(LaunchPreparationError::Request)?;
     let compiled_policy = compiler::compile(&request_value.policy, &request_value.cwd)
         .map_err(LaunchPreparationError::Request)?;
+    let recovery = match &compiled_policy.recovery {
+        CompiledRecoveryPolicy::Disabled => None,
+        CompiledRecoveryPolicy::Enabled(limits) => Some(PreparedRecovery {
+            directory: limits.directory().to_path_buf(),
+            maximum_bytes: limits.maximum_bytes(),
+            maximum_items: limits.maximum_items(),
+        }),
+    };
     let policy_payload = payload::seal(&compiled_policy)
         .map_err(|_| LaunchPreparationError::PolicyPayload)?
         .into_bytes();
@@ -157,6 +177,7 @@ fn prepare_launch_with_identity_factory(
         timeout: request_value.timeout,
         execution_identity,
         components,
+        recovery,
     })
 }
 

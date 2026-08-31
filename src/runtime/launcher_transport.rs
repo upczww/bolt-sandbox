@@ -16,6 +16,7 @@ pub(super) enum TransportKind {
     EventEof,
     ProcessExit,
     InfrastructureFailure,
+    RecoveryRequest,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +48,7 @@ impl TryFrom<u16> for TransportKind {
             6 => Ok(Self::EventEof),
             7 => Ok(Self::ProcessExit),
             8 => Ok(Self::InfrastructureFailure),
+            9 => Ok(Self::RecoveryRequest),
             _ => Err(TransportError::UnknownKind),
         }
     }

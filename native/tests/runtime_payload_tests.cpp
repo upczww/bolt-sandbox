@@ -27,6 +27,10 @@ bool RunRuntimePayloadTests() {
     expected.standard_error_handle = 0x888;
     expected.event_sequence_handle = 0x999;
     expected.event_write_mutex_handle = 0xAAA;
+    expected.recovery_request_handle = 0xBBB;
+    expected.recovery_response_handle = 0xCCC;
+    expected.recovery_mutex_handle = 0xDDD;
+    expected.recovery_counter_handle = 0xEEE;
 
     const auto encoded = bolt::protocol::EncodeRuntimePayload(expected);
     bolt::protocol::RuntimePayload decoded{};

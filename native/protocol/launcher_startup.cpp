@@ -18,6 +18,7 @@ constexpr std::array<std::uint8_t, 4> kMagic = {'B', 'L', 'S', '1'};
 constexpr std::size_t kDigestOffset = 64;
 constexpr std::size_t kDigestLength = 32;
 constexpr std::uint32_t kHasTimeout = 1;
+constexpr std::uint32_t kRecoveryEnabled = 2;
 constexpr std::size_t kMaximumPathCodeUnits = 32'767;
 constexpr std::size_t kMaximumCommandCodeUnits = 32'767;
 constexpr std::size_t kMaximumEnvironmentCodeUnits = 524'288;
@@ -208,7 +209,8 @@ bool LauncherStartRequest::operator==(
            policy == other.policy && hook_path == other.hook_path &&
            has_timeout == other.has_timeout &&
            timeout_milliseconds == other.timeout_milliseconds &&
-           nonce == other.nonce;
+           nonce == other.nonce &&
+           recovery_enabled == other.recovery_enabled;
 }
 
 LauncherStartStatus EncodeLauncherStartRequest(
@@ -253,7 +255,10 @@ LauncherStartStatus EncodeLauncherStartRequest(
             request.has_timeout ? request.timeout_milliseconds : 0);
         std::copy(
             request.nonce.begin(), request.nonce.end(), encoded.begin() + 44);
-        WriteU32(encoded.data(), 60, request.has_timeout ? kHasTimeout : 0);
+        WriteU32(
+            encoded.data(), 60,
+            (request.has_timeout ? kHasTimeout : 0) |
+                (request.recovery_enabled ? kRecoveryEnabled : 0));
         AppendUtf16(encoded, request.program.data(), request.program.size());
         AppendUtf16(encoded, request.cwd.data(), request.cwd.size());
         AppendUtf16(
@@ -300,7 +305,7 @@ LauncherStartStatus DecodeLauncherStartRequest(
     }
     const std::uint32_t flags = ReadU32(encoded, 60);
     const std::uint64_t timeout = ReadU64(encoded, 36);
-    if ((flags & ~kHasTimeout) != 0 ||
+    if ((flags & ~(kHasTimeout | kRecoveryEnabled)) != 0 ||
         ((flags & kHasTimeout) == 0) != (timeout == 0)) {
         return LauncherStartStatus::kInvalidFlags;
     }
@@ -312,6 +317,7 @@ LauncherStartStatus DecodeLauncherStartRequest(
     }
     LauncherStartRequest decoded{};
     decoded.has_timeout = (flags & kHasTimeout) != 0;
+    decoded.recovery_enabled = (flags & kRecoveryEnabled) != 0;
     decoded.timeout_milliseconds = timeout;
     std::copy(encoded + 44, encoded + 60, decoded.nonce.begin());
     const std::array<std::size_t, 6> lengths = {

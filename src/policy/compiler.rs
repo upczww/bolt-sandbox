@@ -237,6 +237,20 @@ pub(crate) struct CompiledRecoveryLimits {
     maximum_items: u32,
 }
 
+impl CompiledRecoveryLimits {
+    pub(crate) fn directory(&self) -> &Path {
+        &self.directory
+    }
+
+    pub(crate) const fn maximum_bytes(&self) -> u64 {
+        self.maximum_bytes
+    }
+
+    pub(crate) const fn maximum_items(&self) -> u32 {
+        self.maximum_items
+    }
+}
+
 #[allow(
     dead_code,
     reason = "recovery quota is instantiated by the trusted recovery coordinator later"

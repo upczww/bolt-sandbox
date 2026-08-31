@@ -26,6 +26,10 @@ struct ProcessLaunchOptions {
     HANDLE standard_input = nullptr;
     HANDLE standard_output = nullptr;
     HANDLE standard_error = nullptr;
+    HANDLE recovery_request = nullptr;
+    HANDLE recovery_response = nullptr;
+    HANDLE recovery_mutex = nullptr;
+    HANDLE recovery_counter = nullptr;
 };
 
 enum class ProcessStatus : std::uint8_t {
@@ -101,6 +105,10 @@ class SuspendedProcess final {
     HANDLE release_event_ = nullptr;
     HANDLE standard_output_ = nullptr;
     HANDLE standard_error_ = nullptr;
+    HANDLE recovery_request_ = nullptr;
+    HANDLE recovery_response_ = nullptr;
+    HANDLE recovery_mutex_ = nullptr;
+    HANDLE recovery_counter_ = nullptr;
 };
 
 }  // namespace bolt::common

@@ -18,6 +18,7 @@ enum class LauncherTransportKind : std::uint16_t {
     kEventEof = 6,
     kProcessExit = 7,
     kInfrastructureFailure = 8,
+    kRecoveryRequest = 9,
 };
 
 enum class LauncherTransportStatus : std::uint8_t {

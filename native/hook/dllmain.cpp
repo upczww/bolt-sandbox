@@ -8,6 +8,7 @@
 #include "hook/process/process_hooks.h"
 #include "hook/process/process_mitigations.h"
 #include "hook/registry/registry_hooks.h"
+#include "hook/recovery/recovery_client.h"
 
 #include <cstdint>
 
@@ -93,6 +94,9 @@ RuntimeInitializationStatus InitializeRuntime(const HINSTANCE instance) noexcept
             event_handle, HandleFromWire(payload.event_sequence_handle),
             HandleFromWire(payload.event_write_mutex_handle)) !=
         bolt::hook::EventSinkStatus::kSuccess) {
+        return failed();
+    }
+    if (!bolt::recovery::ConfigureRecoveryClient(payload)) {
         return failed();
     }
     const auto* policy = static_cast<const std::uint8_t*>(

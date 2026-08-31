@@ -275,12 +275,14 @@ fn rec_001_allowed_delete_is_backed_up_and_indexed_before_mutation() {
     let expected = b"recoverable-content";
     fs::write(&source, expected).expect("source fixture must be written");
 
-    let mut policy = SandboxPolicy::default();
-    policy.recovery = RecoveryPolicy::Enabled(RecoveryLimits {
-        directory: recovery.clone(),
-        maximum_bytes: 1_048_576,
-        maximum_items: 16,
-    });
+    let policy = SandboxPolicy {
+        recovery: RecoveryPolicy::Enabled(RecoveryLimits {
+            directory: recovery.clone(),
+            maximum_bytes: 1_048_576,
+            maximum_items: 16,
+        }),
+        ..SandboxPolicy::default()
+    };
     let mut handle = sandbox
         .start(SandboxRequest {
             program: component_root.join("bolt-sandbox-native-tests.exe"),

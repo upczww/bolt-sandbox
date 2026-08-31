@@ -439,12 +439,21 @@ bool InstallDescendantRuntime(
     HANDLE remote_standard_error = nullptr;
     HANDLE remote_event_sequence = nullptr;
     HANDLE remote_event_write_mutex = nullptr;
+    HANDLE remote_recovery_request = nullptr;
+    HANDLE remote_recovery_response = nullptr;
+    HANDLE remote_recovery_mutex = nullptr;
+    HANDLE remote_recovery_counter = nullptr;
     const bool dns_proxy_configured =
         g_runtime_payload.dns_request_handle != 0 &&
         g_runtime_payload.dns_response_handle != 0;
     const bool standard_streams_configured =
         g_runtime_payload.standard_output_handle != 0 &&
         g_runtime_payload.standard_error_handle != 0;
+    const bool recovery_configured =
+        g_runtime_payload.recovery_request_handle != 0 &&
+        g_runtime_payload.recovery_response_handle != 0 &&
+        g_runtime_payload.recovery_mutex_handle != 0 &&
+        g_runtime_payload.recovery_counter_handle != 0;
     const bool duplicated =
         CreateReadOnlyPolicyMapping(local_policy) &&
         DuplicateIntoProcess(
@@ -483,7 +492,24 @@ bool InstallDescendantRuntime(
           DuplicateIntoProcess(
               process_information->hProcess,
               HandleFromWire(g_runtime_payload.standard_error_handle),
-              remote_standard_error)));
+              remote_standard_error))) &&
+        (!recovery_configured ||
+         (DuplicateIntoProcess(
+              process_information->hProcess,
+              HandleFromWire(g_runtime_payload.recovery_request_handle),
+              remote_recovery_request) &&
+          DuplicateIntoProcess(
+              process_information->hProcess,
+              HandleFromWire(g_runtime_payload.recovery_response_handle),
+              remote_recovery_response) &&
+          DuplicateIntoProcessWithAccess(
+              process_information->hProcess,
+              HandleFromWire(g_runtime_payload.recovery_mutex_handle),
+              SYNCHRONIZE | MUTEX_MODIFY_STATE, remote_recovery_mutex) &&
+          DuplicateIntoProcess(
+              process_information->hProcess,
+              HandleFromWire(g_runtime_payload.recovery_counter_handle),
+              remote_recovery_counter)));
     const DWORD duplication_error = duplicated ? ERROR_SUCCESS : GetLastError();
     if (local_policy != nullptr) {
         CloseHandle(local_policy);
@@ -526,6 +552,16 @@ bool InstallDescendantRuntime(
             reinterpret_cast<std::uintptr_t>(remote_standard_output);
         child_payload.standard_error_handle =
             reinterpret_cast<std::uintptr_t>(remote_standard_error);
+    }
+    if (recovery_configured) {
+        child_payload.recovery_request_handle =
+            reinterpret_cast<std::uintptr_t>(remote_recovery_request);
+        child_payload.recovery_response_handle =
+            reinterpret_cast<std::uintptr_t>(remote_recovery_response);
+        child_payload.recovery_mutex_handle =
+            reinterpret_cast<std::uintptr_t>(remote_recovery_mutex);
+        child_payload.recovery_counter_handle =
+            reinterpret_cast<std::uintptr_t>(remote_recovery_counter);
     }
     auto encoded = protocol::EncodeRuntimePayload(child_payload);
     if (!DetourCopyPayloadToProcess(

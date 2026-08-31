@@ -7,6 +7,7 @@
 #include "hook/filesystem/safe_device.h"
 #include "hook/event_sink.h"
 #include "hook/process/process_hooks.h"
+#include "hook/recovery/recovery_client.h"
 
 #include "DetouredFunctionTypes.h"
 #include "DetouredScope.h"
@@ -2849,7 +2850,11 @@ BOOL WINAPI DetouredDeleteFileW(const LPCWSTR filename) noexcept {
     if (scope.Detoured_IsDisabled()) {
         return g_delete_file_w(filename);
     }
-    return AuthorizeDeletion(filename) ? g_delete_file_w(filename) : FALSE;
+    if (!AuthorizeDeletion(filename)) {
+        return FALSE;
+    }
+    recovery::BackupPath(filename, protocol::RecoveryOperation::kDelete);
+    return g_delete_file_w(filename);
 }
 
 BOOL WINAPI DetouredDeleteFileA(const LPCSTR filename) noexcept {
@@ -2862,6 +2867,8 @@ BOOL WINAPI DetouredDeleteFileA(const LPCSTR filename) noexcept {
         !AuthorizeDeletion(filename_wide.c_str())) {
         return FALSE;
     }
+    recovery::BackupPath(
+        filename_wide.c_str(), protocol::RecoveryOperation::kDelete);
     return g_delete_file_w(filename_wide.c_str());
 }
 

@@ -32,6 +32,10 @@ constexpr std::size_t kStandardOutputHandleOffset = 128;
 constexpr std::size_t kStandardErrorHandleOffset = 136;
 constexpr std::size_t kEventSequenceHandleOffset = 144;
 constexpr std::size_t kEventWriteMutexHandleOffset = 152;
+constexpr std::size_t kRecoveryRequestHandleOffset = 160;
+constexpr std::size_t kRecoveryResponseHandleOffset = 168;
+constexpr std::size_t kRecoveryMutexHandleOffset = 176;
+constexpr std::size_t kRecoveryCounterHandleOffset = 184;
 constexpr std::size_t kMinimumPolicyLength = kPolicyEnvelopeLength;
 constexpr std::size_t kMaximumPolicyLength = kPolicyEnvelopeLength + kPolicyMaximumBodyLength;
 
@@ -130,6 +134,18 @@ std::array<std::uint8_t, kRuntimePayloadLength> EncodeRuntimePayload(
     WriteU64(
         encoded.data(), kEventWriteMutexHandleOffset,
         payload.event_write_mutex_handle);
+    WriteU64(
+        encoded.data(), kRecoveryRequestHandleOffset,
+        payload.recovery_request_handle);
+    WriteU64(
+        encoded.data(), kRecoveryResponseHandleOffset,
+        payload.recovery_response_handle);
+    WriteU64(
+        encoded.data(), kRecoveryMutexHandleOffset,
+        payload.recovery_mutex_handle);
+    WriteU64(
+        encoded.data(), kRecoveryCounterHandleOffset,
+        payload.recovery_counter_handle);
     return encoded;
 }
 
@@ -188,6 +204,14 @@ RuntimePayloadStatus DecodeRuntimePayload(
         ReadU64(encoded, kEventSequenceHandleOffset);
     decoded.event_write_mutex_handle =
         ReadU64(encoded, kEventWriteMutexHandleOffset);
+    decoded.recovery_request_handle =
+        ReadU64(encoded, kRecoveryRequestHandleOffset);
+    decoded.recovery_response_handle =
+        ReadU64(encoded, kRecoveryResponseHandleOffset);
+    decoded.recovery_mutex_handle =
+        ReadU64(encoded, kRecoveryMutexHandleOffset);
+    decoded.recovery_counter_handle =
+        ReadU64(encoded, kRecoveryCounterHandleOffset);
     if (decoded.target_process_id == 0) {
         return RuntimePayloadStatus::kInvalidProcessId;
     }
@@ -212,6 +236,22 @@ RuntimePayloadStatus DecodeRuntimePayload(
     }
     if (!IsValidHandleValue(decoded.event_sequence_handle) ||
         !IsValidHandleValue(decoded.event_write_mutex_handle)) {
+        return RuntimePayloadStatus::kInvalidHandle;
+    }
+    const std::array<std::uint64_t, 4> recovery_handles = {
+        decoded.recovery_request_handle,
+        decoded.recovery_response_handle,
+        decoded.recovery_mutex_handle,
+        decoded.recovery_counter_handle};
+    const bool recovery_absent = std::all_of(
+        recovery_handles.begin(), recovery_handles.end(),
+        [](const std::uint64_t handle) { return handle == 0; });
+    const bool recovery_valid = std::all_of(
+        recovery_handles.begin(), recovery_handles.end(),
+        [](const std::uint64_t handle) {
+            return IsValidHandleValue(handle);
+        });
+    if (!recovery_absent && !recovery_valid) {
         return RuntimePayloadStatus::kInvalidHandle;
     }
     const bool dns_key_zero = std::all_of(

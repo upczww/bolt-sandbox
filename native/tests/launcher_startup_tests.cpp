@@ -57,6 +57,7 @@ bool RunLauncherStartupTests() {
     expected.has_timeout = true;
     expected.timeout_milliseconds = 5'000;
     expected.nonce.fill(0xA5);
+    expected.recovery_enabled = true;
 
     auto truncated_command = expected;
     truncated_command.command_line = {
@@ -88,7 +89,7 @@ bool RunLauncherStartupTests() {
         return false;
     }
     auto invalid_flags = encoded;
-    invalid_flags[60] = 2;
+    invalid_flags[60] = 4;
     return bolt::protocol::DecodeLauncherStartRequest(
                invalid_flags.data(), invalid_flags.size(), decoded) ==
            bolt::protocol::LauncherStartStatus::kInvalidFlags;
