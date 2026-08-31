@@ -190,6 +190,56 @@ bool RunEventFrameTests() {
         return false;
     }
 
+    constexpr char registry_key[] =
+        "HKEY_CURRENT_USER\\Software\\Denied";
+    constexpr std::size_t registry_length =
+        bolt::protocol::kEventHeaderLength + 9 + sizeof(registry_key) - 1;
+    std::array<std::uint8_t, registry_length> registry_frame{};
+    std::array<std::uint8_t, registry_length> expected_registry{};
+    expected_registry[0] = 'B';
+    expected_registry[1] = 'L';
+    expected_registry[2] = 'T';
+    expected_registry[3] = '1';
+    expected_registry[4] = 1;
+    expected_registry[6] = 3;
+    const std::uint32_t registry_payload_length =
+        static_cast<std::uint32_t>(registry_length -
+                                   bolt::protocol::kEventHeaderLength);
+    for (std::size_t index = 0; index < 4; ++index) {
+        expected_registry[8 + index] = static_cast<std::uint8_t>(
+            registry_payload_length >> (index * 8U));
+        expected_registry[24 + index] = static_cast<std::uint8_t>(
+            0x01020304U >> (index * 8U));
+        expected_registry[29 + index] = static_cast<std::uint8_t>(
+            (sizeof(registry_key) - 1) >> (index * 8U));
+    }
+    expected_registry[12] = 109;
+    expected_registry[28] = static_cast<std::uint8_t>(
+        bolt::protocol::RegistryOperation::kSetValue);
+    std::copy_n(
+        reinterpret_cast<const std::uint8_t*>(registry_key),
+        sizeof(registry_key) - 1, expected_registry.begin() + 33);
+    bolt::protocol::RewriteFrameChecksum(
+        expected_registry.data(), expected_registry.size());
+    std::size_t registry_written = 0;
+    if (bolt::protocol::RegistryViolationFrameLength(registry_key) !=
+            registry_length ||
+        bolt::protocol::EncodeRegistryViolationFrame(
+            0x01020304U, bolt::protocol::RegistryOperation::kSetValue,
+            registry_key, 109, registry_frame.data(), registry_frame.size(),
+            registry_written) !=
+            bolt::protocol::FrameEncodeStatus::kSuccess ||
+        registry_written != registry_frame.size() ||
+        registry_frame != expected_registry ||
+        bolt::protocol::RegistryViolationFrameLength("") != 0 ||
+        bolt::protocol::EncodeRegistryViolationFrame(
+            1, static_cast<bolt::protocol::RegistryOperation>(0xff),
+            registry_key, 1, registry_frame.data(), registry_frame.size(),
+            registry_written) !=
+            bolt::protocol::FrameEncodeStatus::kInvalidOperation) {
+        return false;
+    }
+
     std::array<std::uint8_t, bolt::protocol::kEventsDroppedFrameLength>
         dropped_frame{};
     std::array<std::uint8_t, bolt::protocol::kEventsDroppedFrameLength>

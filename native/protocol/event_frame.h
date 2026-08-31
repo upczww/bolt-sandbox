@@ -35,6 +35,16 @@ enum class ProcessOperation : std::uint8_t {
     kExternalDelegation = 5,
 };
 
+enum class RegistryOperation : std::uint8_t {
+    kOpen = 0,
+    kQuery = 1,
+    kEnumerate = 2,
+    kCreate = 3,
+    kSetValue = 4,
+    kDelete = 5,
+    kRename = 6,
+};
+
 enum class NetworkOperation : std::uint8_t {
     kResolve = 0,
     kConnect = 1,
@@ -116,6 +126,17 @@ FrameEncodeStatus EncodeDomainNetworkViolationFrame(
     std::uint32_t process_id,
     NetworkOperation operation,
     const char* ascii_domain,
+    std::uint64_t sequence,
+    std::uint8_t* output,
+    std::size_t capacity,
+    std::size_t& written) noexcept;
+
+std::size_t RegistryViolationFrameLength(const char* key) noexcept;
+
+FrameEncodeStatus EncodeRegistryViolationFrame(
+    std::uint32_t process_id,
+    RegistryOperation operation,
+    const char* key,
     std::uint64_t sequence,
     std::uint8_t* output,
     std::size_t capacity,
