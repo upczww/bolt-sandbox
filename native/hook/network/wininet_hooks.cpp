@@ -4,6 +4,8 @@
 #include <windows.h>
 #include <wininet.h>
 
+#include <array>
+
 #include <detours.h>
 
 namespace bolt::network {
@@ -15,6 +17,20 @@ using InternetConnectWFunction = decltype(&InternetConnectW);
 InternetConnectAFunction g_internet_connect_a = InternetConnectA;
 InternetConnectWFunction g_internet_connect_w = InternetConnectW;
 
+bool UsesExplicitProxy(const HINTERNET internet) noexcept {
+    if (internet == nullptr) {
+        return false;
+    }
+    alignas(INTERNET_PROXY_INFO) std::array<std::uint8_t, 4'096> buffer{};
+    DWORD proxy_length = static_cast<DWORD>(buffer.size());
+    auto* const proxy =
+        reinterpret_cast<INTERNET_PROXY_INFO*>(buffer.data());
+    return InternetQueryOptionW(
+               internet, INTERNET_OPTION_PROXY, buffer.data(),
+               &proxy_length) != FALSE &&
+           proxy->dwAccessType == INTERNET_OPEN_TYPE_PROXY;
+}
+
 HINTERNET WINAPI DetouredInternetConnectA(
     const HINTERNET internet,
     const LPCSTR server,
@@ -24,7 +40,7 @@ HINTERNET WINAPI DetouredInternetConnectA(
     const DWORD service,
     const DWORD flags,
     const DWORD_PTR context) noexcept {
-    if (DenyHighLevelConnection(server, port)) {
+    if (DenyHighLevelConnection(server, port, !UsesExplicitProxy(internet))) {
         return nullptr;
     }
     return g_internet_connect_a(
@@ -40,7 +56,7 @@ HINTERNET WINAPI DetouredInternetConnectW(
     const DWORD service,
     const DWORD flags,
     const DWORD_PTR context) noexcept {
-    if (DenyHighLevelConnection(server, port)) {
+    if (DenyHighLevelConnection(server, port, !UsesExplicitProxy(internet))) {
         return nullptr;
     }
     return g_internet_connect_w(

@@ -13,12 +13,23 @@ using WinHttpConnectFunction = decltype(&WinHttpConnect);
 
 WinHttpConnectFunction g_win_http_connect = WinHttpConnect;
 
+bool UsesExplicitProxy(const HINTERNET session) noexcept {
+    if (session == nullptr) {
+        return false;
+    }
+    WINHTTP_PROXY_INFO proxy{};
+    DWORD proxy_length = sizeof(proxy);
+    return WinHttpQueryOption(
+               session, WINHTTP_OPTION_PROXY, &proxy, &proxy_length) != FALSE &&
+           proxy.dwAccessType == WINHTTP_ACCESS_TYPE_NAMED_PROXY;
+}
+
 HINTERNET WINAPI DetouredWinHttpConnect(
     const HINTERNET session,
     const LPCWSTR server,
     const INTERNET_PORT port,
     const DWORD reserved) noexcept {
-    if (DenyHighLevelConnection(server, port)) {
+    if (DenyHighLevelConnection(server, port, !UsesExplicitProxy(session))) {
         return nullptr;
     }
     return g_win_http_connect(session, server, port, reserved);

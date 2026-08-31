@@ -2,6 +2,8 @@
 
 #include <winhttp.h>
 
+#include <string>
+
 namespace bolt::tests {
 
 
@@ -53,6 +55,63 @@ std::uint32_t TryWinHttpGet(
     }
     if (session == nullptr) {
         return 100U + open_error;
+    }
+    if (connection == nullptr) {
+        return 2;
+    }
+    if (request == nullptr) {
+        return 3;
+    }
+    if (!sent) {
+        return 4;
+    }
+    if (!received) {
+        return 5;
+    }
+    return read ? 0U : 6U;
+}
+
+std::uint32_t TryWinHttpGetViaProxy(
+    const wchar_t* const server,
+    const std::uint16_t target_port,
+    const std::uint16_t proxy_port) noexcept {
+    const std::wstring proxy =
+        L"127.0.0.1:" + std::to_wstring(proxy_port);
+    const HINTERNET session = WinHttpOpen(
+        L"bolt-sandbox-network-test/1.0", WINHTTP_ACCESS_TYPE_NAMED_PROXY,
+        proxy.c_str(), WINHTTP_NO_PROXY_BYPASS, 0);
+    const HINTERNET connection = session == nullptr
+                                     ? nullptr
+                                     : WinHttpConnect(
+                                           session, server, target_port, 0);
+    const HINTERNET request = connection == nullptr
+                                  ? nullptr
+                                  : WinHttpOpenRequest(
+                                        connection, L"GET", L"/", nullptr,
+                                        WINHTTP_NO_REFERER,
+                                        WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+    const bool sent = request != nullptr &&
+        WinHttpSendRequest(
+            request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+            WINHTTP_NO_REQUEST_DATA, 0, 0, 0) != FALSE;
+    const bool received = sent &&
+        WinHttpReceiveResponse(request, nullptr) != FALSE;
+    char body[2]{};
+    DWORD bytes_read = 0;
+    const bool read = received &&
+        WinHttpReadData(request, body, sizeof(body), &bytes_read) != FALSE &&
+        bytes_read == sizeof(body) && body[0] == 'o' && body[1] == 'k';
+    if (request != nullptr) {
+        WinHttpCloseHandle(request);
+    }
+    if (connection != nullptr) {
+        WinHttpCloseHandle(connection);
+    }
+    if (session != nullptr) {
+        WinHttpCloseHandle(session);
+    }
+    if (session == nullptr) {
+        return 1;
     }
     if (connection == nullptr) {
         return 2;

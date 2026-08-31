@@ -511,6 +511,68 @@ bool CopyAsciiDomain(
     }
 }
 
+bool TryParseNumericAddress(
+    const char* const host,
+    AddressFamily& family,
+    std::array<std::uint8_t, 16>& address,
+    std::size_t& address_length) noexcept {
+    address.fill(0);
+    address_length = 0;
+    if (host == nullptr) {
+        return false;
+    }
+    __try {
+        IN_ADDR ipv4{};
+        if (InetPtonA(AF_INET, host, &ipv4) == 1) {
+            family = AddressFamily::kIpv4;
+            address_length = 4;
+            std::memcpy(address.data(), &ipv4, address_length);
+            return true;
+        }
+        IN6_ADDR ipv6{};
+        if (InetPtonA(AF_INET6, host, &ipv6) == 1) {
+            family = AddressFamily::kIpv6;
+            address_length = 16;
+            std::memcpy(address.data(), &ipv6, address_length);
+            return true;
+        }
+        return false;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool TryParseNumericAddress(
+    const wchar_t* const host,
+    AddressFamily& family,
+    std::array<std::uint8_t, 16>& address,
+    std::size_t& address_length) noexcept {
+    address.fill(0);
+    address_length = 0;
+    if (host == nullptr) {
+        return false;
+    }
+    __try {
+        IN_ADDR ipv4{};
+        if (InetPtonW(AF_INET, host, &ipv4) == 1) {
+            family = AddressFamily::kIpv4;
+            address_length = 4;
+            std::memcpy(address.data(), &ipv4, address_length);
+            return true;
+        }
+        IN6_ADDR ipv6{};
+        if (InetPtonW(AF_INET6, host, &ipv6) == 1) {
+            family = AddressFamily::kIpv6;
+            address_length = 16;
+            std::memcpy(address.data(), &ipv6, address_length);
+            return true;
+        }
+        return false;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 template <typename Result>
 void ClearAddressResults(Result** results) noexcept {
     if (results == nullptr) {
@@ -1038,6 +1100,15 @@ INT WSAAPI DetouredGetAddrInfoA(
         node_name == nullptr) {
         return g_get_addr_info_a(node_name, service_name, hints, results);
     }
+    AddressFamily numeric_family{};
+    std::array<std::uint8_t, 16> numeric_address{};
+    std::size_t numeric_address_length = 0;
+    if (policy != nullptr && policy->mode() == Mode::kAllowList &&
+        TryParseNumericAddress(
+            node_name, numeric_family, numeric_address,
+            numeric_address_length)) {
+        return g_get_addr_info_a(node_name, service_name, hints, results);
+    }
     std::array<char, protocol::kMaximumEventDomainBytes + 1U> domain{};
     std::uint16_t port = 0;
     protocol::DnsProxyQueryFamily family{};
@@ -1098,6 +1169,15 @@ INT WSAAPI DetouredGetAddrInfoW(
     }
     if ((policy != nullptr && policy->mode() == Mode::kUnrestricted) ||
         node_name == nullptr) {
+        return g_get_addr_info_w(node_name, service_name, hints, results);
+    }
+    AddressFamily numeric_family{};
+    std::array<std::uint8_t, 16> numeric_address{};
+    std::size_t numeric_address_length = 0;
+    if (policy != nullptr && policy->mode() == Mode::kAllowList &&
+        TryParseNumericAddress(
+            node_name, numeric_family, numeric_address,
+            numeric_address_length)) {
         return g_get_addr_info_w(node_name, service_name, hints, results);
     }
     std::array<char, protocol::kMaximumEventDomainBytes + 1U> domain{};
@@ -1262,6 +1342,17 @@ INT WSAAPI DetouredGetAddrInfoExW(
             node_name, service_name, name_space, provider, hints, results,
             timeout, overlapped, completion_routine, lookup_handle);
     }
+    AddressFamily numeric_family{};
+    std::array<std::uint8_t, 16> numeric_address{};
+    std::size_t numeric_address_length = 0;
+    if (policy != nullptr && policy->mode() == Mode::kAllowList &&
+        TryParseNumericAddress(
+            node_name, numeric_family, numeric_address,
+            numeric_address_length)) {
+        return g_get_addr_info_ex_w(
+            node_name, service_name, name_space, provider, hints, results,
+            timeout, overlapped, completion_routine, lookup_handle);
+    }
     std::array<char, protocol::kMaximumEventDomainBytes + 1U> domain{};
     std::uint16_t port = 0;
     protocol::DnsProxyQueryFamily family{};
@@ -1308,6 +1399,17 @@ INT WSAAPI DetouredGetAddrInfoExA(
     }
     if ((policy != nullptr && policy->mode() == Mode::kUnrestricted) ||
         node_name == nullptr) {
+        return g_get_addr_info_ex_a(
+            node_name, service_name, name_space, provider, hints, results,
+            timeout, overlapped, completion_routine, lookup_handle);
+    }
+    AddressFamily numeric_family{};
+    std::array<std::uint8_t, 16> numeric_address{};
+    std::size_t numeric_address_length = 0;
+    if (policy != nullptr && policy->mode() == Mode::kAllowList &&
+        TryParseNumericAddress(
+            node_name, numeric_family, numeric_address,
+            numeric_address_length)) {
         return g_get_addr_info_ex_a(
             node_name, service_name, name_space, provider, hints, results,
             timeout, overlapped, completion_routine, lookup_handle);
@@ -1558,7 +1660,8 @@ int WSAAPI DetouredCloseSocket(const SOCKET socket) noexcept {
 
 bool DenyHighLevelConnection(
     const char* const server,
-    const std::uint16_t port) noexcept {
+    const std::uint16_t port,
+    const bool resolve_target) noexcept {
     const auto* policy = g_policy.get();
     if (policy != nullptr && policy->mode() == Mode::kUnrestricted) {
         return false;
@@ -1566,9 +1669,17 @@ bool DenyHighLevelConnection(
     std::array<char, protocol::kMaximumEventDomainBytes + 1U> domain{};
     const bool valid_domain = CopyAsciiDomain(server, domain);
     if (policy != nullptr && policy->mode() == Mode::kAllowList &&
-        valid_domain && port != 0 && g_dns_channel != nullptr &&
+        valid_domain && port != 0 &&
         policy->DecideDomain(domain.data()) == Decision::kAllow &&
         policy->DecidePort(port) == Decision::kAllow) {
+        if (!resolve_target) {
+            SetLastError(ERROR_SUCCESS);
+            return false;
+        }
+        if (g_dns_channel == nullptr) {
+            SetLastError(ERROR_NETWORK_UNREACHABLE);
+            return true;
+        }
         const std::uint64_t now = GetTickCount64();
         std::vector<protocol::DnsProxyAddress> addresses;
         const auto status = g_dns_channel->Resolve(
@@ -1594,7 +1705,8 @@ bool DenyHighLevelConnection(
 
 bool DenyHighLevelConnection(
     const wchar_t* const server,
-    const std::uint16_t port) noexcept {
+    const std::uint16_t port,
+    const bool resolve_target) noexcept {
     const auto* policy = g_policy.get();
     if (policy != nullptr && policy->mode() == Mode::kUnrestricted) {
         return false;
@@ -1602,9 +1714,17 @@ bool DenyHighLevelConnection(
     std::array<char, protocol::kMaximumEventDomainBytes + 1U> domain{};
     const bool valid_domain = CopyAsciiDomain(server, domain);
     if (policy != nullptr && policy->mode() == Mode::kAllowList &&
-        valid_domain && port != 0 && g_dns_channel != nullptr &&
+        valid_domain && port != 0 &&
         policy->DecideDomain(domain.data()) == Decision::kAllow &&
         policy->DecidePort(port) == Decision::kAllow) {
+        if (!resolve_target) {
+            SetLastError(ERROR_SUCCESS);
+            return false;
+        }
+        if (g_dns_channel == nullptr) {
+            SetLastError(ERROR_NETWORK_UNREACHABLE);
+            return true;
+        }
         const std::uint64_t now = GetTickCount64();
         std::vector<protocol::DnsProxyAddress> addresses;
         const auto status = g_dns_channel->Resolve(

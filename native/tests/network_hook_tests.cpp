@@ -371,6 +371,49 @@ bool ServeHttpRedirectOnce(
     return received > 0 && offset == static_cast<int>(response.size());
 }
 
+bool ServeHttpProxyOnce(
+    const SOCKET ipv4_listener,
+    const SOCKET ipv6_listener,
+    const char* const final_domain,
+    const std::uint16_t final_port,
+    const HANDLE process) {
+    const SOCKET accepted = AcceptEitherWhileProcessRuns(
+        ipv4_listener, ipv6_listener, process, 3'000);
+    if (accepted == INVALID_SOCKET) {
+        return false;
+    }
+    constexpr DWORD receive_timeout = 3'000;
+    setsockopt(
+        accepted, SOL_SOCKET, SO_RCVTIMEO,
+        reinterpret_cast<const char*>(&receive_timeout),
+        sizeof(receive_timeout));
+    std::array<char, 4'096> request{};
+    const int received =
+        recv(accepted, request.data(), static_cast<int>(request.size()), 0);
+    const std::string request_text = received > 0
+        ? std::string(request.data(), static_cast<std::size_t>(received))
+        : std::string{};
+    const std::string expected_target =
+        "GET http://" + std::string(final_domain) + ":" +
+        std::to_string(final_port) + "/";
+    constexpr char response[] =
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+    int offset = 0;
+    while (received > 0 && offset < static_cast<int>(sizeof(response) - 1)) {
+        const int sent = send(
+            accepted, response + offset,
+            static_cast<int>(sizeof(response) - 1) - offset, 0);
+        if (sent <= 0) {
+            break;
+        }
+        offset += sent;
+    }
+    shutdown(accepted, SD_BOTH);
+    closesocket(accepted);
+    return request_text.find(expected_target) != std::string::npos &&
+           offset == static_cast<int>(sizeof(response) - 1);
+}
+
 }  // namespace
 
 int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
@@ -1147,7 +1190,7 @@ bool RunNetworkUnrestrictedTests() {
 }
 
 int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 8) {
+    if (argument_count != 12) {
         return 510;
     }
     const std::wstring executable = CurrentExecutable();
@@ -1179,7 +1222,7 @@ int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
 }
 
 int RunNetworkAllowListLeaf(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 8) {
+    if (argument_count != 12) {
         return 210;
     }
     WSADATA winsock{};
@@ -1381,6 +1424,26 @@ int RunNetworkAllowListLeaf(const int argument_count, wchar_t** arguments) {
         bolt::tests::TryWinInetGetW(
             arguments[2],
             static_cast<std::uint16_t>(_wtoi(arguments[5])));
+    const std::uint32_t win_http_proxy_stage =
+        bolt::tests::TryWinHttpGetViaProxy(
+            arguments[8],
+            static_cast<std::uint16_t>(_wtoi(arguments[5])),
+            static_cast<std::uint16_t>(_wtoi(arguments[9])));
+    const std::uint32_t win_inet_proxy_stage =
+        bolt::tests::TryWinInetGetViaProxyW(
+            arguments[2],
+            static_cast<std::uint16_t>(_wtoi(arguments[5])),
+            static_cast<std::uint16_t>(_wtoi(arguments[9])));
+    const std::uint32_t win_inet_denied_proxy_stage =
+        bolt::tests::TryWinInetGetViaProxyW(
+            arguments[8],
+            static_cast<std::uint16_t>(_wtoi(arguments[5])),
+            static_cast<std::uint16_t>(_wtoi(arguments[10])));
+    const std::uint32_t win_http_denied_final_stage =
+        bolt::tests::TryWinHttpGetViaProxy(
+            arguments[8],
+            static_cast<std::uint16_t>(_wtoi(arguments[11])),
+            static_cast<std::uint16_t>(_wtoi(arguments[9])));
 
     sockaddr_in wrong_port{};
     if (results != nullptr && results->ai_addrlen >= sizeof(wrong_port)) {
@@ -1474,6 +1537,18 @@ int RunNetworkAllowListLeaf(const int argument_count, wchar_t** arguments) {
     }
     if (win_inet_denied_redirect_stage == 0) {
         return 460;
+    }
+    if (win_http_proxy_stage != 0) {
+        return 480 + static_cast<int>(win_http_proxy_stage);
+    }
+    if (win_inet_proxy_stage != 0) {
+        return 490 + static_cast<int>(win_inet_proxy_stage);
+    }
+    if (win_inet_denied_proxy_stage == 0) {
+        return 500;
+    }
+    if (win_http_denied_final_stage == 0) {
+        return 501;
     }
     if (closed_peer_status != SOCKET_ERROR ||
         closed_peer_error != WSAENOTSOCK) {
@@ -1638,8 +1713,54 @@ bool RunNetworkAllowListTests() {
         WSACleanup();
         return false;
     }
+    SOCKET application_proxy_listener = INVALID_SOCKET;
+    SOCKET application_proxy_ipv6_listener = INVALID_SOCKET;
+    std::uint16_t application_proxy_port = 0;
+    SOCKET denied_proxy_listener = INVALID_SOCKET;
+    SOCKET denied_proxy_ipv6_listener = INVALID_SOCKET;
+    std::uint16_t denied_proxy_port = 0;
+    if (!CreateDualLoopbackListeners(
+            application_proxy_listener, application_proxy_ipv6_listener,
+            application_proxy_port) ||
+        !CreateDualLoopbackListeners(
+            denied_proxy_listener, denied_proxy_ipv6_listener,
+            denied_proxy_port)) {
+        closesocket(listener);
+        closesocket(ipv6_listener);
+        closesocket(http_listener);
+        closesocket(http_ipv6_listener);
+        closesocket(redirect_listener);
+        closesocket(redirect_ipv6_listener);
+        closesocket(denied_redirect_listener);
+        closesocket(denied_redirect_ipv6_listener);
+        if (application_proxy_listener != INVALID_SOCKET) {
+            closesocket(application_proxy_listener);
+        }
+        if (application_proxy_ipv6_listener != INVALID_SOCKET) {
+            closesocket(application_proxy_ipv6_listener);
+        }
+        if (denied_proxy_listener != INVALID_SOCKET) {
+            closesocket(denied_proxy_listener);
+        }
+        if (denied_proxy_ipv6_listener != INVALID_SOCKET) {
+            closesocket(denied_proxy_ipv6_listener);
+        }
+        WSACleanup();
+        return false;
+    }
     const std::string allowed_domain = "localhost";
     const std::wstring allowed_domain_w = L"localhost";
+    const std::string proxy_target_domain = "proxy-target.invalid";
+    const std::wstring proxy_target_domain_w = L"proxy-target.invalid";
+    std::uint16_t denied_final_port = 1;
+    const std::array<std::uint16_t, 5> allowed_ports = {
+        port, ipv6_port, http_port, redirect_port, application_proxy_port};
+    while (std::find(
+               allowed_ports.begin(), allowed_ports.end(), denied_final_port) !=
+               allowed_ports.end() ||
+           denied_final_port == denied_proxy_port) {
+        ++denied_final_port;
+    }
     const std::wstring executable = CurrentExecutable();
     bolt::tests::NetworkAddressRule loopback{};
     loopback.family = 4;
@@ -1647,9 +1768,10 @@ bool RunNetworkAllowListTests() {
     loopback.address[0] = 127;
     loopback.address[3] = 1;
     const bolt::tests::NetworkAllowListRules allow_list{
-        {{false, allowed_domain}}, {loopback},
+        {{false, allowed_domain}, {false, proxy_target_domain}}, {loopback},
         {{port, port}, {ipv6_port, ipv6_port}, {http_port, http_port},
-         {redirect_port, redirect_port}}};
+         {redirect_port, redirect_port},
+         {application_proxy_port, application_proxy_port}}};
     const auto payload = bolt::tests::SealPolicy(
         {{bolt::tests::FilesystemRuleKind::kReadWrite,
           std::filesystem::path(executable).root_path()}},
@@ -1661,6 +1783,8 @@ bool RunNetworkAllowListTests() {
             bolt::network::PolicyLoadStatus::kValid ||
         checked_policy->DecideDomain("localhost") !=
             bolt::network::Decision::kAllow ||
+        checked_policy->DecideDomain(proxy_target_domain.c_str()) !=
+            bolt::network::Decision::kAllow ||
         checked_policy->DecidePort(port) != bolt::network::Decision::kAllow) {
         std::fprintf(stderr, "allow-list fixture policy mismatch at port %u\n", port);
         closesocket(listener);
@@ -1671,6 +1795,10 @@ bool RunNetworkAllowListTests() {
         closesocket(redirect_ipv6_listener);
         closesocket(denied_redirect_listener);
         closesocket(denied_redirect_ipv6_listener);
+        closesocket(application_proxy_listener);
+        closesocket(application_proxy_ipv6_listener);
+        closesocket(denied_proxy_listener);
+        closesocket(denied_proxy_ipv6_listener);
         WSACleanup();
         return false;
     }
@@ -1697,6 +1825,10 @@ bool RunNetworkAllowListTests() {
         closesocket(redirect_ipv6_listener);
         closesocket(denied_redirect_listener);
         closesocket(denied_redirect_ipv6_listener);
+        closesocket(application_proxy_listener);
+        closesocket(application_proxy_ipv6_listener);
+        closesocket(denied_proxy_listener);
+        closesocket(denied_proxy_ipv6_listener);
         WSACleanup();
         return false;
     }
@@ -1713,6 +1845,10 @@ bool RunNetworkAllowListTests() {
         closesocket(redirect_ipv6_listener);
         closesocket(denied_redirect_listener);
         closesocket(denied_redirect_ipv6_listener);
+        closesocket(application_proxy_listener);
+        closesocket(application_proxy_ipv6_listener);
+        closesocket(denied_proxy_listener);
+        closesocket(denied_proxy_ipv6_listener);
         WSACleanup();
         return false;
     }
@@ -1748,6 +1884,10 @@ bool RunNetworkAllowListTests() {
         closesocket(redirect_ipv6_listener);
         closesocket(denied_redirect_listener);
         closesocket(denied_redirect_ipv6_listener);
+        closesocket(application_proxy_listener);
+        closesocket(application_proxy_ipv6_listener);
+        closesocket(denied_proxy_listener);
+        closesocket(denied_proxy_ipv6_listener);
         CloseHandle(release);
         event_pipe.Close();
         WSACleanup();
@@ -1758,7 +1898,11 @@ bool RunNetworkAllowListTests() {
         L"\" --network-allow-list-child " + allowed_domain_w + L" " +
         std::to_wstring(port) + L" " + std::to_wstring(ipv6_port) + L" " +
         std::to_wstring(http_port) + L" " + std::to_wstring(redirect_port) +
-        L" " + std::to_wstring(denied_redirect_port);
+        L" " + std::to_wstring(denied_redirect_port) + L" " +
+        proxy_target_domain_w + L" " +
+        std::to_wstring(application_proxy_port) + L" " +
+        std::to_wstring(denied_proxy_port) + L" " +
+        std::to_wstring(denied_final_port);
     const HANDLE inherited[] = {
         policy.handle(), event_client, release,
         dns_proxy->request_write_handle(), dns_proxy->response_read_handle()};
@@ -1837,6 +1981,38 @@ bool RunNetworkAllowListTests() {
     if (denied_redirect_connection != INVALID_SOCKET) {
         closesocket(denied_redirect_connection);
     }
+    const bool win_http_application_proxy_served =
+        denied_redirect_source_served &&
+        denied_redirect_connection == INVALID_SOCKET &&
+        ServeHttpProxyOnce(
+            application_proxy_listener, application_proxy_ipv6_listener,
+            proxy_target_domain.c_str(), http_port,
+            process.process_handle());
+    const bool win_inet_application_proxy_served =
+        win_http_application_proxy_served &&
+        ServeHttpProxyOnce(
+            application_proxy_listener, application_proxy_ipv6_listener,
+            allowed_domain.c_str(), http_port,
+            process.process_handle());
+    const SOCKET denied_proxy_connection = win_inet_application_proxy_served
+        ? AcceptEitherWhileProcessRuns(
+              denied_proxy_listener, denied_proxy_ipv6_listener,
+              process.process_handle(), 1'000)
+        : INVALID_SOCKET;
+    if (denied_proxy_connection != INVALID_SOCKET) {
+        closesocket(denied_proxy_connection);
+    }
+    const SOCKET denied_final_proxy_connection =
+        win_inet_application_proxy_served &&
+            denied_proxy_connection == INVALID_SOCKET
+        ? AcceptEitherWhileProcessRuns(
+              application_proxy_listener,
+              application_proxy_ipv6_listener,
+              process.process_handle(), 1'000)
+        : INVALID_SOCKET;
+    if (denied_final_proxy_connection != INVALID_SOCKET) {
+        closesocket(denied_final_proxy_connection);
+    }
     const bool waited =
         process.Wait(5'000) == bolt::common::ProcessStatus::kSuccess;
     dns_proxy->CloseClientHandles();
@@ -1851,6 +2027,10 @@ bool RunNetworkAllowListTests() {
         redirect_source_served && redirect_target_served &&
         denied_redirect_source_served &&
         denied_redirect_connection == INVALID_SOCKET &&
+        win_http_application_proxy_served &&
+        win_inet_application_proxy_served &&
+        denied_proxy_connection == INVALID_SOCKET &&
+        denied_final_proxy_connection == INVALID_SOCKET &&
         exit_status == bolt::common::ProcessStatus::kSuccess && exit_code == 0;
     closesocket(listener);
     closesocket(ipv6_listener);
@@ -1860,6 +2040,10 @@ bool RunNetworkAllowListTests() {
     closesocket(redirect_ipv6_listener);
     closesocket(denied_redirect_listener);
     closesocket(denied_redirect_ipv6_listener);
+    closesocket(application_proxy_listener);
+    closesocket(application_proxy_ipv6_listener);
+    closesocket(denied_proxy_listener);
+    closesocket(denied_proxy_ipv6_listener);
     CloseHandle(release);
     event_pipe.Close();
     WSACleanup();
@@ -1867,10 +2051,17 @@ bool RunNetworkAllowListTests() {
         std::fprintf(
             stderr,
             "allow-list fixture failed: port=%u ready=%d waited=%d proxy=%d "
-            "http=%d inet=%d exit=%lu\n",
+            "http=%d inet=%d app_proxy=%d denied_proxy=%d "
+            "denied_final=%d exit=%lu\n",
             port,
             ready_ok ? 1 : 0, waited ? 1 : 0, proxy_waited ? 1 : 0,
             win_http_served ? 1 : 0, win_inet_served ? 1 : 0,
+            win_http_application_proxy_served &&
+                    win_inet_application_proxy_served
+                ? 1
+                : 0,
+            denied_proxy_connection == INVALID_SOCKET ? 1 : 0,
+            denied_final_proxy_connection == INVALID_SOCKET ? 1 : 0,
             static_cast<unsigned long>(exit_code));
     }
     return passed;

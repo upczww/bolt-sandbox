@@ -449,6 +449,14 @@ Enforcement uses two layers:
 2. In allow-list mode, route supported traffic through a local policy proxy and
    block direct outbound connections to prevent DNS-to-IP bypass.
 
+WinHTTP and WinInet explicit-proxy sessions enforce two independent decisions:
+the requested origin domain and port must be allowed before the request handle
+is created, and the proxy server address and port must pass the Winsock policy
+when the transport connects. The origin is not resolved locally in this mode;
+the application proxy owns that resolution. Numeric IPv4 and IPv6 host strings
+are parsed locally by address-info APIs and are still authorized only when the
+subsequent endpoint connection passes the address and port rules.
+
 Required API coverage includes `connect`, `WSAConnect`, `ConnectEx`, synchronous
 and asynchronous DNS resolution, IPv4, and IPv6. UDP and custom protocol support
 must be explicitly tested and documented rather than implicitly allowed.

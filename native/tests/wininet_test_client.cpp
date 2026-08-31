@@ -2,6 +2,8 @@
 
 #include <wininet.h>
 
+#include <string>
+
 namespace bolt::tests {
 
 HighLevelConnectResult TryWinInetConnectW(
@@ -78,6 +80,74 @@ std::uint32_t TryWinInetGetW(
     }
     if (!sent) {
         return 4;
+    }
+    return read ? 0U : 5U;
+}
+
+std::uint32_t TryWinInetGetViaProxyW(
+    const wchar_t* const server,
+    const std::uint16_t target_port,
+    const std::uint16_t proxy_port) noexcept {
+    const std::wstring proxy =
+        L"127.0.0.1:" + std::to_wstring(proxy_port);
+    const HINTERNET session = InternetOpenW(
+        L"bolt-sandbox-network-test/1.0", INTERNET_OPEN_TYPE_PROXY,
+        proxy.c_str(), L"<-loopback>", 0);
+    DWORD timeout_milliseconds = 1'000;
+    if (session != nullptr) {
+        InternetSetOptionW(
+            session, INTERNET_OPTION_CONNECT_TIMEOUT,
+            &timeout_milliseconds, sizeof(timeout_milliseconds));
+        InternetSetOptionW(
+            session, INTERNET_OPTION_SEND_TIMEOUT,
+            &timeout_milliseconds, sizeof(timeout_milliseconds));
+        InternetSetOptionW(
+            session, INTERNET_OPTION_RECEIVE_TIMEOUT,
+            &timeout_milliseconds, sizeof(timeout_milliseconds));
+    }
+    const HINTERNET connection = session == nullptr
+                                     ? nullptr
+                                     : InternetConnectW(
+                                           session, server, target_port,
+                                           nullptr, nullptr,
+                                           INTERNET_SERVICE_HTTP, 0, 0);
+    const wchar_t* accept_types[] = {L"*/*", nullptr};
+    const HINTERNET request = connection == nullptr
+                                  ? nullptr
+                                  : HttpOpenRequestW(
+                                        connection, L"GET", L"/", nullptr,
+                                        nullptr, accept_types,
+                                        INTERNET_FLAG_NO_CACHE_WRITE |
+                                            INTERNET_FLAG_RELOAD,
+                                        0);
+    const bool sent = request != nullptr &&
+        HttpSendRequestW(request, nullptr, 0, nullptr, 0) != FALSE;
+    const DWORD send_error = sent ? ERROR_SUCCESS : GetLastError();
+    char body[2]{};
+    DWORD bytes_read = 0;
+    const bool read = sent &&
+        InternetReadFile(request, body, sizeof(body), &bytes_read) != FALSE &&
+        bytes_read == sizeof(body) && body[0] == 'o' && body[1] == 'k';
+    if (request != nullptr) {
+        InternetCloseHandle(request);
+    }
+    if (connection != nullptr) {
+        InternetCloseHandle(connection);
+    }
+    if (session != nullptr) {
+        InternetCloseHandle(session);
+    }
+    if (session == nullptr) {
+        return 1;
+    }
+    if (connection == nullptr) {
+        return 2;
+    }
+    if (request == nullptr) {
+        return 3;
+    }
+    if (!sent) {
+        return 1'000U + send_error;
     }
     return read ? 0U : 5U;
 }
