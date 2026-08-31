@@ -2788,6 +2788,15 @@ int RunArgumentObservationLeaf(
     return 0;
 }
 
+int RunEntryMarkerChild(const int argument_count, wchar_t** arguments) {
+    if (argument_count != 3) {
+        return 337;
+    }
+    const HANDLE marker = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[2], nullptr, 10));
+    return SetEvent(marker) ? 0 : 338;
+}
+
 int RunNestedProcess(const int argument_count, wchar_t** arguments) {
     if (argument_count != 4) {
         return 288;
@@ -4200,9 +4209,63 @@ bool RunCompatibilityToolTests(
 bool RunInjectionFailureBeforeEntryTest(
     const std::wstring& executable,
     const std::filesystem::path& test_root) {
-    static_cast<void>(executable);
-    static_cast<void>(test_root);
-    return false;
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE marker = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const HANDLE release = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    HANDLE event_read = nullptr;
+    HANDLE event_write = nullptr;
+    const auto policy_payload = bolt::tests::SealPolicy(
+        {{bolt::tests::FilesystemRuleKind::kReadOnly,
+          std::filesystem::path(executable).root_path()}},
+        bolt::tests::ChildProcessPolicyKind::kDeny);
+    bolt::common::ImmutablePolicyMapping policy;
+    if (marker == nullptr || release == nullptr ||
+        !CreatePipe(&event_read, &event_write, &inheritable, 4'096) ||
+        !SetHandleInformation(event_read, HANDLE_FLAG_INHERIT, 0) ||
+        bolt::common::ImmutablePolicyMapping::Create(
+            policy_payload.data(), policy_payload.size(), policy) !=
+            bolt::common::PolicyMappingStatus::kSuccess) {
+        if (marker != nullptr) CloseHandle(marker);
+        if (release != nullptr) CloseHandle(release);
+        if (event_read != nullptr) CloseHandle(event_read);
+        if (event_write != nullptr) CloseHandle(event_write);
+        return false;
+    }
+    const std::wstring command =
+        L"\"" + executable + L"\" --entry-marker " + HandleText(marker);
+    const HANDLE inherited[] = {policy.handle(), event_write, release, marker};
+    const bolt::common::ProcessLaunchOptions options{
+        executable, command, L"", nullptr, inherited, std::size(inherited), 0};
+    bolt::common::ExecutionJob job;
+    bolt::common::SuspendedProcess process;
+    std::array<std::uint8_t, 16> nonce{};
+    nonce.fill(0xA4);
+    const bool prepared =
+        bolt::common::ExecutionJob::Create(job) ==
+            bolt::common::JobStatus::kSuccess &&
+        bolt::common::SuspendedProcess::Create(options, process) ==
+            bolt::common::ProcessStatus::kSuccess &&
+        process.AssignTo(job) == bolt::common::ProcessStatus::kSuccess &&
+        process.InstallRuntimePayload(
+            policy.handle(), policy.length(), event_write, release, nonce) ==
+            bolt::common::ProcessStatus::kSuccess;
+    const auto injection_status =
+        prepared ? process.Inject((test_root / L"missing-hook.dll").string())
+                 : bolt::common::ProcessStatus::kInvalidState;
+    const bool absent_before_cleanup =
+        WaitForSingleObject(marker, 0) == WAIT_TIMEOUT;
+    const bool terminated =
+        prepared && job.Terminate(336) == bolt::common::JobStatus::kSuccess &&
+        process.Wait(5'000) == bolt::common::ProcessStatus::kSuccess;
+    const bool never_entered = WaitForSingleObject(marker, 0) == WAIT_TIMEOUT;
+    CloseHandle(event_write);
+    CloseHandle(event_read);
+    CloseHandle(release);
+    CloseHandle(marker);
+    return injection_status == bolt::common::ProcessStatus::kInvalidDllPath &&
+           absent_before_cleanup && terminated && never_entered;
 }
 
 }  // namespace
