@@ -1,9 +1,10 @@
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 
 const MAGIC: [u8; 4] = *b"BLX1";
 const VERSION: u16 = 1;
 const HEADER_LENGTH: usize = 12;
 const MAX_PAYLOAD_LENGTH: usize = 1_048_576;
+const CONTROL_MAGIC: [u8; 4] = *b"BLC1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TransportKind {
@@ -15,6 +16,21 @@ pub(super) enum TransportKind {
     EventEof,
     ProcessExit,
     InfrastructureFailure,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ControlKind {
+    Cancel = 1,
+    Timeout = 2,
+}
+
+pub(super) fn write_control(writer: &mut impl Write, kind: ControlKind) -> io::Result<()> {
+    let mut encoded = [0_u8; 8];
+    encoded[..4].copy_from_slice(&CONTROL_MAGIC);
+    encoded[4..6].copy_from_slice(&VERSION.to_le_bytes());
+    encoded[6..8].copy_from_slice(&(kind as u16).to_le_bytes());
+    writer.write_all(&encoded)?;
+    writer.flush()
 }
 
 impl TryFrom<u16> for TransportKind {
@@ -182,5 +198,16 @@ mod tests {
             read_frame(&mut partial_then_broken),
             Err(TransportError::Read(io::ErrorKind::BrokenPipe))
         );
+    }
+
+    #[test]
+    fn control_frames_have_stable_cancel_and_timeout_vectors() {
+        let mut cancel = Vec::new();
+        write_control(&mut cancel, ControlKind::Cancel).expect("cancel must encode");
+        assert_eq!(cancel, b"BLC1\x01\x00\x01\x00");
+
+        let mut timeout = Vec::new();
+        write_control(&mut timeout, ControlKind::Timeout).expect("timeout must encode");
+        assert_eq!(timeout, b"BLC1\x01\x00\x02\x00");
     }
 }

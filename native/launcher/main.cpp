@@ -1,3 +1,4 @@
+#include "protocol/launcher_control.h"
 #include "protocol/launcher_startup.h"
 #include "protocol/launcher_transport.h"
 #include "protocol/event_frame.h"
@@ -225,6 +226,42 @@ bool WriteProcessExit(
         static_cast<std::uint32_t>(payload.size()));
 }
 
+struct ControlReaderContext {
+    HANDLE input = nullptr;
+    HANDLE signaled = nullptr;
+    std::atomic<std::uint16_t> kind{0};
+};
+
+DWORD WINAPI ReadControlFrame(LPVOID parameter) noexcept {
+    auto* context = static_cast<ControlReaderContext*>(parameter);
+    std::array<std::uint8_t, bolt::protocol::kLauncherControlLength> encoded{};
+    bolt::protocol::LauncherControlKind kind{};
+    const bool valid = context != nullptr &&
+        ReadExact(context->input, encoded.data(), encoded.size()) &&
+        bolt::protocol::DecodeLauncherControl(
+            encoded.data(), encoded.size(), kind) ==
+            bolt::protocol::LauncherControlStatus::kSuccess;
+    if (context == nullptr) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    context->kind.store(
+        valid ? static_cast<std::uint16_t>(kind)
+              : static_cast<std::uint16_t>(
+                    bolt::protocol::LauncherControlKind::kCancel),
+        std::memory_order_release);
+    SetEvent(context->signaled);
+    return valid ? ERROR_SUCCESS : ERROR_BROKEN_PIPE;
+}
+
+void StopControlReader(const HANDLE thread) noexcept {
+    if (thread == nullptr) {
+        return;
+    }
+    CancelSynchronousIo(thread);
+    WaitForSingleObject(thread, 5'000);
+    CloseHandle(thread);
+}
+
 std::wstring EventPipeName(
     const std::array<std::uint8_t, 16>& nonce) {
     constexpr wchar_t digits[] = L"0123456789abcdef";
@@ -360,13 +397,23 @@ int RunDecodedSession(
     std::array<std::uint8_t, 12> acknowledgment{
         'B', 'L', 'A', '1', 1, 0, 12, 0, 0, 0, 0, 0};
     const DWORD process_id = GetProcessId(process.process_handle());
+    ControlReaderContext control{};
+    control.input = GetStdHandle(STD_INPUT_HANDLE);
+    control.signaled = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    const HANDLE control_thread =
+        control.signaled == nullptr
+            ? nullptr
+            : CreateThread(
+                  nullptr, 0, ReadControlFrame, &control, 0, nullptr);
     std::memcpy(acknowledgment.data() + 8, &process_id, sizeof(process_id));
-    if (process_id == 0 ||
+    if (process_id == 0 || control_thread == nullptr ||
         !WriteExact(
             GetStdHandle(STD_OUTPUT_HANDLE), acknowledgment.data(),
             acknowledgment.size())) {
         job.Terminate(ERROR_BROKEN_PIPE);
         process.Wait(5'000);
+        StopControlReader(control_thread);
+        CloseIfValid(control.signaled);
         CloseHandle(stdout_read);
         CloseHandle(stderr_read);
         CloseHandle(release);
@@ -378,6 +425,8 @@ int RunDecodedSession(
             static_cast<std::uint32_t>(ready.size()))) {
         job.Terminate(ERROR_BROKEN_PIPE);
         process.Wait(5'000);
+        StopControlReader(control_thread);
+        CloseHandle(control.signaled);
         CloseHandle(stdout_read);
         CloseHandle(stderr_read);
         CloseHandle(release);
@@ -415,6 +464,8 @@ int RunDecodedSession(
         if (event_thread.joinable()) {
             event_thread.join();
         }
+        StopControlReader(control_thread);
+        CloseHandle(control.signaled);
         CloseHandle(release);
         return ERROR_NOT_ENOUGH_MEMORY;
     }
@@ -428,16 +479,30 @@ int RunDecodedSession(
                   request.timeout_milliseconds,
                   static_cast<std::uint64_t>(INFINITE - 1)))
             : INFINITE;
-    const auto wait_status = process.Wait(wait_milliseconds);
+    const std::array<HANDLE, 2> wait_handles = {
+        process.process_handle(), control.signaled};
+    const DWORD wait_status = WaitForMultipleObjects(
+        static_cast<DWORD>(wait_handles.size()), wait_handles.data(), FALSE,
+        wait_milliseconds);
     std::uint8_t exit_reason = 0;
     bool has_exit_code = false;
     DWORD exit_code = ERROR_PROCESS_ABORTED;
-    if (wait_status == bolt::common::ProcessStatus::kWaitTimeout) {
+    if (wait_status == WAIT_TIMEOUT) {
         exit_reason = 2;
         job.Terminate(408);
         process.Wait(5'000);
+    } else if (wait_status == WAIT_OBJECT_0 + 1) {
+        const auto control_kind = static_cast<
+            bolt::protocol::LauncherControlKind>(
+            control.kind.load(std::memory_order_acquire));
+        exit_reason =
+            control_kind == bolt::protocol::LauncherControlKind::kTimeout
+                ? 2
+                : 1;
+        job.Terminate(exit_reason == 2 ? 408 : ERROR_PROCESS_ABORTED);
+        process.Wait(5'000);
     } else if (
-        wait_status == bolt::common::ProcessStatus::kSuccess &&
+        wait_status == WAIT_OBJECT_0 &&
         process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess) {
         has_exit_code = true;
         exit_reason =
@@ -448,6 +513,8 @@ int RunDecodedSession(
         job.Terminate(ERROR_PROCESS_ABORTED);
         process.Wait(5'000);
     }
+    StopControlReader(control_thread);
+    CloseHandle(control.signaled);
     stdout_thread.join();
     stderr_thread.join();
     event_thread.join();

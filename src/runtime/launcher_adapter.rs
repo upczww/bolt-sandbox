@@ -1,7 +1,7 @@
 use std::{
     io::{Read, Write},
     os::windows::ffi::OsStrExt,
-    process::{Child, ChildStdout, Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::mpsc::{self, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
     thread,
     time::{Duration, Instant},
@@ -14,7 +14,7 @@ use crate::{
 
 use super::{
     launcher_protocol::{self, LauncherStartRequest},
-    launcher_transport::{self, TransportFrame, TransportKind},
+    launcher_transport::{self, ControlKind, TransportFrame, TransportKind},
     preparation::PreparedLaunch,
 };
 
@@ -27,9 +27,10 @@ pub(super) fn start(
     prepared: &PreparedLaunch,
     stream_capacity: usize,
 ) -> Result<ExecutionHandle, SandboxError> {
-    let (launcher, process_id, transport) = spawn_and_acknowledge(prepared)?;
+    let (launcher, control, process_id, transport) = spawn_and_acknowledge(prepared)?;
     Ok(build_execution_handle(
         launcher,
+        control,
         transport,
         process_id,
         prepared.timeout(),
@@ -40,7 +41,7 @@ pub(super) fn start(
 
 fn spawn_and_acknowledge(
     prepared: &PreparedLaunch,
-) -> Result<(Child, u32, ChildStdout), SandboxError> {
+) -> Result<(Child, ChildStdin, u32, ChildStdout), SandboxError> {
     let request = encode_request(prepared)?;
     let mut launcher = Command::new(prepared.launcher_component_path())
         .arg("--stdio-session")
@@ -57,7 +58,6 @@ fn spawn_and_acknowledge(
             terminate_launcher(&mut launcher);
             initialization_failure()
         })?;
-    drop(stdin);
     let stdout = launcher.stdout.take().ok_or_else(|| {
         terminate_launcher(&mut launcher);
         initialization_failure()
@@ -83,11 +83,12 @@ fn spawn_and_acknowledge(
         terminate_launcher(&mut launcher);
         initialization_failure()
     })?;
-    Ok((launcher, process_id, transport))
+    Ok((launcher, stdin, process_id, transport))
 }
 
 fn build_execution_handle(
     mut launcher: Child,
+    mut control: ChildStdin,
     transport: ChildStdout,
     process_id: u32,
     timeout: Option<Duration>,
@@ -105,6 +106,7 @@ fn build_execution_handle(
     thread::spawn(move || {
         let result = run_execution(
             &mut launcher,
+            &mut control,
             process_id,
             timeout,
             nonce,
@@ -155,6 +157,7 @@ fn read_transport(
 )]
 fn run_execution(
     launcher: &mut Child,
+    control: &mut ChildStdin,
     process_id: u32,
     timeout: Option<Duration>,
     nonce: [u8; 16],
@@ -166,17 +169,32 @@ fn run_execution(
 ) -> ExecutionResult {
     let started = Instant::now();
     let mut state = TransportState::new(nonce);
+    let mut requested_termination = None;
     loop {
-        match cancel.try_recv() {
-            Ok(()) | Err(TryRecvError::Disconnected) => {
-                terminate_launcher(launcher);
-                return state.forced_result(process_id, ProcessExitReason::Terminated);
+        if requested_termination.is_none() {
+            match cancel.try_recv() {
+                Ok(()) | Err(TryRecvError::Disconnected) => {
+                    if launcher_transport::write_control(control, ControlKind::Cancel).is_err() {
+                        terminate_launcher(launcher);
+                        return state.forced_result(
+                            process_id,
+                            ProcessExitReason::Terminated,
+                            events,
+                        );
+                    }
+                    requested_termination = Some(ProcessExitReason::Terminated);
+                }
+                Err(TryRecvError::Empty) => {}
             }
-            Err(TryRecvError::Empty) => {}
-        }
-        if timeout.is_some_and(|limit| started.elapsed() >= limit) {
-            terminate_launcher(launcher);
-            return state.forced_result(process_id, ProcessExitReason::TimedOut);
+            if requested_termination.is_none()
+                && timeout.is_some_and(|limit| started.elapsed() >= limit)
+            {
+                if launcher_transport::write_control(control, ControlKind::Timeout).is_err() {
+                    terminate_launcher(launcher);
+                    return state.forced_result(process_id, ProcessExitReason::TimedOut, events);
+                }
+                requested_termination = Some(ProcessExitReason::TimedOut);
+            }
         }
         match transport.recv_timeout(POLL_INTERVAL) {
             Ok(Ok(Some(frame))) => {
@@ -211,7 +229,7 @@ fn run_execution(
             }
         }
         if state.launcher_exited && state.transport_eof {
-            return state.completed_result(process_id, events);
+            return state.completed_result(process_id, requested_termination, events);
         }
     }
 }
@@ -276,12 +294,22 @@ impl TransportState {
         Ok(())
     }
 
-    fn forced_result(&self, process_id: u32, reason: ProcessExitReason) -> ExecutionResult {
+    fn forced_result(
+        &mut self,
+        process_id: u32,
+        reason: ProcessExitReason,
+        events: &SyncSender<SandboxEvent>,
+    ) -> ExecutionResult {
         let process_exit = ProcessExit {
             process_id,
             exit_code: None,
             reason,
         };
+        send_bounded(
+            events,
+            SandboxEvent::ProcessExited(process_exit.clone()),
+            &mut self.receiver_loss.events,
+        );
         ExecutionResult {
             terminal: ExecutionTerminal::Process(process_exit),
             receiver_loss: self.receiver_loss,
@@ -298,14 +326,15 @@ impl TransportState {
     fn completed_result(
         &mut self,
         expected_process_id: u32,
+        requested_termination: Option<ProcessExitReason>,
         events: &SyncSender<SandboxEvent>,
     ) -> ExecutionResult {
         let valid_eof = self.stream_eof.stdout && self.stream_eof.stderr && self.stream_eof.events;
-        let Some(process_exit) = self
-            .process_exit
-            .take()
-            .filter(|exit| valid_eof && exit.process_id == expected_process_id)
-        else {
+        let Some(process_exit) = self.process_exit.take().filter(|exit| {
+            valid_eof
+                && exit.process_id == expected_process_id
+                && requested_termination.is_none_or(|reason| exit.reason == reason)
+        }) else {
             return self.infrastructure_result(crate::InfrastructureFailure::ProtocolIntegrity);
         };
         send_bounded(

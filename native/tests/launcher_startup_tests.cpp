@@ -1,9 +1,22 @@
+#include "protocol/launcher_control.h"
 #include "protocol/launcher_startup.h"
 #include "protocol/launcher_transport.h"
 
 #include <algorithm>
 
 bool RunLauncherStartupTests() {
+    const auto cancel = bolt::protocol::EncodeLauncherControl(
+        bolt::protocol::LauncherControlKind::kCancel);
+    bolt::protocol::LauncherControlKind decoded_control{};
+    if (cancel != std::array<std::uint8_t, 8>{
+                      'B', 'L', 'C', '1', 1, 0, 1, 0} ||
+        bolt::protocol::DecodeLauncherControl(
+            cancel.data(), cancel.size(), decoded_control) !=
+            bolt::protocol::LauncherControlStatus::kSuccess ||
+        decoded_control != bolt::protocol::LauncherControlKind::kCancel) {
+        return false;
+    }
+
     std::array<std::uint8_t, bolt::protocol::kLauncherTransportHeaderLength>
         transport_header{};
     if (bolt::protocol::EncodeLauncherTransportHeader(

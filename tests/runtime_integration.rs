@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, ffi::OsString, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    ffi::OsString,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use bolt_sandbox::{
     ExecutionTerminal, ProcessExitReason, ReceiverLoss, Sandbox, SandboxConfig, SandboxEvent,
@@ -155,11 +160,11 @@ fn configured_sandbox() -> Option<(Sandbox, PathBuf)> {
     Some((sandbox, component_root))
 }
 
-fn blocking_request(component_root: &PathBuf, timeout: Option<Duration>) -> SandboxRequest {
+fn blocking_request(component_root: &Path, timeout: Option<Duration>) -> SandboxRequest {
     SandboxRequest {
         program: component_root.join("bolt-sandbox-native-tests.exe"),
         arguments: vec![OsString::from("--blocking-stream-fixture")],
-        cwd: component_root.clone(),
+        cwd: component_root.to_path_buf(),
         environment: BTreeMap::new(),
         policy: SandboxPolicy::default(),
         timeout,

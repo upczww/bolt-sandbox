@@ -135,6 +135,7 @@ add_library(bolt-sandbox-protocol STATIC
     protocol/dns_proxy_protocol.cpp
     protocol/tcp_proxy_protocol.cpp
     protocol/event_frame.cpp
+    protocol/launcher_control.cpp
     protocol/launcher_startup.cpp
     protocol/launcher_transport.cpp
     protocol/policy_payload.cpp
