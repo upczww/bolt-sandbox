@@ -233,6 +233,71 @@ mod tests {
         fs::remove_dir_all(root).expect("fixture must clean up");
     }
 
+    #[test]
+    fn rec_001_artifact_commits_content_and_versioned_path_index_together() {
+        let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "bolt-recovery-index-unit-{}-{id}",
+            std::process::id()
+        ));
+        let work = root.join("work");
+        let store = root.join("store");
+        fs::create_dir_all(&work).expect("work must be created");
+        fs::create_dir_all(&store).expect("store must be created");
+        let source = work.join("indexed.bin");
+        fs::write(&source, b"indexed-content").expect("source must be written");
+        let compiled = compiler::compile(&SandboxPolicy::default(), &work)
+            .expect("default policy must compile");
+        let configuration = PreparedRecovery {
+            directory: store.clone(),
+            maximum_bytes: 1_024,
+            maximum_items: 4,
+            filesystem: compiled.filesystem,
+        };
+        let mut coordinator = RecoveryCoordinator::new(Some(&configuration), &[0x5A; 16])
+            .expect("coordinator must initialize")
+            .expect("recovery must be enabled");
+        let outcome = coordinator.backup(&RecoveryRequest {
+            request_id: 1,
+            process_id: 42,
+            operation: RecoveryOperation::Delete,
+            path: source.clone(),
+        });
+        assert_eq!(outcome.artifact_id, Some(1));
+
+        let execution = fs::read_dir(&store)
+            .expect("store must be readable")
+            .next()
+            .expect("execution directory must exist")
+            .expect("execution entry must be readable")
+            .path();
+        let artifact = fs::read_dir(execution)
+            .expect("execution directory must be readable")
+            .next()
+            .expect("artifact directory must exist")
+            .expect("artifact entry must be readable")
+            .path();
+        assert!(artifact.is_dir());
+        assert_eq!(
+            fs::read(artifact.join("content.bin")).expect("artifact content must be readable"),
+            b"indexed-content"
+        );
+        let metadata =
+            fs::read(artifact.join("metadata.bin")).expect("artifact metadata must be readable");
+        assert_eq!(&metadata[..4], b"BRI1");
+        assert_eq!(&metadata[8..16], &1_u64.to_le_bytes());
+        assert_eq!(&metadata[16..20], &42_u32.to_le_bytes());
+        assert_eq!(&metadata[24..32], &15_u64.to_le_bytes());
+        let encoded_path: Vec<u8> = source
+            .as_os_str()
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert!(metadata.ends_with(&encoded_path));
+        drop(coordinator);
+        fs::remove_dir_all(root).expect("fixture must clean up");
+    }
+
     fn recovery_files_for_test(root: &Path) -> Vec<PathBuf> {
         let mut files = Vec::new();
         for entry in fs::read_dir(root).expect("store must be readable") {
