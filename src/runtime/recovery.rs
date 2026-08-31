@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::policy::compiler::{CompiledFilesystemPolicy, FilesystemAccess, FilesystemDecision};
 use crate::{RecoveryArtifact, SandboxEvent};
 
 use super::{
@@ -19,6 +20,7 @@ pub(super) struct RecoveryCoordinator {
     used_bytes: u64,
     used_items: u32,
     next_artifact_id: u64,
+    filesystem: CompiledFilesystemPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,6 +66,7 @@ impl RecoveryCoordinator {
             used_bytes: 0,
             used_items: 0,
             next_artifact_id: 1,
+            filesystem: configuration.filesystem.clone(),
         }))
     }
 
@@ -80,6 +83,13 @@ impl RecoveryCoordinator {
                 | RecoveryOperation::Replace
                 | RecoveryOperation::Rename
         ) || !request.path.is_absolute()
+        {
+            return failed();
+        }
+        if self
+            .filesystem
+            .decide(&request.path, FilesystemAccess::Write)
+            != FilesystemDecision::Allow
         {
             return failed();
         }
@@ -154,6 +164,14 @@ fn display_path(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+impl Drop for RecoveryCoordinator {
+    fn drop(&mut self) {
+        if self.used_items == 0 {
+            let _ = fs::remove_dir(&self.execution_directory);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,13 +234,5 @@ mod tests {
             }
         }
         files
-    }
-}
-
-impl Drop for RecoveryCoordinator {
-    fn drop(&mut self) {
-        if self.used_items == 0 {
-            let _ = fs::remove_dir(&self.execution_directory);
-        }
     }
 }

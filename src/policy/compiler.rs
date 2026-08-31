@@ -973,7 +973,7 @@ impl RegistryHive {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CompiledFilesystemPolicy {
     rules: Vec<FilesystemRule>,
 }
@@ -1105,12 +1105,13 @@ impl FilesystemRuleKind {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct FilesystemRule {
     root: NormalizedPath,
     kind: FilesystemRuleKind,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct NormalizedPath {
     components: Vec<NormalizedComponent>,
 }
@@ -1214,7 +1215,7 @@ impl PartialEq for NormalizedPath {
 
 impl Eq for NormalizedPath {}
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum NormalizedComponent {
     Prefix(OsString),
     Root,

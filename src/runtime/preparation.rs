@@ -12,7 +12,7 @@ use super::components::{ComponentOpenError, OpenedComponents, open_components};
 use crate::{
     SandboxError, SandboxRequest,
     ipc::identity::ExecutionIdentity,
-    policy::compiler::{self, CompiledRecoveryPolicy, payload},
+    policy::compiler::{self, CompiledFilesystemPolicy, CompiledRecoveryPolicy, payload},
     request,
 };
 
@@ -36,6 +36,7 @@ pub(super) struct PreparedRecovery {
     pub(super) directory: PathBuf,
     pub(super) maximum_bytes: u64,
     pub(super) maximum_items: u32,
+    pub(super) filesystem: CompiledFilesystemPolicy,
 }
 
 impl PreparedLaunch {
@@ -151,6 +152,7 @@ fn prepare_launch_with_identity_factory(
             directory: limits.directory().to_path_buf(),
             maximum_bytes: limits.maximum_bytes(),
             maximum_items: limits.maximum_items(),
+            filesystem: compiled_policy.filesystem.clone(),
         }),
     };
     let policy_payload = payload::seal(&compiled_policy)
