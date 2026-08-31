@@ -3,6 +3,7 @@
 #include "common/private_pipe.h"
 #include "common/suspended_process.h"
 #include "protocol/event_frame.h"
+#include "protocol/runtime_payload.h"
 #include "tests/policy_fixture.h"
 
 #include <algorithm>
@@ -2760,6 +2761,31 @@ int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
     return 0;
 }
 
+bool ReadChildInjectionFailure(
+    const HANDLE event_pipe,
+    const std::uint32_t parent_process_id,
+    const bolt::protocol::ChildInjectionFailureReason reason,
+    const std::uint64_t sequence) {
+    std::array<std::uint8_t,
+               bolt::protocol::kChildInjectionFailureFrameLength>
+        actual{};
+    if (!ReadExact(event_pipe, actual.data(), actual.size())) {
+        return false;
+    }
+    const std::uint32_t child_process_id =
+        ReadU32(actual.data() + bolt::protocol::kEventHeaderLength + 4);
+    std::array<std::uint8_t,
+               bolt::protocol::kChildInjectionFailureFrameLength>
+        expected{};
+    std::size_t written = 0;
+    return child_process_id != 0 &&
+           bolt::protocol::EncodeChildInjectionFailureFrame(
+               parent_process_id, child_process_id, reason, sequence,
+               expected.data(), expected.size(), written) ==
+               bolt::protocol::FrameEncodeStatus::kSuccess &&
+           written == expected.size() && actual == expected;
+}
+
 int RunArgumentObservationLeaf(
     const int argument_count,
     wchar_t** arguments) {
@@ -2804,6 +2830,46 @@ int RunCreationMitigationChild(const int argument_count, wchar_t** arguments) {
     const HANDLE marker = reinterpret_cast<HANDLE>(
         _wcstoui64(arguments[2], nullptr, 10));
     return SetEvent(marker) ? 0 : 341;
+}
+
+int RunFaultedDescendantParent(
+    const int argument_count,
+    wchar_t** arguments) {
+    if (argument_count != 4) {
+        return 343;
+    }
+    const HMODULE hook = GetModuleHandleW(arguments[2]);
+    const auto initialized = hook == nullptr
+                                 ? nullptr
+                                 : reinterpret_cast<BOOL (*)()>(GetProcAddress(
+                                       hook, "BoltSandboxRuntimeInitialized"));
+    const HANDLE marker = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[3], nullptr, 10));
+    if (initialized == nullptr || !initialized()) {
+        return 344;
+    }
+    const std::wstring executable = CurrentExecutable();
+    std::wstring command =
+        L"\"" + executable + L"\" --entry-marker " + arguments[3];
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION child{};
+    SetLastError(ERROR_SUCCESS);
+    const BOOL created = CreateProcessW(
+        executable.c_str(), command.data(), nullptr, nullptr, TRUE, 0, nullptr,
+        nullptr, &startup, &child);
+    const DWORD error = GetLastError();
+    if (created) {
+        TerminateProcess(child.hProcess, 345);
+        WaitForSingleObject(child.hProcess, 5'000);
+        CloseHandle(child.hThread);
+        CloseHandle(child.hProcess);
+        return 345;
+    }
+    return error == ERROR_ACCESS_DENIED &&
+                   WaitForSingleObject(marker, 0) == WAIT_TIMEOUT
+               ? 0
+               : 346;
 }
 
 int RunNestedProcess(const int argument_count, wchar_t** arguments) {
@@ -3675,6 +3741,12 @@ struct CompatibilityProbe {
     std::wstring tool_root;
 };
 
+struct InjectionFailureProbe {
+    HANDLE marker;
+    bolt::protocol::RuntimeStartupFault fault;
+    bolt::protocol::ChildInjectionFailureReason reason;
+};
+
 bool RunStartupHandleListTest(
     const std::wstring& executable,
     const std::filesystem::path& test_root) {
@@ -3763,7 +3835,8 @@ bool RunInheritedProcessTest(
     const std::wstring& parent_arguments = {},
     const std::uint8_t nonce_byte = 0x5A,
     const ParentExitProbe* parent_exit_probe = nullptr,
-    const CompatibilityProbe* compatibility_probe = nullptr) {
+    const CompatibilityProbe* compatibility_probe = nullptr,
+    const InjectionFailureProbe* injection_failure_probe = nullptr) {
     std::vector<bolt::tests::FilesystemRule> policy_rules = {
         {bolt::tests::FilesystemRuleKind::kReadOnly,
          std::filesystem::path(executable).root_path()},
@@ -3846,6 +3919,9 @@ bool RunInheritedProcessTest(
     if (compatibility_probe != nullptr) {
         inherited.push_back(compatibility_probe->process_id_mapping);
     }
+    if (injection_failure_probe != nullptr) {
+        inherited.push_back(injection_failure_probe->marker);
+    }
     const bolt::common::ProcessLaunchOptions options{
         executable, command_line, L"", nullptr, inherited.data(),
         inherited.size(), 0};
@@ -3856,7 +3932,11 @@ bool RunInheritedProcessTest(
             bolt::common::ProcessStatus::kSuccess &&
         process.AssignTo(job) == bolt::common::ProcessStatus::kSuccess &&
         process.InstallRuntimePayload(
-            policy.handle(), policy.length(), event_client, release, nonce) ==
+            policy.handle(), policy.length(), event_client, release, nonce,
+            nullptr, nullptr, nullptr, 0, 0, 0,
+            injection_failure_probe == nullptr
+                ? bolt::protocol::RuntimeStartupFault::kNone
+                : injection_failure_probe->fault) ==
             bolt::common::ProcessStatus::kSuccess &&
         process.Inject(hook_path.string()) == bolt::common::ProcessStatus::kSuccess &&
         process.BeginHookInitialization() == bolt::common::ProcessStatus::kSuccess;
@@ -3955,6 +4035,12 @@ bool RunInheritedProcessTest(
                     mitigation_weakening_operation, sequence);
         }
     }
+    const bool injection_failure_event_ok =
+        injection_failure_probe == nullptr ||
+        (ready_ok &&
+         ReadChildInjectionFailure(
+             event_pipe.handle(), parent_process_id,
+             injection_failure_probe->reason, 1));
     const bool external_delegation_events_ok =
         !parent_arguments.empty() ||
         (ReadProcessViolation(
@@ -3966,6 +4052,7 @@ bool RunInheritedProcessTest(
     DWORD exit_code = 0;
     const auto exit_status = process.ExitCode(exit_code);
     const bool passed = ready_ok && parent_exit_descendant_ok &&
+                        injection_failure_event_ok &&
                         job_limit_event_ok &&
                         compatibility_event_ok &&
                         breakaway_event_ok &&
@@ -4004,6 +4091,33 @@ bool RunInheritedProcessTest(
     }
     CloseHandle(release);
     return passed;
+}
+
+bool RunMitigationFailureTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const wchar_t* hook_name) {
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE marker = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    if (marker == nullptr) {
+        return false;
+    }
+    const std::wstring arguments =
+        L"--faulted-descendant-parent " + std::wstring(hook_name) + L" " +
+        HandleText(marker);
+    const InjectionFailureProbe probe{
+        marker, bolt::protocol::RuntimeStartupFault::kMitigationFailure,
+        bolt::protocol::ChildInjectionFailureReason::kMitigationFailed};
+    const bool passed = RunInheritedProcessTest(
+        executable, hook_path, hook_name,
+        PipeName(GetCurrentProcessId() ^ 0x5100'0032U), arguments, 0xA4,
+        nullptr, nullptr, &probe);
+    const bool marker_absent =
+        WaitForSingleObject(marker, 0) == WAIT_TIMEOUT;
+    CloseHandle(marker);
+    return passed && marker_absent;
 }
 
 bool RunUnicodeLaunchPathTest(
@@ -5431,7 +5545,8 @@ bool RunProcessTests() {
     }
 
     event_pipe.Close();
-    if (!RunUnicodeLaunchPathTest(executable, hook_path, hook_name, test_root) ||
+    if (!RunMitigationFailureTest(executable, hook_path, hook_name) ||
+        !RunUnicodeLaunchPathTest(executable, hook_path, hook_name, test_root) ||
         !RunCompatibilityToolTests(
             executable, hook_path, hook_name, test_root) ||
         !RunInheritedProcessTest(executable, hook_path, hook_name, pipe_name)) {
