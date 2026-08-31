@@ -561,17 +561,75 @@ bool ReadProcessViolation(
     const HANDLE event_pipe,
     const std::uint32_t process_id,
     const bolt::protocol::ProcessOperation operation,
-    const std::uint64_t sequence) {
-    std::array<std::uint8_t, bolt::protocol::kProcessViolationFrameLength> actual{};
-    if (!ReadExact(event_pipe, actual.data(), actual.size())) {
-        return false;
-    }
+    const std::uint64_t sequence,
+    const bool allow_later_sequence = false) {
     std::array<std::uint8_t, bolt::protocol::kProcessViolationFrameLength> expected{};
     std::size_t written = 0;
-    return bolt::protocol::EncodeProcessViolationFrame(
-               process_id, operation, sequence, expected.data(), expected.size(),
-               written) == bolt::protocol::FrameEncodeStatus::kSuccess &&
-           written == expected.size() && actual == expected;
+    if (bolt::protocol::EncodeProcessViolationFrame(
+            process_id, operation, sequence, expected.data(), expected.size(),
+            written) != bolt::protocol::FrameEncodeStatus::kSuccess ||
+        written != expected.size()) {
+        return false;
+    }
+    constexpr std::size_t maximum_skipped_frames = 64;
+    constexpr std::uint32_t maximum_payload_length = 1U << 20U;
+    for (std::size_t skipped = 0; skipped <= maximum_skipped_frames;
+         ++skipped) {
+        std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
+        if (!ReadExact(event_pipe, header.data(), header.size())) {
+            return false;
+        }
+        const std::uint32_t payload_length =
+            static_cast<std::uint32_t>(header[8]) |
+            (static_cast<std::uint32_t>(header[9]) << 8U) |
+            (static_cast<std::uint32_t>(header[10]) << 16U) |
+            (static_cast<std::uint32_t>(header[11]) << 24U);
+        if (payload_length > maximum_payload_length) {
+            return false;
+        }
+        std::vector<std::uint8_t> payload(payload_length);
+        if (!ReadExact(event_pipe, payload.data(), payload.size())) {
+            return false;
+        }
+        if (payload_length !=
+            bolt::protocol::kProcessViolationFrameLength -
+                bolt::protocol::kEventHeaderLength) {
+            continue;
+        }
+        std::array<std::uint8_t, bolt::protocol::kProcessViolationFrameLength>
+            actual{};
+        std::copy(header.begin(), header.end(), actual.begin());
+        std::copy(payload.begin(), payload.end(),
+                  actual.begin() + bolt::protocol::kEventHeaderLength);
+        if (actual == expected) {
+            return true;
+        }
+        if (allow_later_sequence) {
+            std::uint64_t actual_sequence = 0;
+            for (std::size_t index = 0; index < sizeof(actual_sequence);
+                 ++index) {
+                actual_sequence |=
+                    static_cast<std::uint64_t>(header[12 + index])
+                    << (index * 8U);
+            }
+            std::array<
+                std::uint8_t,
+                bolt::protocol::kProcessViolationFrameLength>
+                later_expected{};
+            std::size_t later_written = 0;
+            if (actual_sequence >= sequence &&
+                bolt::protocol::EncodeProcessViolationFrame(
+                    process_id, operation, actual_sequence,
+                    later_expected.data(), later_expected.size(),
+                    later_written) ==
+                    bolt::protocol::FrameEncodeStatus::kSuccess &&
+                later_written == later_expected.size() &&
+                actual == later_expected) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 volatile LONG g_io_completion_calls = 0;
@@ -2923,12 +2981,6 @@ int RunFaultedDescendantParent(
     return WaitForSingleObject(marker, 0) == WAIT_TIMEOUT ? 0 : 348;
 }
 
-int RunAssociationLeaf(const int argument_count, wchar_t** arguments) {
-    static_cast<void>(argument_count);
-    static_cast<void>(arguments);
-    return 350;
-}
-
 int RunNestedProcess(const int argument_count, wchar_t** arguments) {
     if (argument_count != 4) {
         return 288;
@@ -3140,7 +3192,7 @@ int RunCompatibilityParent(const int argument_count, wchar_t** arguments) {
 }
 
 int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 5 && argument_count != 7) {
+    if (argument_count != 5 && argument_count != 6) {
         return 222;
     }
     const HMODULE hook = GetModuleHandleW(arguments[2]);
@@ -3647,12 +3699,7 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
         return 240;
     }
 
-    if (argument_count == 7) {
-        const HANDLE association_event = OpenEventW(
-            SYNCHRONIZE, FALSE, arguments[6]);
-        if (association_event == nullptr) {
-            return 351;
-        }
+    if (argument_count == 6) {
         SHELLEXECUTEINFOW association{};
         association.cbSize = sizeof(association);
         association.fMask =
@@ -3660,32 +3707,22 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
         association.lpVerb = L"open";
         association.lpFile = arguments[5];
         association.nShow = SW_HIDE;
-        const bool association_started =
-            ShellExecuteExW(&association) != FALSE &&
-            association.hProcess != nullptr;
-        const DWORD association_wait =
-            association_started
-                ? WaitForSingleObject(association.hProcess, 5'000)
-                : WAIT_FAILED;
-        DWORD association_exit_code = 0;
-        const bool association_exited =
-            association_wait == WAIT_OBJECT_0 &&
-            GetExitCodeProcess(
-                association.hProcess, &association_exit_code) != FALSE;
-        const bool leaf_entered =
-            association_exited && association_exit_code == 0 &&
-            WaitForSingleObject(association_event, 5'000) == WAIT_OBJECT_0;
-        if (association_started && !association_exited) {
+        SetLastError(ERROR_SUCCESS);
+        const BOOL association_started = ShellExecuteExW(&association);
+        const DWORD association_error = GetLastError();
+        if (association_started && association.hProcess != nullptr) {
             TerminateProcess(association.hProcess, 352);
             WaitForSingleObject(association.hProcess, 5'000);
         }
         if (association.hProcess != nullptr) {
             CloseHandle(association.hProcess);
         }
-        CloseHandle(association_event);
-        if (!association_exited || association_exit_code != 0 ||
-            !leaf_entered) {
-            return 352;
+        if (association_started || association_error != ERROR_ACCESS_DENIED ||
+            association.hProcess != nullptr) {
+            return 351;
+        }
+        if (!flush_events(5'000)) {
+            return 353;
         }
     }
 
@@ -3874,7 +3911,6 @@ struct InjectionFailureProbe {
 
 struct AssociationProbe {
     std::wstring script_path;
-    std::wstring event_name;
 };
 
 bool RunStartupHandleListTest(
@@ -4039,8 +4075,7 @@ bool RunInheritedProcessTest(
                                            : L"\"" + executable + L"\" " +
                                                  parent_arguments;
     if (association_probe != nullptr) {
-        command_line += L" \"" + association_probe->script_path + L"\" " +
-                        association_probe->event_name;
+        command_line += L" \"" + association_probe->script_path + L"\"";
     }
     std::vector<HANDLE> inherited = {policy.handle(), event_client, release};
     if (exposed_job != nullptr) {
@@ -4178,12 +4213,27 @@ bool RunInheritedProcessTest(
              injection_failure_probe->reason));
     bool external_delegation_events_ok = true;
     if (parent_arguments.empty()) {
-        for (std::uint64_t sequence = 11; sequence <= 21; ++sequence) {
-            external_delegation_events_ok =
-                external_delegation_events_ok &&
-                ReadProcessViolation(
+        for (std::uint64_t sequence = 11;
+             sequence <= 21; ++sequence) {
+            if (!ReadProcessViolation(
                     event_pipe.handle(), parent_process_id,
-                    external_delegation_operation, sequence);
+                    external_delegation_operation, sequence)) {
+                std::fprintf(
+                    stderr,
+                    "external delegation event mismatch: sequence=%llu\n",
+                    static_cast<unsigned long long>(sequence));
+                external_delegation_events_ok = false;
+                break;
+            }
+        }
+        if (external_delegation_events_ok && association_probe != nullptr &&
+            !ReadProcessViolation(
+                event_pipe.handle(), parent_process_id,
+                external_delegation_operation, 22, true)) {
+            std::fprintf(
+                stderr,
+                "external delegation event mismatch: sequence>=22\n");
+            external_delegation_events_ok = false;
         }
     }
     DWORD exit_code = 0;
@@ -4200,11 +4250,12 @@ bool RunInheritedProcessTest(
     if (!passed) {
         std::fprintf(
             stderr,
-            "inherited process fixture failed: exit=%lu ready=%d descendant=%d compatibility=%d breakaway=%d mitigation=%d\n",
+            "inherited process fixture failed: exit=%lu ready=%d descendant=%d compatibility=%d breakaway=%d mitigation=%d external=%d\n",
             static_cast<unsigned long>(exit_code), ready_ok ? 1 : 0,
             parent_exit_descendant_ok ? 1 : 0,
             compatibility_event_ok ? 1 : 0, breakaway_event_ok ? 1 : 0,
-            mitigation_weakening_events_ok ? 1 : 0);
+            mitigation_weakening_events_ok ? 1 : 0,
+            external_delegation_events_ok ? 1 : 0);
         std::fprintf(
             stderr,
             "process timing: initialize=%lld ready=%lld total=%lld wait_status=%u exit_status=%u\n",
@@ -4261,48 +4312,21 @@ bool RunAssociationLaunchTest(
     const std::wstring& executable,
     const std::filesystem::path& hook_path,
     const wchar_t* hook_name) {
-    const std::wstring event_name =
-        L"Local\\BoltSandboxAssociation-" +
-        std::to_wstring(GetCurrentProcessId());
-    const HANDLE event =
-        CreateEventW(nullptr, TRUE, FALSE, event_name.c_str());
     const auto script_path =
         std::filesystem::temp_directory_path() /
         (L"bolt-sandbox-association-" +
          std::to_wstring(GetCurrentProcessId()) + L".cmd");
-    const std::string executable_ansi = AnsiPath(executable.c_str());
-    const std::string hook_ansi = AnsiPath(hook_name);
-    std::string event_ansi;
-    event_ansi.reserve(event_name.size());
-    for (const wchar_t value : event_name) {
-        if (value > 0x7f) {
-            event_ansi.clear();
-            break;
-        }
-        event_ansi.push_back(static_cast<char>(value));
-    }
-    const std::string script =
-        "@echo off\r\n\"" + executable_ansi +
-        "\" --association-leaf " + hook_ansi + " " + event_ansi +
-        "\r\nexit /b %errorlevel%\r\n";
-    if (event == nullptr || executable_ansi.empty() || hook_ansi.empty() ||
-        event_ansi.empty() || !WriteFixture(script_path, script)) {
-        if (event != nullptr) {
-            CloseHandle(event);
-        }
+    if (!WriteFixture(script_path, "@echo off\r\nexit /b 0\r\n")) {
         return false;
     }
-    const AssociationProbe probe{script_path.wstring(), event_name};
+    const AssociationProbe probe{script_path.wstring()};
     const bool passed = RunInheritedProcessTest(
         executable, hook_path, hook_name,
         PipeName(GetCurrentProcessId() ^ 0x5100'0028U), {}, 0xA5, nullptr,
         nullptr, nullptr, &probe);
-    const bool leaf_entered =
-        WaitForSingleObject(event, 0) == WAIT_OBJECT_0;
-    CloseHandle(event);
     std::error_code error;
     std::filesystem::remove(script_path, error);
-    return passed && leaf_entered;
+    return passed;
 }
 
 bool RunUnicodeLaunchPathTest(

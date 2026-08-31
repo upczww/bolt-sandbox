@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cwchar>
 #include <limits>
 #include <string>
 #include <vector>
@@ -1111,24 +1112,91 @@ bool IsElevationVerb(const LPCWSTR verb) noexcept {
            CompareStringOrdinal(verb, -1, L"runas", -1, TRUE) == CSTR_EQUAL;
 }
 
-BOOL WINAPI DetouredShellExecuteExW(
+bool IsDirectExecutableImage(const wchar_t* const path) noexcept {
+    if (path == nullptr || *path == L'\0') {
+        return false;
+    }
+    const wchar_t* const extension = std::wcsrchr(path, L'.');
+    return extension != nullptr &&
+           (CompareStringOrdinal(
+                extension, -1, L".exe", -1, TRUE) == CSTR_EQUAL ||
+            CompareStringOrdinal(
+                extension, -1, L".com", -1, TRUE) == CSTR_EQUAL);
+}
+
+bool IsOpenVerb(const wchar_t* const verb) noexcept {
+    return verb == nullptr || *verb == L'\0' ||
+           CompareStringOrdinal(verb, -1, L"open", -1, TRUE) == CSTR_EQUAL;
+}
+
+BOOL LaunchDirectExecutable(
     SHELLEXECUTEINFOW* const execute_information) noexcept {
-    {
-        DetouredScope scope;
-        if (scope.Detoured_IsDisabled()) {
-            return g_shell_execute_ex_w(execute_information);
+    try {
+        std::wstring command_line = L"\"";
+        command_line.append(execute_information->lpFile);
+        command_line.push_back(L'\"');
+        if (execute_information->lpParameters != nullptr &&
+            *execute_information->lpParameters != L'\0') {
+            command_line.push_back(L' ');
+            command_line.append(execute_information->lpParameters);
         }
-        if (execute_information != nullptr &&
-            execute_information->cbSize >= sizeof(SHELLEXECUTEINFOW) &&
-            IsElevationVerb(execute_information->lpVerb)) {
-            hook::TryReportProcessViolation(
-                protocol::ProcessOperation::kElevation);
+
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESHOWWINDOW;
+        startup.wShowWindow = static_cast<WORD>(execute_information->nShow);
+        PROCESS_INFORMATION process{};
+        if (!DetouredCreateProcessW(
+                execute_information->lpFile, command_line.data(), nullptr,
+                nullptr, FALSE, 0, nullptr, execute_information->lpDirectory,
+                &startup, &process)) {
             execute_information->hProcess = nullptr;
-            SetLastError(ERROR_ACCESS_DENIED);
             return FALSE;
         }
+        CloseHandle(process.hThread);
+        if ((execute_information->fMask & SEE_MASK_NOCLOSEPROCESS) != 0) {
+            execute_information->hProcess = process.hProcess;
+        } else {
+            CloseHandle(process.hProcess);
+            execute_information->hProcess = nullptr;
+        }
+        execute_information->hInstApp = reinterpret_cast<HINSTANCE>(33);
+        return TRUE;
+    } catch (...) {
+        execute_information->hProcess = nullptr;
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return FALSE;
     }
-    return g_shell_execute_ex_w(execute_information);
+}
+
+BOOL WINAPI DetouredShellExecuteExW(
+    SHELLEXECUTEINFOW* const execute_information) noexcept {
+    if (execute_information != nullptr &&
+        execute_information->cbSize >= sizeof(SHELLEXECUTEINFOW) &&
+        IsElevationVerb(execute_information->lpVerb)) {
+        hook::TryReportProcessViolation(
+            protocol::ProcessOperation::kElevation);
+        execute_information->hProcess = nullptr;
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    if (execute_information == nullptr ||
+        execute_information->cbSize < sizeof(SHELLEXECUTEINFOW)) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    if (!IsDirectExecutableImage(execute_information->lpFile) ||
+        !IsOpenVerb(execute_information->lpVerb) ||
+        execute_information->lpIDList != nullptr ||
+        execute_information->lpClass != nullptr ||
+        execute_information->hkeyClass != nullptr) {
+        hook::TryReportProcessViolation(
+            protocol::ProcessOperation::kExternalDelegation);
+        execute_information->hProcess = nullptr;
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return LaunchDirectExecutable(execute_information);
 }
 
 }  // namespace

@@ -416,6 +416,15 @@ caller-visible interface output, and emits a path-free `ExternalDelegation`
 event. In-process COM remains available, including the policy-wrapped
 `IFileOperation` path.
 
+Shell file association and custom-verb activation are also external delegation
+boundaries because Windows may satisfy them through an existing host broker or
+an association-selected process outside the confined tree. `ShellExecuteExW`
+therefore accepts only a direct executable image with the default `open` verb,
+converts that request to the ordinary confined process-creation path, and never
+delegates it back to the Shell. Elevation, file associations, class/ID-list
+activation, and custom verbs fail closed with a path-free
+`ExternalDelegation` event before external code runs.
+
 Injected processes also intercept `SetInformationJobObject`. A Job whose process
 list contains the current confined process cannot be reconfigured, even if a
 caller obtains a handle with `JOB_OBJECT_SET_ATTRIBUTES`; the attempt returns

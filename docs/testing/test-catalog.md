@@ -179,7 +179,7 @@ and reason code—not merely identical serialized bytes.
 | PROC-025 | Parent uses `CreateProcessW/A` with every supported flag family | Child is forced suspended for injection, caller-visible flags are preserved, and child resumes only after readiness |
 | PROC-026 | Parent uses `CreateProcessAsUserW/A` with a supported non-elevated test token | Child is injected into the same policy/job before user code and retains only the supplied user-authorized token rights |
 | PROC-027 | Parent uses `CreateProcessWithTokenW` or `CreateProcessWithLogonW` | Token-changing creation is denied before user code in the initial release and emits a process violation |
-| PROC-028 | Parent uses `ShellExecuteExW`, COM shell activation, or association launch | Resulting process is injected into the same policy/job; elevation verbs are denied |
+| PROC-028 | Parent uses `ShellExecuteExW`, COM shell activation, or association launch | Direct executable `open` requests are converted to confined process creation; elevation, file association, custom-verb, and out-of-process COM delegation are denied before external code runs |
 | PROC-029 | Parent uses `NtCreateUserProcess`/`RtlCreateUserProcess` fixture | Native path is intercepted and confined before user code |
 | PROC-030 | PE header is malformed, architecture is ambiguous, WOW64 query fails, or image changes during selection | Architecture selection fails closed; no wrong-architecture injection attempt reaches user code |
 | PROC-031 | Process mitigation query runs after target readiness | Required mitigation bits from the release profile are active in target and supported descendants |
