@@ -246,7 +246,7 @@ fn validate_network_allow_list(reader: &mut BodyReader<'_>) -> Result<(), Policy
 
 fn validate_registry_body(reader: &mut BodyReader<'_>) -> Result<(), PolicyPayloadError> {
     let rule_count = reader.read_count()?;
-    if rule_count > super::MAX_TOTAL_REGISTRY_RULES {
+    if rule_count > super::MAX_COMPILED_REGISTRY_RULES {
         return Err(PolicyPayloadError::InvalidBody);
     }
     for _ in 0..rule_count {
@@ -917,7 +917,8 @@ mod tests {
         let mut too_many = Vec::new();
         push_u32(
             &mut too_many,
-            u32::try_from(super::super::MAX_TOTAL_REGISTRY_RULES + 1).expect("limit must fit u32"),
+            u32::try_from(super::super::MAX_COMPILED_REGISTRY_RULES + 1)
+                .expect("limit must fit u32"),
         );
 
         let mut invalid_kind = Vec::new();

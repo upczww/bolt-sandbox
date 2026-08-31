@@ -18,7 +18,7 @@ namespace {
 
 constexpr std::size_t kNetworkCategoryLimit = 1'024;
 constexpr std::size_t kNetworkTotalLimit = 2'048;
-constexpr std::size_t kRegistryTotalLimit = 2'048;
+constexpr std::size_t kRegistryTotalLimit = 2'088;
 
 class Reader {
   public:

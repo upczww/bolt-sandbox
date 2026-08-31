@@ -170,6 +170,48 @@ SOCKET AcceptWithTimeout(
                : INVALID_SOCKET;
 }
 
+void PrintNextEventForDiagnostics(const HANDLE pipe) {
+    for (std::size_t event = 0; event < 64; ++event) {
+        DWORD available = 0;
+        if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr) ||
+            available < bolt::protocol::kEventHeaderLength) {
+            return;
+        }
+        std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
+        if (!ReadExact(pipe, header.data(), header.size())) {
+            return;
+        }
+        const std::uint16_t kind = static_cast<std::uint16_t>(header[6]) |
+            static_cast<std::uint16_t>(header[7]) << 8U;
+        const std::size_t payload_length =
+            static_cast<std::size_t>(header[8]) |
+            static_cast<std::size_t>(header[9]) << 8U |
+            static_cast<std::size_t>(header[10]) << 16U |
+            static_cast<std::size_t>(header[11]) << 24U;
+        std::vector<std::uint8_t> payload(payload_length);
+        if (!ReadExact(pipe, payload.data(), payload.size())) {
+            return;
+        }
+        if (kind != 3 || payload.size() < 9) {
+            continue;
+        }
+        const std::size_t key_length =
+            static_cast<std::size_t>(payload[5]) |
+            static_cast<std::size_t>(payload[6]) << 8U |
+            static_cast<std::size_t>(payload[7]) << 16U |
+            static_cast<std::size_t>(payload[8]) << 24U;
+        std::string key;
+        if (key_length <= payload.size() - 9) {
+            key.assign(
+                reinterpret_cast<const char*>(payload.data() + 9), key_length);
+        }
+        std::fprintf(
+            stderr, "registry event diagnostic: operation=%u key=%s\n",
+            static_cast<unsigned int>(payload[4]), key.c_str());
+        return;
+    }
+}
+
 SOCKET AcceptEitherWhileProcessRuns(
     const SOCKET ipv4_listener,
     const SOCKET ipv6_listener,
@@ -1181,6 +1223,9 @@ bool RunNetworkHookTests() {
     closesocket(sibling_ipv4_listener);
     closesocket(sibling_ipv6_listener);
     WSACleanup();
+    if (!child_ok) {
+        PrintNextEventForDiagnostics(event_pipe.handle());
+    }
     CloseHandle(release);
     event_pipe.Close();
     if (!child_ok || !high_level_events_ok || !sibling_loopback_blocked) {
@@ -2270,6 +2315,9 @@ bool RunNetworkAllowListTests() {
     closesocket(application_proxy_ipv6_listener);
     closesocket(denied_proxy_listener);
     closesocket(denied_proxy_ipv6_listener);
+    if (!passed) {
+        PrintNextEventForDiagnostics(event_pipe.handle());
+    }
     CloseHandle(release);
     event_pipe.Close();
     WSACleanup();

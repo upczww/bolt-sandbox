@@ -118,6 +118,114 @@ bool HashPayload(std::vector<std::uint8_t>& payload) {
     return success;
 }
 
+std::vector<RegistryRule> RegistryRulesWithCompatibility(
+    const std::vector<RegistryRule>& requested) {
+    std::vector<RegistryRule> rules = requested;
+    const std::vector<RegistryRule> compatibility = {
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "CURRENTCONTROLSET", "CONTROL", "SESSION MANAGER"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "CURRENTCONTROLSET", "SERVICES", "WINSOCK2"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "CURRENTCONTROLSET", "SERVICES", "WINSOCK"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "CURRENTCONTROLSET", "SERVICES", "TCPIP", "PARAMETERS", "WINSOCK"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "CURRENTCONTROLSET", "SERVICES", "TCPIP", "PARAMETERS"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "CURRENTCONTROLSET", "SERVICES", "TCPIP6", "PARAMETERS", "WINSOCK"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "MICROSOFT", "OLE"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "MICROSOFT", "APPMODEL", "LOOKASIDE", "MACHINE"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "MICROSOFT", "APPMODEL", "LOOKASIDE", "USER"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kCurrentUser,
+         {"SOFTWARE", "CLASSES", "LOCAL SETTINGS"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "MICROSOFT", "WOW64", "X86", "XTAJIT"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "CURRENTCONTROLSET", "CONTROL", "SAFEBOOT", "OPTION"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "CURRENTCONTROLSET", "SERVICES", "DNSCACHE", "PARAMETERS"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "POLICIES", "MICROSOFT", "WINDOWS", "SAFER", "CODEIDENTIFIERS"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kCurrentUser,
+         {"SOFTWARE", "POLICIES", "MICROSOFT", "WINDOWS", "SAFER", "CODEIDENTIFIERS"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kCurrentUser,
+         {"SOFTWARE", "MICROSOFT", "WINDOWS", "CURRENTVERSION", "EXPLORER", "SHELL FOLDERS"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kCurrentUser,
+         {"SOFTWARE", "MICROSOFT", "WINDOWS", "CURRENTVERSION", "EXPLORER", "USER SHELL FOLDERS"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kCurrentUser,
+         {"SOFTWARE", "MICROSOFT", "WINDOWS NT", "CURRENTVERSION"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "MICROSOFT", "WINDOWS NT", "CURRENTVERSION", "CONTAINERS"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "MICROSOFT", "WINDOWS", "CURRENTVERSION", "SIDEBYSIDE"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "MICROSOFT", "LANGUAGEOVERLAY", "OVERLAYPACKAGES"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "MICROSOFT", "WINDOWS", "CURRENTVERSION", "INTERNET SETTINGS"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kCurrentUser,
+         {"SOFTWARE", "MICROSOFT", "WINDOWS", "CURRENTVERSION", "INTERNET SETTINGS"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "POLICIES", "MICROSOFT", "INTERNET EXPLORER", "MAIN"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kCurrentUser,
+         {"SOFTWARE", "POLICIES", "MICROSOFT", "INTERNET EXPLORER", "MAIN"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "POLICIES", "MICROSOFT", "WINDOWS", "CURRENTVERSION", "INTERNET SETTINGS"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kCurrentUser,
+         {"SOFTWARE", "POLICIES", "MICROSOFT", "WINDOWS", "CURRENTVERSION", "INTERNET SETTINGS"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "POLICIES", "MICROSOFT", "WINDOWS", "MPEHTTPEXT", "PAYLOAD"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "POLICIES", "MICROSOFT", "WINDOWS", "TENANTRESTRICTIONS", "PAYLOAD"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "MICROSOFT", "RPC"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "CURRENTCONTROLSET", "SERVICES", "CCG"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "CURRENTCONTROLSET", "CONTROL", "COMPUTERNAME", "ACTIVECOMPUTERNAME"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "SETUP"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "POLICIES", "MICROSOFT", "WINDOWS NT", "RPC"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "CURRENTCONTROLSET", "CONTROL", "NLS", "SORTING", "IDS"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "POLICIES", "MICROSOFT", "PEERDIST", "SERVICE"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SOFTWARE", "MICROSOFT", "WINDOWS NT", "CURRENTVERSION", "PEERDIST", "SERVICE"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "CURRENTCONTROLSET", "CONTROL", "HVSI"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "CURRENTCONTROLSET", "CONTROL", "SECURITYPROVIDERS"}},
+        {RegistryRuleKind::kInheritUser, RegistryHive::kLocalMachine,
+         {"SYSTEM", "CURRENTCONTROLSET", "CONTROL", "LSA", "SSPICACHE"}},
+    };
+    for (const auto& candidate : compatibility) {
+        const bool present = std::any_of(
+            rules.begin(), rules.end(), [&candidate](const RegistryRule& rule) {
+                if (rule.hive != candidate.hive ||
+                    rule.components.size() != candidate.components.size()) {
+                    return false;
+                }
+                for (std::size_t index = 0; index < rule.components.size(); ++index) {
+                    if (_stricmp(
+                            rule.components[index].c_str(),
+                            candidate.components[index].c_str()) != 0) {
+                        return false;
+                    }
+                }
+                return true;
+            });
+        if (!present) {
+            rules.push_back(candidate);
+        }
+    }
+    return rules;
+}
+
 }  // namespace
 
 std::vector<std::uint8_t> SealPolicy(
@@ -168,10 +276,12 @@ std::vector<std::uint8_t> SealPolicy(
             AppendU16(body, port.end);
         }
     }
-    if (!AppendU32(body, registry_rules.size())) {
+    const auto encoded_registry_rules =
+        RegistryRulesWithCompatibility(registry_rules);
+    if (!AppendU32(body, encoded_registry_rules.size())) {
         return {};
     }
-    for (const auto& rule : registry_rules) {
+    for (const auto& rule : encoded_registry_rules) {
         body.push_back(static_cast<std::uint8_t>(rule.kind));
         body.push_back(static_cast<std::uint8_t>(rule.hive));
         if (!AppendU32(body, rule.components.size())) {

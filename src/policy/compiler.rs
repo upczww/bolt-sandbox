@@ -20,6 +20,50 @@ const MAX_TOTAL_FILESYSTEM_RULES: usize = 2_048;
 const MAX_FILESYSTEM_PATH_CODE_UNITS: usize = 32_767;
 const MAX_REGISTRY_RULES_PER_CATEGORY: usize = 1_024;
 const MAX_TOTAL_REGISTRY_RULES: usize = 2_048;
+const DEFAULT_REGISTRY_COMPATIBILITY_GRANTS: &[&str] = &[
+    r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager",
+    r"HKLM\SYSTEM\CurrentControlSet\Services\WinSock2",
+    r"HKLM\SYSTEM\CurrentControlSet\Services\WinSock",
+    r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Winsock",
+    r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters",
+    r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Winsock",
+    r"HKLM\SOFTWARE\Microsoft\OLE",
+    r"HKLM\SOFTWARE\Microsoft\AppModel\Lookaside\machine",
+    r"HKLM\SOFTWARE\Microsoft\AppModel\Lookaside\user",
+    r"HKCU\Software\Classes\Local Settings",
+    r"HKLM\SOFTWARE\Microsoft\Wow64\x86\xtajit",
+    r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Option",
+    r"HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters",
+    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers",
+    r"HKCU\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers",
+    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+    r"HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Containers",
+    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\SideBySide",
+    r"HKLM\SOFTWARE\Microsoft\LanguageOverlay\OverlayPackages",
+    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings",
+    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings",
+    r"HKLM\SOFTWARE\Policies\Microsoft\Internet Explorer\Main",
+    r"HKCU\SOFTWARE\Policies\Microsoft\Internet Explorer\Main",
+    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings",
+    r"HKCU\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings",
+    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\MpeHttpExt\Payload",
+    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\TenantRestrictions\Payload",
+    r"HKLM\SOFTWARE\Microsoft\Rpc",
+    r"HKLM\SYSTEM\CurrentControlSet\Services\CCG",
+    r"HKLM\SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName",
+    r"HKLM\SYSTEM\Setup",
+    r"HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Rpc",
+    r"HKLM\SYSTEM\CurrentControlSet\Control\Nls\Sorting\Ids",
+    r"HKLM\SOFTWARE\Policies\Microsoft\PeerDist\Service",
+    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PeerDist\Service",
+    r"HKLM\SYSTEM\CurrentControlSet\Control\Hvsi",
+    r"HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders",
+    r"HKLM\SYSTEM\CurrentControlSet\Control\Lsa\SspiCache",
+];
+const MAX_COMPILED_REGISTRY_RULES: usize =
+    MAX_TOTAL_REGISTRY_RULES + DEFAULT_REGISTRY_COMPATIBILITY_GRANTS.len();
 const MAX_REGISTRY_KEY_CODE_UNITS: usize = 255;
 
 pub(crate) fn compile(policy: &SandboxPolicy, cwd: &Path) -> Result<CompiledPolicy, SandboxError> {
@@ -572,6 +616,7 @@ fn compile_registry_policy(
     compiled.add_rules(&policy.read_only, RegistryRuleKind::ReadOnly)?;
     compiled.add_rules(&policy.no_access, RegistryRuleKind::NoAccess)?;
     compiled.add_rules(mandatory_denies, RegistryRuleKind::NoAccess)?;
+    compiled.add_compatibility_rules(DEFAULT_REGISTRY_COMPATIBILITY_GRANTS)?;
     compiled.add_rules(&policy.inherit_user, RegistryRuleKind::InheritUser)?;
     compiled
         .rules
@@ -635,6 +680,20 @@ impl RegistryPolicyBuilder {
             }
         }
         self.rules.push(RegistryRule { root, kind });
+        Ok(())
+    }
+
+    fn add_compatibility_rules(&mut self, keys: &[&str]) -> Result<(), SandboxError> {
+        for key in keys {
+            let root = NormalizedRegistryKey::parse(key)?;
+            if self.rules.iter().any(|rule| rule.root == root) {
+                continue;
+            }
+            self.rules.push(RegistryRule {
+                root,
+                kind: RegistryRuleKind::InheritUser,
+            });
+        }
         Ok(())
     }
 }
@@ -1897,29 +1956,95 @@ mod tests {
 
     #[test]
     fn reg_default_compatibility_grants_are_explicit_and_narrow() {
-        let compiled = compile(
-            &SandboxPolicy::default(),
-            Path::new(r"C:\work\project"),
-        )
-        .expect("default compatibility registry grants must compile");
+        let compiled = compile(&SandboxPolicy::default(), Path::new(r"C:\work\project"))
+            .expect("default compatibility registry grants must compile");
 
         for key in [
             r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager",
             r"HKLM\SYSTEM\CurrentControlSet\Services\WinSock2\Parameters",
+            r"HKLM\SYSTEM\CurrentControlSet\Services\WinSock\Parameters",
+            r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Winsock",
+            r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters",
+            r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Winsock",
             r"HKLM\SOFTWARE\Microsoft\OLE",
             r"HKLM\SOFTWARE\Microsoft\AppModel\Lookaside\machine",
             r"HKLM\SOFTWARE\Microsoft\AppModel\Lookaside\user",
             r"HKCU\Software\Classes\Local Settings",
+            r"HKLM\SOFTWARE\Microsoft\Wow64\x86\xtajit",
+            r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Option",
+            r"HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters",
+            r"HKLM\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers",
+            r"HKCU\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers",
+            r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+            r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+            r"HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Containers",
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\SideBySide",
+            r"HKLM\SOFTWARE\Microsoft\LanguageOverlay\OverlayPackages",
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings",
+            r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings",
+            r"HKLM\SOFTWARE\Policies\Microsoft\Internet Explorer\Main",
+            r"HKCU\SOFTWARE\Policies\Microsoft\Internet Explorer\Main",
+            r"HKLM\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings",
+            r"HKCU\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings",
+            r"HKLM\SOFTWARE\Policies\Microsoft\Windows\MpeHttpExt\Payload",
+            r"HKLM\SOFTWARE\Policies\Microsoft\Windows\TenantRestrictions\Payload",
+            r"HKLM\SOFTWARE\Microsoft\Rpc",
+            r"HKLM\SYSTEM\CurrentControlSet\Services\CCG",
+            r"HKLM\SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName",
+            r"HKLM\SYSTEM\Setup",
+            r"HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Rpc",
+            r"HKLM\SYSTEM\CurrentControlSet\Control\Nls\Sorting\Ids",
+            r"HKLM\SOFTWARE\Policies\Microsoft\PeerDist\Service",
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PeerDist\Service",
+            r"HKLM\SYSTEM\CurrentControlSet\Control\Hvsi",
+            r"HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders",
+            r"HKLM\SYSTEM\CurrentControlSet\Control\Lsa\SspiCache",
         ] {
             assert_eq!(
                 compiled.registry.decide(key, RegistryAccess::Read),
                 RegistryDecision::InheritUser,
-                "{key}"
+                "read: {key}"
+            );
+            assert_eq!(
+                compiled.registry.decide(key, RegistryAccess::Write),
+                RegistryDecision::InheritUser,
+                "write: {key}"
             );
         }
         assert_eq!(
             compiled.registry.decide(
                 r"HKLM\SOFTWARE\Microsoft\AppModel\Unrelated",
+                RegistryAccess::Read,
+            ),
+            RegistryDecision::Deny
+        );
+
+        let mut explicitly_denied = SandboxPolicy::default();
+        explicitly_denied
+            .registry
+            .no_access
+            .push(r"HKLM\SOFTWARE\Microsoft\Rpc".into());
+        let explicitly_denied = compile(&explicitly_denied, Path::new(r"C:\work\project"))
+            .expect("an explicit deny must replace the compatibility grant");
+        assert_eq!(
+            explicitly_denied.registry.decide(
+                r"HKLM\SOFTWARE\Microsoft\Rpc\SecurityService",
+                RegistryAccess::Read,
+            ),
+            RegistryDecision::Deny
+        );
+
+        let mandatorily_denied = compile_with_security_denies(
+            &SandboxPolicy::default(),
+            Path::new(r"C:\work\project"),
+            &[],
+            &[r"HKLM\SOFTWARE\Microsoft\Rpc".into()],
+        )
+        .expect("a mandatory deny must replace the compatibility grant");
+        assert_eq!(
+            mandatorily_denied.registry.decide(
+                r"HKLM\SOFTWARE\Microsoft\Rpc\SecurityService",
                 RegistryAccess::Read,
             ),
             RegistryDecision::Deny

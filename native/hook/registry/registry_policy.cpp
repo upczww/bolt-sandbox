@@ -17,7 +17,7 @@
 namespace bolt::registry {
 namespace {
 
-constexpr std::size_t kMaximumRegistryRules = 2'048;
+constexpr std::size_t kMaximumRegistryRules = 2'088;
 constexpr std::size_t kMaximumRegistryKeyCodeUnits = 255;
 
 enum class RuleKind : std::uint8_t {
