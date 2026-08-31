@@ -329,7 +329,7 @@ fn recovery_files(root: &Path) -> Vec<PathBuf> {
             let path = entry.expect("recovery entry must be readable").path();
             if path.is_dir() {
                 pending.push(path);
-            } else {
+            } else if path.file_name().is_some_and(|name| name == "content.bin") {
                 files.push(path);
             }
         }

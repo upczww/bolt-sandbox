@@ -1,6 +1,7 @@
 use std::{
     ffi::OsString,
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
 };
@@ -86,9 +87,10 @@ impl RecoveryCoordinator {
         {
             return silent_failure();
         }
+        let indexed_path = display_path(&request.path);
         if self
             .filesystem
-            .decide(&request.path, FilesystemAccess::Write)
+            .decide(&indexed_path, FilesystemAccess::Write)
             != FilesystemDecision::Allow
         {
             return silent_failure();
@@ -113,18 +115,25 @@ impl RecoveryCoordinator {
             return recovery_failure(request.process_id, RecoveryFailureReason::CounterOverflow);
         };
         let artifact_id = self.next_artifact_id;
-        let final_path = self
+        let final_directory = self
             .execution_directory
-            .join(format!("artifact-{artifact_id:016x}.bin"));
-        let temporary_path = final_path.with_extension("partial");
-        let copied = fs::copy(&request.path, &temporary_path);
-        let Ok(copied) = copied else {
-            let _ = fs::remove_file(&temporary_path);
+            .join(format!("artifact-{artifact_id:016x}"));
+        let temporary_directory = self
+            .execution_directory
+            .join(format!("artifact-{artifact_id:016x}.partial"));
+        if fs::create_dir(&temporary_directory).is_err() {
             return recovery_failure(request.process_id, RecoveryFailureReason::StoreUnavailable);
-        };
-        if copied != byte_count || fs::rename(&temporary_path, &final_path).is_err() {
-            let _ = fs::remove_file(&temporary_path);
-            let _ = fs::remove_file(&final_path);
+        }
+        let content_path = temporary_directory.join("content.bin");
+        let metadata_path = temporary_directory.join("metadata.bin");
+        let committed = fs::copy(&request.path, &content_path)
+            .is_ok_and(|copied| copied == byte_count)
+            && sync_file(&content_path)
+            && write_metadata(&metadata_path, artifact_id, request, byte_count)
+            && fs::rename(&temporary_directory, &final_directory).is_ok();
+        if !committed {
+            let _ = fs::remove_dir_all(&temporary_directory);
+            let _ = fs::remove_dir_all(&final_directory);
             return recovery_failure(request.process_id, RecoveryFailureReason::StoreUnavailable);
         }
         self.used_bytes = next_bytes;
@@ -136,11 +145,63 @@ impl RecoveryCoordinator {
             event: Some(SandboxEvent::RecoveryArtifactCreated(RecoveryArtifact {
                 process_id: request.process_id,
                 artifact_id,
-                original_path: display_path(&request.path),
+                original_path: indexed_path,
                 byte_count,
             })),
         }
     }
+}
+
+fn sync_file(path: &Path) -> bool {
+    OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|file| file.sync_all())
+        .is_ok()
+}
+
+fn write_metadata(
+    path: &Path,
+    artifact_id: u64,
+    request: &RecoveryRequest,
+    byte_count: u64,
+) -> bool {
+    const HEADER_LENGTH: usize = 40;
+    const HEADER_LENGTH_U16: u16 = 40;
+    let indexed_path = display_path(&request.path);
+    let encoded_path: Vec<u16> = indexed_path.as_os_str().encode_wide().collect();
+    let Some(total_length) = encoded_path
+        .len()
+        .checked_mul(2)
+        .and_then(|length| length.checked_add(HEADER_LENGTH))
+        .and_then(|length| u32::try_from(length).ok())
+    else {
+        return false;
+    };
+    let Ok(path_length) = u32::try_from(encoded_path.len()) else {
+        return false;
+    };
+    let Ok(capacity) = usize::try_from(total_length) else {
+        return false;
+    };
+    let mut metadata = Vec::with_capacity(capacity);
+    metadata.extend_from_slice(b"BRI1");
+    metadata.extend_from_slice(&1_u16.to_le_bytes());
+    metadata.extend_from_slice(&HEADER_LENGTH_U16.to_le_bytes());
+    metadata.extend_from_slice(&artifact_id.to_le_bytes());
+    metadata.extend_from_slice(&request.process_id.to_le_bytes());
+    metadata.extend_from_slice(&[request.operation as u8, 0, 0, 0]);
+    metadata.extend_from_slice(&byte_count.to_le_bytes());
+    metadata.extend_from_slice(&path_length.to_le_bytes());
+    metadata.extend_from_slice(&total_length.to_le_bytes());
+    for unit in encoded_path {
+        metadata.extend_from_slice(&unit.to_le_bytes());
+    }
+    let file = OpenOptions::new().write(true).create_new(true).open(path);
+    let Ok(mut file) = file else {
+        return false;
+    };
+    file.write_all(&metadata).is_ok() && file.sync_all().is_ok()
 }
 
 fn recovery_failure(process_id: u32, reason: RecoveryFailureReason) -> RecoveryOutcome {
