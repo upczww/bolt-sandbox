@@ -43,6 +43,8 @@ enum class RegistryOperation : std::uint8_t {
     kSetValue = 4,
     kDelete = 5,
     kRename = 6,
+    kUnsupportedRemote = 7,
+    kUnsupportedTransactional = 8,
 };
 
 enum class NetworkOperation : std::uint8_t {

@@ -50,6 +50,8 @@ pub enum RegistryOperation {
     SetValue,
     Delete,
     Rename,
+    UnsupportedRemote,
+    UnsupportedTransactional,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

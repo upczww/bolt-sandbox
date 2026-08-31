@@ -31,6 +31,9 @@ constexpr NTSTATUS kStatusInfoLengthMismatch =
     static_cast<NTSTATUS>(0xC0000004L);
 constexpr ULONG kKeyNameInformation = 3;
 constexpr ULONG kKeyHandleTagsInformation = 7;
+constexpr char kRemoteRegistryEventKey[] = "HKEY_REMOTE";
+constexpr char kTransactionalRegistryEventKey[] =
+    "HKEY_TRANSACTIONAL";
 
 using NtOpenKeyFunction = NTSTATUS(NTAPI*)(
     PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
@@ -39,6 +42,13 @@ using NtOpenKeyExFunction = NTSTATUS(NTAPI*)(
 using NtCreateKeyFunction = NTSTATUS(NTAPI*)(
     PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG, PUNICODE_STRING, ULONG,
     PULONG);
+using NtOpenKeyTransactedFunction = NTSTATUS(NTAPI*)(
+    PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, HANDLE);
+using NtOpenKeyTransactedExFunction = NTSTATUS(NTAPI*)(
+    PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG, HANDLE);
+using NtCreateKeyTransactedFunction = NTSTATUS(NTAPI*)(
+    PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG, PUNICODE_STRING, ULONG,
+    HANDLE, PULONG);
 using NtQueryKeyFunction = NTSTATUS(NTAPI*)(
     HANDLE, ULONG, PVOID, ULONG, PULONG);
 using NtQueryValueKeyFunction = NTSTATUS(NTAPI*)(
@@ -54,10 +64,31 @@ using NtDeleteKeyFunction = NTSTATUS(NTAPI*)(HANDLE);
 using NtDeleteValueKeyFunction = NTSTATUS(NTAPI*)(HANDLE, PUNICODE_STRING);
 using NtRenameKeyFunction = NTSTATUS(NTAPI*)(HANDLE, PUNICODE_STRING);
 using NtCloseFunction = NTSTATUS(NTAPI*)(HANDLE);
+using RegConnectRegistryAFunction = LSTATUS(WINAPI*)(
+    LPCSTR, HKEY, PHKEY);
+using RegConnectRegistryWFunction = LSTATUS(WINAPI*)(
+    LPCWSTR, HKEY, PHKEY);
+using RegOpenKeyTransactedAFunction = LSTATUS(WINAPI*)(
+    HKEY, LPCSTR, DWORD, REGSAM, PHKEY, HANDLE, PVOID);
+using RegOpenKeyTransactedWFunction = LSTATUS(WINAPI*)(
+    HKEY, LPCWSTR, DWORD, REGSAM, PHKEY, HANDLE, PVOID);
+using RegCreateKeyTransactedAFunction = LSTATUS(WINAPI*)(
+    HKEY, LPCSTR, DWORD, LPSTR, DWORD, REGSAM,
+    const SECURITY_ATTRIBUTES*, PHKEY, LPDWORD, HANDLE, PVOID);
+using RegCreateKeyTransactedWFunction = LSTATUS(WINAPI*)(
+    HKEY, LPCWSTR, DWORD, LPWSTR, DWORD, REGSAM,
+    const SECURITY_ATTRIBUTES*, PHKEY, LPDWORD, HANDLE, PVOID);
+using RegDeleteKeyTransactedAFunction = LSTATUS(WINAPI*)(
+    HKEY, LPCSTR, REGSAM, DWORD, HANDLE, PVOID);
+using RegDeleteKeyTransactedWFunction = LSTATUS(WINAPI*)(
+    HKEY, LPCWSTR, REGSAM, DWORD, HANDLE, PVOID);
 
 NtOpenKeyFunction g_nt_open_key = nullptr;
 NtOpenKeyExFunction g_nt_open_key_ex = nullptr;
 NtCreateKeyFunction g_nt_create_key = nullptr;
+NtOpenKeyTransactedFunction g_nt_open_key_transacted = nullptr;
+NtOpenKeyTransactedExFunction g_nt_open_key_transacted_ex = nullptr;
+NtCreateKeyTransactedFunction g_nt_create_key_transacted = nullptr;
 NtQueryKeyFunction g_nt_query_key = nullptr;
 NtQueryValueKeyFunction g_nt_query_value_key = nullptr;
 NtEnumerateKeyFunction g_nt_enumerate_key = nullptr;
@@ -67,6 +98,14 @@ NtDeleteKeyFunction g_nt_delete_key = nullptr;
 NtDeleteValueKeyFunction g_nt_delete_value_key = nullptr;
 NtRenameKeyFunction g_nt_rename_key = nullptr;
 NtCloseFunction g_nt_close = nullptr;
+RegConnectRegistryAFunction g_reg_connect_registry_a = nullptr;
+RegConnectRegistryWFunction g_reg_connect_registry_w = nullptr;
+RegOpenKeyTransactedAFunction g_reg_open_key_transacted_a = nullptr;
+RegOpenKeyTransactedWFunction g_reg_open_key_transacted_w = nullptr;
+RegCreateKeyTransactedAFunction g_reg_create_key_transacted_a = nullptr;
+RegCreateKeyTransactedWFunction g_reg_create_key_transacted_w = nullptr;
+RegDeleteKeyTransactedAFunction g_reg_delete_key_transacted_a = nullptr;
+RegDeleteKeyTransactedWFunction g_reg_delete_key_transacted_w = nullptr;
 std::unique_ptr<RegistryPolicy> g_policy;
 std::wstring g_current_user_prefix;
 std::wstring g_current_user_classes_prefix;
@@ -135,6 +174,10 @@ bool WriteNullHandle(PHANDLE output) noexcept {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+bool WriteNullRegistryKey(PHKEY output) noexcept {
+    return WriteNullHandle(reinterpret_cast<PHANDLE>(output));
 }
 
 bool QueryHandleName(const HANDLE key, std::wstring& name) {
@@ -487,6 +530,15 @@ void ReportHandleViolation(
     }
 }
 
+void ReportUnsupportedRegistryOperation(
+    const protocol::RegistryOperation operation) noexcept {
+    const char* const key =
+        operation == protocol::RegistryOperation::kUnsupportedRemote
+        ? kRemoteRegistryEventKey
+        : kTransactionalRegistryEventKey;
+    hook::TryReportRegistryViolation(operation, key);
+}
+
 template <typename OpenCall>
 NTSTATUS GuardOpen(
     PHANDLE key,
@@ -574,6 +626,44 @@ NTSTATUS NTAPI DetouredNtCreateKey(
                              key, desired_access, attributes, title_index,
                              class_name, create_options, disposition);
                      });
+}
+
+NTSTATUS NTAPI DetouredNtOpenKeyTransacted(
+    PHANDLE key,
+    ACCESS_MASK,
+    POBJECT_ATTRIBUTES,
+    HANDLE) {
+    WriteNullHandle(key);
+    ReportUnsupportedRegistryOperation(
+        protocol::RegistryOperation::kUnsupportedTransactional);
+    return kStatusAccessDenied;
+}
+
+NTSTATUS NTAPI DetouredNtOpenKeyTransactedEx(
+    PHANDLE key,
+    ACCESS_MASK,
+    POBJECT_ATTRIBUTES,
+    ULONG,
+    HANDLE) {
+    WriteNullHandle(key);
+    ReportUnsupportedRegistryOperation(
+        protocol::RegistryOperation::kUnsupportedTransactional);
+    return kStatusAccessDenied;
+}
+
+NTSTATUS NTAPI DetouredNtCreateKeyTransacted(
+    PHANDLE key,
+    ACCESS_MASK,
+    POBJECT_ATTRIBUTES,
+    ULONG,
+    PUNICODE_STRING,
+    ULONG,
+    HANDLE,
+    PULONG) {
+    WriteNullHandle(key);
+    ReportUnsupportedRegistryOperation(
+        protocol::RegistryOperation::kUnsupportedTransactional);
+    return kStatusAccessDenied;
 }
 
 NTSTATUS NTAPI DetouredNtQueryKey(
@@ -700,6 +790,114 @@ NTSTATUS NTAPI DetouredNtRenameKey(
     return g_nt_rename_key(key, new_name);
 }
 
+LSTATUS WINAPI DetouredRegConnectRegistryA(
+    LPCSTR,
+    HKEY,
+    PHKEY result) {
+    WriteNullRegistryKey(result);
+    ReportUnsupportedRegistryOperation(
+        protocol::RegistryOperation::kUnsupportedRemote);
+    return ERROR_ACCESS_DENIED;
+}
+
+LSTATUS WINAPI DetouredRegConnectRegistryW(
+    LPCWSTR,
+    HKEY,
+    PHKEY result) {
+    WriteNullRegistryKey(result);
+    ReportUnsupportedRegistryOperation(
+        protocol::RegistryOperation::kUnsupportedRemote);
+    return ERROR_ACCESS_DENIED;
+}
+
+LSTATUS WINAPI DetouredRegOpenKeyTransactedA(
+    HKEY,
+    LPCSTR,
+    DWORD,
+    REGSAM,
+    PHKEY result,
+    HANDLE,
+    PVOID) {
+    WriteNullRegistryKey(result);
+    ReportUnsupportedRegistryOperation(
+        protocol::RegistryOperation::kUnsupportedTransactional);
+    return ERROR_ACCESS_DENIED;
+}
+
+LSTATUS WINAPI DetouredRegOpenKeyTransactedW(
+    HKEY,
+    LPCWSTR,
+    DWORD,
+    REGSAM,
+    PHKEY result,
+    HANDLE,
+    PVOID) {
+    WriteNullRegistryKey(result);
+    ReportUnsupportedRegistryOperation(
+        protocol::RegistryOperation::kUnsupportedTransactional);
+    return ERROR_ACCESS_DENIED;
+}
+
+LSTATUS WINAPI DetouredRegCreateKeyTransactedA(
+    HKEY,
+    LPCSTR,
+    DWORD,
+    LPSTR,
+    DWORD,
+    REGSAM,
+    const SECURITY_ATTRIBUTES*,
+    PHKEY result,
+    LPDWORD,
+    HANDLE,
+    PVOID) {
+    WriteNullRegistryKey(result);
+    ReportUnsupportedRegistryOperation(
+        protocol::RegistryOperation::kUnsupportedTransactional);
+    return ERROR_ACCESS_DENIED;
+}
+
+LSTATUS WINAPI DetouredRegCreateKeyTransactedW(
+    HKEY,
+    LPCWSTR,
+    DWORD,
+    LPWSTR,
+    DWORD,
+    REGSAM,
+    const SECURITY_ATTRIBUTES*,
+    PHKEY result,
+    LPDWORD,
+    HANDLE,
+    PVOID) {
+    WriteNullRegistryKey(result);
+    ReportUnsupportedRegistryOperation(
+        protocol::RegistryOperation::kUnsupportedTransactional);
+    return ERROR_ACCESS_DENIED;
+}
+
+LSTATUS WINAPI DetouredRegDeleteKeyTransactedA(
+    HKEY,
+    LPCSTR,
+    REGSAM,
+    DWORD,
+    HANDLE,
+    PVOID) {
+    ReportUnsupportedRegistryOperation(
+        protocol::RegistryOperation::kUnsupportedTransactional);
+    return ERROR_ACCESS_DENIED;
+}
+
+LSTATUS WINAPI DetouredRegDeleteKeyTransactedW(
+    HKEY,
+    LPCWSTR,
+    REGSAM,
+    DWORD,
+    HANDLE,
+    PVOID) {
+    ReportUnsupportedRegistryOperation(
+        protocol::RegistryOperation::kUnsupportedTransactional);
+    return ERROR_ACCESS_DENIED;
+}
+
 template <typename Function>
 bool ResolveFunction(
     const HMODULE ntdll,
@@ -729,10 +927,19 @@ RegistryHookInstallStatus InstallRegistryHooks(
         return RegistryHookInstallStatus::kInvalidPolicy;
     }
     const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    if (ntdll == nullptr ||
+    const HMODULE advapi32 = GetModuleHandleW(L"advapi32.dll");
+    if (ntdll == nullptr || advapi32 == nullptr ||
         !ResolveFunction(ntdll, "NtOpenKey", g_nt_open_key) ||
         !ResolveFunction(ntdll, "NtOpenKeyEx", g_nt_open_key_ex) ||
         !ResolveFunction(ntdll, "NtCreateKey", g_nt_create_key) ||
+        !ResolveFunction(
+            ntdll, "NtOpenKeyTransacted", g_nt_open_key_transacted) ||
+        !ResolveFunction(
+            ntdll, "NtOpenKeyTransactedEx",
+            g_nt_open_key_transacted_ex) ||
+        !ResolveFunction(
+            ntdll, "NtCreateKeyTransacted",
+            g_nt_create_key_transacted) ||
         !ResolveFunction(ntdll, "NtQueryKey", g_nt_query_key) ||
         !ResolveFunction(ntdll, "NtQueryValueKey", g_nt_query_value_key) ||
         !ResolveFunction(ntdll, "NtEnumerateKey", g_nt_enumerate_key) ||
@@ -742,7 +949,31 @@ RegistryHookInstallStatus InstallRegistryHooks(
         !ResolveFunction(ntdll, "NtDeleteKey", g_nt_delete_key) ||
         !ResolveFunction(ntdll, "NtDeleteValueKey", g_nt_delete_value_key) ||
         !ResolveFunction(ntdll, "NtRenameKey", g_nt_rename_key) ||
-        !ResolveFunction(ntdll, "NtClose", g_nt_close)) {
+        !ResolveFunction(ntdll, "NtClose", g_nt_close) ||
+        !ResolveFunction(
+            advapi32, "RegConnectRegistryA",
+            g_reg_connect_registry_a) ||
+        !ResolveFunction(
+            advapi32, "RegConnectRegistryW",
+            g_reg_connect_registry_w) ||
+        !ResolveFunction(
+            advapi32, "RegOpenKeyTransactedA",
+            g_reg_open_key_transacted_a) ||
+        !ResolveFunction(
+            advapi32, "RegOpenKeyTransactedW",
+            g_reg_open_key_transacted_w) ||
+        !ResolveFunction(
+            advapi32, "RegCreateKeyTransactedA",
+            g_reg_create_key_transacted_a) ||
+        !ResolveFunction(
+            advapi32, "RegCreateKeyTransactedW",
+            g_reg_create_key_transacted_w) ||
+        !ResolveFunction(
+            advapi32, "RegDeleteKeyTransactedA",
+            g_reg_delete_key_transacted_a) ||
+        !ResolveFunction(
+            advapi32, "RegDeleteKeyTransactedW",
+            g_reg_delete_key_transacted_w)) {
         return RegistryHookInstallStatus::kMissingFunction;
     }
     if (DetourTransactionBegin() != NO_ERROR ||
@@ -756,6 +987,18 @@ RegistryHookInstallStatus InstallRegistryHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_nt_create_key),
             reinterpret_cast<PVOID>(DetouredNtCreateKey)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_open_key_transacted),
+            reinterpret_cast<PVOID>(
+                DetouredNtOpenKeyTransacted)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_open_key_transacted_ex),
+            reinterpret_cast<PVOID>(
+                DetouredNtOpenKeyTransactedEx)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_create_key_transacted),
+            reinterpret_cast<PVOID>(
+                DetouredNtCreateKeyTransacted)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_nt_query_key),
             reinterpret_cast<PVOID>(DetouredNtQueryKey)) != NO_ERROR ||
@@ -780,6 +1023,38 @@ RegistryHookInstallStatus InstallRegistryHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_nt_rename_key),
             reinterpret_cast<PVOID>(DetouredNtRenameKey)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_reg_connect_registry_a),
+            reinterpret_cast<PVOID>(
+                DetouredRegConnectRegistryA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_reg_connect_registry_w),
+            reinterpret_cast<PVOID>(
+                DetouredRegConnectRegistryW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_reg_open_key_transacted_a),
+            reinterpret_cast<PVOID>(
+                DetouredRegOpenKeyTransactedA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_reg_open_key_transacted_w),
+            reinterpret_cast<PVOID>(
+                DetouredRegOpenKeyTransactedW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_reg_create_key_transacted_a),
+            reinterpret_cast<PVOID>(
+                DetouredRegCreateKeyTransactedA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_reg_create_key_transacted_w),
+            reinterpret_cast<PVOID>(
+                DetouredRegCreateKeyTransactedW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_reg_delete_key_transacted_a),
+            reinterpret_cast<PVOID>(
+                DetouredRegDeleteKeyTransactedA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_reg_delete_key_transacted_w),
+            reinterpret_cast<PVOID>(
+                DetouredRegDeleteKeyTransactedW)) != NO_ERROR ||
         DetourTransactionCommit() != NO_ERROR) {
         DetourTransactionAbort();
         return RegistryHookInstallStatus::kTransactionFailed;

@@ -281,7 +281,8 @@ FrameEncodeStatus EncodeRegistryViolationFrame(
     }
     const auto operation_value = static_cast<std::uint8_t>(operation);
     if (operation_value >
-        static_cast<std::uint8_t>(RegistryOperation::kRename)) {
+        static_cast<std::uint8_t>(
+            RegistryOperation::kUnsupportedTransactional)) {
         return FrameEncodeStatus::kInvalidOperation;
     }
     const std::size_t frame_length = RegistryViolationFrameLength(key);

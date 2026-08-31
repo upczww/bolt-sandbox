@@ -395,6 +395,8 @@ wire_enum!(
     RegistryOperation::SetValue => 4,
     RegistryOperation::Delete => 5,
     RegistryOperation::Rename => 6,
+    RegistryOperation::UnsupportedRemote => 7,
+    RegistryOperation::UnsupportedTransactional => 8,
 );
 wire_enum!(
     NetworkOperation,
@@ -603,6 +605,31 @@ mod tests {
 
             assert_eq!(decoded.sequence, sequence);
             assert_eq!(decoded.event, event);
+        }
+    }
+
+    #[test]
+    fn reg_017_unsupported_registry_operations_round_trip_without_inputs() {
+        for (sequence, operation, key) in [
+            (170_u64, RegistryOperation::UnsupportedRemote, "HKEY_REMOTE"),
+            (
+                171_u64,
+                RegistryOperation::UnsupportedTransactional,
+                "HKEY_TRANSACTIONAL",
+            ),
+        ] {
+            let event = SandboxEvent::RegistryViolation(RegistryViolation {
+                process_id: 102,
+                operation,
+                key: key.to_owned(),
+            });
+            let encoded =
+                encode_event(&event, sequence).expect("unsupported registry event must encode");
+            let decoded = decode_event(&encoded).expect("unsupported registry event must decode");
+
+            assert_eq!(decoded.sequence, sequence);
+            assert_eq!(decoded.event, event);
+            assert!(!encoded.windows(4).any(|bytes| bytes == b"host"));
         }
     }
 

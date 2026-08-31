@@ -379,6 +379,18 @@ std::string CanonicalCurrentUserKey(const std::wstring& relative) {
     return key;
 }
 
+std::string NarrowAscii(const std::wstring& value) {
+    std::string narrowed;
+    narrowed.reserve(value.size());
+    for (const wchar_t character : value) {
+        if (character < 0 || character > 0x7f) {
+            return {};
+        }
+        narrowed.push_back(static_cast<char>(character));
+    }
+    return narrowed;
+}
+
 bool ValueEquals(
     const std::wstring& key_path,
     const wchar_t* value_name,
@@ -823,6 +835,225 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
         RegCloseKey(inherited_key);
     }
 
+    const HMODULE advapi32 = GetModuleHandleW(L"advapi32.dll");
+    using RegConnectRegistryWFunction = LSTATUS(WINAPI*)(
+        LPCWSTR, HKEY, PHKEY);
+    using RegConnectRegistryAFunction = LSTATUS(WINAPI*)(
+        LPCSTR, HKEY, PHKEY);
+    const auto reg_connect_registry_w = advapi32 == nullptr
+        ? nullptr
+        : reinterpret_cast<RegConnectRegistryWFunction>(
+              GetProcAddress(advapi32, "RegConnectRegistryW"));
+    const auto reg_connect_registry_a = advapi32 == nullptr
+        ? nullptr
+        : reinterpret_cast<RegConnectRegistryAFunction>(
+              GetProcAddress(advapi32, "RegConnectRegistryA"));
+    HKEY remote_key = reinterpret_cast<HKEY>(
+        static_cast<std::uintptr_t>(1));
+    const LSTATUS remote_status = reg_connect_registry_w == nullptr
+        ? ERROR_PROC_NOT_FOUND
+        : reg_connect_registry_w(
+              nullptr, HKEY_CURRENT_USER, &remote_key);
+    if (remote_status == ERROR_SUCCESS && remote_key != nullptr) {
+        RegCloseKey(remote_key);
+    }
+    HKEY remote_key_a = reinterpret_cast<HKEY>(
+        static_cast<std::uintptr_t>(1));
+    const LSTATUS remote_status_a = reg_connect_registry_a == nullptr
+        ? ERROR_PROC_NOT_FOUND
+        : reg_connect_registry_a(
+              nullptr, HKEY_CURRENT_USER, &remote_key_a);
+    if (remote_status_a == ERROR_SUCCESS && remote_key_a != nullptr) {
+        RegCloseKey(remote_key_a);
+    }
+
+    using RegOpenKeyTransactedWFunction = LSTATUS(WINAPI*)(
+        HKEY, LPCWSTR, DWORD, REGSAM, PHKEY, HANDLE, PVOID);
+    using RegCreateKeyTransactedWFunction = LSTATUS(WINAPI*)(
+        HKEY, LPCWSTR, DWORD, LPWSTR, DWORD, REGSAM,
+        const SECURITY_ATTRIBUTES*, PHKEY, LPDWORD, HANDLE, PVOID);
+    using RegDeleteKeyTransactedWFunction = LSTATUS(WINAPI*)(
+        HKEY, LPCWSTR, REGSAM, DWORD, HANDLE, PVOID);
+    using RegOpenKeyTransactedAFunction = LSTATUS(WINAPI*)(
+        HKEY, LPCSTR, DWORD, REGSAM, PHKEY, HANDLE, PVOID);
+    using RegCreateKeyTransactedAFunction = LSTATUS(WINAPI*)(
+        HKEY, LPCSTR, DWORD, LPSTR, DWORD, REGSAM,
+        const SECURITY_ATTRIBUTES*, PHKEY, LPDWORD, HANDLE, PVOID);
+    using RegDeleteKeyTransactedAFunction = LSTATUS(WINAPI*)(
+        HKEY, LPCSTR, REGSAM, DWORD, HANDLE, PVOID);
+    const auto reg_open_key_transacted_w = advapi32 == nullptr
+        ? nullptr
+        : reinterpret_cast<RegOpenKeyTransactedWFunction>(
+              GetProcAddress(advapi32, "RegOpenKeyTransactedW"));
+    const auto reg_create_key_transacted_w = advapi32 == nullptr
+        ? nullptr
+        : reinterpret_cast<RegCreateKeyTransactedWFunction>(
+              GetProcAddress(advapi32, "RegCreateKeyTransactedW"));
+    const auto reg_delete_key_transacted_w = advapi32 == nullptr
+        ? nullptr
+        : reinterpret_cast<RegDeleteKeyTransactedWFunction>(
+              GetProcAddress(advapi32, "RegDeleteKeyTransactedW"));
+    const auto reg_open_key_transacted_a = advapi32 == nullptr
+        ? nullptr
+        : reinterpret_cast<RegOpenKeyTransactedAFunction>(
+              GetProcAddress(advapi32, "RegOpenKeyTransactedA"));
+    const auto reg_create_key_transacted_a = advapi32 == nullptr
+        ? nullptr
+        : reinterpret_cast<RegCreateKeyTransactedAFunction>(
+              GetProcAddress(advapi32, "RegCreateKeyTransactedA"));
+    const auto reg_delete_key_transacted_a = advapi32 == nullptr
+        ? nullptr
+        : reinterpret_cast<RegDeleteKeyTransactedAFunction>(
+              GetProcAddress(advapi32, "RegDeleteKeyTransactedA"));
+    const HANDLE invalid_transaction = INVALID_HANDLE_VALUE;
+    HKEY transacted_open_key = reinterpret_cast<HKEY>(
+        static_cast<std::uintptr_t>(1));
+    const LSTATUS transacted_open_status =
+        reg_open_key_transacted_w == nullptr
+        ? ERROR_PROC_NOT_FOUND
+        : reg_open_key_transacted_w(
+              HKEY_CURRENT_USER, allowed.c_str(), 0, KEY_READ,
+              &transacted_open_key, invalid_transaction, nullptr);
+    if (transacted_open_status == ERROR_SUCCESS &&
+        transacted_open_key != nullptr) {
+        RegCloseKey(transacted_open_key);
+    }
+    const std::wstring unsupported_create =
+        root + L"\\Allowed\\UnsupportedCreate";
+    HKEY transacted_create_key = reinterpret_cast<HKEY>(
+        static_cast<std::uintptr_t>(1));
+    DWORD transacted_disposition = 99;
+    const LSTATUS transacted_create_status =
+        reg_create_key_transacted_w == nullptr
+        ? ERROR_PROC_NOT_FOUND
+        : reg_create_key_transacted_w(
+              HKEY_CURRENT_USER, unsupported_create.c_str(), 0, nullptr, 0,
+              KEY_ALL_ACCESS, nullptr, &transacted_create_key,
+              &transacted_disposition, invalid_transaction, nullptr);
+    if (transacted_create_status == ERROR_SUCCESS &&
+        transacted_create_key != nullptr) {
+        RegCloseKey(transacted_create_key);
+    }
+    const LSTATUS transacted_delete_status =
+        reg_delete_key_transacted_w == nullptr
+        ? ERROR_PROC_NOT_FOUND
+        : reg_delete_key_transacted_w(
+              HKEY_CURRENT_USER, allowed.c_str(), 0, 0,
+              invalid_transaction, nullptr);
+    const std::string allowed_a = NarrowAscii(allowed);
+    const std::string unsupported_create_a =
+        NarrowAscii(unsupported_create);
+    HKEY transacted_open_key_a = reinterpret_cast<HKEY>(
+        static_cast<std::uintptr_t>(1));
+    const LSTATUS transacted_open_status_a =
+        reg_open_key_transacted_a == nullptr
+        ? ERROR_PROC_NOT_FOUND
+        : reg_open_key_transacted_a(
+              HKEY_CURRENT_USER, allowed_a.c_str(), 0, KEY_READ,
+              &transacted_open_key_a, invalid_transaction, nullptr);
+    if (transacted_open_status_a == ERROR_SUCCESS &&
+        transacted_open_key_a != nullptr) {
+        RegCloseKey(transacted_open_key_a);
+    }
+    HKEY transacted_create_key_a = reinterpret_cast<HKEY>(
+        static_cast<std::uintptr_t>(1));
+    DWORD transacted_disposition_a = 99;
+    const LSTATUS transacted_create_status_a =
+        reg_create_key_transacted_a == nullptr
+        ? ERROR_PROC_NOT_FOUND
+        : reg_create_key_transacted_a(
+              HKEY_CURRENT_USER, unsupported_create_a.c_str(), 0, nullptr,
+              0, KEY_ALL_ACCESS, nullptr, &transacted_create_key_a,
+              &transacted_disposition_a, invalid_transaction, nullptr);
+    if (transacted_create_status_a == ERROR_SUCCESS &&
+        transacted_create_key_a != nullptr) {
+        RegCloseKey(transacted_create_key_a);
+    }
+    const LSTATUS transacted_delete_status_a =
+        reg_delete_key_transacted_a == nullptr
+        ? ERROR_PROC_NOT_FOUND
+        : reg_delete_key_transacted_a(
+              HKEY_CURRENT_USER, allowed_a.c_str(), 0, 0,
+              invalid_transaction, nullptr);
+
+    using NtOpenKeyTransactedFunction = LONG(NTAPI*)(
+        PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, HANDLE);
+    using NtOpenKeyTransactedExFunction = LONG(NTAPI*)(
+        PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG, HANDLE);
+    using NtCreateKeyTransactedFunction = LONG(NTAPI*)(
+        PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG, PUNICODE_STRING,
+        ULONG, HANDLE, PULONG);
+    const auto nt_open_key_transacted =
+        reinterpret_cast<NtOpenKeyTransactedFunction>(
+            GetProcAddress(ntdll, "NtOpenKeyTransacted"));
+    const auto nt_open_key_transacted_ex =
+        reinterpret_cast<NtOpenKeyTransactedExFunction>(
+            GetProcAddress(ntdll, "NtOpenKeyTransactedEx"));
+    const auto nt_create_key_transacted =
+        reinterpret_cast<NtCreateKeyTransactedFunction>(
+            GetProcAddress(ntdll, "NtCreateKeyTransacted"));
+    HKEY transaction_current_user = nullptr;
+    const LSTATUS transaction_current_user_status =
+        RegOpenCurrentUser(KEY_READ, &transaction_current_user);
+    UNICODE_STRING transacted_allowed_name{};
+    transacted_allowed_name.Buffer = const_cast<PWSTR>(allowed.c_str());
+    transacted_allowed_name.Length = static_cast<USHORT>(
+        allowed.size() * sizeof(wchar_t));
+    transacted_allowed_name.MaximumLength =
+        transacted_allowed_name.Length;
+    OBJECT_ATTRIBUTES transacted_allowed_attributes{};
+    transacted_allowed_attributes.Length =
+        sizeof(transacted_allowed_attributes);
+    transacted_allowed_attributes.RootDirectory =
+        transaction_current_user;
+    transacted_allowed_attributes.ObjectName =
+        &transacted_allowed_name;
+    transacted_allowed_attributes.Attributes = OBJ_CASE_INSENSITIVE;
+    HANDLE native_transacted_open = reinterpret_cast<HANDLE>(
+        static_cast<std::uintptr_t>(1));
+    const LONG native_transacted_open_status =
+        transaction_current_user_status == ERROR_SUCCESS &&
+            nt_open_key_transacted != nullptr
+        ? nt_open_key_transacted(
+              &native_transacted_open, KEY_READ,
+              &transacted_allowed_attributes, invalid_transaction)
+        : 0;
+    if (native_transacted_open_status >= 0 &&
+        native_transacted_open != nullptr) {
+        CloseHandle(native_transacted_open);
+    }
+    HANDLE native_transacted_open_ex = reinterpret_cast<HANDLE>(
+        static_cast<std::uintptr_t>(1));
+    const LONG native_transacted_open_ex_status =
+        transaction_current_user_status == ERROR_SUCCESS &&
+            nt_open_key_transacted_ex != nullptr
+        ? nt_open_key_transacted_ex(
+              &native_transacted_open_ex, KEY_READ,
+              &transacted_allowed_attributes, 0, invalid_transaction)
+        : 0;
+    if (native_transacted_open_ex_status >= 0 &&
+        native_transacted_open_ex != nullptr) {
+        CloseHandle(native_transacted_open_ex);
+    }
+    HANDLE native_transacted_create = reinterpret_cast<HANDLE>(
+        static_cast<std::uintptr_t>(1));
+    ULONG native_transacted_disposition = 99;
+    const LONG native_transacted_create_status =
+        transaction_current_user_status == ERROR_SUCCESS &&
+            nt_create_key_transacted != nullptr
+        ? nt_create_key_transacted(
+              &native_transacted_create, KEY_ALL_ACCESS,
+              &transacted_allowed_attributes, 0, nullptr, 0,
+              invalid_transaction, &native_transacted_disposition)
+        : 0;
+    if (native_transacted_create_status >= 0 &&
+        native_transacted_create != nullptr) {
+        CloseHandle(native_transacted_create);
+    }
+    if (transaction_current_user != nullptr) {
+        RegCloseKey(transaction_current_user);
+    }
+
     if (!value_enumerated || !key_enumerated) {
         return 716;
     }
@@ -894,6 +1125,34 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     }
     if (!inherit_user_allowed) {
         return 706;
+    }
+    if (allowed_a.empty() || unsupported_create_a.empty() ||
+        remote_status != ERROR_ACCESS_DENIED || remote_key != nullptr ||
+        remote_status_a != ERROR_ACCESS_DENIED ||
+        remote_key_a != nullptr ||
+        transacted_open_status != ERROR_ACCESS_DENIED ||
+        transacted_open_key != nullptr ||
+        transacted_create_status != ERROR_ACCESS_DENIED ||
+        transacted_create_key != nullptr ||
+        transacted_disposition != 99 ||
+        transacted_delete_status != ERROR_ACCESS_DENIED ||
+        transacted_open_status_a != ERROR_ACCESS_DENIED ||
+        transacted_open_key_a != nullptr ||
+        transacted_create_status_a != ERROR_ACCESS_DENIED ||
+        transacted_create_key_a != nullptr ||
+        transacted_disposition_a != 99 ||
+        transacted_delete_status_a != ERROR_ACCESS_DENIED ||
+        native_transacted_open_status !=
+            static_cast<LONG>(0xC0000022L) ||
+        native_transacted_open != nullptr ||
+        native_transacted_open_ex_status !=
+            static_cast<LONG>(0xC0000022L) ||
+        native_transacted_open_ex != nullptr ||
+        native_transacted_create_status !=
+            static_cast<LONG>(0xC0000022L) ||
+        native_transacted_create != nullptr ||
+        native_transacted_disposition != 99) {
+        return 723;
     }
     const HMODULE hook = GetModuleHandleW(
 #if defined(_WIN64)
@@ -1142,6 +1401,28 @@ bool RunRegistryHookTests() {
          CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
         {bolt::protocol::RegistryOperation::kOpen,
          CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
+        {bolt::protocol::RegistryOperation::kUnsupportedRemote,
+         "HKEY_REMOTE"},
+        {bolt::protocol::RegistryOperation::kUnsupportedRemote,
+         "HKEY_REMOTE"},
+        {bolt::protocol::RegistryOperation::kUnsupportedTransactional,
+         "HKEY_TRANSACTIONAL"},
+        {bolt::protocol::RegistryOperation::kUnsupportedTransactional,
+         "HKEY_TRANSACTIONAL"},
+        {bolt::protocol::RegistryOperation::kUnsupportedTransactional,
+         "HKEY_TRANSACTIONAL"},
+        {bolt::protocol::RegistryOperation::kUnsupportedTransactional,
+         "HKEY_TRANSACTIONAL"},
+        {bolt::protocol::RegistryOperation::kUnsupportedTransactional,
+         "HKEY_TRANSACTIONAL"},
+        {bolt::protocol::RegistryOperation::kUnsupportedTransactional,
+         "HKEY_TRANSACTIONAL"},
+        {bolt::protocol::RegistryOperation::kUnsupportedTransactional,
+         "HKEY_TRANSACTIONAL"},
+        {bolt::protocol::RegistryOperation::kUnsupportedTransactional,
+         "HKEY_TRANSACTIONAL"},
+        {bolt::protocol::RegistryOperation::kUnsupportedTransactional,
+         "HKEY_TRANSACTIONAL"},
     };
     bool events_passed = child_passed && child_process_id != 0;
     for (std::size_t index = 0;
@@ -1168,8 +1449,11 @@ bool RunRegistryHookTests() {
         KeyMissing(root + L"\\Broad\\RenamedSensitive") &&
         ValueEquals(root + L"\\Allowed", L"Changed", L"changed") &&
         KeyMissing(root + L"\\Allowed\\Renamed");
+    const bool unsupported_side_effects_absent =
+        KeyMissing(root + L"\\Allowed\\UnsupportedCreate");
     const bool passed =
-        child_passed && events_passed && no_extra_events && side_effects_ok;
+        child_passed && events_passed && no_extra_events && side_effects_ok &&
+        unsupported_side_effects_absent;
     if (!passed) {
         std::fprintf(
             stderr,

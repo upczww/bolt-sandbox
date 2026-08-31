@@ -239,6 +239,20 @@ bool RunEventFrameTests() {
             bolt::protocol::FrameEncodeStatus::kInvalidOperation) {
         return false;
     }
+    for (const auto operation : {
+             bolt::protocol::RegistryOperation::kUnsupportedRemote,
+             bolt::protocol::RegistryOperation::kUnsupportedTransactional}) {
+        registry_written = 0;
+        if (bolt::protocol::EncodeRegistryViolationFrame(
+                1, operation, registry_key, 1, registry_frame.data(),
+                registry_frame.size(), registry_written) !=
+                bolt::protocol::FrameEncodeStatus::kSuccess ||
+            registry_written != registry_frame.size() ||
+            registry_frame[28] !=
+                static_cast<std::uint8_t>(operation)) {
+            return false;
+        }
+    }
 
     std::array<std::uint8_t, bolt::protocol::kEventsDroppedFrameLength>
         dropped_frame{};
