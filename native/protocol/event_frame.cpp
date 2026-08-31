@@ -4,6 +4,9 @@
 
 #include <algorithm>
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 namespace bolt::protocol {
 namespace {
 
@@ -15,6 +18,7 @@ constexpr std::size_t kSequenceOffset = 12;
 constexpr std::size_t kChecksumOffset = 20;
 constexpr std::uint16_t kReadyKind = 1;
 constexpr std::uint16_t kFilesystemViolationKind = 2;
+constexpr std::uint16_t kRegistryViolationKind = 3;
 constexpr std::uint16_t kNetworkViolationKind = 4;
 constexpr std::uint16_t kProcessViolationKind = 8;
 constexpr std::uint16_t kEventsDroppedKind = 9;
@@ -25,6 +29,10 @@ constexpr std::size_t kFilesystemPathOffset = kFilesystemPathLengthOffset + 4;
 constexpr std::size_t kProcessViolationProcessIdOffset = kEventHeaderLength;
 constexpr std::size_t kProcessViolationOperationOffset =
     kProcessViolationProcessIdOffset + 4;
+constexpr std::size_t kRegistryProcessIdOffset = kEventHeaderLength;
+constexpr std::size_t kRegistryOperationOffset = kRegistryProcessIdOffset + 4;
+constexpr std::size_t kRegistryKeyLengthOffset = kRegistryOperationOffset + 1;
+constexpr std::size_t kRegistryKeyOffset = kRegistryKeyLengthOffset + 4;
 constexpr std::size_t kNetworkProcessIdOffset = kEventHeaderLength;
 constexpr std::size_t kNetworkOperationOffset = kNetworkProcessIdOffset + 4;
 constexpr std::size_t kNetworkFamilyOffset = kNetworkOperationOffset + 1;
@@ -99,6 +107,14 @@ bool NonceMatches(
         difference |= actual[index] ^ expected[index];
     }
     return difference == 0;
+}
+
+bool IsValidUtf8(const char* const text, const std::size_t length) noexcept {
+    return text != nullptr && length != 0 &&
+           length <= static_cast<std::size_t>(INT_MAX) &&
+           MultiByteToWideChar(
+               CP_UTF8, MB_ERR_INVALID_CHARS, text,
+               static_cast<int>(length), nullptr, 0) > 0;
 }
 
 }  // namespace
@@ -235,6 +251,63 @@ FrameEncodeStatus EncodeProcessViolationFrame(
     output[kProcessViolationOperationOffset] = operation_value;
     RewriteFrameChecksum(output, kProcessViolationFrameLength);
     written = kProcessViolationFrameLength;
+    return FrameEncodeStatus::kSuccess;
+}
+
+std::size_t RegistryViolationFrameLength(const char* const key) noexcept {
+    if (key == nullptr) {
+        return 0;
+    }
+    std::size_t length = 0;
+    while (length <= 4'096 && key[length] != '\0') {
+        ++length;
+    }
+    return length != 0 && length <= 4'096 && IsValidUtf8(key, length)
+               ? kRegistryKeyOffset + length
+               : 0;
+}
+
+FrameEncodeStatus EncodeRegistryViolationFrame(
+    const std::uint32_t process_id,
+    const RegistryOperation operation,
+    const char* const key,
+    const std::uint64_t sequence,
+    std::uint8_t* const output,
+    const std::size_t capacity,
+    std::size_t& written) noexcept {
+    written = 0;
+    if (output == nullptr) {
+        return FrameEncodeStatus::kInvalidArgument;
+    }
+    const auto operation_value = static_cast<std::uint8_t>(operation);
+    if (operation_value >
+        static_cast<std::uint8_t>(RegistryOperation::kRename)) {
+        return FrameEncodeStatus::kInvalidOperation;
+    }
+    const std::size_t frame_length = RegistryViolationFrameLength(key);
+    if (frame_length == 0) {
+        return FrameEncodeStatus::kInvalidRegistryKey;
+    }
+    if (capacity < frame_length) {
+        return FrameEncodeStatus::kInsufficientBuffer;
+    }
+    const std::size_t key_length = frame_length - kRegistryKeyOffset;
+    std::fill_n(output, frame_length, std::uint8_t{0});
+    std::copy(kMagic.begin(), kMagic.end(), output);
+    WriteU16(output, kVersionOffset, kProtocolVersion);
+    WriteU16(output, kKindOffset, kRegistryViolationKind);
+    WriteU32(
+        output, kLengthOffset,
+        static_cast<std::uint32_t>(frame_length - kEventHeaderLength));
+    WriteU64(output, kSequenceOffset, sequence);
+    WriteU32(output, kRegistryProcessIdOffset, process_id);
+    output[kRegistryOperationOffset] = operation_value;
+    WriteU32(
+        output, kRegistryKeyLengthOffset,
+        static_cast<std::uint32_t>(key_length));
+    std::copy_n(key, key_length, output + kRegistryKeyOffset);
+    RewriteFrameChecksum(output, frame_length);
+    written = frame_length;
     return FrameEncodeStatus::kSuccess;
 }
 

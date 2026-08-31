@@ -69,6 +69,7 @@ enum class FrameEncodeStatus : std::uint8_t {
     kInvalidPath,
     kInvalidAddress,
     kInvalidDomain,
+    kInvalidRegistryKey,
     kInsufficientBuffer,
 };
 

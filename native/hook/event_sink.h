@@ -34,6 +34,10 @@ bool TryReportFilesystemViolation(
 
 bool TryReportProcessViolation(protocol::ProcessOperation operation) noexcept;
 
+bool TryReportRegistryViolation(
+    protocol::RegistryOperation operation,
+    const char* key) noexcept;
+
 bool TryReportNetworkViolation(
     protocol::NetworkOperation operation,
     const protocol::NetworkEndpoint& endpoint) noexcept;

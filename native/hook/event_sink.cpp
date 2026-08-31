@@ -15,6 +15,7 @@ constexpr std::size_t kMaximumFrameLength =
 enum class EventRecordKind : std::uint8_t {
     kFilesystem,
     kProcess,
+    kRegistry,
     kNetwork,
     kNetworkDomain,
 };
@@ -25,10 +26,13 @@ struct EventRecord {
     protocol::FilesystemOperation operation = protocol::FilesystemOperation::kRead;
     protocol::ProcessOperation process_operation =
         protocol::ProcessOperation::kCreateWithToken;
+    protocol::RegistryOperation registry_operation =
+        protocol::RegistryOperation::kOpen;
     protocol::NetworkOperation network_operation =
         protocol::NetworkOperation::kConnect;
     protocol::NetworkEndpoint network_endpoint{};
     char domain[protocol::kMaximumEventDomainBytes + 1U]{};
+    char registry_key[4'097]{};
     std::uint64_t sequence = 0;
     std::size_t path_length = 0;
     wchar_t path[protocol::kMaximumEventPathCodeUnits + 1U]{};
@@ -132,6 +136,13 @@ DWORD WINAPI EventWriterThread(LPVOID parameter) noexcept {
                             queued->process_id, queued->process_operation,
                             queued->sequence, g_state.frame_buffer,
                             kMaximumFrameLength, frame_length);
+                        break;
+                    case EventRecordKind::kRegistry:
+                        encode_status = protocol::EncodeRegistryViolationFrame(
+                            queued->process_id, queued->registry_operation,
+                            queued->registry_key, queued->sequence,
+                            g_state.frame_buffer, kMaximumFrameLength,
+                            frame_length);
                         break;
                     case EventRecordKind::kNetwork:
                         encode_status = protocol::EncodeNetworkViolationFrame(
@@ -316,6 +327,40 @@ bool TryReportProcessViolation(
     record.process_id = GetCurrentProcessId();
     record.process_operation = operation;
     record.sequence = g_state.next_sequence++;
+    record.path_length = 0;
+    record.path[0] = L'\0';
+    g_state.tail = (g_state.tail + 1U) % kQueueCapacity;
+    ++g_state.count;
+    ResetEvent(g_state.idle_event);
+    LeaveCriticalSection(&g_state.lock);
+    SetEvent(g_state.wake_event);
+    return true;
+}
+
+bool TryReportRegistryViolation(
+    const protocol::RegistryOperation operation,
+    const char* const key) noexcept {
+    if (InterlockedCompareExchange(&g_state.initialization_state, 1, 1) != 1 ||
+        InterlockedCompareExchange(&g_state.writer_failed, 0, 0) != 0 ||
+        protocol::RegistryViolationFrameLength(key) == 0) {
+        return false;
+    }
+    std::size_t key_length = 0;
+    while (key[key_length] != '\0') {
+        ++key_length;
+    }
+    EnterCriticalSection(&g_state.lock);
+    if (g_state.count == kQueueCapacity) {
+        RecordDroppedEvent();
+        LeaveCriticalSection(&g_state.lock);
+        return false;
+    }
+    EventRecord& record = g_state.records[g_state.tail];
+    record.kind = EventRecordKind::kRegistry;
+    record.process_id = GetCurrentProcessId();
+    record.registry_operation = operation;
+    record.sequence = g_state.next_sequence++;
+    std::copy_n(key, key_length + 1U, record.registry_key);
     record.path_length = 0;
     record.path[0] = L'\0';
     g_state.tail = (g_state.tail + 1U) % kQueueCapacity;
