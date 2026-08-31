@@ -13,8 +13,10 @@
 #include <cstring>
 #include <cwchar>
 #include <array>
+#include <atomic>
 #include <filesystem>
 #include <memory>
+#include <new>
 #include <string>
 #include <utility>
 
@@ -22,6 +24,7 @@
 #include <windows.h>
 #include <winioctl.h>
 #include <shellapi.h>
+#include <shobjidl.h>
 
 #include <detours.h>
 
@@ -29,7 +32,7 @@ namespace bolt::filesystem {
 namespace {
 
 std::unique_ptr<FilesystemPolicy> g_policy;
-constexpr LONG kRequiredFilesystemHookCount = 75;
+constexpr LONG kRequiredFilesystemHookCount = 76;
 volatile LONG g_installed_file_hook_count = 0;
 
 CreateFileW_t g_create_file_w = CreateFileW;
@@ -196,6 +199,7 @@ using SHFileOperationWFunction = int(WINAPI*)(LPSHFILEOPSTRUCTW);
 using SHFileOperationAFunction = int(WINAPI*)(LPSHFILEOPSTRUCTA);
 SHFileOperationWFunction g_sh_file_operation_w = SHFileOperationW;
 SHFileOperationAFunction g_sh_file_operation_a = SHFileOperationA;
+decltype(&CoCreateInstance) g_co_create_instance = CoCreateInstance;
 using ReadFileFunction = BOOL(WINAPI*)(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
 using WriteFileFunction = BOOL(WINAPI*)(
     HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);
@@ -1528,6 +1532,332 @@ bool AuthorizeShellTransfer(
         }
     }
     return true;
+}
+
+bool ShellItemPath(IShellItem* const item, std::wstring& path) noexcept {
+    path.clear();
+    if (item == nullptr) {
+        return false;
+    }
+    PWSTR raw_path = nullptr;
+    const HRESULT status = item->GetDisplayName(SIGDN_FILESYSPATH, &raw_path);
+    if (FAILED(status) || raw_path == nullptr) {
+        CoTaskMemFree(raw_path);
+        return false;
+    }
+    try {
+        path.assign(raw_path);
+    } catch (...) {
+        CoTaskMemFree(raw_path);
+        return false;
+    }
+    CoTaskMemFree(raw_path);
+    return !path.empty();
+}
+
+bool ShellDestinationPath(
+    IShellItem* const source,
+    IShellItem* const destination_folder,
+    const wchar_t* const requested_name,
+    std::wstring& source_path,
+    std::wstring& destination_path) noexcept {
+    std::wstring folder_path;
+    if (!ShellItemPath(source, source_path) ||
+        !ShellItemPath(destination_folder, folder_path)) {
+        return false;
+    }
+    try {
+        std::filesystem::path destination(folder_path);
+        destination /= requested_name != nullptr && *requested_name != L'\0'
+                           ? requested_name
+                           : std::filesystem::path(source_path).filename();
+        destination_path = destination.wstring();
+    } catch (...) {
+        return false;
+    }
+    return !destination_path.empty();
+}
+
+bool AuthorizeIFileOperationCopy(
+    IShellItem* const source,
+    IShellItem* const destination_folder,
+    const wchar_t* const requested_name) noexcept {
+    DetouredScope scope;
+    std::wstring source_path;
+    std::wstring destination_path;
+    return ShellDestinationPath(
+               source, destination_folder, requested_name, source_path,
+               destination_path) &&
+           AuthorizeCopy(source_path.c_str(), destination_path.c_str());
+}
+
+bool AuthorizeIFileOperationMove(
+    IShellItem* const source,
+    IShellItem* const destination_folder,
+    const wchar_t* const requested_name) noexcept {
+    DetouredScope scope;
+    std::wstring source_path;
+    std::wstring destination_path;
+    return ShellDestinationPath(
+               source, destination_folder, requested_name, source_path,
+               destination_path) &&
+           AuthorizeMove(source_path.c_str(), destination_path.c_str());
+}
+
+bool AuthorizeIFileOperationRename(
+    IShellItem* const item,
+    const wchar_t* const requested_name) noexcept {
+    DetouredScope scope;
+    std::wstring source_path;
+    if (requested_name == nullptr || *requested_name == L'\0' ||
+        !ShellItemPath(item, source_path)) {
+        return false;
+    }
+    try {
+        const std::wstring destination_path =
+            (std::filesystem::path(source_path).parent_path() / requested_name)
+                .wstring();
+        return AuthorizeMove(source_path.c_str(), destination_path.c_str());
+    } catch (...) {
+        return false;
+    }
+}
+
+bool AuthorizeIFileOperationDelete(IShellItem* const item) noexcept {
+    DetouredScope scope;
+    std::wstring path;
+    return ShellItemPath(item, path) && AuthorizeDeletion(path.c_str());
+}
+
+bool AuthorizeIFileOperationNew(
+    IShellItem* const destination_folder,
+    const wchar_t* const requested_name) noexcept {
+    DetouredScope scope;
+    std::wstring folder_path;
+    if (requested_name == nullptr || *requested_name == L'\0' ||
+        !ShellItemPath(destination_folder, folder_path) || g_policy == nullptr) {
+        return false;
+    }
+    try {
+        const std::wstring path =
+            (std::filesystem::path(folder_path) / requested_name).wstring();
+        const auto evaluation = g_policy->Evaluate(path.c_str(), Access::kWrite);
+        if (evaluation.decision == Decision::kDeny) {
+            ReportDenied(
+                protocol::FilesystemOperation::kCreate,
+                EvaluatedPath(evaluation, path.c_str()));
+            SetLastError(ERROR_ACCESS_DENIED);
+            return false;
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+HRESULT DeniedFileOperation() noexcept {
+    SetLastError(ERROR_ACCESS_DENIED);
+    return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+}
+
+class SandboxedFileOperation final : public IFileOperation {
+  public:
+    explicit SandboxedFileOperation(IFileOperation* const inner) noexcept
+        : inner_(inner) {}
+
+    SandboxedFileOperation(const SandboxedFileOperation&) = delete;
+    SandboxedFileOperation& operator=(const SandboxedFileOperation&) = delete;
+    SandboxedFileOperation(SandboxedFileOperation&&) = delete;
+    SandboxedFileOperation& operator=(SandboxedFileOperation&&) = delete;
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(
+        const IID& interface_id,
+        void** const output) override {
+        if (output == nullptr) {
+            return E_POINTER;
+        }
+        *output = nullptr;
+        if (IsEqualIID(interface_id, IID_IUnknown) ||
+            IsEqualIID(interface_id, IID_IFileOperation)) {
+            *output = static_cast<IFileOperation*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return references_.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        const ULONG remaining =
+            references_.fetch_sub(1, std::memory_order_acq_rel) - 1;
+        if (remaining == 0) {
+            delete this;
+        }
+        return remaining;
+    }
+
+    HRESULT STDMETHODCALLTYPE Advise(
+        IFileOperationProgressSink* const sink,
+        DWORD* const cookie) override {
+        return inner_->Advise(sink, cookie);
+    }
+    HRESULT STDMETHODCALLTYPE Unadvise(const DWORD cookie) override {
+        return inner_->Unadvise(cookie);
+    }
+    HRESULT STDMETHODCALLTYPE SetOperationFlags(const DWORD flags) override {
+        return inner_->SetOperationFlags(flags);
+    }
+    HRESULT STDMETHODCALLTYPE SetProgressMessage(const LPCWSTR message) override {
+        return inner_->SetProgressMessage(message);
+    }
+    HRESULT STDMETHODCALLTYPE SetProgressDialog(
+        IOperationsProgressDialog* const dialog) override {
+        return inner_->SetProgressDialog(dialog);
+    }
+    HRESULT STDMETHODCALLTYPE SetProperties(
+        IPropertyChangeArray* const properties) override {
+        return inner_->SetProperties(properties);
+    }
+    HRESULT STDMETHODCALLTYPE SetOwnerWindow(const HWND owner) override {
+        return inner_->SetOwnerWindow(owner);
+    }
+    HRESULT STDMETHODCALLTYPE ApplyPropertiesToItem(IShellItem* const item) override {
+        return inner_->ApplyPropertiesToItem(item);
+    }
+    HRESULT STDMETHODCALLTYPE ApplyPropertiesToItems(IUnknown* const items) override {
+        return inner_->ApplyPropertiesToItems(items);
+    }
+
+    HRESULT STDMETHODCALLTYPE RenameItem(
+        IShellItem* const item,
+        const LPCWSTR new_name,
+        IFileOperationProgressSink* const sink) override {
+        return AuthorizeIFileOperationRename(item, new_name)
+                   ? inner_->RenameItem(item, new_name, sink)
+                   : DeniedFileOperation();
+    }
+    HRESULT STDMETHODCALLTYPE RenameItems(
+        IUnknown* const items,
+        const LPCWSTR new_name) override {
+        static_cast<void>(items);
+        static_cast<void>(new_name);
+        return DeniedFileOperation();
+    }
+    HRESULT STDMETHODCALLTYPE MoveItem(
+        IShellItem* const item,
+        IShellItem* const destination_folder,
+        const LPCWSTR new_name,
+        IFileOperationProgressSink* const sink) override {
+        return AuthorizeIFileOperationMove(item, destination_folder, new_name)
+                   ? inner_->MoveItem(item, destination_folder, new_name, sink)
+                   : DeniedFileOperation();
+    }
+    HRESULT STDMETHODCALLTYPE MoveItems(
+        IUnknown* const items,
+        IShellItem* const destination_folder) override {
+        static_cast<void>(items);
+        static_cast<void>(destination_folder);
+        return DeniedFileOperation();
+    }
+    HRESULT STDMETHODCALLTYPE CopyItem(
+        IShellItem* const item,
+        IShellItem* const destination_folder,
+        const LPCWSTR copy_name,
+        IFileOperationProgressSink* const sink) override {
+        return AuthorizeIFileOperationCopy(item, destination_folder, copy_name)
+                   ? inner_->CopyItem(item, destination_folder, copy_name, sink)
+                   : DeniedFileOperation();
+    }
+    HRESULT STDMETHODCALLTYPE CopyItems(
+        IUnknown* const items,
+        IShellItem* const destination_folder) override {
+        static_cast<void>(items);
+        static_cast<void>(destination_folder);
+        return DeniedFileOperation();
+    }
+    HRESULT STDMETHODCALLTYPE DeleteItem(
+        IShellItem* const item,
+        IFileOperationProgressSink* const sink) override {
+        return AuthorizeIFileOperationDelete(item)
+                   ? inner_->DeleteItem(item, sink)
+                   : DeniedFileOperation();
+    }
+    HRESULT STDMETHODCALLTYPE DeleteItems(IUnknown* const items) override {
+        static_cast<void>(items);
+        return DeniedFileOperation();
+    }
+    HRESULT STDMETHODCALLTYPE NewItem(
+        IShellItem* const destination_folder,
+        const DWORD file_attributes,
+        const LPCWSTR name,
+        const LPCWSTR template_name,
+        IFileOperationProgressSink* const sink) override {
+        return AuthorizeIFileOperationNew(destination_folder, name)
+                   ? inner_->NewItem(
+                         destination_folder, file_attributes, name, template_name,
+                         sink)
+                   : DeniedFileOperation();
+    }
+    HRESULT STDMETHODCALLTYPE PerformOperations() override {
+        return inner_->PerformOperations();
+    }
+    HRESULT STDMETHODCALLTYPE GetAnyOperationsAborted(BOOL* const aborted) override {
+        return inner_->GetAnyOperationsAborted(aborted);
+    }
+
+  private:
+    ~SandboxedFileOperation() noexcept {
+        inner_->Release();
+    }
+
+    std::atomic<ULONG> references_{1};
+    IFileOperation* const inner_;
+};
+
+HRESULT WINAPI DetouredCoCreateInstance(
+    REFCLSID class_id,
+    IUnknown* const outer,
+    const DWORD context,
+    REFIID interface_id,
+    void** const output) noexcept {
+    const HRESULT status =
+        g_co_create_instance(class_id, outer, context, interface_id, output);
+    if (FAILED(status) || output == nullptr || *output == nullptr ||
+        !IsEqualCLSID(class_id, CLSID_FileOperation)) {
+        return status;
+    }
+    if (outer != nullptr ||
+        (!IsEqualIID(interface_id, IID_IFileOperation) &&
+         !IsEqualIID(interface_id, IID_IUnknown))) {
+        static_cast<IUnknown*>(*output)->Release();
+        *output = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    IFileOperation* inner = nullptr;
+    if (IsEqualIID(interface_id, IID_IFileOperation)) {
+        inner = static_cast<IFileOperation*>(*output);
+    } else {
+        auto* const unknown = static_cast<IUnknown*>(*output);
+        const HRESULT query_status = unknown->QueryInterface(
+            IID_IFileOperation, reinterpret_cast<void**>(&inner));
+        unknown->Release();
+        if (FAILED(query_status) || inner == nullptr) {
+            *output = nullptr;
+            return FAILED(query_status) ? query_status : E_NOINTERFACE;
+        }
+    }
+    auto* const wrapped = new (std::nothrow) SandboxedFileOperation(inner);
+    if (wrapped == nullptr) {
+        inner->Release();
+        *output = nullptr;
+        return E_OUTOFMEMORY;
+    }
+    *output = static_cast<IFileOperation*>(wrapped);
+    return S_OK;
 }
 
 HANDLE WINAPI DetouredFindFirstFileW(
@@ -3606,6 +3936,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_sh_file_operation_a),
             reinterpret_cast<PVOID>(DetouredSHFileOperationA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_co_create_instance),
+            reinterpret_cast<PVOID>(DetouredCoCreateInstance)) != NO_ERROR ||
         (g_copy_file_2 != nullptr &&
          DetourAttach(
              reinterpret_cast<PVOID*>(&g_copy_file_2),

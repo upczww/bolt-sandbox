@@ -56,7 +56,7 @@ foreach ($hook in $hooks) {
     if (-not $symbols.Add([string]$hook.symbol)) {
         throw "Duplicate filesystem hook symbol: $($hook.symbol)"
     }
-    if ($hook.module -notmatch '^(advapi32|kernel32|ntdll|shell32)\.dll$') {
+    if ($hook.module -notmatch '^(advapi32|kernel32|ntdll|ole32|shell32)\.dll$') {
         throw "Unexpected filesystem hook module: $($hook.module)"
     }
     $hookArchitectures = if ($null -eq $hook.architectures) {

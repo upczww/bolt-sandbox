@@ -129,14 +129,21 @@ rename similarly preflight the complete source/destination lists, including
 funnels before allowing any Shell side effect.
 
 Explorer-compatible `IFileOperation` copy, move, rename, and delete are covered
-by injected x86/x64 integration probes. Windows Shell reaches the existing
-CreateFile, copy, move, handle-write, and delete funnels, so Bolt does not add a
-parallel COM hook. Allowed operations complete, read-only destinations and
-sources retain their original state, and every emitted frame remains bounded,
-checksummed, ordered, process-attributed, and classified by the first denying
-filesystem seam. Shell may also attempt cache and recent-item maintenance; those
-out-of-policy side effects remain denied and auditable rather than being granted
-as hidden compatibility exceptions.
+by injected x86/x64 integration probes. A thin `CoCreateInstance` adapter wraps
+the SDK-defined `CLSID_FileOperation` interface and sends singular operations
+through the existing BuildXL-derived copy, move, and delete authorization
+funnels before Shell queues them. This is not a parallel policy implementation:
+allowed requests are forwarded to the native COM object and the lower
+CreateFile, copy, move, handle-write, and delete hooks remain active as TOCTOU
+backstops. Unresolvable interfaces and collection operations fail closed.
+
+The adapter is required because Windows Shell can retry a low-level access
+denial indefinitely. Queue-time denial returns immediately instead, while
+read-only destinations and sources retain their original state and every emitted
+frame remains bounded, checksummed, ordered, process-attributed, and classified
+by the first denying filesystem seam. Shell may also attempt cache and
+recent-item maintenance; those out-of-policy side effects remain denied and
+auditable rather than being granted as hidden compatibility exceptions.
 
 Startup handle inheritance is constrained by the launcher's explicit
 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`: an ambient inheritable file object that is

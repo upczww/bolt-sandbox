@@ -3,6 +3,7 @@
 #include "common/private_pipe.h"
 #include "common/suspended_process.h"
 #include "protocol/event_frame.h"
+#include "protocol/version.h"
 #include "tests/policy_fixture.h"
 
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
@@ -25,8 +27,9 @@
 
 namespace {
 
-constexpr FILEOP_FLAGS kFileOperationFlags =
-    FOF_NOCONFIRMATION | FOF_NOCONFIRMMKDIR | FOF_NOERRORUI | FOF_SILENT;
+constexpr DWORD kFileOperationFlags =
+    FOF_NOCONFIRMATION | FOF_NOCONFIRMMKDIR | FOF_NOERRORUI | FOF_SILENT |
+    FOFX_EARLYFAILURE | FOFX_NOCOPYHOOKS;
 
 enum class ShellOperation {
     kCopy,
@@ -141,15 +144,15 @@ std::filesystem::path LongDeniedPath(
     return path;
 }
 
-class ComApartment final {
+class ProcessLifetimeComApartment final {
   public:
-    ComApartment() : status_(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
+    ProcessLifetimeComApartment()
+        : status_(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
 
-    ~ComApartment() {
-        if (SUCCEEDED(status_)) {
-            CoUninitialize();
-        }
-    }
+    // This dedicated fixture exits immediately after its COM work. Windows
+    // reclaims the apartment during process termination; explicit teardown can
+    // wait indefinitely for Shell callbacks while the sandbox hooks are active.
+    ~ProcessLifetimeComApartment() = default;
 
     bool initialized() const {
         return SUCCEEDED(status_);
@@ -270,6 +273,7 @@ bool ReadFilesystemViolations(
     std::vector<FilesystemViolation>& violations) {
     violations.clear();
     std::uint64_t expected_sequence = 1;
+    bool no_dropped_events = true;
     for (;;) {
         std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
         DWORD first_read = 0;
@@ -279,7 +283,7 @@ bool ReadFilesystemViolations(
         if (!header_read) {
             const DWORD error = GetLastError();
             if (error == ERROR_BROKEN_PIPE) {
-                return !violations.empty();
+                return !violations.empty() && no_dropped_events;
             }
             if (error != ERROR_MORE_DATA || first_read != header.size()) {
                 std::fprintf(
@@ -298,8 +302,14 @@ bool ReadFilesystemViolations(
             return false;
         }
 
+        const std::uint16_t kind = ReadU16(header.data() + 6);
         const std::size_t payload_length = ReadU32(header.data() + 8);
-        if (ReadU16(header.data() + 6) != 2 || payload_length < 9 ||
+        const bool known_kind =
+            kind == 2 || kind == 3 || kind == 4 || kind == 8 || kind == 9;
+        if (header[0] != 'B' || header[1] != 'L' || header[2] != 'T' ||
+            header[3] != '1' ||
+            ReadU16(header.data() + 4) != bolt::protocol::kProtocolVersion ||
+            !known_kind || payload_length < 5 ||
             payload_length > 9 +
                                  bolt::protocol::kMaximumEventPathCodeUnits *
                                      sizeof(wchar_t) ||
@@ -307,7 +317,7 @@ bool ReadFilesystemViolations(
             std::fprintf(
                 stderr,
                 "event header invalid: kind=%u payload=%zu sequence=%llu expected=%llu\n",
-                static_cast<unsigned>(ReadU16(header.data() + 6)), payload_length,
+                static_cast<unsigned>(kind), payload_length,
                 static_cast<unsigned long long>(ReadU64(header.data() + 12)),
                 static_cast<unsigned long long>(expected_sequence));
             return false;
@@ -316,11 +326,33 @@ bool ReadFilesystemViolations(
         std::copy(header.begin(), header.end(), frame.begin());
         if (!ReadExact(
                 event_pipe, frame.data() + header.size(), payload_length) ||
-            ReadU32(frame.data() + 24) != process_id || frame[28] > 6) {
+            ReadU32(frame.data() + 24) != process_id) {
             std::fprintf(
                 stderr, "event payload read failed: payload=%zu sequence=%llu\n",
                 payload_length,
                 static_cast<unsigned long long>(expected_sequence));
+            return false;
+        }
+        std::vector<std::uint8_t> checksum_frame = frame;
+        bolt::protocol::RewriteFrameChecksum(
+            checksum_frame.data(), checksum_frame.size());
+        if (checksum_frame != frame) {
+            std::fprintf(
+                stderr, "event checksum mismatch: sequence=%llu\n",
+                static_cast<unsigned long long>(expected_sequence));
+            return false;
+        }
+        if (kind == 9) {
+            no_dropped_events = false;
+        }
+        if (kind != 2) {
+            ++expected_sequence;
+            continue;
+        }
+        if (payload_length < 9 || frame[28] > 6) {
+            std::fprintf(
+                stderr, "filesystem event payload invalid: payload=%zu\n",
+                payload_length);
             return false;
         }
         const std::size_t path_length = ReadU32(frame.data() + 29);
@@ -346,7 +378,7 @@ bool ReadFilesystemViolations(
                 bolt::protocol::FrameEncodeStatus::kSuccess ||
             written != expected.size() || expected != frame) {
             std::fprintf(
-                stderr, "event checksum mismatch: sequence=%llu\n",
+                stderr, "filesystem event encoding mismatch: sequence=%llu\n",
                 static_cast<unsigned long long>(expected_sequence));
             return false;
         }
@@ -438,15 +470,19 @@ int RunShellFileOperationChild(
     if (argument_count != 15) {
         return 240;
     }
-    ComApartment apartment;
+    const auto completion = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[12], nullptr, 10));
+    ProcessLifetimeComApartment apartment;
     if (!apartment.initialized()) {
         return 241;
     }
 
     if (!RunFileOperation(
             ShellOperation::kCopy, arguments[2], arguments[3],
-            L"allowed-copy.txt", true) ||
-        !RunFileOperation(
+            L"allowed-copy.txt", true)) {
+        return 242;
+    }
+    if (!RunFileOperation(
             ShellOperation::kMove, arguments[4], arguments[3],
             L"allowed-move.txt", true) ||
         !RunFileOperation(
@@ -499,9 +535,7 @@ int RunShellFileOperationChild(
         return 246;
     }
 
-    const auto release = reinterpret_cast<HANDLE>(
-        _wcstoui64(arguments[12], nullptr, 10));
-    return SetEvent(release) ? 0 : 244;
+    return SetEvent(completion) ? 0 : 244;
 }
 
 bool RunShellFileOperationTests() {
@@ -562,10 +596,11 @@ bool RunShellFileOperationTests() {
     inheritable.nLength = sizeof(inheritable);
     inheritable.bInheritHandle = TRUE;
     const HANDLE release = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const HANDLE completion = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
     bolt::common::ImmutablePolicyMapping policy;
     bolt::common::PrivatePipe event_pipe;
     const std::wstring pipe_name = PipeName(GetCurrentProcessId());
-    if (release == nullptr || policy_payload.empty() ||
+    if (release == nullptr || completion == nullptr || policy_payload.empty() ||
         bolt::common::ImmutablePolicyMapping::Create(
             policy_payload.data(), policy_payload.size(), policy) !=
             bolt::common::PolicyMappingStatus::kSuccess ||
@@ -574,6 +609,9 @@ bool RunShellFileOperationTests() {
         std::fprintf(stderr, "IFileOperation fixture: runtime resource setup failed\n");
         if (release != nullptr) {
             CloseHandle(release);
+        }
+        if (completion != nullptr) {
+            CloseHandle(completion);
         }
         std::filesystem::remove_all(test_root, error);
         return false;
@@ -586,6 +624,7 @@ bool RunShellFileOperationTests() {
         event_pipe.Accept() != bolt::common::PipeStatus::kSuccess) {
         std::fprintf(stderr, "IFileOperation fixture: event pipe connection failed\n");
         CloseHandle(release);
+        CloseHandle(completion);
         std::filesystem::remove_all(test_root, error);
         return false;
     }
@@ -606,9 +645,10 @@ bool RunShellFileOperationTests() {
         denied_copy_source.wstring() + L"\" \"" + read_only_root.wstring() +
         L"\" \"" + denied_move_source.wstring() + L"\" \"" +
         denied_rename_source.wstring() + L"\" \"" +
-        denied_delete_source.wstring() + L"\" " + HandleText(release) +
+        denied_delete_source.wstring() + L"\" " + HandleText(completion) +
         L" unused unused";
-    const HANDLE inherited[] = {policy.handle(), event_client, release};
+    const HANDLE inherited[] = {
+        policy.handle(), event_client, release, completion};
     const bolt::common::ProcessLaunchOptions options{
         executable, command_line, L"", nullptr, inherited,
         std::size(inherited), 0};
@@ -631,7 +671,7 @@ bool RunShellFileOperationTests() {
 
     std::array<std::uint8_t, bolt::protocol::kReadyFrameLength> ready{};
     DWORD bytes_read = 0;
-    const bool ready_ok =
+    const bool handshake_ok =
         initialized &&
         ReadFile(
             event_pipe.handle(), ready.data(),
@@ -639,22 +679,36 @@ bool RunShellFileOperationTests() {
         bytes_read == ready.size() &&
         bolt::protocol::ValidateReadyFrame(
             ready.data(), ready.size(), nonce_bytes) ==
-            bolt::protocol::ReadyFrameStatus::kSuccess &&
-        process.ReleaseAfterReady() == bolt::common::ProcessStatus::kSuccess &&
-        process.Wait(10'000) == bolt::common::ProcessStatus::kSuccess;
-    DWORD exit_code = 0;
-    const bool child_ok =
-        ready_ok &&
-        process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
-        exit_code == 0 && WaitForSingleObject(release, 0) == WAIT_OBJECT_0;
-
+            bolt::protocol::ReadyFrameStatus::kSuccess;
     const auto child_process_id =
         static_cast<std::uint32_t>(GetProcessId(process.process_handle()));
     std::vector<FilesystemViolation> violations;
-    const bool event_stream_ok =
-        child_ok && child_process_id != 0 &&
-        ReadFilesystemViolations(
-            event_pipe.handle(), child_process_id, violations);
+    bool event_stream_ok = false;
+    std::thread event_reader;
+    if (handshake_ok && child_process_id != 0) {
+        event_reader = std::thread([&] {
+            event_stream_ok = ReadFilesystemViolations(
+                event_pipe.handle(), child_process_id, violations);
+        });
+    }
+    const bool released =
+        handshake_ok &&
+        process.ReleaseAfterReady() == bolt::common::ProcessStatus::kSuccess;
+    const bool exited =
+        released &&
+        process.Wait(10'000) == bolt::common::ProcessStatus::kSuccess;
+    if (!exited) {
+        static_cast<void>(job.Terminate(247));
+        static_cast<void>(process.Wait(5'000));
+    }
+    if (event_reader.joinable()) {
+        event_reader.join();
+    }
+    DWORD exit_code = 0;
+    const bool child_ok =
+        exited &&
+        process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
+        exit_code == 0 && WaitForSingleObject(completion, 0) == WAIT_OBJECT_0;
     bool events_ok =
         event_stream_ok &&
         ContainsViolation(
@@ -667,7 +721,7 @@ bool RunShellFileOperationTests() {
             read_only_root / L"denied-move.txt") &&
         ContainsViolation(
             violations,
-            bolt::protocol::FilesystemOperation::kWrite,
+            bolt::protocol::FilesystemOperation::kRename,
             denied_rename_source) &&
         ContainsViolation(
             violations,
@@ -708,15 +762,21 @@ bool RunShellFileOperationTests() {
     side_effects_ok =
         side_effects_ok && !std::filesystem::exists(long_denied_path);
 
+    const bool completion_signaled =
+        WaitForSingleObject(completion, 0) == WAIT_OBJECT_0;
     CloseHandle(release);
+    CloseHandle(completion);
     event_pipe.Close();
     std::filesystem::remove_all(test_root, error);
     if (!child_ok || !events_ok || !side_effects_ok) {
         std::fprintf(
             stderr,
-            "IFileOperation fixture failed with exit code %lu, pid %lu, stream %s, frames %zu, events %s, side effects %s\n",
+            "IFileOperation fixture failed with exit code %lu, pid %lu, "
+            "completion %s, stream %s, frames %zu, events %s, "
+            "side effects %s\n",
             static_cast<unsigned long>(exit_code),
             static_cast<unsigned long>(child_process_id),
+            completion_signaled ? "signaled" : "not-signaled",
             event_stream_ok ? "valid" : "invalid", violations.size(),
             events_ok ? "valid" : "invalid",
             side_effects_ok ? "valid" : "invalid");

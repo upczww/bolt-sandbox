@@ -234,6 +234,7 @@ target_link_libraries(bolt-sandbox-filesystem PRIVATE
     bolt-sandbox-detours
     bolt-sandbox-process
     bolt-sandbox-protocol
+    ole32
     shell32
 )
 

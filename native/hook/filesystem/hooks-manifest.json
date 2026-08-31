@@ -79,6 +79,7 @@
     {"target":"g_copy_file_transacted_a","detour":"DetouredCopyFileTransactedA","symbol":"CopyFileTransactedA","module":"kernel32.dll","availability":"required","operations":["read","create"],"cases":["FS-040"]},
     {"target":"g_sh_file_operation_w","detour":"DetouredSHFileOperationW","symbol":"SHFileOperationW","module":"shell32.dll","availability":"required","operations":["shell","create","delete","rename"],"cases":["FS-041"]},
     {"target":"g_sh_file_operation_a","detour":"DetouredSHFileOperationA","symbol":"SHFileOperationA","module":"shell32.dll","availability":"required","operations":["shell","create","delete","rename"],"cases":["FS-041"]},
+    {"target":"g_co_create_instance","detour":"DetouredCoCreateInstance","symbol":"CoCreateInstance","module":"ole32.dll","availability":"required","operations":["shell","create","delete","rename"],"cases":["FS-041"]},
     {"target":"g_copy_file_2","detour":"DetouredCopyFile2","symbol":"CopyFile2","module":"kernel32.dll","availability":"if_present","operations":["read","create"],"cases":["FS-040"]}
   ],
   "coverage_claims": [
