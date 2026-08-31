@@ -482,6 +482,14 @@ Hostname authorization must bind resolved addresses to the authorized hostname
 for a bounded lifetime. An IP appearing in an allow-listed DNS response must not
 become globally authorized for unrelated processes or sessions.
 
+The trusted DNS broker validates answer ownership before creating bindings. It
+follows at most 16 canonical CNAME hops, rejects loops and conflicting aliases,
+and accepts only A/AAAA records owned by the final chain name. Unrelated answer
+records, zero-TTL records, malformed names, and responses exceeding 64 unique
+addresses create no bindings. System resolution is wrapped by a two-second
+single-worker deadline; a timeout permanently fail-closes that broker resolver
+instance so repeated requests cannot create unbounded stuck threads.
+
 ## 9. Registry Enforcement
 
 Registry support follows filesystem parity and uses explicit rules:

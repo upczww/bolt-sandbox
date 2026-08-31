@@ -46,7 +46,9 @@ bool RunNetworkUnrestrictedTests();
 bool RunNetworkEventSaturationTests();
 int RunNetworkUnrestrictedChild(int argument_count, wchar_t** arguments);
 bool RunDnsBindingTests();
+bool RunDnsRecordParserTests();
 bool RunDnsProxyProtocolTests();
+bool RunBoundedDnsResolverTests();
 bool RunTcpProxyProtocolTests();
 bool RunTcpProxyServerTests();
 bool RunSystemTcpConnectorTests();
@@ -358,8 +360,16 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-binding-tests") {
         return RunDnsBindingTests() ? 0 : 1;
     }
+    if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--dns-record-parser-tests") {
+        return RunDnsRecordParserTests() ? 0 : 1;
+    }
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-proxy-protocol-tests") {
         return RunDnsProxyProtocolTests() ? 0 : 1;
+    }
+    if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--bounded-dns-resolver-tests") {
+        return RunBoundedDnsResolverTests() ? 0 : 1;
     }
     if (argument_count == 2 &&
         std::wstring(arguments[1]) == L"--tcp-proxy-protocol-tests") {
@@ -541,8 +551,14 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (!RunDnsBindingTests()) {
         return 18;
     }
+    if (!RunDnsRecordParserTests()) {
+        return 44;
+    }
     if (!RunDnsProxyProtocolTests()) {
         return 19;
+    }
+    if (!RunBoundedDnsResolverTests()) {
+        return 45;
     }
     if (!RunDnsProxyServerTests()) {
         return 20;

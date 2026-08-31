@@ -1,4 +1,5 @@
 #include "hook/network/tcp_proxy_listener.h"
+#include "hook/network/bounded_dns_resolver.h"
 #include "hook/network/dns_proxy_handle_transport.h"
 #include "hook/network/dns_proxy_server.h"
 #include "hook/network/dns_proxy_session.h"
@@ -171,7 +172,11 @@ int RunProxy() noexcept {
             startup.session.authentication_key.size());
         return 14;
     }
-    bolt::network::SystemDnsResolver resolver;
+    auto system_resolver =
+        std::make_shared<bolt::network::SystemDnsResolver>();
+    constexpr std::uint32_t dns_timeout_milliseconds = 2'000;
+    bolt::network::BoundedDnsResolver resolver(
+        system_resolver, dns_timeout_milliseconds);
     std::unique_ptr<bolt::network::DnsBindingTable> bindings;
     if (bolt::network::DnsBindingTable::Create(4'096, bindings) !=
         bolt::network::BindingStatus::kSuccess) {

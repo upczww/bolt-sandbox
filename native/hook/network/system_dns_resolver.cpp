@@ -1,5 +1,7 @@
 #include "hook/network/system_dns_resolver.h"
 
+#include "hook/network/dns_record_parser.h"
+
 #include <algorithm>
 #include <cstring>
 
@@ -10,48 +12,42 @@
 namespace bolt::network {
 namespace {
 
-void AppendRecords(
-    const DNS_RECORD* records,
-    std::vector<protocol::DnsProxyAddress>& addresses) {
-    for (const DNS_RECORD* record = records;
-         record != nullptr && addresses.size() < protocol::kDnsProxyMaximumAddressRecords;
-         record = record->pNext) {
-        protocol::DnsProxyAddress address{};
-        if (record->wType == DNS_TYPE_A) {
-            address.family = protocol::DnsProxyAddressFamily::kIpv4;
-            std::memcpy(address.address.data(), &record->Data.A.IpAddress, 4);
-        } else if (record->wType == DNS_TYPE_AAAA) {
-            address.family = protocol::DnsProxyAddressFamily::kIpv6;
-            std::copy_n(
-                record->Data.AAAA.Ip6Address.IP6Byte, 16,
-                address.address.begin());
-        } else {
-            continue;
-        }
-        if (record->dwTtl == 0) {
-            continue;
-        }
-        address.ttl_seconds = record->dwTtl;
-        if (std::find(addresses.begin(), addresses.end(), address) == addresses.end()) {
-            addresses.push_back(address);
-        }
-    }
-}
+struct QueryResult {
+    DNS_STATUS status = DNS_INFO_NO_RECORDS;
+    DnsRecordParseStatus parse_status = DnsRecordParseStatus::kNotFound;
+};
 
-DNS_STATUS Query(
+QueryResult Query(
     const char* domain,
     const WORD type,
     std::vector<protocol::DnsProxyAddress>& addresses) {
     DNS_RECORD* records = nullptr;
     const DNS_STATUS status = DnsQuery_A(
         domain, type, DNS_QUERY_STANDARD, nullptr, &records, nullptr);
+    DnsRecordParseStatus parse_status = DnsRecordParseStatus::kNotFound;
     if (status == ERROR_SUCCESS) {
-        AppendRecords(records, addresses);
+        std::vector<protocol::DnsProxyAddress> parsed;
+        parse_status =
+            CollectValidatedDnsAddresses(domain, type, records, parsed);
+        if (parse_status == DnsRecordParseStatus::kSuccess) {
+            for (const auto& address : parsed) {
+                if (std::find(addresses.begin(), addresses.end(), address) ==
+                    addresses.end()) {
+                    if (addresses.size() ==
+                        protocol::kDnsProxyMaximumAddressRecords) {
+                        addresses.clear();
+                        parse_status = DnsRecordParseStatus::kInvalid;
+                        break;
+                    }
+                    addresses.push_back(address);
+                }
+            }
+        }
     }
     if (records != nullptr) {
         DnsRecordListFree(records, DnsFreeRecordList);
     }
-    return status;
+    return {status, parse_status};
 }
 
 }  // namespace
@@ -65,8 +61,8 @@ protocol::DnsProxyResult SystemDnsResolver::Resolve(
         return protocol::DnsProxyResult::kFailure;
     }
     try {
-        DNS_STATUS ipv4 = DNS_INFO_NO_RECORDS;
-        DNS_STATUS ipv6 = DNS_INFO_NO_RECORDS;
+        QueryResult ipv4{};
+        QueryResult ipv6{};
         if (family == protocol::DnsProxyQueryFamily::kAny ||
             family == protocol::DnsProxyQueryFamily::kIpv4) {
             ipv4 = Query(ascii_domain, DNS_TYPE_A, addresses);
@@ -75,11 +71,18 @@ protocol::DnsProxyResult SystemDnsResolver::Resolve(
             family == protocol::DnsProxyQueryFamily::kIpv6) {
             ipv6 = Query(ascii_domain, DNS_TYPE_AAAA, addresses);
         }
+        if (ipv4.parse_status == DnsRecordParseStatus::kInvalid ||
+            ipv6.parse_status == DnsRecordParseStatus::kInvalid) {
+            addresses.clear();
+            return protocol::DnsProxyResult::kFailure;
+        }
         if (!addresses.empty()) {
             return protocol::DnsProxyResult::kSuccess;
         }
-        if (ipv4 == DNS_ERROR_RCODE_NAME_ERROR || ipv6 == DNS_ERROR_RCODE_NAME_ERROR ||
-            ipv4 == DNS_INFO_NO_RECORDS || ipv6 == DNS_INFO_NO_RECORDS) {
+        if (ipv4.status == DNS_ERROR_RCODE_NAME_ERROR ||
+            ipv6.status == DNS_ERROR_RCODE_NAME_ERROR ||
+            ipv4.status == DNS_INFO_NO_RECORDS ||
+            ipv6.status == DNS_INFO_NO_RECORDS) {
             return protocol::DnsProxyResult::kNotFound;
         }
         return protocol::DnsProxyResult::kFailure;

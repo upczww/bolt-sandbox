@@ -170,6 +170,7 @@ target_link_libraries(bolt-sandbox-process PRIVATE
 )
 
 add_library(bolt-sandbox-network STATIC
+    hook/network/bounded_dns_resolver.cpp
     hook/network/dns_binding_table.cpp
     hook/network/dns_proxy_server.cpp
     hook/network/dns_proxy_session.cpp
@@ -177,6 +178,7 @@ add_library(bolt-sandbox-network STATIC
     hook/network/dns_proxy_client_channel.cpp
     hook/network/dns_proxy_process.cpp
     hook/network/dns_proxy_handle_transport.cpp
+    hook/network/dns_record_parser.cpp
     hook/network/http_connect_policy.cpp
     hook/network/network_hooks.cpp
     hook/network/network_policy.cpp
@@ -261,6 +263,7 @@ else()
 endif()
 
 add_executable(bolt-sandbox-native-tests
+    tests/bounded_dns_resolver_tests.cpp
     tests/buildxl_tree_tests.cpp
     tests/detours_tests.cpp
     tests/event_frame_tests.cpp
@@ -276,6 +279,7 @@ add_executable(bolt-sandbox-native-tests
     tests/winhttp_test_client.cpp
     tests/wininet_test_client.cpp
     tests/dns_binding_tests.cpp
+    tests/dns_record_parser_tests.cpp
     tests/dns_proxy_protocol_tests.cpp
     tests/tcp_proxy_protocol_tests.cpp
     tests/tcp_proxy_server_tests.cpp
