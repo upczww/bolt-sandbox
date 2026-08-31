@@ -15,6 +15,7 @@ constexpr std::size_t kMaximumFrameLength =
 enum class EventRecordKind : std::uint8_t {
     kFilesystem,
     kProcess,
+    kChildInjectionFailure,
     kRegistry,
     kNetwork,
     kNetworkDomain,
@@ -26,6 +27,9 @@ struct EventRecord {
     protocol::FilesystemOperation operation = protocol::FilesystemOperation::kRead;
     protocol::ProcessOperation process_operation =
         protocol::ProcessOperation::kCreateWithToken;
+    std::uint32_t child_process_id = 0;
+    protocol::ChildInjectionFailureReason child_failure_reason =
+        protocol::ChildInjectionFailureReason::kInjectionFailed;
     protocol::RegistryOperation registry_operation =
         protocol::RegistryOperation::kOpen;
     protocol::NetworkOperation network_operation =
@@ -136,6 +140,14 @@ DWORD WINAPI EventWriterThread(LPVOID parameter) noexcept {
                             queued->process_id, queued->process_operation,
                             queued->sequence, g_state.frame_buffer,
                             kMaximumFrameLength, frame_length);
+                        break;
+                    case EventRecordKind::kChildInjectionFailure:
+                        encode_status =
+                            protocol::EncodeChildInjectionFailureFrame(
+                                queued->process_id, queued->child_process_id,
+                                queued->child_failure_reason, queued->sequence,
+                                g_state.frame_buffer, kMaximumFrameLength,
+                                frame_length);
                         break;
                     case EventRecordKind::kRegistry:
                         encode_status = protocol::EncodeRegistryViolationFrame(
@@ -361,6 +373,37 @@ bool TryReportRegistryViolation(
     record.registry_operation = operation;
     record.sequence = g_state.next_sequence++;
     std::copy_n(key, key_length + 1U, record.registry_key);
+    record.path_length = 0;
+    record.path[0] = L'\0';
+    g_state.tail = (g_state.tail + 1U) % kQueueCapacity;
+    ++g_state.count;
+    ResetEvent(g_state.idle_event);
+    LeaveCriticalSection(&g_state.lock);
+    SetEvent(g_state.wake_event);
+    return true;
+}
+
+bool TryReportChildInjectionFailure(
+    const std::uint32_t child_process_id,
+    const protocol::ChildInjectionFailureReason reason) noexcept {
+    if (child_process_id == 0 ||
+        reason > protocol::ChildInjectionFailureReason::kMitigationFailed ||
+        InterlockedCompareExchange(&g_state.initialization_state, 1, 1) != 1 ||
+        InterlockedCompareExchange(&g_state.writer_failed, 0, 0) != 0) {
+        return false;
+    }
+    EnterCriticalSection(&g_state.lock);
+    if (g_state.count == kQueueCapacity) {
+        RecordDroppedEvent();
+        LeaveCriticalSection(&g_state.lock);
+        return false;
+    }
+    EventRecord& record = g_state.records[g_state.tail];
+    record.kind = EventRecordKind::kChildInjectionFailure;
+    record.process_id = GetCurrentProcessId();
+    record.child_process_id = child_process_id;
+    record.child_failure_reason = reason;
+    record.sequence = g_state.next_sequence++;
     record.path_length = 0;
     record.path[0] = L'\0';
     g_state.tail = (g_state.tail + 1U) % kQueueCapacity;

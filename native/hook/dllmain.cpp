@@ -117,7 +117,9 @@ RuntimeInitializationStatus InitializeRuntime(const HINSTANCE instance) noexcept
             bolt::registry::RegistryHookInstallStatus::kSuccess) {
         return failed();
     }
-    if (bolt::process::ApplyRequiredProcessMitigations() !=
+    if (payload.startup_fault ==
+            bolt::protocol::RuntimeStartupFault::kMitigationFailure ||
+        bolt::process::ApplyRequiredProcessMitigations() !=
         bolt::process::ProcessMitigationStatus::kSuccess) {
         return failed();
     }

@@ -428,6 +428,14 @@ the integrity-checked runtime payload, so an inherited allow-list policy cannot
 silently degrade to an unproxied channel. It uses a private descendant readiness
 event so the public session has exactly one `Ready` frame, and restores
 caller-requested `CREATE_SUSPENDED` semantics before returning.
+Readiness waits observe both the private Ready event and the child process handle
+with a five-second bound, so loader or mitigation failure is detected immediately
+instead of waiting for a handshake timeout. The parent emits a PID-only typed
+`ChildInjectionFailed` frame (`UnsupportedArchitecture`, `PolicyUnavailable`,
+`InjectionFailed`, `HandshakeFailed`, or `MitigationFailed`) before aborting the
+created process. Trusted test payloads may request only a fail-closed mitigation
+failure for the next descendant; unknown values and nonzero reserved bytes are
+rejected during payload decoding.
 For a machine-type mismatch it selects the matching x86/x64 DLL and uses the
 Microsoft Detours helper payload and ordinal-1 injection flow. The helper is
 started from an absolute Windows system directory with a minimal internal

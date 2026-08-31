@@ -449,6 +449,9 @@ bool InstallDescendantRuntime(
         CloseHandle(local_policy);
     }
     if (!duplicated) {
+        hook::TryReportChildInjectionFailure(
+            process_information->dwProcessId,
+            protocol::ChildInjectionFailureReason::kPolicyUnavailable);
         CloseHandle(ready);
         CloseHandle(release);
         SetLastError(duplication_error);
@@ -462,6 +465,9 @@ bool InstallDescendantRuntime(
     child_payload.release_handle = reinterpret_cast<std::uintptr_t>(remote_release);
     child_payload.descendant_ready_handle =
         reinterpret_cast<std::uintptr_t>(remote_ready);
+    child_payload.startup_fault = g_runtime_payload.descendant_startup_fault;
+    child_payload.descendant_startup_fault =
+        protocol::RuntimeStartupFault::kNone;
     if (dns_proxy_configured) {
         child_payload.dns_request_handle =
             reinterpret_cast<std::uintptr_t>(remote_dns_request);
@@ -481,6 +487,9 @@ bool InstallDescendantRuntime(
     std::string selected_hook_path;
     if (!SelectHookDll(process_information->hProcess, selected_hook_path)) {
         const DWORD error = GetLastError();
+        hook::TryReportChildInjectionFailure(
+            process_information->dwProcessId,
+            protocol::ChildInjectionFailureReason::kUnsupportedArchitecture);
         CloseHandle(ready);
         CloseHandle(release);
         SetLastError(error);
@@ -494,6 +503,9 @@ bool InstallDescendantRuntime(
                                     process_information->hProcess, dlls, 1);
     if (!injected) {
         const DWORD error = GetLastError();
+        hook::TryReportChildInjectionFailure(
+            process_information->dwProcessId,
+            protocol::ChildInjectionFailureReason::kInjectionFailed);
         CloseHandle(ready);
         CloseHandle(release);
         SetLastError(error);
@@ -501,15 +513,31 @@ bool InstallDescendantRuntime(
     }
     if (ResumeThread(process_information->hThread) == static_cast<DWORD>(-1)) {
         const DWORD error = GetLastError();
+        hook::TryReportChildInjectionFailure(
+            process_information->dwProcessId,
+            protocol::ChildInjectionFailureReason::kInjectionFailed);
         CloseHandle(ready);
         CloseHandle(release);
         SetLastError(error);
         return false;
     }
-    const DWORD ready_wait = WaitForSingleObject(ready, 30'000);
+    const HANDLE readiness_waits[] = {ready, process_information->hProcess};
+    const DWORD ready_wait = WaitForMultipleObjects(
+        static_cast<DWORD>(std::size(readiness_waits)), readiness_waits, FALSE,
+        5'000);
     if (ready_wait != WAIT_OBJECT_0) {
-        const DWORD error =
-            ready_wait == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
+        const DWORD error = ready_wait == WAIT_TIMEOUT
+                                ? ERROR_TIMEOUT
+                                : ready_wait == WAIT_OBJECT_0 + 1
+                                      ? ERROR_DLL_INIT_FAILED
+                                      : GetLastError();
+        const auto reason =
+            child_payload.startup_fault ==
+                    protocol::RuntimeStartupFault::kMitigationFailure
+                ? protocol::ChildInjectionFailureReason::kMitigationFailed
+                : protocol::ChildInjectionFailureReason::kHandshakeFailed;
+        hook::TryReportChildInjectionFailure(
+            process_information->dwProcessId, reason);
         CloseHandle(ready);
         CloseHandle(release);
         SetLastError(error);

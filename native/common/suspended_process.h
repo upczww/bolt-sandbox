@@ -4,6 +4,7 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include "common/execution_job.h"
+#include "protocol/runtime_payload.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -72,7 +73,9 @@ class SuspendedProcess final {
         const std::array<std::uint8_t, 32>* dns_authentication_key = nullptr,
         std::uint32_t dns_maximum_frame_length = 0,
         std::uint16_t tcp_proxy_port = 0,
-        std::uint16_t tcp_proxy_ipv6_port = 0) noexcept;
+        std::uint16_t tcp_proxy_ipv6_port = 0,
+        protocol::RuntimeStartupFault descendant_startup_fault =
+            protocol::RuntimeStartupFault::kNone) noexcept;
     ProcessStatus Inject(std::string_view dll_path) noexcept;
     ProcessStatus BeginHookInitialization() noexcept;
     ProcessStatus ReleaseAfterReady() noexcept;

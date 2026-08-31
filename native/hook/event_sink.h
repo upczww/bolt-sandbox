@@ -34,6 +34,10 @@ bool TryReportFilesystemViolation(
 
 bool TryReportProcessViolation(protocol::ProcessOperation operation) noexcept;
 
+bool TryReportChildInjectionFailure(
+    std::uint32_t child_process_id,
+    protocol::ChildInjectionFailureReason reason) noexcept;
+
 bool TryReportRegistryViolation(
     protocol::RegistryOperation operation,
     const char* key) noexcept;

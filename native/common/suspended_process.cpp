@@ -170,7 +170,8 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
     const std::array<std::uint8_t, 32>* const dns_authentication_key,
     const std::uint32_t dns_maximum_frame_length,
     const std::uint16_t tcp_proxy_port,
-    const std::uint16_t tcp_proxy_ipv6_port) noexcept {
+    const std::uint16_t tcp_proxy_ipv6_port,
+    const protocol::RuntimeStartupFault descendant_startup_fault) noexcept {
     if (process_ == nullptr || !assigned_ || payload_installed_ || injected_ ||
         initialization_started_) {
         return ProcessStatus::kInvalidState;
@@ -233,6 +234,7 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
     payload.event_handle = reinterpret_cast<std::uintptr_t>(event_handle);
     payload.release_handle = reinterpret_cast<std::uintptr_t>(release_handle);
     payload.handshake_nonce = nonce;
+    payload.descendant_startup_fault = descendant_startup_fault;
     if (!dns_absent) {
         payload.dns_request_handle =
             reinterpret_cast<std::uintptr_t>(dns_request_handle);

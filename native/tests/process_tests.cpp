@@ -4,6 +4,7 @@
 #include "common/suspended_process.h"
 #include "protocol/event_frame.h"
 #include "protocol/runtime_payload.h"
+#include "protocol/version.h"
 #include "tests/policy_fixture.h"
 
 #include <algorithm>
@@ -2761,29 +2762,73 @@ int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
     return 0;
 }
 
+std::uint16_t ReadU16(const std::uint8_t* const bytes) {
+    return static_cast<std::uint16_t>(bytes[0]) |
+           static_cast<std::uint16_t>(bytes[1]) << 8;
+}
+
+std::uint64_t ReadU64(const std::uint8_t* const bytes) {
+    std::uint64_t value = 0;
+    for (std::size_t index = 0; index < 8; ++index) {
+        value |= static_cast<std::uint64_t>(bytes[index]) << (index * 8);
+    }
+    return value;
+}
+
 bool ReadChildInjectionFailure(
     const HANDLE event_pipe,
     const std::uint32_t parent_process_id,
-    const bolt::protocol::ChildInjectionFailureReason reason,
-    const std::uint64_t sequence) {
-    std::array<std::uint8_t,
-               bolt::protocol::kChildInjectionFailureFrameLength>
-        actual{};
-    if (!ReadExact(event_pipe, actual.data(), actual.size())) {
-        return false;
+    const bolt::protocol::ChildInjectionFailureReason reason) {
+    std::uint64_t expected_sequence = 1;
+    for (;;) {
+        std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
+        if (!ReadExact(event_pipe, header.data(), header.size())) {
+            return false;
+        }
+        const std::size_t payload_length = ReadU32(header.data() + 8);
+        if (header[0] != 'B' || header[1] != 'L' || header[2] != 'T' ||
+            header[3] != '1' ||
+            ReadU16(header.data() + 4) != bolt::protocol::kProtocolVersion ||
+            payload_length > 1'048'576 ||
+            ReadU64(header.data() + 12) != expected_sequence) {
+            return false;
+        }
+        std::vector<std::uint8_t> frame(header.size() + payload_length);
+        std::copy(header.begin(), header.end(), frame.begin());
+        if (!ReadExact(
+                event_pipe, frame.data() + header.size(), payload_length)) {
+            return false;
+        }
+        auto checksum_frame = frame;
+        bolt::protocol::RewriteFrameChecksum(
+            checksum_frame.data(), checksum_frame.size());
+        if (checksum_frame != frame) {
+            return false;
+        }
+        const std::uint16_t kind = ReadU16(header.data() + 6);
+        if (kind == 6) {
+            if (payload_length != 9 ||
+                ReadU32(frame.data() + header.size()) != parent_process_id) {
+                return false;
+            }
+            const std::uint32_t child_process_id =
+                ReadU32(frame.data() + header.size() + 4);
+            std::array<std::uint8_t,
+                       bolt::protocol::kChildInjectionFailureFrameLength>
+                expected{};
+            std::size_t written = 0;
+            return child_process_id != 0 &&
+                   bolt::protocol::EncodeChildInjectionFailureFrame(
+                       parent_process_id, child_process_id, reason,
+                       expected_sequence, expected.data(), expected.size(),
+                       written) ==
+                       bolt::protocol::FrameEncodeStatus::kSuccess &&
+                   written == expected.size() && frame == std::vector<std::uint8_t>(
+                                                         expected.begin(),
+                                                         expected.end());
+        }
+        ++expected_sequence;
     }
-    const std::uint32_t child_process_id =
-        ReadU32(actual.data() + bolt::protocol::kEventHeaderLength + 4);
-    std::array<std::uint8_t,
-               bolt::protocol::kChildInjectionFailureFrameLength>
-        expected{};
-    std::size_t written = 0;
-    return child_process_id != 0 &&
-           bolt::protocol::EncodeChildInjectionFailureFrame(
-               parent_process_id, child_process_id, reason, sequence,
-               expected.data(), expected.size(), written) ==
-               bolt::protocol::FrameEncodeStatus::kSuccess &&
-           written == expected.size() && actual == expected;
 }
 
 int RunArgumentObservationLeaf(
@@ -2866,10 +2911,15 @@ int RunFaultedDescendantParent(
         CloseHandle(child.hProcess);
         return 345;
     }
-    return error == ERROR_ACCESS_DENIED &&
-                   WaitForSingleObject(marker, 0) == WAIT_TIMEOUT
-               ? 0
-               : 346;
+    const auto flush_events = reinterpret_cast<BOOL (*)(DWORD)>(
+        GetProcAddress(hook, "BoltSandboxFlushEvents"));
+    if (error != ERROR_DLL_INIT_FAILED) {
+        return error == ERROR_SUCCESS ? 346 : static_cast<int>(error);
+    }
+    if (flush_events == nullptr || !flush_events(5'000)) {
+        return 347;
+    }
+    return WaitForSingleObject(marker, 0) == WAIT_TIMEOUT ? 0 : 348;
 }
 
 int RunNestedProcess(const int argument_count, wchar_t** arguments) {
@@ -4040,7 +4090,7 @@ bool RunInheritedProcessTest(
         (ready_ok &&
          ReadChildInjectionFailure(
              event_pipe.handle(), parent_process_id,
-             injection_failure_probe->reason, 1));
+             injection_failure_probe->reason));
     const bool external_delegation_events_ok =
         !parent_arguments.empty() ||
         (ReadProcessViolation(
