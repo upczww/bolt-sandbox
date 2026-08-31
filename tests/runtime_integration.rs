@@ -43,21 +43,21 @@ fn assert_dual_stream_execution(mode: &str) {
         })
         .expect("generic native target must start sandboxed");
 
-    let stdout = handle
-        .take_stdout()
-        .expect("stdout is available")
-        .flatten()
-        .collect::<Vec<_>>();
-    let stderr = handle
-        .take_stderr()
-        .expect("stderr is available")
-        .flatten()
-        .collect::<Vec<_>>();
-    let events = handle
-        .take_events()
-        .expect("events are available")
-        .collect::<Vec<_>>();
-    let result = handle.wait().expect("execution must complete");
+    let stdout_stream = handle.take_stdout().expect("stdout is available");
+    let stderr_stream = handle.take_stderr().expect("stderr is available");
+    let event_stream = handle.take_events().expect("events are available");
+    let (stdout, stderr, events, result) = std::thread::scope(|scope| {
+        let stdout = scope.spawn(move || stdout_stream.flatten().collect::<Vec<_>>());
+        let stderr = scope.spawn(move || stderr_stream.flatten().collect::<Vec<_>>());
+        let events = scope.spawn(move || event_stream.collect::<Vec<_>>());
+        let result = handle.wait().expect("execution must complete");
+        (
+            stdout.join().expect("stdout reader must not panic"),
+            stderr.join().expect("stderr reader must not panic"),
+            events.join().expect("event reader must not panic"),
+            result,
+        )
+    });
 
     assert_pattern(&stdout, false);
     assert_pattern(&stderr, true);

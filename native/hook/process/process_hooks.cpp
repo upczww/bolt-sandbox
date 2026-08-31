@@ -435,9 +435,16 @@ bool InstallDescendantRuntime(
     HANDLE remote_release = nullptr;
     HANDLE remote_dns_request = nullptr;
     HANDLE remote_dns_response = nullptr;
+    HANDLE remote_standard_output = nullptr;
+    HANDLE remote_standard_error = nullptr;
+    HANDLE remote_event_sequence = nullptr;
+    HANDLE remote_event_write_mutex = nullptr;
     const bool dns_proxy_configured =
         g_runtime_payload.dns_request_handle != 0 &&
         g_runtime_payload.dns_response_handle != 0;
+    const bool standard_streams_configured =
+        g_runtime_payload.standard_output_handle != 0 &&
+        g_runtime_payload.standard_error_handle != 0;
     const bool duplicated =
         CreateReadOnlyPolicyMapping(local_policy) &&
         DuplicateIntoProcess(
@@ -451,6 +458,14 @@ bool InstallDescendantRuntime(
         DuplicateIntoProcessWithAccess(
             process_information->hProcess, release, SYNCHRONIZE,
             remote_release) &&
+        DuplicateIntoProcess(
+            process_information->hProcess,
+            HandleFromWire(g_runtime_payload.event_sequence_handle),
+            remote_event_sequence) &&
+        DuplicateIntoProcessWithAccess(
+            process_information->hProcess,
+            HandleFromWire(g_runtime_payload.event_write_mutex_handle),
+            SYNCHRONIZE | MUTEX_MODIFY_STATE, remote_event_write_mutex) &&
         (!dns_proxy_configured ||
          (DuplicateIntoProcess(
               process_information->hProcess,
@@ -459,7 +474,16 @@ bool InstallDescendantRuntime(
           DuplicateIntoProcess(
               process_information->hProcess,
               HandleFromWire(g_runtime_payload.dns_response_handle),
-              remote_dns_response)));
+              remote_dns_response))) &&
+        (!standard_streams_configured ||
+         (DuplicateIntoProcess(
+              process_information->hProcess,
+              HandleFromWire(g_runtime_payload.standard_output_handle),
+              remote_standard_output) &&
+          DuplicateIntoProcess(
+              process_information->hProcess,
+              HandleFromWire(g_runtime_payload.standard_error_handle),
+              remote_standard_error)));
     const DWORD duplication_error = duplicated ? ERROR_SUCCESS : GetLastError();
     if (local_policy != nullptr) {
         CloseHandle(local_policy);
@@ -481,6 +505,10 @@ bool InstallDescendantRuntime(
     child_payload.release_handle = reinterpret_cast<std::uintptr_t>(remote_release);
     child_payload.descendant_ready_handle =
         reinterpret_cast<std::uintptr_t>(remote_ready);
+    child_payload.event_sequence_handle =
+        reinterpret_cast<std::uintptr_t>(remote_event_sequence);
+    child_payload.event_write_mutex_handle =
+        reinterpret_cast<std::uintptr_t>(remote_event_write_mutex);
     child_payload.startup_fault = g_runtime_payload.descendant_startup_fault;
     child_payload.descendant_startup_fault =
         protocol::RuntimeStartupFault::kNone;
@@ -492,6 +520,12 @@ bool InstallDescendantRuntime(
             reinterpret_cast<std::uintptr_t>(remote_dns_request);
         child_payload.dns_response_handle =
             reinterpret_cast<std::uintptr_t>(remote_dns_response);
+    }
+    if (standard_streams_configured) {
+        child_payload.standard_output_handle =
+            reinterpret_cast<std::uintptr_t>(remote_standard_output);
+        child_payload.standard_error_handle =
+            reinterpret_cast<std::uintptr_t>(remote_standard_error);
     }
     auto encoded = protocol::EncodeRuntimePayload(child_payload);
     if (!DetourCopyPayloadToProcess(

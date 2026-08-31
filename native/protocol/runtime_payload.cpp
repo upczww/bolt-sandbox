@@ -28,6 +28,10 @@ constexpr std::size_t kStartupFaultOffset = 124;
 constexpr std::size_t kDescendantStartupFaultOffset = 125;
 constexpr std::size_t kIsolatedConsoleOffset = 126;
 constexpr std::size_t kReservedOffset = 127;
+constexpr std::size_t kStandardOutputHandleOffset = 128;
+constexpr std::size_t kStandardErrorHandleOffset = 136;
+constexpr std::size_t kEventSequenceHandleOffset = 144;
+constexpr std::size_t kEventWriteMutexHandleOffset = 152;
 constexpr std::size_t kMinimumPolicyLength = kPolicyEnvelopeLength;
 constexpr std::size_t kMaximumPolicyLength = kPolicyEnvelopeLength + kPolicyMaximumBodyLength;
 
@@ -114,6 +118,18 @@ std::array<std::uint8_t, kRuntimePayloadLength> EncodeRuntimePayload(
     encoded[kDescendantStartupFaultOffset] =
         static_cast<std::uint8_t>(payload.descendant_startup_fault);
     encoded[kIsolatedConsoleOffset] = payload.isolated_console ? 1 : 0;
+    WriteU64(
+        encoded.data(), kStandardOutputHandleOffset,
+        payload.standard_output_handle);
+    WriteU64(
+        encoded.data(), kStandardErrorHandleOffset,
+        payload.standard_error_handle);
+    WriteU64(
+        encoded.data(), kEventSequenceHandleOffset,
+        payload.event_sequence_handle);
+    WriteU64(
+        encoded.data(), kEventWriteMutexHandleOffset,
+        payload.event_write_mutex_handle);
     return encoded;
 }
 
@@ -164,6 +180,14 @@ RuntimePayloadStatus DecodeRuntimePayload(
         return RuntimePayloadStatus::kInvalidCapability;
     }
     decoded.isolated_console = encoded[kIsolatedConsoleOffset] != 0;
+    decoded.standard_output_handle =
+        ReadU64(encoded, kStandardOutputHandleOffset);
+    decoded.standard_error_handle =
+        ReadU64(encoded, kStandardErrorHandleOffset);
+    decoded.event_sequence_handle =
+        ReadU64(encoded, kEventSequenceHandleOffset);
+    decoded.event_write_mutex_handle =
+        ReadU64(encoded, kEventWriteMutexHandleOffset);
     if (decoded.target_process_id == 0) {
         return RuntimePayloadStatus::kInvalidProcessId;
     }
@@ -175,6 +199,19 @@ RuntimePayloadStatus DecodeRuntimePayload(
         !IsValidHandleValue(decoded.release_handle) ||
         (decoded.descendant_ready_handle != 0 &&
          !IsValidHandleValue(decoded.descendant_ready_handle))) {
+        return RuntimePayloadStatus::kInvalidHandle;
+    }
+    const bool standard_streams_absent =
+        decoded.standard_output_handle == 0 &&
+        decoded.standard_error_handle == 0;
+    const bool standard_streams_valid =
+        IsValidHandleValue(decoded.standard_output_handle) &&
+        IsValidHandleValue(decoded.standard_error_handle);
+    if (!standard_streams_absent && !standard_streams_valid) {
+        return RuntimePayloadStatus::kInvalidHandle;
+    }
+    if (!IsValidHandleValue(decoded.event_sequence_handle) ||
+        !IsValidHandleValue(decoded.event_write_mutex_handle)) {
         return RuntimePayloadStatus::kInvalidHandle;
     }
     const bool dns_key_zero = std::all_of(

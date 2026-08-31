@@ -99,6 +99,8 @@ class SuspendedProcess final {
     bool initialization_started_ = false;
     bool resumed_ = false;
     HANDLE release_event_ = nullptr;
+    HANDLE standard_output_ = nullptr;
+    HANDLE standard_error_ = nullptr;
 };
 
 }  // namespace bolt::common

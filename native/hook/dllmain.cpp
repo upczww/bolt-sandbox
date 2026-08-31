@@ -89,7 +89,9 @@ RuntimeInitializationStatus InitializeRuntime(const HINSTANCE instance) noexcept
         !bolt::process::ConfigureProcessRuntime(payload, hook_path.data())) {
         return failed();
     }
-    if (bolt::hook::InitializeEventSink(event_handle) !=
+    if (bolt::hook::InitializeEventSink(
+            event_handle, HandleFromWire(payload.event_sequence_handle),
+            HandleFromWire(payload.event_write_mutex_handle)) !=
         bolt::hook::EventSinkStatus::kSuccess) {
         return failed();
     }
@@ -101,12 +103,8 @@ RuntimeInitializationStatus InitializeRuntime(const HINSTANCE instance) noexcept
     const auto file_hook_status =
         bolt::filesystem::InstallFileHooks(
             policy, payload.policy_length,
-            payload.descendant_ready_handle == 0
-                ? GetStdHandle(STD_OUTPUT_HANDLE)
-                : nullptr,
-            payload.descendant_ready_handle == 0
-                ? GetStdHandle(STD_ERROR_HANDLE)
-                : nullptr);
+            HandleFromWire(payload.standard_output_handle),
+            HandleFromWire(payload.standard_error_handle));
     const auto network_hook_status =
         file_hook_status == bolt::filesystem::HookInstallStatus::kSuccess
             ? bolt::network::InstallNetworkHooks(

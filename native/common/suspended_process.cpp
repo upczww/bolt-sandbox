@@ -193,6 +193,8 @@ ProcessStatus SuspendedProcess::Create(
     output.initialization_started_ = false;
     output.resumed_ = false;
     output.release_event_ = nullptr;
+    output.standard_output_ = options.standard_output;
+    output.standard_error_ = options.standard_error;
     return ProcessStatus::kSuccess;
 }
 
@@ -287,6 +289,44 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
             SYNCHRONIZE, FALSE, 0)) {
         return ProcessStatus::kInvalidRuntimePayload;
     }
+    const HANDLE sequence_mapping = CreateFileMappingW(
+        INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(LONG64),
+        nullptr);
+    const HANDLE sequence_mutex = CreateMutexW(nullptr, FALSE, nullptr);
+    auto* sequence = sequence_mapping == nullptr
+                         ? nullptr
+                         : static_cast<volatile LONG64*>(MapViewOfFile(
+                               sequence_mapping,
+                               FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+                               sizeof(LONG64)));
+    HANDLE remote_sequence_mapping = nullptr;
+    HANDLE remote_sequence_mutex = nullptr;
+    const bool sequence_ready =
+        sequence_mapping != nullptr && sequence_mutex != nullptr &&
+        sequence != nullptr;
+    if (sequence_ready) {
+        InterlockedExchange64(sequence, 0);
+    }
+    const bool sequence_duplicated = sequence_ready &&
+        DuplicateHandle(
+            GetCurrentProcess(), sequence_mapping, process_,
+            &remote_sequence_mapping, FILE_MAP_READ | FILE_MAP_WRITE, FALSE,
+            0) &&
+        DuplicateHandle(
+            GetCurrentProcess(), sequence_mutex, process_,
+            &remote_sequence_mutex, SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE,
+            0);
+    if (sequence != nullptr) {
+        UnmapViewOfFile(const_cast<LONG64*>(sequence));
+    }
+    CloseHandle(sequence_mapping);
+    CloseHandle(sequence_mutex);
+    if (!sequence_duplicated) {
+        CloseRemoteHandle(process_, remote_release);
+        CloseRemoteHandle(process_, remote_sequence_mapping);
+        CloseRemoteHandle(process_, remote_sequence_mutex);
+        return ProcessStatus::kInvalidRuntimePayload;
+    }
     protocol::RuntimePayload payload{};
     payload.target_process_id = process_id;
     payload.policy_length = static_cast<std::uint32_t>(policy_length);
@@ -295,6 +335,14 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
     payload.release_handle = reinterpret_cast<std::uintptr_t>(remote_release);
     payload.handshake_nonce = nonce;
     payload.descendant_startup_fault = descendant_startup_fault;
+    payload.standard_output_handle =
+        reinterpret_cast<std::uintptr_t>(standard_output_);
+    payload.standard_error_handle =
+        reinterpret_cast<std::uintptr_t>(standard_error_);
+    payload.event_sequence_handle =
+        reinterpret_cast<std::uintptr_t>(remote_sequence_mapping);
+    payload.event_write_mutex_handle =
+        reinterpret_cast<std::uintptr_t>(remote_sequence_mutex);
     if (!dns_absent) {
         payload.dns_request_handle =
             reinterpret_cast<std::uintptr_t>(dns_request_handle);
@@ -310,12 +358,16 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
     if (protocol::DecodeRuntimePayload(encoded.data(), encoded.size(), checked) !=
         protocol::RuntimePayloadStatus::kSuccess) {
         CloseRemoteHandle(process_, remote_release);
+        CloseRemoteHandle(process_, remote_sequence_mapping);
+        CloseRemoteHandle(process_, remote_sequence_mutex);
         return ProcessStatus::kInvalidRuntimePayload;
     }
     if (!DetourCopyPayloadToProcess(
             process_, protocol::kRuntimePayloadGuid, encoded.data(),
             static_cast<DWORD>(encoded.size()))) {
         CloseRemoteHandle(process_, remote_release);
+        CloseRemoteHandle(process_, remote_sequence_mapping);
+        CloseRemoteHandle(process_, remote_sequence_mutex);
         return ProcessStatus::kPayloadCopyFailed;
     }
     payload_installed_ = true;
@@ -411,6 +463,8 @@ void SuspendedProcess::Close() noexcept {
     initialization_started_ = false;
     resumed_ = false;
     release_event_ = nullptr;
+    standard_output_ = nullptr;
+    standard_error_ = nullptr;
     if (process != nullptr && !resumed) {
         TerminateProcess(process, ERROR_PROCESS_ABORTED);
     }

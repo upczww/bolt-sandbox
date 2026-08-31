@@ -50,12 +50,14 @@ struct EventSinkState {
     HANDLE wake_event = nullptr;
     HANDLE idle_event = nullptr;
     HANDLE worker_thread = nullptr;
+    HANDLE sequence_mapping_handle = nullptr;
+    HANDLE write_mutex_handle = nullptr;
+    volatile LONG64* sequence = nullptr;
     EventRecord* records = nullptr;
     std::uint8_t* frame_buffer = nullptr;
     std::size_t head = 0;
     std::size_t tail = 0;
     std::size_t count = 0;
-    std::uint64_t next_sequence = 1;
     std::uint64_t dropped_events = 0;
 };
 
@@ -92,6 +94,20 @@ void FailWriter() noexcept {
     LeaveCriticalSection(&g_state.lock);
 }
 
+bool AcquireWriteSequence(std::uint64_t& sequence) noexcept {
+    const DWORD wait = WaitForSingleObject(g_state.write_mutex_handle, INFINITE);
+    if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
+        return false;
+    }
+    const LONG64 value = InterlockedIncrement64(g_state.sequence);
+    if (value <= 0) {
+        ReleaseMutex(g_state.write_mutex_handle);
+        return false;
+    }
+    sequence = static_cast<std::uint64_t>(value);
+    return true;
+}
+
 DWORD WINAPI EventWriterThread(LPVOID parameter) noexcept {
     static_cast<void>(parameter);
     for (;;) {
@@ -102,7 +118,6 @@ DWORD WINAPI EventWriterThread(LPVOID parameter) noexcept {
         for (;;) {
             bool write_dropped_summary = false;
             std::uint64_t dropped_count = 0;
-            std::uint64_t dropped_sequence = 0;
             EnterCriticalSection(&g_state.lock);
             if (g_state.count == 0) {
                 if (g_state.dropped_events == 0) {
@@ -113,7 +128,6 @@ DWORD WINAPI EventWriterThread(LPVOID parameter) noexcept {
                 write_dropped_summary = true;
                 dropped_count = g_state.dropped_events;
                 g_state.dropped_events = 0;
-                dropped_sequence = g_state.next_sequence++;
             }
             const EventRecord* queued = write_dropped_summary
                                             ? nullptr
@@ -123,43 +137,48 @@ DWORD WINAPI EventWriterThread(LPVOID parameter) noexcept {
             std::size_t frame_length = 0;
             protocol::FrameEncodeStatus encode_status =
                 protocol::FrameEncodeStatus::kInvalidArgument;
+            std::uint64_t sequence = 0;
+            if (!AcquireWriteSequence(sequence)) {
+                FailWriter();
+                return 1;
+            }
             if (write_dropped_summary) {
                 encode_status = protocol::EncodeEventsDroppedFrame(
-                    GetCurrentProcessId(), dropped_count, dropped_sequence,
+                    GetCurrentProcessId(), dropped_count, sequence,
                     g_state.frame_buffer, kMaximumFrameLength, frame_length);
             } else {
                 switch (queued->kind) {
                     case EventRecordKind::kFilesystem:
                         encode_status = protocol::EncodeFilesystemViolationFrame(
                             queued->process_id, queued->operation, queued->path,
-                            queued->sequence, g_state.frame_buffer,
+                            sequence, g_state.frame_buffer,
                             kMaximumFrameLength, frame_length);
                         break;
                     case EventRecordKind::kProcess:
                         encode_status = protocol::EncodeProcessViolationFrame(
                             queued->process_id, queued->process_operation,
-                            queued->sequence, g_state.frame_buffer,
+                            sequence, g_state.frame_buffer,
                             kMaximumFrameLength, frame_length);
                         break;
                     case EventRecordKind::kChildInjectionFailure:
                         encode_status =
                             protocol::EncodeChildInjectionFailureFrame(
                                 queued->process_id, queued->child_process_id,
-                                queued->child_failure_reason, queued->sequence,
+                                queued->child_failure_reason, sequence,
                                 g_state.frame_buffer, kMaximumFrameLength,
                                 frame_length);
                         break;
                     case EventRecordKind::kRegistry:
                         encode_status = protocol::EncodeRegistryViolationFrame(
                             queued->process_id, queued->registry_operation,
-                            queued->registry_key, queued->sequence,
+                            queued->registry_key, sequence,
                             g_state.frame_buffer, kMaximumFrameLength,
                             frame_length);
                         break;
                     case EventRecordKind::kNetwork:
                         encode_status = protocol::EncodeNetworkViolationFrame(
                             queued->process_id, queued->network_operation,
-                            queued->network_endpoint, queued->sequence,
+                            queued->network_endpoint, sequence,
                             g_state.frame_buffer, kMaximumFrameLength,
                             frame_length);
                         break;
@@ -167,14 +186,19 @@ DWORD WINAPI EventWriterThread(LPVOID parameter) noexcept {
                         encode_status =
                             protocol::EncodeDomainNetworkViolationFrame(
                                 queued->process_id, queued->network_operation,
-                                queued->domain, queued->sequence,
+                                queued->domain, sequence,
                                 g_state.frame_buffer, kMaximumFrameLength,
                                 frame_length);
                         break;
                 }
             }
-            if (encode_status != protocol::FrameEncodeStatus::kSuccess ||
-                !WriteExact(g_state.event_handle, g_state.frame_buffer, frame_length)) {
+            const bool written =
+                encode_status == protocol::FrameEncodeStatus::kSuccess &&
+                WriteExact(
+                    g_state.event_handle, g_state.frame_buffer, frame_length);
+            const bool released =
+                ReleaseMutex(g_state.write_mutex_handle) != FALSE;
+            if (!written || !released) {
                 FailWriter();
                 return 1;
             }
@@ -208,11 +232,53 @@ std::size_t BoundedPathLength(const wchar_t* path) noexcept {
 
 }  // namespace
 
-EventSinkStatus InitializeEventSink(const HANDLE event_handle) noexcept {
+EventSinkStatus InitializeEventSink(
+    const HANDLE event_handle,
+    const HANDLE sequence_mapping_handle,
+    const HANDLE write_mutex_handle) noexcept {
     DWORD handle_flags = 0;
     if (event_handle == nullptr || event_handle == INVALID_HANDLE_VALUE ||
         !GetHandleInformation(event_handle, &handle_flags)) {
         return EventSinkStatus::kInvalidHandle;
+    }
+    const bool shared_sequence_absent =
+        sequence_mapping_handle == nullptr && write_mutex_handle == nullptr;
+    if (!shared_sequence_absent &&
+        (sequence_mapping_handle == nullptr ||
+         sequence_mapping_handle == INVALID_HANDLE_VALUE ||
+         write_mutex_handle == nullptr ||
+         write_mutex_handle == INVALID_HANDLE_VALUE ||
+         !GetHandleInformation(sequence_mapping_handle, &handle_flags) ||
+         !GetHandleInformation(write_mutex_handle, &handle_flags))) {
+        return EventSinkStatus::kInvalidHandle;
+    }
+    HANDLE selected_mapping = sequence_mapping_handle;
+    HANDLE selected_mutex = write_mutex_handle;
+    if (shared_sequence_absent) {
+        selected_mapping = CreateFileMappingW(
+            INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+            sizeof(LONG64), nullptr);
+        selected_mutex = CreateMutexW(nullptr, FALSE, nullptr);
+    }
+    auto* sequence = selected_mapping == nullptr
+                         ? nullptr
+                         : static_cast<volatile LONG64*>(MapViewOfFile(
+                               selected_mapping,
+                               FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+                               sizeof(LONG64)));
+    if (selected_mapping == nullptr || selected_mutex == nullptr ||
+        sequence == nullptr) {
+        if (sequence != nullptr) {
+            UnmapViewOfFile(const_cast<LONG64*>(sequence));
+        }
+        if (shared_sequence_absent) {
+            CloseHandle(selected_mapping);
+            CloseHandle(selected_mutex);
+        }
+        return EventSinkStatus::kSynchronizationFailed;
+    }
+    if (shared_sequence_absent) {
+        InterlockedExchange64(sequence, 0);
     }
     if (InterlockedCompareExchange(&g_state.initialization_state, -1, 0) != 0) {
         return EventSinkStatus::kAlreadyInitialized;
@@ -237,6 +303,9 @@ EventSinkStatus InitializeEventSink(const HANDLE event_handle) noexcept {
         return EventSinkStatus::kSynchronizationFailed;
     }
     g_state.event_handle = event_handle;
+    g_state.sequence_mapping_handle = selected_mapping;
+    g_state.write_mutex_handle = selected_mutex;
+    g_state.sequence = sequence;
     g_state.worker_thread = CreateThread(nullptr, 0, EventWriterThread, nullptr, 0, nullptr);
     if (g_state.worker_thread == nullptr) {
         InterlockedExchange(&g_state.initialization_state, 0);
@@ -311,7 +380,6 @@ bool TryReportFilesystemViolation(
     record.kind = EventRecordKind::kFilesystem;
     record.process_id = GetCurrentProcessId();
     record.operation = operation;
-    record.sequence = g_state.next_sequence++;
     record.path_length = path_length;
     std::copy_n(path, path_length + 1U, record.path);
     g_state.tail = (g_state.tail + 1U) % kQueueCapacity;
@@ -338,7 +406,6 @@ bool TryReportProcessViolation(
     record.kind = EventRecordKind::kProcess;
     record.process_id = GetCurrentProcessId();
     record.process_operation = operation;
-    record.sequence = g_state.next_sequence++;
     record.path_length = 0;
     record.path[0] = L'\0';
     g_state.tail = (g_state.tail + 1U) % kQueueCapacity;
@@ -371,7 +438,6 @@ bool TryReportRegistryViolation(
     record.kind = EventRecordKind::kRegistry;
     record.process_id = GetCurrentProcessId();
     record.registry_operation = operation;
-    record.sequence = g_state.next_sequence++;
     std::copy_n(key, key_length + 1U, record.registry_key);
     record.path_length = 0;
     record.path[0] = L'\0';
@@ -403,7 +469,6 @@ bool TryReportChildInjectionFailure(
     record.process_id = GetCurrentProcessId();
     record.child_process_id = child_process_id;
     record.child_failure_reason = reason;
-    record.sequence = g_state.next_sequence++;
     record.path_length = 0;
     record.path[0] = L'\0';
     g_state.tail = (g_state.tail + 1U) % kQueueCapacity;
@@ -432,7 +497,6 @@ bool TryReportNetworkViolation(
     record.process_id = GetCurrentProcessId();
     record.network_operation = operation;
     record.network_endpoint = endpoint;
-    record.sequence = g_state.next_sequence++;
     record.path_length = 0;
     record.path[0] = L'\0';
     g_state.tail = (g_state.tail + 1U) % kQueueCapacity;
@@ -465,7 +529,6 @@ bool TryReportDomainNetworkViolation(
     record.kind = EventRecordKind::kNetworkDomain;
     record.process_id = GetCurrentProcessId();
     record.network_operation = operation;
-    record.sequence = g_state.next_sequence++;
     std::copy_n(ascii_domain, domain_length + 1U, record.domain);
     record.path_length = 0;
     record.path[0] = L'\0';

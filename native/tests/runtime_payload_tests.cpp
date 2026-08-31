@@ -23,6 +23,10 @@ bool RunRuntimePayloadTests() {
     expected.descendant_startup_fault =
         bolt::protocol::RuntimeStartupFault::kMitigationFailure;
     expected.isolated_console = true;
+    expected.standard_output_handle = 0x777;
+    expected.standard_error_handle = 0x888;
+    expected.event_sequence_handle = 0x999;
+    expected.event_write_mutex_handle = 0xAAA;
 
     const auto encoded = bolt::protocol::EncodeRuntimePayload(expected);
     bolt::protocol::RuntimePayload decoded{};
