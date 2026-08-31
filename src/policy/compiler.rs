@@ -2478,4 +2478,21 @@ mod tests {
         assert_eq!(quota.reserve(u64::MAX), Ok(()));
         assert_eq!(quota.reserve(1), Err(RecoveryQuotaError::CounterOverflow));
     }
+
+    #[test]
+    fn rec_015_recovery_namespace_deny_overrides_broad_request_grant() {
+        let mut policy = recovery_policy(1_024, 4);
+        policy.filesystem.read_write.push(PathBuf::from(r"C:\"));
+
+        let compiled =
+            compile(&policy, Path::new(r"C:\work")).expect("valid recovery policy must compile");
+
+        assert_eq!(
+            compiled.filesystem.decide(
+                Path::new(r"C:\trusted-recovery\artifact.bin"),
+                FilesystemAccess::Write
+            ),
+            FilesystemDecision::Deny
+        );
+    }
 }

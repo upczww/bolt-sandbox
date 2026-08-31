@@ -335,3 +335,68 @@ fn recovery_files(root: &Path) -> Vec<PathBuf> {
     }
     files
 }
+
+#[test]
+fn rec_002_truncate_backs_up_complete_pre_mutation_content() {
+    let Some((sandbox, component_root)) = configured_sandbox() else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let fixture_root = std::env::temp_dir().join(format!(
+        "bolt-sandbox-recovery-truncate-{}-{fixture_id}",
+        std::process::id()
+    ));
+    let work = fixture_root.join("work");
+    let recovery = fixture_root.join("recovery");
+    fs::create_dir_all(&work).expect("work directory must be created");
+    fs::create_dir_all(&recovery).expect("recovery directory must be created");
+    let source = work.join("truncate-me.bin");
+    let expected = b"truncate-complete-content";
+    fs::write(&source, expected).expect("source fixture must be written");
+    let policy = SandboxPolicy {
+        recovery: RecoveryPolicy::Enabled(RecoveryLimits {
+            directory: recovery.clone(),
+            maximum_bytes: 1_048_576,
+            maximum_items: 16,
+        }),
+        ..SandboxPolicy::default()
+    };
+    let mut handle = sandbox
+        .start(SandboxRequest {
+            program: component_root.join("bolt-sandbox-native-tests.exe"),
+            arguments: vec![
+                OsString::from("--recovery-truncate-fixture"),
+                source.as_os_str().to_os_string(),
+            ],
+            cwd: work,
+            environment: BTreeMap::new(),
+            policy,
+            timeout: Some(Duration::from_secs(5)),
+        })
+        .expect("truncate fixture must start");
+    let stdout = handle.take_stdout().expect("stdout is available");
+    let stderr = handle.take_stderr().expect("stderr is available");
+    let events = handle.take_events().expect("events are available");
+    let (_stdout, _stderr, events, result) = collect_execution(handle, stdout, stderr, events);
+
+    assert_eq!(
+        fs::read(&source).expect("truncated source must exist"),
+        &expected[..4]
+    );
+    let recovered = recovery_files(&recovery);
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(
+        fs::read(&recovered[0]).expect("backup must be readable"),
+        expected
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        SandboxEvent::RecoveryArtifactCreated(artifact)
+            if artifact.original_path == source && artifact.byte_count == expected.len() as u64
+    )));
+    assert!(matches!(
+        result.terminal,
+        ExecutionTerminal::Process(ref exit) if exit.exit_code == Some(0)
+    ));
+    fs::remove_dir_all(fixture_root).expect("truncate fixture must clean up");
+}
