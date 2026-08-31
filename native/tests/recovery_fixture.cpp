@@ -37,3 +37,20 @@ int RunRecoveryTruncateFixture(
     CloseHandle(file);
     return truncated ? 0 : 339;
 }
+
+int RunRecoveryReplaceRenameFixture(
+    const int argument_count,
+    wchar_t** arguments) noexcept {
+    if (argument_count != 6) {
+        return 340;
+    }
+    if (!ReplaceFileW(
+            arguments[2], arguments[3], nullptr, 0, nullptr, nullptr)) {
+        return 341;
+    }
+    if (!MoveFileExW(
+            arguments[4], arguments[5], MOVEFILE_REPLACE_EXISTING)) {
+        return 342;
+    }
+    return 0;
+}

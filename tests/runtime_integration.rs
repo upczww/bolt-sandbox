@@ -400,3 +400,87 @@ fn rec_002_truncate_backs_up_complete_pre_mutation_content() {
     ));
     fs::remove_dir_all(fixture_root).expect("truncate fixture must clean up");
 }
+
+#[test]
+fn rec_003_replace_and_overwrite_rename_preserve_destroyed_objects() {
+    let Some((sandbox, component_root)) = configured_sandbox() else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let fixture_root = std::env::temp_dir().join(format!(
+        "bolt-sandbox-recovery-replace-{}-{fixture_id}",
+        std::process::id()
+    ));
+    let work = fixture_root.join("work");
+    let recovery = fixture_root.join("recovery");
+    fs::create_dir_all(&work).expect("work directory must be created");
+    fs::create_dir_all(&recovery).expect("recovery directory must be created");
+    let replaced = work.join("replaced.bin");
+    let replacement = work.join("replacement.bin");
+    let move_source = work.join("move-source.bin");
+    let move_destination = work.join("move-destination.bin");
+    fs::write(&replaced, b"replaced-original").expect("replaced fixture must be written");
+    fs::write(&replacement, b"replacement-new").expect("replacement fixture must be written");
+    fs::write(&move_source, b"move-new").expect("move source must be written");
+    fs::write(&move_destination, b"move-original").expect("move target must be written");
+    let policy = SandboxPolicy {
+        recovery: RecoveryPolicy::Enabled(RecoveryLimits {
+            directory: recovery.clone(),
+            maximum_bytes: 1_048_576,
+            maximum_items: 16,
+        }),
+        ..SandboxPolicy::default()
+    };
+    let mut handle = sandbox
+        .start(SandboxRequest {
+            program: component_root.join("bolt-sandbox-native-tests.exe"),
+            arguments: vec![
+                OsString::from("--recovery-replace-rename-fixture"),
+                replaced.as_os_str().to_os_string(),
+                replacement.as_os_str().to_os_string(),
+                move_source.as_os_str().to_os_string(),
+                move_destination.as_os_str().to_os_string(),
+            ],
+            cwd: work,
+            environment: BTreeMap::new(),
+            policy,
+            timeout: Some(Duration::from_secs(5)),
+        })
+        .expect("replace and rename fixture must start");
+    let stdout = handle.take_stdout().expect("stdout is available");
+    let stderr = handle.take_stderr().expect("stderr is available");
+    let events = handle.take_events().expect("events are available");
+    let (_stdout, _stderr, events, result) = collect_execution(handle, stdout, stderr, events);
+
+    assert_eq!(
+        fs::read(&replaced).expect("replacement must land"),
+        b"replacement-new"
+    );
+    assert_eq!(
+        fs::read(&move_destination).expect("move source must land"),
+        b"move-new"
+    );
+    let mut recovered_contents: Vec<Vec<u8>> = recovery_files(&recovery)
+        .iter()
+        .map(|path| fs::read(path).expect("backup must be readable"))
+        .collect();
+    recovered_contents.sort();
+    assert_eq!(
+        recovered_contents,
+        vec![b"move-original".to_vec(), b"replaced-original".to_vec()]
+    );
+    let recovered_paths: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            SandboxEvent::RecoveryArtifactCreated(artifact) => Some(artifact.original_path.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(recovered_paths.contains(&replaced));
+    assert!(recovered_paths.contains(&move_destination));
+    assert!(matches!(
+        result.terminal,
+        ExecutionTerminal::Process(ref exit) if exit.exit_code == Some(0)
+    ));
+    fs::remove_dir_all(fixture_root).expect("replace fixture must clean up");
+}
