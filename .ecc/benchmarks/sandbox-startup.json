@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-31",
+  "configuration": "Debug",
+  "metric": "sandbox startup including process creation, injection, Ready handshake, release, and target exit",
+  "target_milliseconds": 100,
+  "samples": {
+    "x64": {
+      "cold": 28,
+      "warm": [26, 26, 26, 28, 26],
+      "warm_max": 28
+    },
+    "x86": {
+      "cold": 35,
+      "warm": [26, 26, 27, 26, 26],
+      "warm_max": 27
+    }
+  }
+}

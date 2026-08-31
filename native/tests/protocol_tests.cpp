@@ -30,6 +30,7 @@ int RunJobTreeParent(int argument_count, wchar_t** arguments);
 int RunIgnoreGracefulChild(int argument_count, wchar_t** arguments);
 bool RunNamedPipeTests();
 bool RunProcessTests();
+bool RunProcessStartupLatencyTests();
 bool RunDetoursTests();
 bool RunEventFrameTests();
 bool RunPolicyMappingTests();
@@ -308,6 +309,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count == 2 &&
         std::wstring(arguments[1]) == L"--filesystem-race-tests") {
         return RunFilesystemRaceTests() ? 0 : 1;
+    }
+    if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--process-startup-latency-tests") {
+        return RunProcessStartupLatencyTests() ? 0 : 1;
     }
     if (argument_count == 2 &&
         std::wstring(arguments[1]) == L"--shell-file-operation-tests") {

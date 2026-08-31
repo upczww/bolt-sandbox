@@ -1590,6 +1590,10 @@ HookInstallStatus InstallNetworkHooks(
         PolicyLoadStatus::kValid) {
         return HookInstallStatus::kInvalidPolicy;
     }
+    if (policy->mode() == Mode::kUnrestricted) {
+        g_policy = std::move(policy);
+        return HookInstallStatus::kSuccess;
+    }
     std::unique_ptr<DnsBindingTable> bindings;
     std::unique_ptr<DnsProxyClientChannel> channel;
     std::unique_ptr<SocketTargetTable> socket_targets;

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -2680,9 +2681,15 @@ int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
     constexpr std::uint32_t already_initialized = 1;
     const std::uint32_t hook_count_before =
         installed_hook_count == nullptr ? 0 : installed_hook_count();
+    constexpr std::uint32_t required_filesystem_hook_count = 75;
+    const bool copy_file_2_present =
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CopyFile2") != nullptr;
+    const std::uint32_t expected_hook_count =
+        required_filesystem_hook_count + (copy_file_2_present ? 1U : 0U);
     if (initialize_runtime == nullptr || installed_hook_count == nullptr ||
         initialize_runtime() != already_initialized ||
-        installed_hook_count() != hook_count_before || hook_count_before != 75 ||
+        installed_hook_count() != hook_count_before ||
+        hook_count_before != expected_hook_count ||
         !initialized()) {
         return 311;
     }
@@ -3471,7 +3478,7 @@ int RunCrossArchitectureProcessParent(
             FALSE, 0, nullptr, nullptr, &startup, &process)) {
         return 232;
     }
-    const DWORD wait = WaitForSingleObject(process.hProcess, 10'000);
+    const DWORD wait = WaitForSingleObject(process.hProcess, 2'000);
     DWORD exit_code = 0;
     const bool exited = wait == WAIT_OBJECT_0 &&
                         GetExitCodeProcess(process.hProcess, &exit_code) != FALSE;
@@ -3655,6 +3662,7 @@ bool RunInheritedProcessTest(
         inherited.size(), 0};
     bolt::common::SuspendedProcess process;
     bolt::common::ExecutionJob job;
+    const auto initialization_started_at = std::chrono::steady_clock::now();
     const bool initialized =
         bolt::common::ExecutionJob::Create(job) == bolt::common::JobStatus::kSuccess &&
         bolt::common::SuspendedProcess::Create(options, process) ==
@@ -3665,19 +3673,29 @@ bool RunInheritedProcessTest(
             bolt::common::ProcessStatus::kSuccess &&
         process.Inject(hook_path.string()) == bolt::common::ProcessStatus::kSuccess &&
         process.BeginHookInitialization() == bolt::common::ProcessStatus::kSuccess;
+    const auto initialization_finished_at = std::chrono::steady_clock::now();
     CloseHandle(event_client);
     std::array<std::uint8_t, bolt::protocol::kReadyFrameLength> ready{};
     DWORD bytes_read = 0;
-    const bool ready_ok = initialized &&
-                          ReadFile(
-                              event_pipe.handle(), ready.data(),
-                              static_cast<DWORD>(ready.size()), &bytes_read, nullptr) != FALSE &&
-                          bytes_read == ready.size() &&
-                          bolt::protocol::ValidateReadyFrame(
-                              ready.data(), ready.size(), nonce) ==
-                              bolt::protocol::ReadyFrameStatus::kSuccess &&
-                          process.ReleaseAfterReady() == bolt::common::ProcessStatus::kSuccess &&
-                          process.Wait(10'000) == bolt::common::ProcessStatus::kSuccess;
+    const bool ready_frame_ok =
+        initialized &&
+        ReadFile(
+            event_pipe.handle(), ready.data(), static_cast<DWORD>(ready.size()),
+            &bytes_read, nullptr) != FALSE &&
+        bytes_read == ready.size() &&
+        bolt::protocol::ValidateReadyFrame(
+            ready.data(), ready.size(), nonce) ==
+            bolt::protocol::ReadyFrameStatus::kSuccess;
+    const auto ready_received_at = std::chrono::steady_clock::now();
+    const bool released =
+        ready_frame_ok &&
+        process.ReleaseAfterReady() == bolt::common::ProcessStatus::kSuccess;
+    const auto wait_status = released
+                                 ? process.Wait(10'000)
+                                 : bolt::common::ProcessStatus::kInvalidState;
+    const auto process_finished_at = std::chrono::steady_clock::now();
+    const bool ready_ok =
+        released && wait_status == bolt::common::ProcessStatus::kSuccess;
     const auto parent_process_id = static_cast<std::uint32_t>(
         GetProcessId(process.process_handle()));
     bool parent_exit_descendant_ok = true;
@@ -3749,12 +3767,13 @@ bool RunInheritedProcessTest(
              event_pipe.handle(), parent_process_id,
              external_delegation_operation, 11));
     DWORD exit_code = 0;
+    const auto exit_status = process.ExitCode(exit_code);
     const bool passed = ready_ok && parent_exit_descendant_ok &&
                         compatibility_event_ok &&
                         breakaway_event_ok &&
                         mitigation_weakening_events_ok &&
                         external_delegation_events_ok &&
-                        process.ExitCode(exit_code) == bolt::common::ProcessStatus::kSuccess &&
+                        exit_status == bolt::common::ProcessStatus::kSuccess &&
                         exit_code == 0;
     if (!passed) {
         std::fprintf(
@@ -3764,6 +3783,26 @@ bool RunInheritedProcessTest(
             parent_exit_descendant_ok ? 1 : 0,
             compatibility_event_ok ? 1 : 0, breakaway_event_ok ? 1 : 0,
             mitigation_weakening_events_ok ? 1 : 0);
+        std::fprintf(
+            stderr,
+            "process timing: initialize=%lld ready=%lld total=%lld wait_status=%u exit_status=%u\n",
+            static_cast<long long>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    initialization_finished_at - initialization_started_at)
+                    .count()),
+            static_cast<long long>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    ready_received_at - initialization_finished_at)
+                    .count()),
+            static_cast<long long>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    process_finished_at - initialization_started_at)
+                    .count()),
+            static_cast<unsigned>(wait_status),
+            static_cast<unsigned>(exit_status));
+        std::fwprintf(
+            stderr, L"process fixture arguments: %ls\n",
+            parent_arguments.empty() ? L"<main>" : parent_arguments.c_str());
     }
     CloseHandle(release);
     return passed;
@@ -3791,6 +3830,44 @@ bool RunUnicodeLaunchPathTest(
         PipeName(GetCurrentProcessId() ^ 0x5100'0022U), arguments, 0x64);
     std::filesystem::remove_all(staged_directory, error);
     return passed;
+}
+
+bool RunStartupLatencyTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const wchar_t* hook_name) {
+    constexpr std::size_t sample_count = 6;
+    constexpr auto warm_limit = std::chrono::milliseconds(100);
+    std::array<std::chrono::milliseconds, sample_count> samples{};
+    const std::wstring arguments =
+        L"--nested-process " + std::wstring(hook_name) + L" 0";
+    for (std::size_t index = 0; index < sample_count; ++index) {
+        const auto start = std::chrono::steady_clock::now();
+        const bool passed = RunInheritedProcessTest(
+            executable, hook_path, hook_name,
+            PipeName(
+                GetCurrentProcessId() ^
+                (0x5100'1000U + static_cast<DWORD>(index))),
+            arguments, static_cast<std::uint8_t>(0x80U + index));
+        samples[index] = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start);
+        if (!passed) {
+            return false;
+        }
+    }
+    const auto warm_maximum = *std::max_element(samples.begin() + 1, samples.end());
+    std::fprintf(stderr, "sandbox startup samples:");
+    for (const auto sample : samples) {
+        std::fprintf(
+            stderr, " %lld", static_cast<long long>(sample.count()));
+    }
+    std::fprintf(stderr, " ms (warm max=%lld ms)\n",
+                 static_cast<long long>(warm_maximum.count()));
+    if (warm_maximum >= warm_limit) {
+        std::fprintf(stderr, "warm sandbox startup exceeded 100 ms\n");
+        return false;
+    }
+    return true;
 }
 
 std::wstring FindCompatibilityTool(
@@ -5127,4 +5204,19 @@ bool RunProcessTests() {
     bolt::common::SuspendedProcess rejected;
     const auto breakaway_status = bolt::common::SuspendedProcess::Create(breakaway, rejected);
     return breakaway_status == bolt::common::ProcessStatus::kUnsupportedFlags;
+}
+
+bool RunProcessStartupLatencyTests() {
+    const std::wstring executable = CurrentExecutable();
+    if (executable.empty()) {
+        return false;
+    }
+#if defined(_WIN64)
+    constexpr auto hook_name = L"bolt-sandbox-x64.dll";
+#else
+    constexpr auto hook_name = L"bolt-sandbox-x86.dll";
+#endif
+    const auto hook_path =
+        std::filesystem::path(executable).parent_path() / hook_name;
+    return RunStartupLatencyTest(executable, hook_path, hook_name);
 }
