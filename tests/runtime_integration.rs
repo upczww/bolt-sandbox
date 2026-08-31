@@ -8,8 +8,9 @@ use std::{
 };
 
 use bolt_sandbox::{
-    ExecutionTerminal, InfrastructureFailure, ProcessExitReason, ReceiverLoss, RecoveryLimits,
-    RecoveryPolicy, Sandbox, SandboxConfig, SandboxEvent, SandboxPolicy, SandboxRequest,
+    ExecutionTerminal, InfrastructureFailure, ProcessExitReason, ReceiverLoss,
+    RecoveryFailureReason, RecoveryLimits, RecoveryPolicy, Sandbox, SandboxConfig, SandboxEvent,
+    SandboxPolicy, SandboxRequest,
 };
 
 const STREAM_BYTES: usize = 256 * 1_024;
@@ -544,4 +545,76 @@ fn rec_019_target_cannot_write_directly_to_recovery_channel() {
         ExecutionTerminal::Process(ref exit) if exit.exit_code == Some(346)
     ));
     fs::remove_dir_all(fixture_root).expect("authority fixture must clean up");
+}
+
+#[test]
+fn rec_006_007_exact_quota_succeeds_and_next_byte_reports_typed_failure() {
+    let Some((sandbox, component_root)) = configured_sandbox() else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let fixture_root = std::env::temp_dir().join(format!(
+        "bolt-sandbox-recovery-quota-{}-{fixture_id}",
+        std::process::id()
+    ));
+    let work = fixture_root.join("work");
+    let recovery = fixture_root.join("recovery");
+    fs::create_dir_all(&work).expect("work directory must be created");
+    fs::create_dir_all(&recovery).expect("recovery directory must be created");
+    let exact = work.join("exact.bin");
+    let over = work.join("over.bin");
+    fs::write(&exact, b"1234").expect("exact fixture must be written");
+    fs::write(&over, b"5").expect("over fixture must be written");
+    let policy = SandboxPolicy {
+        recovery: RecoveryPolicy::Enabled(RecoveryLimits {
+            directory: recovery.clone(),
+            maximum_bytes: 4,
+            maximum_items: 2,
+        }),
+        ..SandboxPolicy::default()
+    };
+    let mut handle = sandbox
+        .start(SandboxRequest {
+            program: component_root.join("bolt-sandbox-native-tests.exe"),
+            arguments: vec![
+                OsString::from("--recovery-delete-two-fixture"),
+                exact.as_os_str().to_os_string(),
+                over.as_os_str().to_os_string(),
+            ],
+            cwd: work,
+            environment: BTreeMap::new(),
+            policy,
+            timeout: Some(Duration::from_secs(5)),
+        })
+        .expect("quota fixture must start");
+    let stdout = handle.take_stdout().expect("stdout is available");
+    let stderr = handle.take_stderr().expect("stderr is available");
+    let events = handle.take_events().expect("events are available");
+    let (_stdout, _stderr, events, result) = collect_execution(handle, stdout, stderr, events);
+
+    assert!(!exact.exists());
+    assert!(!over.exists());
+    let recovered = recovery_files(&recovery);
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(
+        fs::read(&recovered[0]).expect("exact backup must exist"),
+        b"1234"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, SandboxEvent::RecoveryArtifactCreated(_)))
+            .count(),
+        1
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        SandboxEvent::RecoveryFailed(failure)
+            if failure.reason == RecoveryFailureReason::QuotaExceeded
+    )));
+    assert!(matches!(
+        result.terminal,
+        ExecutionTerminal::Process(ref exit) if exit.exit_code == Some(0)
+    ));
+    fs::remove_dir_all(fixture_root).expect("quota fixture must clean up");
 }

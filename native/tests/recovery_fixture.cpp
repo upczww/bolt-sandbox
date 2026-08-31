@@ -159,3 +159,15 @@ int RunUnauthorizedRecoveryRequestFixture(
     ReleaseMutex(mutex);
     return valid && !decoded.succeeded ? 0 : 346;
 }
+
+int RunRecoveryDeleteTwoFixture(
+    const int argument_count,
+    wchar_t** arguments) noexcept {
+    if (argument_count != 4) {
+        return 347;
+    }
+    if (!DeleteFileW(arguments[2])) {
+        return 348;
+    }
+    return DeleteFileW(arguments[3]) ? 0 : 349;
+}
