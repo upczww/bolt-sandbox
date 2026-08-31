@@ -2724,9 +2724,29 @@ int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
 int RunArgumentObservationLeaf(
     const int argument_count,
     wchar_t** arguments) {
-    static_cast<void>(argument_count);
-    static_cast<void>(arguments);
-    return 328;
+    if (argument_count != 8) {
+        return 328;
+    }
+    const HMODULE hook = GetModuleHandleW(arguments[2]);
+    const auto initialized = hook == nullptr
+                                 ? nullptr
+                                 : reinterpret_cast<BOOL (*)()>(GetProcAddress(
+                                       hook, "BoltSandboxRuntimeInitialized"));
+    BOOL remains_in_job = FALSE;
+    if (initialized == nullptr || !initialized() ||
+        !HasRequiredProcessMitigations() ||
+        !IsProcessInJob(GetCurrentProcess(), nullptr, &remains_in_job) ||
+        !remains_in_job) {
+        return 329;
+    }
+    constexpr std::array<std::wstring_view, 5> expected = {
+        L"plain", L"space value", L"quote\"value", L"trailing\\", L""};
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        if (std::wstring_view(arguments[index + 3]) != expected[index]) {
+            return 330;
+        }
+    }
+    return 0;
 }
 
 int RunNestedProcess(const int argument_count, wchar_t** arguments) {
@@ -3882,15 +3902,23 @@ bool RunUnicodeLaunchPathTest(
         long_directory /=
             L"segment-0123456789-" + std::to_wstring(index);
     }
-    const auto long_executable =
-        long_directory / std::filesystem::path(executable).filename();
+    const std::filesystem::path extended_long_directory =
+        L"\\\\?\\" + long_directory.wstring();
+    const auto long_executable = extended_long_directory /
+                                 std::filesystem::path(executable).filename();
     error.clear();
     const bool long_path_ready =
-        std::filesystem::create_directories(long_directory, error) && !error &&
+        std::filesystem::create_directories(extended_long_directory, error) &&
+        !error &&
         std::filesystem::copy_file(
             executable, long_executable,
             std::filesystem::copy_options::overwrite_existing, error) &&
         !error;
+    if (!long_path_ready) {
+        std::fprintf(
+            stderr, "long launch path setup failed: length=%zu error=%d\n",
+            long_executable.wstring().size(), error.value());
+    }
     const std::wstring complex_arguments =
         L"--argument-observation " + std::wstring(hook_name) +
         L" plain \"space value\" \"quote\\\"value\" \"trailing\\\\\" \"\"";
@@ -3901,7 +3929,10 @@ bool RunUnicodeLaunchPathTest(
             PipeName(GetCurrentProcessId() ^ 0x5100'0023U),
             complex_arguments, 0x65);
     std::filesystem::remove_all(staged_directory, error);
-    std::filesystem::remove_all(test_root / L"long launch path", error);
+    std::filesystem::remove_all(
+        std::filesystem::path(L"\\\\?\\" +
+                              (test_root / L"long launch path").wstring()),
+        error);
     return unicode_path_passed && long_path_and_arguments_passed;
 }
 
