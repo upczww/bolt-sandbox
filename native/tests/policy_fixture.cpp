@@ -124,7 +124,8 @@ std::vector<std::uint8_t> SealPolicy(
     const std::vector<FilesystemRule>& filesystem_rules,
     const ChildProcessPolicyKind child_process_policy,
     const NetworkPolicyKind network_policy,
-    const NetworkAllowListRules& network_allow_list) {
+    const NetworkAllowListRules& network_allow_list,
+    const std::vector<RegistryRule>& registry_rules) {
     std::vector<std::uint8_t> body{
         static_cast<std::uint8_t>(child_process_policy)};
     if (!AppendU32(body, filesystem_rules.size())) {
@@ -167,8 +168,21 @@ std::vector<std::uint8_t> SealPolicy(
             AppendU16(body, port.end);
         }
     }
-    if (!AppendU32(body, 0)) {
+    if (!AppendU32(body, registry_rules.size())) {
         return {};
+    }
+    for (const auto& rule : registry_rules) {
+        body.push_back(static_cast<std::uint8_t>(rule.kind));
+        body.push_back(static_cast<std::uint8_t>(rule.hive));
+        if (!AppendU32(body, rule.components.size())) {
+            return {};
+        }
+        for (const auto& component : rule.components) {
+            if (component.empty() || !AppendU32(body, component.size())) {
+                return {};
+            }
+            body.insert(body.end(), component.begin(), component.end());
+        }
     }
 
     std::vector<std::uint8_t> payload(protocol::kPolicyEnvelopeLength, 0);

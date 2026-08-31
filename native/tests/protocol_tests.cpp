@@ -40,6 +40,7 @@ bool RunFilesystemPolicyTests();
 bool RunFilesystemRaceTests();
 bool RunShellFileOperationTests();
 bool RunNetworkPolicyTests();
+bool RunRegistryPolicyTests();
 bool RunHttpConnectPolicyTests();
 bool RunNetworkHookTests();
 bool RunNetworkUnrestrictedTests();
@@ -333,6 +334,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
         return RunNetworkPolicyTests() ? 0 : 1;
     }
     if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--registry-policy-tests") {
+        return RunRegistryPolicyTests() ? 0 : 1;
+    }
+    if (argument_count == 2 &&
         std::wstring(arguments[1]) == L"--http-connect-policy-tests") {
         return RunHttpConnectPolicyTests() ? 0 : 1;
     }
@@ -558,6 +563,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunNetworkPolicyTests()) {
         return 16;
+    }
+    if (!RunRegistryPolicyTests()) {
+        return 48;
     }
     if (!RunHttpConnectPolicyTests()) {
         return 43;

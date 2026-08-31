@@ -272,6 +272,7 @@ add_executable(bolt-sandbox-native-tests
     tests/job_tests.cpp
     tests/named_pipe_tests.cpp
     tests/network_policy_tests.cpp
+    tests/registry_policy_tests.cpp
     tests/http_connect_policy_tests.cpp
     tests/system_dns_resolver_tests.cpp
     tests/network_hook_tests.cpp

@@ -54,11 +54,33 @@ struct NetworkAllowListRules {
     std::vector<NetworkPortRule> ports;
 };
 
+enum class RegistryRuleKind : std::uint8_t {
+    kNoAccess = 0,
+    kReadOnly = 1,
+    kInheritUser = 2,
+    kReadWrite = 3,
+};
+
+enum class RegistryHive : std::uint8_t {
+    kClassesRoot = 0,
+    kCurrentUser = 1,
+    kLocalMachine = 2,
+    kUsers = 3,
+    kCurrentConfig = 4,
+};
+
+struct RegistryRule {
+    RegistryRuleKind kind = RegistryRuleKind::kNoAccess;
+    RegistryHive hive = RegistryHive::kCurrentUser;
+    std::vector<std::string> components;
+};
+
 std::vector<std::uint8_t> SealPolicy(
     const std::vector<FilesystemRule>& filesystem_rules,
     ChildProcessPolicyKind child_process_policy =
         ChildProcessPolicyKind::kInherit,
     NetworkPolicyKind network_policy = NetworkPolicyKind::kUnrestricted,
-    const NetworkAllowListRules& network_allow_list = {});
+    const NetworkAllowListRules& network_allow_list = {},
+    const std::vector<RegistryRule>& registry_rules = {});
 
 }  // namespace bolt::tests
