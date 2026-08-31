@@ -586,7 +586,7 @@ void CALLBACK IoCompletionProbe(
 }  // namespace
 
 int RunProcessChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 41) {
+    if (argument_count != 42) {
         return 80;
     }
     const auto allowed = reinterpret_cast<HANDLE>(_wcstoui64(arguments[2], nullptr, 10));
@@ -652,6 +652,45 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     }
     if (!HasRequiredProcessMitigations()) {
         return 244;
+    }
+    const HANDLE inherited_policy = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[41], nullptr, 10));
+    void* const readable_policy =
+        MapViewOfFile(inherited_policy, FILE_MAP_READ, 0, 0, 0);
+    MEMORY_BASIC_INFORMATION policy_memory{};
+    const bool policy_size_known =
+        readable_policy != nullptr &&
+        VirtualQuery(
+            readable_policy, &policy_memory, sizeof(policy_memory)) ==
+            sizeof(policy_memory) &&
+        policy_memory.RegionSize <= (std::numeric_limits<DWORD>::max)();
+    if (readable_policy != nullptr) {
+        UnmapViewOfFile(readable_policy);
+    }
+    SetLastError(ERROR_SUCCESS);
+    void* const writable_policy =
+        MapViewOfFile(inherited_policy, FILE_MAP_WRITE, 0, 0, 0);
+    const DWORD writable_policy_error = GetLastError();
+    if (!policy_size_known || writable_policy != nullptr ||
+        writable_policy_error != ERROR_ACCESS_DENIED ||
+        !CloseHandle(inherited_policy)) {
+        if (writable_policy != nullptr) {
+            UnmapViewOfFile(writable_policy);
+        }
+        return 331;
+    }
+    const HANDLE fake_policy = CreateFileMappingW(
+        INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+        static_cast<DWORD>(policy_memory.RegionSize), nullptr);
+    const auto initialize_runtime = reinterpret_cast<std::uint32_t (*)()>(
+        GetProcAddress(hook, "BoltSandboxInitializeRuntime"));
+    constexpr std::uint32_t already_initialized = 1;
+    if (fake_policy != inherited_policy || initialize_runtime == nullptr ||
+        initialize_runtime() != already_initialized || !initialized()) {
+        if (fake_policy != nullptr) {
+            CloseHandle(fake_policy);
+        }
+        return 332;
     }
     const HANDLE denied_file = CreateFileW(
         arguments[5], GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -2960,7 +2999,7 @@ int RunCompatibilityParent(const int argument_count, wchar_t** arguments) {
 }
 
 int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 3) {
+    if (argument_count != 4) {
         return 222;
     }
     const HMODULE hook = GetModuleHandleW(arguments[2]);
@@ -2970,6 +3009,32 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
                                        hook, "BoltSandboxRuntimeInitialized"));
     if (initialized == nullptr || !initialized()) {
         return 223;
+    }
+    const HANDLE inherited_policy = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[3], nullptr, 10));
+    void* const readable_policy =
+        MapViewOfFile(inherited_policy, FILE_MAP_READ, 0, 0, 0);
+    MEMORY_BASIC_INFORMATION policy_memory{};
+    const bool policy_size_known =
+        readable_policy != nullptr &&
+        VirtualQuery(
+            readable_policy, &policy_memory, sizeof(policy_memory)) ==
+            sizeof(policy_memory) &&
+        policy_memory.RegionSize <= (std::numeric_limits<DWORD>::max)();
+    if (readable_policy != nullptr) {
+        UnmapViewOfFile(readable_policy);
+    }
+    if (!policy_size_known || !CloseHandle(inherited_policy)) {
+        return 333;
+    }
+    const HANDLE fake_policy = CreateFileMappingW(
+        INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+        static_cast<DWORD>(policy_memory.RegionSize), nullptr);
+    if (fake_policy != inherited_policy) {
+        if (fake_policy != nullptr) {
+            CloseHandle(fake_policy);
+        }
+        return 334;
     }
 
     const std::wstring executable = CurrentExecutable();
@@ -3713,7 +3778,8 @@ bool RunInheritedProcessTest(
 
     const std::wstring command_line = parent_arguments.empty()
                                           ? L"\"" + executable +
-                                                L"\" --inherit-parent " + hook_name
+                                                L"\" --inherit-parent " + hook_name +
+                                                L" " + HandleText(policy.handle())
                                           : L"\"" + executable + L"\" " +
                                                 parent_arguments;
     std::vector<HANDLE> inherited = {policy.handle(), event_client, release};
