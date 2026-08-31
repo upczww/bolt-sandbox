@@ -94,7 +94,8 @@ bool ReadNetworkViolation(
     const std::uint64_t sequence,
     const bolt::protocol::NetworkAddressFamily family,
     const bolt::protocol::NetworkOperation operation =
-        bolt::protocol::NetworkOperation::kConnect) {
+        bolt::protocol::NetworkOperation::kConnect,
+    const std::uint16_t port = 9) {
     bolt::protocol::NetworkEndpoint endpoint{};
     endpoint.family = family;
     if (family == bolt::protocol::NetworkAddressFamily::kIpv4) {
@@ -103,7 +104,7 @@ bool ReadNetworkViolation(
     } else {
         endpoint.address[15] = 1;
     }
-    endpoint.port = 9;
+    endpoint.port = port;
 
     const std::size_t frame_length =
         family == bolt::protocol::NetworkAddressFamily::kIpv4
@@ -417,8 +418,7 @@ bool ServeHttpProxyOnce(
 }  // namespace
 
 int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
-    static_cast<void>(arguments);
-    if (argument_count != 2) {
+    if (argument_count != 3) {
         return 200;
     }
     WSADATA winsock{};
@@ -428,7 +428,8 @@ int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
 
     sockaddr_in endpoint{};
     endpoint.sin_family = AF_INET;
-    endpoint.sin_port = htons(9);
+    endpoint.sin_port = htons(
+        static_cast<std::uint16_t>(_wtoi(arguments[2])));
     endpoint.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     const SOCKET connect_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     const int connect_result =
@@ -438,7 +439,8 @@ int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
 
     sockaddr_in6 ipv6_endpoint{};
     ipv6_endpoint.sin6_family = AF_INET6;
-    ipv6_endpoint.sin6_port = htons(9);
+    ipv6_endpoint.sin6_port = htons(
+        static_cast<std::uint16_t>(_wtoi(arguments[2])));
     ipv6_endpoint.sin6_addr = in6addr_loopback;
     const SOCKET wsa_connect_socket = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
     const int wsa_connect_result = WSAConnect(
@@ -1036,6 +1038,26 @@ bool RunNetworkHookTests() {
         return false;
     }
 
+    WSADATA winsock{};
+    SOCKET sibling_ipv4_listener = INVALID_SOCKET;
+    SOCKET sibling_ipv6_listener = INVALID_SOCKET;
+    std::uint16_t sibling_port = 0;
+    if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0 ||
+        !CreateDualLoopbackListeners(
+            sibling_ipv4_listener, sibling_ipv6_listener, sibling_port)) {
+        CloseHandle(event_client);
+        CloseHandle(release);
+        event_pipe.Close();
+        if (sibling_ipv4_listener != INVALID_SOCKET) {
+            closesocket(sibling_ipv4_listener);
+        }
+        if (sibling_ipv6_listener != INVALID_SOCKET) {
+            closesocket(sibling_ipv6_listener);
+        }
+        WSACleanup();
+        return false;
+    }
+
 #if defined(_WIN64)
     constexpr auto hook_name = L"bolt-sandbox-x64.dll";
 #else
@@ -1044,7 +1066,8 @@ bool RunNetworkHookTests() {
     const std::filesystem::path hook_path =
         std::filesystem::path(executable).parent_path() / hook_name;
     const std::wstring command_line =
-        L"\"" + executable + L"\" --network-hook-child";
+        L"\"" + executable + L"\" --network-hook-child " +
+        std::to_wstring(sibling_port);
     const HANDLE inherited[] = {policy.handle(), event_client, release};
     const bolt::common::ProcessLaunchOptions options{
         executable, command_line, L"", nullptr, inherited, std::size(inherited), 0};
@@ -1084,13 +1107,19 @@ bool RunNetworkHookTests() {
     const bool events_ok = child_ok && process_id != 0 &&
                            ReadNetworkViolation(
                                event_pipe.handle(), process_id, 1,
-                               bolt::protocol::NetworkAddressFamily::kIpv4) &&
+                               bolt::protocol::NetworkAddressFamily::kIpv4,
+                               bolt::protocol::NetworkOperation::kConnect,
+                               sibling_port) &&
                            ReadNetworkViolation(
                                event_pipe.handle(), process_id, 2,
-                               bolt::protocol::NetworkAddressFamily::kIpv6) &&
+                               bolt::protocol::NetworkAddressFamily::kIpv6,
+                               bolt::protocol::NetworkOperation::kConnect,
+                               sibling_port) &&
                            ReadNetworkViolation(
                                event_pipe.handle(), process_id, 3,
-                               bolt::protocol::NetworkAddressFamily::kIpv4) &&
+                               bolt::protocol::NetworkAddressFamily::kIpv4,
+                               bolt::protocol::NetworkOperation::kConnect,
+                               sibling_port) &&
                            ReadDomainNetworkViolation(
                                event_pipe.handle(), process_id, 4, "localhost") &&
                            ReadDomainNetworkViolation(
@@ -1116,15 +1145,15 @@ bool RunNetworkHookTests() {
         ReadNetworkViolation(
             event_pipe.handle(), process_id, 12,
             bolt::protocol::NetworkAddressFamily::kIpv4,
-            bolt::protocol::NetworkOperation::kSend) &&
+            bolt::protocol::NetworkOperation::kSend, sibling_port) &&
         ReadNetworkViolation(
             event_pipe.handle(), process_id, 13,
             bolt::protocol::NetworkAddressFamily::kIpv4,
-            bolt::protocol::NetworkOperation::kSend) &&
+            bolt::protocol::NetworkOperation::kSend, sibling_port) &&
         ReadNetworkViolation(
             event_pipe.handle(), process_id, 14,
             bolt::protocol::NetworkAddressFamily::kIpv6,
-            bolt::protocol::NetworkOperation::kSend);
+            bolt::protocol::NetworkOperation::kSend, sibling_port);
     const bool high_level_events_ok =
         datagram_events_ok &&
         ReadDomainNetworkViolation(
@@ -1136,15 +1165,34 @@ bool RunNetworkHookTests() {
         ReadDomainNetworkViolation(
             event_pipe.handle(), process_id, 17, "localhost",
             bolt::protocol::NetworkOperation::kConnect);
+    const SOCKET unexpected_ipv4 =
+        AcceptWithTimeout(sibling_ipv4_listener, 100);
+    const SOCKET unexpected_ipv6 =
+        AcceptWithTimeout(sibling_ipv6_listener, 100);
+    const bool sibling_loopback_blocked =
+        unexpected_ipv4 == INVALID_SOCKET &&
+        unexpected_ipv6 == INVALID_SOCKET;
+    if (unexpected_ipv4 != INVALID_SOCKET) {
+        closesocket(unexpected_ipv4);
+    }
+    if (unexpected_ipv6 != INVALID_SOCKET) {
+        closesocket(unexpected_ipv6);
+    }
+    closesocket(sibling_ipv4_listener);
+    closesocket(sibling_ipv6_listener);
+    WSACleanup();
     CloseHandle(release);
     event_pipe.Close();
-    if (!child_ok || !high_level_events_ok) {
+    if (!child_ok || !high_level_events_ok || !sibling_loopback_blocked) {
         std::fprintf(
-            stderr, "network denied fixture failed with exit code %lu, events %s\n",
+            stderr,
+            "network denied fixture failed with exit code %lu, events %s, "
+            "sibling=%s\n",
             static_cast<unsigned long>(exit_code),
-            high_level_events_ok ? "valid" : "invalid");
+            high_level_events_ok ? "valid" : "invalid",
+            sibling_loopback_blocked ? "blocked" : "reached");
     }
-    return child_ok && high_level_events_ok;
+    return child_ok && high_level_events_ok && sibling_loopback_blocked;
 }
 
 bool RunNetworkUnrestrictedTests() {

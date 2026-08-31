@@ -443,6 +443,16 @@ Supported modes:
 - `Denied`: outbound traffic is denied except required loopback IPC.
 - `AllowList`: only configured domains, IP ranges, and ports are allowed.
 
+`Denied` has no TCP or UDP loopback exception. Its required private runtime IPC
+is the authenticated inherited event pipe; that handle remains usable while
+ordinary sibling IPv4/IPv6 listeners are unreachable from the target.
+
+Runtime proxy configuration must exactly match the selected mode:
+`AllowList` requires the authenticated DNS request/response handles, key,
+bounded frame size, and IPv4/IPv6 TCP broker ports; `Unrestricted` and `Denied`
+must not carry that configuration. A mismatch aborts DLL initialization before
+Ready and before the executable entry point.
+
 Protocol version 1 accepts at most 1,024 domain rules, 1,024 CIDR rules, and
 1,024 port ranges, with at most 2,048 network rules in total. These limits are
 checked on untrusted input before normalization or duplicate removal. Equivalent

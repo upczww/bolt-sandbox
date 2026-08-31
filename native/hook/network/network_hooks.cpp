@@ -1874,6 +1874,10 @@ HookInstallStatus InstallNetworkHooks(
         PolicyLoadStatus::kValid) {
         return HookInstallStatus::kInvalidPolicy;
     }
+    const bool dns_configured = runtime.dns_request_handle != 0;
+    if ((policy->mode() == Mode::kAllowList) != dns_configured) {
+        return HookInstallStatus::kInvalidPolicy;
+    }
     if (policy->mode() == Mode::kUnrestricted) {
         if (DetourTransactionBegin() != NO_ERROR ||
             DetourUpdateThread(GetCurrentThread()) != NO_ERROR ||
@@ -1888,7 +1892,6 @@ HookInstallStatus InstallNetworkHooks(
     std::unique_ptr<DnsBindingTable> bindings;
     std::unique_ptr<DnsProxyClientChannel> channel;
     std::unique_ptr<SocketTargetTable> socket_targets;
-    const bool dns_configured = runtime.dns_request_handle != 0;
     if (dns_configured) {
         if (DnsBindingTable::Create(256, bindings) != BindingStatus::kSuccess) {
             return HookInstallStatus::kInvalidPolicy;
