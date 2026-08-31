@@ -20,6 +20,36 @@
 
 namespace {
 
+constexpr char kRegistryValueNameCanary[] =
+    "BOLT_REG_VALUE_NAME_CANARY_4F7A19D2";
+constexpr char kRegistryValueDataCanary[] =
+    "BOLT_REG_VALUE_DATA_CANARY_9C83E5A1";
+constexpr wchar_t kRegistryValueNameCanaryWide[] =
+    L"BOLT_REG_VALUE_NAME_CANARY_4F7A19D2";
+constexpr wchar_t kRegistryValueDataCanaryWide[] =
+    L"BOLT_REG_VALUE_DATA_CANARY_9C83E5A1";
+
+bool ContainsRegistryCanary(
+    const std::uint8_t* const bytes,
+    const std::size_t length) {
+    if (bytes == nullptr) {
+        return false;
+    }
+    for (const char* const canary :
+         {kRegistryValueNameCanary, kRegistryValueDataCanary}) {
+        const std::size_t canary_length =
+            std::char_traits<char>::length(canary);
+        if (std::search(
+                bytes, bytes + length,
+                reinterpret_cast<const std::uint8_t*>(canary),
+                reinterpret_cast<const std::uint8_t*>(canary) +
+                    canary_length) != bytes + length) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::wstring CurrentExecutable() {
     std::wstring path(32'768, L'\0');
     const DWORD length = GetModuleFileNameW(
@@ -190,7 +220,7 @@ bool ValidateRegistrySymbolicLink(
     HKEY target = nullptr;
     std::wstring link_name;
     std::wstring target_name;
-    wchar_t value[16]{};
+    wchar_t value[64]{};
     DWORD value_type = 0;
     DWORD value_bytes = sizeof(value);
     const LSTATUS link_open = RegOpenKeyExW(
@@ -199,7 +229,7 @@ bool ValidateRegistrySymbolicLink(
         HKEY_CURRENT_USER, target_path.c_str(), 0, KEY_READ, &target);
     const LSTATUS value_query = link_open == ERROR_SUCCESS
         ? RegQueryValueExW(
-              link, L"Seed", nullptr, &value_type,
+              link, kRegistryValueNameCanaryWide, nullptr, &value_type,
               reinterpret_cast<BYTE*>(value), &value_bytes)
         : link_open;
     const bool link_name_read =
@@ -211,7 +241,8 @@ bool ValidateRegistrySymbolicLink(
         link_open == ERROR_SUCCESS &&
         target_open == ERROR_SUCCESS &&
         value_query == ERROR_SUCCESS &&
-        value_type == REG_SZ && std::wstring(value) == L"secret" &&
+        value_type == REG_SZ &&
+        std::wstring(value) == kRegistryValueDataCanaryWide &&
         link_name_read && target_name_read;
     if (link != nullptr) {
         RegCloseKey(link);
@@ -323,6 +354,10 @@ bool ReadRegistryViolationWithin(
             actual.resize(header.size() + payload_length);
             const bool read = ReadExact(
                 pipe, actual.data() + header.size(), payload_length);
+            if (read && ContainsRegistryCanary(
+                            actual.data(), actual.size())) {
+                return false;
+            }
             const std::size_t expected_length =
                 bolt::protocol::RegistryViolationFrameLength(key.c_str());
             std::vector<std::uint8_t> expected(expected_length);
@@ -404,7 +439,8 @@ bool ReadRegistryViolationRecordWithin(
         actual.resize(header.size() + payload_length);
         if (!ReadExact(
                 pipe, actual.data() + header.size(), payload_length) ||
-            actual.size() < 33) {
+            actual.size() < 33 ||
+            ContainsRegistryCanary(actual.data(), actual.size())) {
             return false;
         }
         const std::uint16_t kind =
@@ -740,7 +776,8 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     DWORD inherited_value_bytes = sizeof(inherited_value);
     DWORD inherited_value_type = 0;
     const LSTATUS inherited_denied_query = RegQueryValueExW(
-        inherited_denied, L"Seed", nullptr, &inherited_value_type,
+        inherited_denied, kRegistryValueNameCanaryWide, nullptr,
+        &inherited_value_type,
         reinterpret_cast<BYTE*>(inherited_value), &inherited_value_bytes);
     const LSTATUS inherited_denied_set = RegSetValueExW(
         inherited_denied, L"Changed", 0, REG_SZ,
@@ -751,11 +788,11 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     const LSTATUS inherited_denied_enumerate = RegEnumValueW(
         inherited_denied, 0, inherited_enumerated,
         &inherited_enumerated_length, nullptr, nullptr, nullptr, nullptr);
-    wchar_t denied_value_text[] = L"Seed";
     UNICODE_STRING denied_value_name{};
-    denied_value_name.Buffer = denied_value_text;
+    denied_value_name.Buffer =
+        const_cast<PWSTR>(kRegistryValueNameCanaryWide);
     denied_value_name.Length = static_cast<USHORT>(
-        std::wcslen(denied_value_text) * sizeof(wchar_t));
+        std::wcslen(kRegistryValueNameCanaryWide) * sizeof(wchar_t));
     denied_value_name.MaximumLength = denied_value_name.Length;
     const LONG inherited_denied_delete_value =
         nt_delete_value_key == nullptr
@@ -1315,13 +1352,17 @@ bool RunRegistryHookTests() {
         CreateKeyWithValue(
             root + L"\\ReadOnly\\ExistingChild", L"Seed", L"seed") &&
         CreateKeyWithValue(
-            root + L"\\Broad\\Sensitive", L"Seed", L"secret") &&
+            root + L"\\Broad\\Sensitive",
+            kRegistryValueNameCanaryWide,
+            kRegistryValueDataCanaryWide) &&
         CreateKeyWithValue(root + L"\\Allowed", L"Seed", L"seed") &&
         CreateKeyWithValue(root + L"\\Inherited", L"Seed", L"seed") &&
         CreateKeyWithValue(root + L"\\Outside", L"Seed", L"outside") &&
         CreateKeyWithValue(root + L"\\Race\\Allowed", L"Seed", L"seed") &&
         CreateKeyWithValue(
-            root + L"\\Race\\Denied", L"Seed", L"secret") &&
+            root + L"\\Race\\Denied",
+            kRegistryValueNameCanaryWide,
+            kRegistryValueDataCanaryWide) &&
         CreateKeyWithValueInView(
             wow64_read_only, KEY_WOW64_32KEY, L"Seed", L"seed") &&
         CreateKeyWithValueInView(
@@ -1421,6 +1462,7 @@ bool RunRegistryHookTests() {
     bolt::common::PrivatePipe event_pipe;
     const std::wstring pipe_name = PipeName(process_id ^ 0x52454731U);
     if (release == nullptr || payload.empty() ||
+        ContainsRegistryCanary(payload.data(), payload.size()) ||
         bolt::common::ImmutablePolicyMapping::Create(
             payload.data(), payload.size(), policy) !=
             bolt::common::PolicyMappingStatus::kSuccess ||
@@ -1635,13 +1677,18 @@ bool RunRegistryHookTests() {
         KeyMissing(root + L"\\DuplicatedReadOnly") &&
         !KeyMissing(root + L"\\ReadOnly") &&
         ValueEquals(
-            root + L"\\Broad\\Sensitive", L"Seed", L"secret") &&
+            root + L"\\Broad\\Sensitive",
+            kRegistryValueNameCanaryWide,
+            kRegistryValueDataCanaryWide) &&
         KeyMissing(root + L"\\Broad\\Sensitive\\BlockedChild") &&
         KeyMissing(root + L"\\Broad\\RenamedSensitive") &&
         ValueEquals(root + L"\\Allowed", L"Changed", L"changed") &&
         KeyMissing(root + L"\\Allowed\\Renamed") &&
         ValueEquals(root + L"\\Race\\Allowed", L"Seed", L"seed") &&
-        ValueEquals(root + L"\\Race\\Denied", L"Seed", L"secret");
+        ValueEquals(
+            root + L"\\Race\\Denied",
+            kRegistryValueNameCanaryWide,
+            kRegistryValueDataCanaryWide);
     const bool unsupported_side_effects_absent =
         KeyMissing(root + L"\\Allowed\\UnsupportedCreate");
     const bool passed =
