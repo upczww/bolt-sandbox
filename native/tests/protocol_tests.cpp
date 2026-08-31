@@ -87,6 +87,7 @@ int RunCreationMitigationChild(int argument_count, wchar_t** arguments);
 int RunFaultedDescendantParent(int argument_count, wchar_t** arguments);
 int RunNestedProcess(int argument_count, wchar_t** arguments);
 int RunParentExitFixture(int argument_count, wchar_t** arguments);
+int RunCrashTreeParent(int argument_count, wchar_t** arguments);
 int RunPersistentLeaf(int argument_count, wchar_t** arguments);
 int RunCompatibilityParent(int argument_count, wchar_t** arguments);
 int RunCrossArchitectureProcessParent(int argument_count, wchar_t** arguments);
@@ -538,6 +539,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--parent-exit-fixture") {
         return RunParentExitFixture(argument_count, arguments);
+    }
+    if (argument_count >= 2 && std::wstring(arguments[1]) == L"--crash-tree-parent") {
+        return RunCrashTreeParent(argument_count, arguments);
     }
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--persistent-leaf") {
         return RunPersistentLeaf(argument_count, arguments);

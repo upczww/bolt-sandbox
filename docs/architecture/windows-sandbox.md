@@ -434,6 +434,17 @@ configurable for compatibility.
 The initial release supports x64 and x86 on x64 Windows. ARM64 and ARM64EC are a
 separate compatibility milestone.
 
+The private launcher also owns the final inheritable handle to the execution
+Job while a session is active. Its supervision protocol contains only the Job,
+target-ready, host-ready, release, shutdown, and trusted-host process handles;
+target paths, command lines, environment data, and secrets never appear in the
+launcher command line. Before acknowledging readiness it verifies
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and waits for the target-ready signal with
+the same five-second startup bound. It then waits for trusted-host release and
+monitors both explicit shutdown and host-process death. If the launcher exits
+or crashes before or after readiness, its final Job handle closes and Windows
+terminates the still-suspended target or the complete running descendant tree.
+
 The descendant adapter retains the validated policy bytes and creates a fresh,
 non-inheritable read-only mapping for every child before duplicating that mapping,
 the event channel, private handshake, and configured network-proxy channel
