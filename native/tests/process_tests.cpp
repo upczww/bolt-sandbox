@@ -2721,6 +2721,14 @@ int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
     return 0;
 }
 
+int RunArgumentObservationLeaf(
+    const int argument_count,
+    wchar_t** arguments) {
+    static_cast<void>(argument_count);
+    static_cast<void>(arguments);
+    return 328;
+}
+
 int RunNestedProcess(const int argument_count, wchar_t** arguments) {
     if (argument_count != 4) {
         return 288;
@@ -3865,11 +3873,36 @@ bool RunUnicodeLaunchPathTest(
     }
     const std::wstring arguments =
         L"--nested-process " + std::wstring(hook_name) + L" 1";
-    const bool passed = RunInheritedProcessTest(
+    const bool unicode_path_passed = RunInheritedProcessTest(
         staged_executable.wstring(), hook_path, hook_name,
         PipeName(GetCurrentProcessId() ^ 0x5100'0022U), arguments, 0x64);
+    std::filesystem::path long_directory = test_root / L"long launch path";
+    for (std::size_t index = 0;
+         long_directory.wstring().size() <= MAX_PATH + 80U; ++index) {
+        long_directory /=
+            L"segment-0123456789-" + std::to_wstring(index);
+    }
+    const auto long_executable =
+        long_directory / std::filesystem::path(executable).filename();
+    error.clear();
+    const bool long_path_ready =
+        std::filesystem::create_directories(long_directory, error) && !error &&
+        std::filesystem::copy_file(
+            executable, long_executable,
+            std::filesystem::copy_options::overwrite_existing, error) &&
+        !error;
+    const std::wstring complex_arguments =
+        L"--argument-observation " + std::wstring(hook_name) +
+        L" plain \"space value\" \"quote\\\"value\" \"trailing\\\\\" \"\"";
+    const bool long_path_and_arguments_passed =
+        long_path_ready &&
+        RunInheritedProcessTest(
+            long_executable.wstring(), hook_path, hook_name,
+            PipeName(GetCurrentProcessId() ^ 0x5100'0023U),
+            complex_arguments, 0x65);
     std::filesystem::remove_all(staged_directory, error);
-    return passed;
+    std::filesystem::remove_all(test_root / L"long launch path", error);
+    return unicode_path_passed && long_path_and_arguments_passed;
 }
 
 bool RunStartupLatencyTest(

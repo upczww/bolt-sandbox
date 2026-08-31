@@ -81,6 +81,7 @@ int RunFilesystemRaceChild(int argument_count, wchar_t** arguments);
 int RunShellFileOperationChild(int argument_count, wchar_t** arguments);
 int RunInheritedProcessParent(int argument_count, wchar_t** arguments);
 int RunInheritedProcessLeaf(int argument_count, wchar_t** arguments);
+int RunArgumentObservationLeaf(int argument_count, wchar_t** arguments);
 int RunNestedProcess(int argument_count, wchar_t** arguments);
 int RunParentExitFixture(int argument_count, wchar_t** arguments);
 int RunPersistentLeaf(int argument_count, wchar_t** arguments);
@@ -502,6 +503,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--inherit-leaf") {
         return RunInheritedProcessLeaf(argument_count, arguments);
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--argument-observation") {
+        return RunArgumentObservationLeaf(argument_count, arguments);
     }
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--nested-process") {
         return RunNestedProcess(argument_count, arguments);
