@@ -6,6 +6,7 @@ use std::{
 use super::architecture::{ImageArchitecture, detect_image_architecture_from_reader};
 
 const LAUNCHER_NAME: &str = "bolt-sandbox-launcher.exe";
+const X86_LAUNCHER_NAME: &str = "bolt-sandbox-launcher-x86.exe";
 const X86_HOOK_NAME: &str = "bolt-sandbox-x86.dll";
 const X64_HOOK_NAME: &str = "bolt-sandbox-x64.dll";
 
@@ -109,6 +110,8 @@ mod tests {
             fs::create_dir(&root).expect("fixture root must be created");
             fs::write(root.join(LAUNCHER_NAME), pe_image(0x8664))
                 .expect("launcher fixture must be written");
+            fs::write(root.join(X86_LAUNCHER_NAME), pe_image(0x014C))
+                .expect("x86 launcher fixture must be written");
             fs::write(root.join(X86_HOOK_NAME), pe_image(0x014C))
                 .expect("x86 hook fixture must be written");
             fs::write(root.join(X64_HOOK_NAME), pe_image(0x8664))
@@ -146,7 +149,10 @@ mod tests {
         let x64 = open_components(&fixture.root, ImageArchitecture::X64)
             .expect("x64 components must open");
 
-        assert_eq!(x86.launcher_path(), fixture.root.join(LAUNCHER_NAME));
+        assert_eq!(
+            x86.launcher_path(),
+            fixture.root.join(X86_LAUNCHER_NAME)
+        );
         assert_eq!(x86.hook_path(), fixture.root.join(X86_HOOK_NAME));
         assert_eq!(x64.hook_path(), fixture.root.join(X64_HOOK_NAME));
     }
