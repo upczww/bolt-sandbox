@@ -45,6 +45,17 @@ bool RunLauncherStartupTests() {
     expected.timeout_milliseconds = 5'000;
     expected.nonce.fill(0xA5);
 
+    auto truncated_command = expected;
+    truncated_command.command_line = {
+        L't', L'o', L'o', L'l', L'\0', L'h', L'i', L'd', L'd', L'e', L'n',
+        L'\0'};
+    std::vector<std::uint8_t> rejected;
+    if (bolt::protocol::EncodeLauncherStartRequest(
+            truncated_command, rejected) !=
+        bolt::protocol::LauncherStartStatus::kInvalidField) {
+        return false;
+    }
+
     std::vector<std::uint8_t> encoded;
     bolt::protocol::LauncherStartRequest decoded{};
     if (bolt::protocol::EncodeLauncherStartRequest(expected, encoded) !=
