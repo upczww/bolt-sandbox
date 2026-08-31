@@ -24,10 +24,6 @@ mod launcher_protocol;
     reason = "multiplexed launcher frames are connected after the native transport lands"
 )]
 mod launcher_transport;
-#[allow(
-    dead_code,
-    reason = "runtime lifecycle is connected to Windows process and Job Object adapters later"
-)]
 mod lifecycle;
 #[allow(
     dead_code,

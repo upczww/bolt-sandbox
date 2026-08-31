@@ -127,6 +127,10 @@ impl LifecycleController {
         self.phase
     }
 
+    pub(super) const fn receiver_loss(&self) -> ReceiverLoss {
+        self.receiver_loss
+    }
+
     pub(super) fn start(&mut self) -> Result<LifecycleAction, LifecycleError> {
         if self.phase != LifecyclePhase::Starting {
             return Err(self.invalid_transition(LifecycleOperation::Start));

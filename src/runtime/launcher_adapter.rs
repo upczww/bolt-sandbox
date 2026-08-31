@@ -15,6 +15,12 @@ use crate::{
 use super::{
     launcher_protocol::{self, LauncherStartRequest},
     launcher_transport::{self, ControlKind, TransportFrame, TransportKind},
+    lifecycle::{
+        ExecutionOutcome as LifecycleOutcome, ExecutionTerminal as LifecycleTerminal,
+        InfrastructureFailure as LifecycleInfrastructureFailure, LifecycleAction,
+        LifecycleController, LifecyclePhase, MonotonicDeadline, ReceiverKind, StreamKind,
+        TerminationCause, TriggerSet,
+    },
     preparation::PreparedLaunch,
 };
 
@@ -168,32 +174,21 @@ fn run_execution(
     events: &SyncSender<SandboxEvent>,
 ) -> ExecutionResult {
     let started = Instant::now();
-    let mut state = TransportState::new(nonce);
-    let mut requested_termination = None;
+    let deadline = timeout.and_then(|limit| MonotonicDeadline::new(started, limit));
+    let mut state = TransportState::new(nonce, process_id);
     loop {
-        if requested_termination.is_none() {
-            match cancel.try_recv() {
-                Ok(()) | Err(TryRecvError::Disconnected) => {
-                    if launcher_transport::write_control(control, ControlKind::Cancel).is_err() {
-                        terminate_launcher(launcher);
-                        return state.forced_result(
-                            process_id,
-                            ProcessExitReason::Terminated,
-                            events,
-                        );
-                    }
-                    requested_termination = Some(ProcessExitReason::Terminated);
-                }
-                Err(TryRecvError::Empty) => {}
-            }
-            if requested_termination.is_none()
-                && timeout.is_some_and(|limit| started.elapsed() >= limit)
-            {
-                if launcher_transport::write_control(control, ControlKind::Timeout).is_err() {
-                    terminate_launcher(launcher);
-                    return state.forced_result(process_id, ProcessExitReason::TimedOut, events);
-                }
-                requested_termination = Some(ProcessExitReason::TimedOut);
+        let cancelled = matches!(cancel.try_recv(), Ok(()) | Err(TryRecvError::Disconnected));
+        let timed_out = deadline
+            .as_ref()
+            .is_some_and(|deadline| deadline.has_expired(Instant::now()));
+        let Ok(control_request) = state.observe_triggers(cancelled, timed_out) else {
+            terminate_launcher(launcher);
+            return state.infrastructure_result(crate::InfrastructureFailure::ProtocolIntegrity);
+        };
+        if let Some((kind, reason)) = control_request {
+            if launcher_transport::write_control(control, kind).is_err() {
+                terminate_launcher(launcher);
+                return state.forced_result(process_id, reason, events);
             }
         }
         match transport.recv_timeout(POLL_INTERVAL) {
@@ -229,36 +224,61 @@ fn run_execution(
             }
         }
         if state.launcher_exited && state.transport_eof {
-            return state.completed_result(process_id, requested_termination, events);
+            return state.completed_result(process_id, events);
         }
     }
 }
 
 struct TransportState {
     session: crate::ipc::session::SessionProtocol,
-    process_exit: Option<ProcessExit>,
-    stream_eof: StreamEofState,
+    lifecycle: LifecycleController,
+    expected_process_id: u32,
+    pending_process_exit: Option<ProcessExit>,
+    outcome: Option<ExecutionResult>,
     transport_eof: bool,
     launcher_exited: bool,
-    receiver_loss: ReceiverLoss,
-}
-
-#[derive(Default)]
-struct StreamEofState {
-    stdout: bool,
-    stderr: bool,
-    events: bool,
 }
 
 impl TransportState {
-    fn new(nonce: [u8; 16]) -> Self {
-        Self {
+    fn new(nonce: [u8; 16], expected_process_id: u32) -> Self {
+        let mut state = Self {
             session: crate::ipc::session::SessionProtocol::new(nonce),
-            process_exit: None,
-            stream_eof: StreamEofState::default(),
+            lifecycle: LifecycleController::new(),
+            expected_process_id,
+            pending_process_exit: None,
+            outcome: None,
             transport_eof: false,
             launcher_exited: false,
-            receiver_loss: ReceiverLoss::default(),
+        };
+        state
+            .lifecycle
+            .start()
+            .expect("acknowledged launch must enter running state");
+        state
+    }
+
+    fn observe_triggers(
+        &mut self,
+        cancelled: bool,
+        timed_out: bool,
+    ) -> Result<Option<(ControlKind, ProcessExitReason)>, ()> {
+        let action = self
+            .lifecycle
+            .observe_triggers(TriggerSet {
+                cancelled,
+                timed_out,
+                process_exited: false,
+            })
+            .map_err(|_| ())?;
+        match action {
+            LifecycleAction::TerminateJob(TerminationCause::Cancelled) => {
+                Ok(Some((ControlKind::Cancel, ProcessExitReason::Terminated)))
+            }
+            LifecycleAction::TerminateJob(TerminationCause::TimedOut) => {
+                Ok(Some((ControlKind::Timeout, ProcessExitReason::TimedOut)))
+            }
+            LifecycleAction::None => Ok(None),
+            _ => Err(()),
         }
     }
 
@@ -269,29 +289,96 @@ impl TransportState {
         stderr: &SyncSender<Vec<u8>>,
         events: &SyncSender<SandboxEvent>,
     ) -> Result<(), ()> {
-        match frame.kind {
+        let action = match frame.kind {
             TransportKind::Stdout => {
-                send_bounded(stdout, frame.payload, &mut self.receiver_loss.stdout);
+                self.send_bytes(stdout, frame.payload, ReceiverKind::Stdout)?;
+                LifecycleAction::None
             }
             TransportKind::Stderr => {
-                send_bounded(stderr, frame.payload, &mut self.receiver_loss.stderr);
+                self.send_bytes(stderr, frame.payload, ReceiverKind::Stderr)?;
+                LifecycleAction::None
             }
             TransportKind::Event => {
                 let event = self.session.accept(&frame.payload).map_err(|_| ())?;
-                send_bounded(events, event, &mut self.receiver_loss.events);
+                if send_bounded(events, event) {
+                    self.lifecycle
+                        .mark_receiver_lost(ReceiverKind::Events)
+                        .map_err(|_| ())?;
+                }
+                LifecycleAction::None
             }
-            TransportKind::StdoutEof => self.stream_eof.stdout = empty_eof(&frame.payload)?,
-            TransportKind::StderrEof => self.stream_eof.stderr = empty_eof(&frame.payload)?,
-            TransportKind::EventEof => self.stream_eof.events = empty_eof(&frame.payload)?,
+            TransportKind::StdoutEof => {
+                empty_eof(&frame.payload)?;
+                self.lifecycle
+                    .mark_stream_eof(StreamKind::Stdout)
+                    .map_err(|_| ())?
+            }
+            TransportKind::StderrEof => {
+                empty_eof(&frame.payload)?;
+                self.lifecycle
+                    .mark_stream_eof(StreamKind::Stderr)
+                    .map_err(|_| ())?
+            }
+            TransportKind::EventEof => {
+                empty_eof(&frame.payload)?;
+                let process_exit = self.pending_process_exit.as_ref().ok_or(())?;
+                if send_bounded(events, SandboxEvent::ProcessExited(process_exit.clone())) {
+                    self.lifecycle
+                        .mark_receiver_lost(ReceiverKind::Events)
+                        .map_err(|_| ())?;
+                }
+                self.lifecycle.mark_event_eof().map_err(|_| ())?
+            }
             TransportKind::ProcessExit => {
-                if self.process_exit.is_some() {
+                if self.pending_process_exit.is_some() {
                     return Err(());
                 }
-                self.process_exit = Some(decode_process_exit(&frame.payload)?);
+                let process_exit = decode_process_exit(&frame.payload)?;
+                if process_exit.process_id != self.expected_process_id {
+                    return Err(());
+                }
+                if matches!(self.lifecycle.phase(), LifecyclePhase::Terminating(_)) {
+                    self.lifecycle.mark_job_terminated().map_err(|_| ())?;
+                }
+                let action = self
+                    .lifecycle
+                    .mark_terminal_event(process_exit.clone())
+                    .map_err(|_| ())?;
+                self.pending_process_exit = Some(process_exit);
+                action
             }
             TransportKind::InfrastructureFailure => return Err(()),
+        };
+        self.apply_action(action)?;
+        Ok(())
+    }
+
+    fn send_bytes(
+        &mut self,
+        sender: &SyncSender<Vec<u8>>,
+        bytes: Vec<u8>,
+        receiver: ReceiverKind,
+    ) -> Result<(), ()> {
+        if send_bounded(sender, bytes) {
+            self.lifecycle
+                .mark_receiver_lost(receiver)
+                .map_err(|_| ())?;
         }
         Ok(())
+    }
+
+    fn apply_action(&mut self, action: LifecycleAction) -> Result<(), ()> {
+        match action {
+            LifecycleAction::None | LifecycleAction::BeginDrain => Ok(()),
+            LifecycleAction::Completed(outcome) => {
+                if self.outcome.is_some() {
+                    return Err(());
+                }
+                self.outcome = Some(public_outcome(outcome));
+                Ok(())
+            }
+            LifecycleAction::Launch | LifecycleAction::TerminateJob(_) => Err(()),
+        }
     }
 
     fn forced_result(
@@ -305,59 +392,77 @@ impl TransportState {
             exit_code: None,
             reason,
         };
-        send_bounded(
-            events,
-            SandboxEvent::ProcessExited(process_exit.clone()),
-            &mut self.receiver_loss.events,
-        );
+        send_bounded(events, SandboxEvent::ProcessExited(process_exit.clone()));
         ExecutionResult {
             terminal: ExecutionTerminal::Process(process_exit),
-            receiver_loss: self.receiver_loss,
+            receiver_loss: public_receiver_loss(self.lifecycle.receiver_loss()),
         }
     }
 
     fn infrastructure_result(&self, failure: crate::InfrastructureFailure) -> ExecutionResult {
         ExecutionResult {
             terminal: ExecutionTerminal::Infrastructure(failure),
-            receiver_loss: self.receiver_loss,
+            receiver_loss: public_receiver_loss(self.lifecycle.receiver_loss()),
         }
     }
 
     fn completed_result(
         &mut self,
         expected_process_id: u32,
-        requested_termination: Option<ProcessExitReason>,
-        events: &SyncSender<SandboxEvent>,
+        _events: &SyncSender<SandboxEvent>,
     ) -> ExecutionResult {
-        let valid_eof = self.stream_eof.stdout && self.stream_eof.stderr && self.stream_eof.events;
-        let Some(process_exit) = self.process_exit.take().filter(|exit| {
-            valid_eof
-                && exit.process_id == expected_process_id
-                && requested_termination.is_none_or(|reason| exit.reason == reason)
-        }) else {
+        if expected_process_id != self.expected_process_id {
             return self.infrastructure_result(crate::InfrastructureFailure::ProtocolIntegrity);
-        };
-        send_bounded(
-            events,
-            SandboxEvent::ProcessExited(process_exit.clone()),
-            &mut self.receiver_loss.events,
-        );
-        ExecutionResult {
-            terminal: ExecutionTerminal::Process(process_exit),
-            receiver_loss: self.receiver_loss,
+        }
+        self.outcome.take().unwrap_or_else(|| {
+            self.infrastructure_result(crate::InfrastructureFailure::ProtocolIntegrity)
+        })
+    }
+}
+
+fn send_bounded<T>(sender: &SyncSender<T>, value: T) -> bool {
+    match sender.try_send(value) {
+        Ok(()) => false,
+        Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => true,
+    }
+}
+
+fn empty_eof(payload: &[u8]) -> Result<(), ()> {
+    payload.is_empty().then_some(()).ok_or(())
+}
+
+fn public_outcome(outcome: LifecycleOutcome) -> ExecutionResult {
+    let terminal = match outcome.terminal {
+        LifecycleTerminal::Process(exit) => ExecutionTerminal::Process(exit),
+        LifecycleTerminal::Infrastructure(failure) => {
+            ExecutionTerminal::Infrastructure(public_infrastructure_failure(failure))
+        }
+    };
+    ExecutionResult {
+        terminal,
+        receiver_loss: public_receiver_loss(outcome.receiver_loss),
+    }
+}
+
+const fn public_receiver_loss(loss: super::lifecycle::ReceiverLoss) -> ReceiverLoss {
+    ReceiverLoss {
+        stdout: loss.stdout,
+        stderr: loss.stderr,
+        events: loss.events,
+    }
+}
+
+const fn public_infrastructure_failure(
+    failure: LifecycleInfrastructureFailure,
+) -> crate::InfrastructureFailure {
+    match failure {
+        LifecycleInfrastructureFailure::EventChannelLost => {
+            crate::InfrastructureFailure::EventChannelLost
+        }
+        LifecycleInfrastructureFailure::ProtocolIntegrity => {
+            crate::InfrastructureFailure::ProtocolIntegrity
         }
     }
-}
-
-fn send_bounded<T>(sender: &SyncSender<T>, value: T, receiver_lost: &mut bool) {
-    match sender.try_send(value) {
-        Ok(()) => {}
-        Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => *receiver_lost = true,
-    }
-}
-
-fn empty_eof(payload: &[u8]) -> Result<bool, ()> {
-    payload.is_empty().then_some(true).ok_or(())
 }
 
 fn decode_process_exit(payload: &[u8]) -> Result<ProcessExit, ()> {
