@@ -819,7 +819,7 @@ int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
 int RunNetworkUnrestrictedChild(
     const int argument_count,
     wchar_t** arguments) {
-    if (argument_count != 4) {
+    if (argument_count != 5) {
         return 500;
     }
     WSADATA winsock{};
@@ -861,6 +861,16 @@ int RunNetworkUnrestrictedChild(
         connect_family(ipv4_port, AF_INET);
     const int ipv6_error =
         connect_family(ipv6_port, AF_INET6);
+    const auto refused_port = static_cast<std::uint16_t>(_wtoi(arguments[4]));
+    const int refused_error = connect_family(refused_port, AF_INET);
+    const SOCKET invalid_address_socket =
+        socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    const auto* invalid_address = reinterpret_cast<const sockaddr*>(
+        static_cast<std::uintptr_t>(1));
+    const int invalid_address_result = connect(
+        invalid_address_socket, invalid_address, sizeof(sockaddr_in));
+    const int invalid_address_error = WSAGetLastError();
+    closesocket(invalid_address_socket);
     ADDRINFOA* synchronous_results = nullptr;
     const bool synchronous_resolved =
         getaddrinfo("localhost", nullptr, nullptr, &synchronous_results) == 0 &&
@@ -892,11 +902,16 @@ int RunNetworkUnrestrictedChild(
     if (completed != nullptr) {
         CloseHandle(completed);
     }
-    if (ipv4_error != 0 || ipv6_error != 0 || !asynchronous_resolved) {
+    if (ipv4_error != 0 || ipv6_error != 0 ||
+        refused_error != WSAECONNREFUSED ||
+        invalid_address_result != SOCKET_ERROR ||
+        invalid_address_error != WSAEFAULT || !asynchronous_resolved) {
         std::fprintf(
             stderr,
-            "unrestricted child failed: ipv4=%d ipv6=%d async=%d start=%d wsa=%d\n",
+            "unrestricted child failed: ipv4=%d ipv6=%d refused=%d "
+            "invalid=%d async=%d start=%d wsa=%d\n",
             ipv4_error == 0 ? 1 : 0, ipv6_error == 0 ? 1 : 0,
+            refused_error, invalid_address_error,
             asynchronous_resolved ? 1 : 0, started, WSAGetLastError());
     }
     WSACleanup();
@@ -908,6 +923,13 @@ int RunNetworkUnrestrictedChild(
     }
     if (!synchronous_resolved) {
         return 506;
+    }
+    if (refused_error != WSAECONNREFUSED) {
+        return 30'000 + refused_error;
+    }
+    if (invalid_address_result != SOCKET_ERROR ||
+        invalid_address_error != WSAEFAULT) {
+        return 507;
     }
     return asynchronous_resolved ? 0 : 505;
 }
@@ -1076,6 +1098,30 @@ bool RunNetworkUnrestrictedTests() {
         WSACleanup();
         return false;
     }
+    const SOCKET refused_socket =
+        socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in refused_endpoint{};
+    refused_endpoint.sin_family = AF_INET;
+    refused_endpoint.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    refused_endpoint.sin_port = 0;
+    int refused_endpoint_length = sizeof(refused_endpoint);
+    if (refused_socket == INVALID_SOCKET ||
+        bind(
+            refused_socket,
+            reinterpret_cast<const sockaddr*>(&refused_endpoint),
+            sizeof(refused_endpoint)) != 0 ||
+        getsockname(
+            refused_socket, reinterpret_cast<sockaddr*>(&refused_endpoint),
+            &refused_endpoint_length) != 0) {
+        if (refused_socket != INVALID_SOCKET) {
+            closesocket(refused_socket);
+        }
+        closesocket(ipv4_listener);
+        closesocket(ipv6_listener);
+        WSACleanup();
+        return false;
+    }
+    const std::uint16_t refused_port = ntohs(refused_endpoint.sin_port);
     const std::wstring executable = CurrentExecutable();
 #if defined(_WIN64)
     constexpr auto hook_name = L"bolt-sandbox-x64.dll";
@@ -1118,7 +1164,8 @@ bool RunNetworkUnrestrictedTests() {
     }
     std::wstring command =
         L"\"" + executable + L"\" --network-unrestricted-child " +
-        std::to_wstring(port) + L" " + std::to_wstring(port);
+        std::to_wstring(port) + L" " + std::to_wstring(port) + L" " +
+        std::to_wstring(refused_port);
     const HANDLE inherited[] = {policy.handle(), event_client, release};
     const bolt::common::ProcessLaunchOptions options{
         executable, command, L"", nullptr, inherited, std::size(inherited), 0};
@@ -1184,6 +1231,7 @@ bool RunNetworkUnrestrictedTests() {
     }
     closesocket(ipv4_listener);
     closesocket(ipv6_listener);
+    closesocket(refused_socket);
     CloseHandle(release);
     WSACleanup();
     return passed;
