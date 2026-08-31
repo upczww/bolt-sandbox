@@ -177,6 +177,7 @@ add_library(bolt-sandbox-network STATIC
     hook/network/dns_proxy_client_channel.cpp
     hook/network/dns_proxy_process.cpp
     hook/network/dns_proxy_handle_transport.cpp
+    hook/network/http_connect_policy.cpp
     hook/network/network_hooks.cpp
     hook/network/network_policy.cpp
     hook/network/socket_target_table.cpp
@@ -268,6 +269,7 @@ add_executable(bolt-sandbox-native-tests
     tests/job_tests.cpp
     tests/named_pipe_tests.cpp
     tests/network_policy_tests.cpp
+    tests/http_connect_policy_tests.cpp
     tests/system_dns_resolver_tests.cpp
     tests/network_hook_tests.cpp
     tests/network_event_saturation_tests.cpp

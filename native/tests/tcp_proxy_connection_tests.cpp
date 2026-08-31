@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -223,6 +224,80 @@ bool RunTcpProxyConnectionTests() {
     closesocket(proxy_socket);
     if (upstream != INVALID_SOCKET) {
         closesocket(upstream);
+    }
+
+    std::vector<std::uint8_t> tunnel_request;
+    passed = passed &&
+        bolt::protocol::EncodeTcpProxyRequest(
+            session, 2, 1'234,
+            bolt::protocol::DnsProxyAddressFamily::kIpv4, loopback,
+            upstream_port, nullptr, tunnel_request) ==
+            bolt::protocol::TcpProxyStatus::kSuccess;
+    SOCKET tunnel_hook = INVALID_SOCKET;
+    SOCKET tunnel_proxy = INVALID_SOCKET;
+    passed = passed && CreateConnectedPair(tunnel_hook, tunnel_proxy);
+    auto tunnel_status =
+        bolt::network::TcpProxyConnectionStatus::kInvalidSocket;
+    std::thread tunnel_connection;
+    if (passed) {
+        tunnel_connection = std::thread([&] {
+            tunnel_status = bolt::network::RunTcpProxyConnection(
+                tunnel_proxy, session, *policy, *bindings, 2, 1'000);
+        });
+        const auto tunnel_prefix = LengthPrefix(tunnel_request.size());
+        passed = SendExact(
+                     tunnel_hook, tunnel_prefix.data(), tunnel_prefix.size()) &&
+            SendExact(
+                tunnel_hook, tunnel_request.data(), tunnel_request.size());
+        std::array<std::uint8_t, 4> tunnel_response_prefix{};
+        passed = passed && ReceiveExact(
+            tunnel_hook, tunnel_response_prefix.data(),
+            tunnel_response_prefix.size());
+        std::vector<std::uint8_t> tunnel_response(
+            ReadLength(tunnel_response_prefix));
+        passed = passed && !tunnel_response.empty() &&
+            ReceiveExact(
+                tunnel_hook, tunnel_response.data(), tunnel_response.size());
+        bolt::protocol::TcpProxyResponse tunnel_decoded{};
+        passed = passed &&
+            bolt::protocol::DecodeTcpProxyResponse(
+                session, tunnel_response.data(), tunnel_response.size(), 2,
+                tunnel_decoded) == bolt::protocol::TcpProxyStatus::kSuccess &&
+            tunnel_decoded.result ==
+                bolt::protocol::TcpProxyResult::kConnected;
+    }
+    const SOCKET tunnel_upstream =
+        passed ? accept(upstream_listener, nullptr, nullptr) : INVALID_SOCKET;
+    constexpr DWORD receive_timeout = 1'000;
+    if (tunnel_upstream != INVALID_SOCKET) {
+        setsockopt(
+            tunnel_upstream, SOL_SOCKET, SO_RCVTIMEO,
+            reinterpret_cast<const char*>(&receive_timeout),
+            sizeof(receive_timeout));
+    }
+    const std::string denied_connect =
+        "CONNECT denied.invalid:" + std::to_string(upstream_port) +
+        " HTTP/1.1\r\n\r\n";
+    passed = passed && tunnel_upstream != INVALID_SOCKET &&
+        SendExact(
+            tunnel_hook,
+            reinterpret_cast<const std::uint8_t*>(denied_connect.data()),
+            denied_connect.size()) &&
+        shutdown(tunnel_hook, SD_SEND) == 0;
+    if (tunnel_connection.joinable()) {
+        tunnel_connection.join();
+    }
+    char tunnel_probe = 0;
+    const int tunnel_received = tunnel_upstream == INVALID_SOCKET
+                                    ? SOCKET_ERROR
+                                    : recv(tunnel_upstream, &tunnel_probe, 1, 0);
+    passed = passed &&
+        tunnel_status == bolt::network::TcpProxyConnectionStatus::kRejected &&
+        tunnel_received == 0;
+    closesocket(tunnel_hook);
+    closesocket(tunnel_proxy);
+    if (tunnel_upstream != INVALID_SOCKET) {
+        closesocket(tunnel_upstream);
     }
     closesocket(upstream_listener);
     WSACleanup();

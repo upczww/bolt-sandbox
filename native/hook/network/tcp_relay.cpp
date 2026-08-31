@@ -1,5 +1,7 @@
 #include "hook/network/tcp_relay.h"
 
+#include "hook/network/http_connect_policy.h"
+
 #include <array>
 
 namespace bolt::network {
@@ -101,6 +103,66 @@ TcpRelayStatus RelayTcpSockets(
         }
     }
     return TcpRelayStatus::kCompleted;
+}
+
+TcpRelayStatus RelayTcpSocketsWithPolicy(
+    const SOCKET client,
+    const SOCKET upstream,
+    const NetworkPolicy& policy) noexcept {
+    if (client == INVALID_SOCKET || upstream == INVALID_SOCKET ||
+        client == upstream) {
+        return TcpRelayStatus::kInvalidSocket;
+    }
+    std::array<char, kMaximumHttpConnectPrefaceLength> preface{};
+    std::size_t length = 0;
+    for (;;) {
+        fd_set readable{};
+        FD_ZERO(&readable);
+        FD_SET(client, &readable);
+        FD_SET(upstream, &readable);
+        const int selected = select(0, &readable, nullptr, nullptr, nullptr);
+        if (selected == SOCKET_ERROR) {
+            if (WSAGetLastError() == WSAEINTR) {
+                continue;
+            }
+            return TcpRelayStatus::kSelectFailed;
+        }
+        if (FD_ISSET(upstream, &readable)) {
+            return RelayTcpSockets(client, upstream);
+        }
+        const int received = recv(
+            client, preface.data() + length,
+            static_cast<int>(preface.size() - length), 0);
+        if (received == SOCKET_ERROR) {
+            if (WSAGetLastError() == WSAEINTR) {
+                continue;
+            }
+            return TcpRelayStatus::kReadFailed;
+        }
+        const bool end_of_stream = received == 0;
+        if (received > 0) {
+            length += static_cast<std::size_t>(received);
+        }
+        const auto inspection = InspectHttpConnectPreface(
+            preface.data(), length, end_of_stream, policy);
+        if (inspection == HttpConnectInspection::kNeedMore) {
+            continue;
+        }
+        if (inspection == HttpConnectInspection::kDeny) {
+            return TcpRelayStatus::kPolicyDenied;
+        }
+        if (length != 0 &&
+            !SendAll(upstream, preface.data(), static_cast<int>(length))) {
+            return TcpRelayStatus::kWriteFailed;
+        }
+        if (end_of_stream && shutdown(upstream, SD_SEND) == SOCKET_ERROR) {
+            const int error = WSAGetLastError();
+            if (error != WSAENOTCONN && error != WSAESHUTDOWN) {
+                return TcpRelayStatus::kShutdownFailed;
+            }
+        }
+        return RelayTcpSockets(client, upstream);
+    }
 }
 
 }  // namespace bolt::network

@@ -129,8 +129,12 @@ TcpProxyConnectionStatus RunTcpProxyConnection(
             closesocket(upstream);
             return TcpProxyConnectionStatus::kRelayFailed;
         }
-        const auto relay_status = RelayTcpSockets(client, upstream);
-        closesocket(upstream);
+    const auto relay_status =
+        RelayTcpSocketsWithPolicy(client, upstream, policy);
+    closesocket(upstream);
+    if (relay_status == TcpRelayStatus::kPolicyDenied) {
+        return TcpProxyConnectionStatus::kRejected;
+    }
         return relay_status == TcpRelayStatus::kCompleted
                    ? TcpProxyConnectionStatus::kRelayed
                    : TcpProxyConnectionStatus::kRelayFailed;

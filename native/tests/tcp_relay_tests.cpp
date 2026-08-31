@@ -1,7 +1,11 @@
 #include "hook/network/tcp_relay.h"
 
+#include "hook/network/network_policy.h"
+#include "tests/policy_fixture.h"
+
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <thread>
 
 namespace {
@@ -91,6 +95,16 @@ bool RunTcpRelayTests() {
     if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
         return false;
     }
+    const auto unrestricted_payload = bolt::tests::SealPolicy(
+        {}, bolt::tests::ChildProcessPolicyKind::kInherit,
+        bolt::tests::NetworkPolicyKind::kUnrestricted, {});
+    std::unique_ptr<bolt::network::NetworkPolicy> unrestricted_policy;
+    if (bolt::network::NetworkPolicy::Load(
+            unrestricted_payload.data(), unrestricted_payload.size(),
+            unrestricted_policy) != bolt::network::PolicyLoadStatus::kValid) {
+        WSACleanup();
+        return false;
+    }
     SOCKET client_application = INVALID_SOCKET;
     SOCKET proxy_client = INVALID_SOCKET;
     SOCKET proxy_upstream = INVALID_SOCKET;
@@ -114,8 +128,8 @@ bool RunTcpRelayTests() {
 
     auto relay_status = bolt::network::TcpRelayStatus::kInvalidSocket;
     std::thread relay([&] {
-        relay_status =
-            bolt::network::RelayTcpSockets(proxy_client, proxy_upstream);
+        relay_status = bolt::network::RelayTcpSocketsWithPolicy(
+            proxy_client, proxy_upstream, *unrestricted_policy);
     });
 
     constexpr std::array<char, 7> request = {'r', 'e', 'q', 'u', 'e', 's', 't'};
@@ -159,7 +173,49 @@ bool RunTcpRelayTests() {
     CloseSocket(proxy_client);
     CloseSocket(proxy_upstream);
     CloseSocket(upstream_server);
+    bolt::tests::NetworkAddressRule loopback{};
+    loopback.family = 4;
+    loopback.prefix_length = 32;
+    loopback.address[0] = 127;
+    loopback.address[3] = 1;
+    const bolt::tests::NetworkAllowListRules connect_rules{
+        {{false, "allowed.example"}}, {loopback}, {{443, 443}}};
+    const auto connect_payload = bolt::tests::SealPolicy(
+        {}, bolt::tests::ChildProcessPolicyKind::kInherit,
+        bolt::tests::NetworkPolicyKind::kAllowList, connect_rules);
+    std::unique_ptr<bolt::network::NetworkPolicy> connect_policy;
+    bool denied_connect_blocked =
+        bolt::network::NetworkPolicy::Load(
+            connect_payload.data(), connect_payload.size(), connect_policy) ==
+        bolt::network::PolicyLoadStatus::kValid &&
+        CreateConnectedPair(client_application, proxy_client) &&
+        CreateConnectedPair(proxy_upstream, upstream_server);
+    auto denied_status = bolt::network::TcpRelayStatus::kCompleted;
+    std::thread denied_relay;
+    if (denied_connect_blocked) {
+        denied_relay = std::thread([&] {
+            denied_status = bolt::network::RelayTcpSocketsWithPolicy(
+                proxy_client, proxy_upstream, *connect_policy);
+        });
+        constexpr char denied_request[] =
+            "CONNECT denied.example:443 HTTP/1.1\r\n\r\n";
+        denied_connect_blocked = SendExact(
+            client_application, denied_request,
+            static_cast<int>(sizeof(denied_request) - 1));
+        shutdown(client_application, SD_SEND);
+        denied_relay.join();
+        u_long upstream_available = 0;
+        denied_connect_blocked = denied_connect_blocked &&
+            denied_status == bolt::network::TcpRelayStatus::kPolicyDenied &&
+            ioctlsocket(upstream_server, FIONREAD, &upstream_available) == 0 &&
+            upstream_available == 0;
+    }
+    CloseSocket(client_application);
+    CloseSocket(proxy_client);
+    CloseSocket(proxy_upstream);
+    CloseSocket(upstream_server);
     WSACleanup();
     return server_half_close_forwarded &&
-           relay_status == bolt::network::TcpRelayStatus::kCompleted;
+           relay_status == bolt::network::TcpRelayStatus::kCompleted &&
+           denied_connect_blocked;
 }

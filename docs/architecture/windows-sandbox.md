@@ -457,6 +457,13 @@ the application proxy owns that resolution. Numeric IPv4 and IPv6 host strings
 are parsed locally by address-info APIs and are still authorized only when the
 subsequent endpoint connection passes the address and port rules.
 
+The local TCP broker also inspects a bounded first HTTP request line when a
+client initiates a stream with `CONNECT `. The authority host/address and port
+must independently pass policy before any CONNECT bytes reach the upstream
+proxy. Malformed or over-4-KiB CONNECT prefaces fail closed. Server-first
+protocols and streams whose initial bytes do not match CONNECT remain
+transparent.
+
 Required API coverage includes `connect`, `WSAConnect`, `ConnectEx`, synchronous
 and asynchronous DNS resolution, IPv4, and IPv6. UDP and custom protocol support
 must be explicitly tested and documented rather than implicitly allowed.
