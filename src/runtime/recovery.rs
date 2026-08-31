@@ -1,4 +1,9 @@
-use std::{fs, path::PathBuf};
+use std::{
+    ffi::OsString,
+    fs,
+    os::windows::ffi::{OsStrExt, OsStringExt},
+    path::{Path, PathBuf},
+};
 
 use crate::{RecoveryArtifact, SandboxEvent};
 
@@ -68,7 +73,14 @@ impl RecoveryCoordinator {
             byte_count: 0,
             event: None,
         };
-        if request.operation != RecoveryOperation::Delete || !request.path.is_absolute() {
+        if !matches!(
+            request.operation,
+            RecoveryOperation::Delete
+                | RecoveryOperation::Truncate
+                | RecoveryOperation::Replace
+                | RecoveryOperation::Rename
+        ) || !request.path.is_absolute()
+        {
             return failed();
         }
         let Ok(metadata) = fs::symlink_metadata(&request.path) else {
@@ -111,11 +123,35 @@ impl RecoveryCoordinator {
             event: Some(SandboxEvent::RecoveryArtifactCreated(RecoveryArtifact {
                 process_id: request.process_id,
                 artifact_id,
-                original_path: request.path.clone(),
+                original_path: display_path(&request.path),
                 byte_count,
             })),
         }
     }
+}
+
+fn display_path(path: &Path) -> PathBuf {
+    const VERBATIM_PREFIX: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    const VERBATIM_UNC: &[u16] = &[
+        b'\\' as u16,
+        b'\\' as u16,
+        b'?' as u16,
+        b'\\' as u16,
+        b'U' as u16,
+        b'N' as u16,
+        b'C' as u16,
+        b'\\' as u16,
+    ];
+    let encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if let Some(remainder) = encoded.strip_prefix(VERBATIM_UNC) {
+        let mut unc = vec![u16::from(b'\\'), u16::from(b'\\')];
+        unc.extend_from_slice(remainder);
+        return PathBuf::from(OsString::from_wide(&unc));
+    }
+    if let Some(remainder) = encoded.strip_prefix(VERBATIM_PREFIX) {
+        return PathBuf::from(OsString::from_wide(remainder));
+    }
+    path.to_path_buf()
 }
 
 impl Drop for RecoveryCoordinator {

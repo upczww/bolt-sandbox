@@ -162,6 +162,9 @@ pub(crate) fn compile_with_security_denies(
     let network = compile_network_policy(&policy.network)?;
     let registry = compile_registry_policy(&policy.registry, mandatory_registry_denies)?;
     let recovery = compile_recovery_policy(&policy.recovery)?;
+    if let CompiledRecoveryPolicy::Enabled(limits) = &recovery {
+        filesystem.add_rule(limits.directory(), FilesystemRuleKind::Deny)?;
+    }
     let compiled = CompiledPolicy {
         filesystem,
         network,

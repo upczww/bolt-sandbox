@@ -3206,6 +3206,8 @@ BOOL WINAPI DetouredSetEndOfFile(const HANDLE file) noexcept {
         return FALSE;
     }
     InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, source_path.c_str()), false);
+    recovery::BackupPath(
+        source_path.c_str(), protocol::RecoveryOperation::kTruncate);
     return g_set_end_of_file(file);
 }
 
