@@ -406,10 +406,13 @@ process outputs, and emits a typed `Breakaway` process violation. Direct
 The initial release supports x64 and x86 on x64 Windows. ARM64 and ARM64EC are a
 separate compatibility milestone.
 
-The descendant adapter duplicates only the authenticated policy, event, and
-private handshake handles into a forcibly suspended child. It uses a private
-descendant readiness event so the public session has exactly one `Ready` frame,
-and restores caller-requested `CREATE_SUSPENDED` semantics before returning.
+The descendant adapter duplicates the authenticated policy, event, private
+handshake, and configured network-proxy channel handles into a forcibly
+suspended child. The proxy authentication key and loopback endpoints remain in
+the integrity-checked runtime payload, so an inherited allow-list policy cannot
+silently degrade to an unproxied channel. It uses a private descendant readiness
+event so the public session has exactly one `Ready` frame, and restores
+caller-requested `CREATE_SUSPENDED` semantics before returning.
 For a machine-type mismatch it selects the matching x86/x64 DLL and uses the
 Microsoft Detours helper payload and ordinal-1 injection flow. The helper is
 started from an absolute Windows system directory with a minimal internal

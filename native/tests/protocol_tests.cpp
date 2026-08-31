@@ -63,6 +63,7 @@ bool RunImmutableMappingTests();
 bool RunDnsProxyProcessTests();
 bool RunNetworkAllowListTests();
 int RunNetworkAllowListChild(int argument_count, wchar_t** arguments);
+int RunNetworkAllowListLeaf(int argument_count, wchar_t** arguments);
 int RunNetworkHookChild(int argument_count, wchar_t** arguments);
 int RunProcessChild(int argument_count, wchar_t** arguments);
 int RunFilesystemRaceChild(int argument_count, wchar_t** arguments);
@@ -408,6 +409,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count >= 2 &&
         std::wstring(arguments[1]) == L"--network-allow-list-child") {
         return RunNetworkAllowListChild(argument_count, arguments);
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--network-allow-list-leaf") {
+        return RunNetworkAllowListLeaf(argument_count, arguments);
     }
     if (argument_count == 2 &&
         std::wstring(arguments[1]) == L"--network-allow-list-tests") {

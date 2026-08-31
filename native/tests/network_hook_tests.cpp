@@ -169,21 +169,48 @@ SOCKET AcceptWithTimeout(
                : INVALID_SOCKET;
 }
 
+SOCKET AcceptEitherWhileProcessRuns(
+    const SOCKET ipv4_listener,
+    const SOCKET ipv6_listener,
+    const HANDLE process,
+    const DWORD timeout_milliseconds) {
+    constexpr DWORD poll_interval_milliseconds = 50;
+    const ULONGLONG deadline = GetTickCount64() + timeout_milliseconds;
+    for (;;) {
+        if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0) {
+            return INVALID_SOCKET;
+        }
+        const ULONGLONG now = GetTickCount64();
+        if (now >= deadline) {
+            return INVALID_SOCKET;
+        }
+        const DWORD remaining = static_cast<DWORD>(deadline - now);
+        const DWORD slice = remaining < poll_interval_milliseconds
+            ? remaining
+            : poll_interval_milliseconds;
+        fd_set readable{};
+        FD_ZERO(&readable);
+        FD_SET(ipv4_listener, &readable);
+        if (ipv6_listener != INVALID_SOCKET) {
+            FD_SET(ipv6_listener, &readable);
+        }
+        timeval timeout{};
+        timeout.tv_sec = 0;
+        timeout.tv_usec = static_cast<long>(slice) * 1'000;
+        if (select(0, &readable, nullptr, nullptr, &timeout) == 1) {
+            return FD_ISSET(ipv4_listener, &readable)
+                       ? accept(ipv4_listener, nullptr, nullptr)
+                       : accept(ipv6_listener, nullptr, nullptr);
+        }
+    }
+}
+
 bool ServeHttpOnce(
     const SOCKET ipv4_listener,
-    const SOCKET ipv6_listener) {
-    fd_set readable{};
-    FD_ZERO(&readable);
-    FD_SET(ipv4_listener, &readable);
-    FD_SET(ipv6_listener, &readable);
-    timeval timeout{};
-    timeout.tv_sec = 3;
-    if (select(0, &readable, nullptr, nullptr, &timeout) <= 0) {
-        return false;
-    }
-    const SOCKET accepted = FD_ISSET(ipv4_listener, &readable)
-                                ? accept(ipv4_listener, nullptr, nullptr)
-                                : accept(ipv6_listener, nullptr, nullptr);
+    const SOCKET ipv6_listener,
+    const HANDLE process) {
+    const SOCKET accepted = AcceptEitherWhileProcessRuns(
+        ipv4_listener, ipv6_listener, process, 3'000);
     if (accepted == INVALID_SOCKET) {
         return false;
     }
@@ -315,9 +342,10 @@ bool ServeHttpRedirectOnce(
     const SOCKET ipv4_listener,
     const SOCKET ipv6_listener,
     const char* const domain,
-    const std::uint16_t port) {
-    const SOCKET accepted =
-        AcceptEitherWithTimeout(ipv4_listener, ipv6_listener, 3'000);
+    const std::uint16_t port,
+    const HANDLE process) {
+    const SOCKET accepted = AcceptEitherWhileProcessRuns(
+        ipv4_listener, ipv6_listener, process, 3'000);
     if (accepted == INVALID_SOCKET) {
         return false;
     }
@@ -1120,6 +1148,38 @@ bool RunNetworkUnrestrictedTests() {
 
 int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {
     if (argument_count != 8) {
+        return 510;
+    }
+    const std::wstring executable = CurrentExecutable();
+    std::wstring command =
+        L"\"" + executable + L"\" --network-allow-list-leaf";
+    for (int index = 2; index < argument_count; ++index) {
+        command += L" \"" + std::wstring(arguments[index]) + L"\"";
+    }
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION child{};
+    if (!CreateProcessW(
+            executable.c_str(), command.data(), nullptr, nullptr, FALSE, 0,
+            nullptr, nullptr, &startup, &child)) {
+        return 511;
+    }
+    const DWORD wait = WaitForSingleObject(child.hProcess, 3'000);
+    DWORD exit_code = 0;
+    const bool passed =
+        wait == WAIT_OBJECT_0 &&
+        GetExitCodeProcess(child.hProcess, &exit_code) != FALSE &&
+        exit_code == 0;
+    if (wait != WAIT_OBJECT_0) {
+        TerminateProcess(child.hProcess, 512);
+    }
+    CloseHandle(child.hThread);
+    CloseHandle(child.hProcess);
+    return passed ? 0 : static_cast<int>(exit_code == 0 ? 512 : exit_code);
+}
+
+int RunNetworkAllowListLeaf(const int argument_count, wchar_t** arguments) {
+    if (argument_count != 8) {
         return 210;
     }
     WSADATA winsock{};
@@ -1593,7 +1653,7 @@ bool RunNetworkAllowListTests() {
     const auto payload = bolt::tests::SealPolicy(
         {{bolt::tests::FilesystemRuleKind::kReadWrite,
           std::filesystem::path(executable).root_path()}},
-        bolt::tests::ChildProcessPolicyKind::kDeny,
+        bolt::tests::ChildProcessPolicyKind::kInherit,
         bolt::tests::NetworkPolicyKind::kAllowList, allow_list);
     std::unique_ptr<bolt::network::NetworkPolicy> checked_policy;
     if (bolt::network::NetworkPolicy::Load(
@@ -1728,38 +1788,49 @@ bool RunNetworkAllowListTests() {
         bolt::protocol::ValidateReadyFrame(ready.data(), ready.size(), nonce) ==
             bolt::protocol::ReadyFrameStatus::kSuccess &&
         process.ReleaseAfterReady() == bolt::common::ProcessStatus::kSuccess;
-    const SOCKET accepted = ready_ok ? AcceptWithTimeout(listener, 5'000)
-                                     : INVALID_SOCKET;
+    const SOCKET accepted = ready_ok
+        ? AcceptEitherWhileProcessRuns(
+              listener, INVALID_SOCKET, process.process_handle(), 3'000)
+        : INVALID_SOCKET;
     if (accepted != INVALID_SOCKET) {
         shutdown(accepted, SD_BOTH);
         closesocket(accepted);
     }
-    const SOCKET ipv6_accepted =
-        ready_ok ? AcceptWithTimeout(ipv6_listener, 5'000) : INVALID_SOCKET;
+    const SOCKET ipv6_accepted = accepted != INVALID_SOCKET
+        ? AcceptEitherWhileProcessRuns(
+              ipv6_listener, INVALID_SOCKET, process.process_handle(), 3'000)
+        : INVALID_SOCKET;
     if (ipv6_accepted != INVALID_SOCKET) {
         shutdown(ipv6_accepted, SD_BOTH);
         closesocket(ipv6_accepted);
     }
-    const SOCKET connect_ex_accepted =
-        ready_ok ? AcceptWithTimeout(listener, 2'000) : INVALID_SOCKET;
+    const SOCKET connect_ex_accepted = ipv6_accepted != INVALID_SOCKET
+        ? AcceptEitherWhileProcessRuns(
+              listener, INVALID_SOCKET, process.process_handle(), 2'000)
+        : INVALID_SOCKET;
     if (connect_ex_accepted != INVALID_SOCKET) {
         shutdown(connect_ex_accepted, SD_BOTH);
         closesocket(connect_ex_accepted);
     }
-    const bool win_http_served =
-        ready_ok && ServeHttpOnce(http_listener, http_ipv6_listener);
-    const bool win_inet_served =
-        ready_ok && ServeHttpOnce(http_listener, http_ipv6_listener);
-    const bool redirect_source_served = ready_ok && ServeHttpRedirectOnce(
-        http_listener, http_ipv6_listener, allowed_domain.c_str(),
-        redirect_port);
-    const bool redirect_target_served = ready_ok &&
-        ServeHttpOnce(redirect_listener, redirect_ipv6_listener);
-    const bool denied_redirect_source_served = ready_ok &&
+    const bool win_http_served = connect_ex_accepted != INVALID_SOCKET &&
+        ServeHttpOnce(
+            http_listener, http_ipv6_listener, process.process_handle());
+    const bool win_inet_served = win_http_served &&
+        ServeHttpOnce(
+            http_listener, http_ipv6_listener, process.process_handle());
+    const bool redirect_source_served = win_inet_served &&
         ServeHttpRedirectOnce(
             http_listener, http_ipv6_listener, allowed_domain.c_str(),
-            denied_redirect_port);
-    const SOCKET denied_redirect_connection = ready_ok
+            redirect_port, process.process_handle());
+    const bool redirect_target_served = redirect_source_served &&
+        ServeHttpOnce(
+            redirect_listener, redirect_ipv6_listener,
+            process.process_handle());
+    const bool denied_redirect_source_served = redirect_target_served &&
+        ServeHttpRedirectOnce(
+            http_listener, http_ipv6_listener, allowed_domain.c_str(),
+            denied_redirect_port, process.process_handle());
+    const SOCKET denied_redirect_connection = denied_redirect_source_served
         ? AcceptEitherWithTimeout(
               denied_redirect_listener, denied_redirect_ipv6_listener, 1'000)
         : INVALID_SOCKET;

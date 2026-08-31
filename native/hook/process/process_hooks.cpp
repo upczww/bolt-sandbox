@@ -337,6 +337,11 @@ bool InstallDescendantRuntime(
     HANDLE remote_event = nullptr;
     HANDLE remote_ready = nullptr;
     HANDLE remote_release = nullptr;
+    HANDLE remote_dns_request = nullptr;
+    HANDLE remote_dns_response = nullptr;
+    const bool dns_proxy_configured =
+        g_runtime_payload.dns_request_handle != 0 &&
+        g_runtime_payload.dns_response_handle != 0;
     const bool duplicated =
         DuplicateIntoProcess(
             process_information->hProcess,
@@ -345,7 +350,16 @@ bool InstallDescendantRuntime(
             process_information->hProcess,
             HandleFromWire(g_runtime_payload.event_handle), remote_event) &&
         DuplicateIntoProcess(process_information->hProcess, ready, remote_ready) &&
-        DuplicateIntoProcess(process_information->hProcess, release, remote_release);
+        DuplicateIntoProcess(process_information->hProcess, release, remote_release) &&
+        (!dns_proxy_configured ||
+         (DuplicateIntoProcess(
+              process_information->hProcess,
+              HandleFromWire(g_runtime_payload.dns_request_handle),
+              remote_dns_request) &&
+          DuplicateIntoProcess(
+              process_information->hProcess,
+              HandleFromWire(g_runtime_payload.dns_response_handle),
+              remote_dns_response)));
     if (!duplicated) {
         const DWORD error = GetLastError();
         CloseHandle(ready);
@@ -361,12 +375,12 @@ bool InstallDescendantRuntime(
     child_payload.release_handle = reinterpret_cast<std::uintptr_t>(remote_release);
     child_payload.descendant_ready_handle =
         reinterpret_cast<std::uintptr_t>(remote_ready);
-    child_payload.dns_request_handle = 0;
-    child_payload.dns_response_handle = 0;
-    child_payload.dns_maximum_frame_length = 0;
-    child_payload.dns_authentication_key.fill(0);
-    child_payload.tcp_proxy_port = 0;
-    child_payload.tcp_proxy_ipv6_port = 0;
+    if (dns_proxy_configured) {
+        child_payload.dns_request_handle =
+            reinterpret_cast<std::uintptr_t>(remote_dns_request);
+        child_payload.dns_response_handle =
+            reinterpret_cast<std::uintptr_t>(remote_dns_response);
+    }
     auto encoded = protocol::EncodeRuntimePayload(child_payload);
     if (!DetourCopyPayloadToProcess(
             process_information->hProcess, protocol::kRuntimePayloadGuid,
