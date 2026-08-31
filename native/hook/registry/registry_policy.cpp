@@ -377,4 +377,31 @@ RegistryDecision RegistryPolicy::Decide(
     }
 }
 
+bool RegistryPolicy::MayTraverse(
+    const RegistryHive hive,
+    const wchar_t* relative_key) const noexcept {
+    if (implementation_ == nullptr ||
+        static_cast<std::uint8_t>(hive) >
+            static_cast<std::uint8_t>(RegistryHive::kCurrentConfig)) {
+        return false;
+    }
+    try {
+        std::vector<std::wstring> components;
+        if (!ParseRelativeKey(relative_key, components)) {
+            return false;
+        }
+        return std::any_of(
+            implementation_->rules.begin(), implementation_->rules.end(),
+            [hive, &components](const Rule& rule) {
+                return rule.hive == hive &&
+                    components.size() < rule.components.size() &&
+                    std::equal(
+                        components.begin(), components.end(),
+                        rule.components.begin(), EqualIgnoreCase);
+            });
+    } catch (...) {
+        return false;
+    }
+}
+
 }  // namespace bolt::registry

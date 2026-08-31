@@ -207,11 +207,16 @@ target_link_libraries(bolt-sandbox-network PRIVATE
 )
 
 add_library(bolt-sandbox-registry STATIC
+    hook/registry/registry_hooks.cpp
     hook/registry/registry_policy.cpp
 )
 bolt_native_warnings(bolt-sandbox-registry)
 target_include_directories(bolt-sandbox-registry PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(bolt-sandbox-registry PRIVATE bolt-sandbox-protocol)
+target_link_libraries(bolt-sandbox-registry PRIVATE
+    advapi32
+    bolt-sandbox-detours
+    bolt-sandbox-protocol
+)
 
 add_library(bolt-sandbox-filesystem STATIC
     hook/event_sink.cpp
@@ -263,6 +268,7 @@ target_include_directories(bolt-sandbox-hook PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(bolt-sandbox-hook PRIVATE bolt-sandbox-protocol bolt-sandbox-detours)
 target_link_libraries(bolt-sandbox-hook PRIVATE bolt-sandbox-filesystem)
 target_link_libraries(bolt-sandbox-hook PRIVATE bolt-sandbox-network)
+target_link_libraries(bolt-sandbox-hook PRIVATE bolt-sandbox-registry)
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     set_target_properties(bolt-sandbox-hook PROPERTIES OUTPUT_NAME bolt-sandbox-x64)
 else()

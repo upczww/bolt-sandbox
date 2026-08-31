@@ -65,7 +65,10 @@ bool RunRegistryPolicyTests() {
             static_cast<Hive>(0xff), L"Software", Access::kRead) !=
             Decision::kDeny ||
         policy->Decide(Hive::kCurrentUser, L"..\\Software", Access::kRead) !=
-            Decision::kDeny) {
+            Decision::kDeny ||
+        !policy->MayTraverse(Hive::kCurrentUser, L"") ||
+        !policy->MayTraverse(Hive::kCurrentUser, L"Software") ||
+        policy->MayTraverse(Hive::kCurrentUser, L"Outside")) {
         return false;
     }
 

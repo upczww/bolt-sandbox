@@ -50,6 +50,10 @@ class RegistryPolicy final {
         const wchar_t* relative_key,
         RegistryAccess access) const noexcept;
 
+    [[nodiscard]] bool MayTraverse(
+        RegistryHive hive,
+        const wchar_t* relative_key) const noexcept;
+
   private:
     struct Impl;
     explicit RegistryPolicy(std::unique_ptr<Impl> implementation) noexcept;

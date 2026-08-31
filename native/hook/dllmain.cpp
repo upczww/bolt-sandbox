@@ -7,6 +7,7 @@
 #include "hook/network/network_hooks.h"
 #include "hook/process/process_hooks.h"
 #include "hook/process/process_mitigations.h"
+#include "hook/registry/registry_hooks.h"
 
 #include <cstdint>
 
@@ -104,9 +105,16 @@ RuntimeInitializationStatus InitializeRuntime(const HINSTANCE instance) noexcept
             ? bolt::network::InstallNetworkHooks(
                   policy, payload.policy_length, payload)
             : bolt::network::HookInstallStatus::kTransactionFailed;
+    const auto registry_hook_status =
+        network_hook_status == bolt::network::HookInstallStatus::kSuccess
+            ? bolt::registry::InstallRegistryHooks(
+                  policy, payload.policy_length)
+            : bolt::registry::RegistryHookInstallStatus::kTransactionFailed;
     UnmapViewOfFile(policy);
     if (file_hook_status != bolt::filesystem::HookInstallStatus::kSuccess ||
-        network_hook_status != bolt::network::HookInstallStatus::kSuccess) {
+        network_hook_status != bolt::network::HookInstallStatus::kSuccess ||
+        registry_hook_status !=
+            bolt::registry::RegistryHookInstallStatus::kSuccess) {
         return failed();
     }
     if (bolt::process::ApplyRequiredProcessMitigations() !=
@@ -162,6 +170,29 @@ BoltSandboxInstalledFilesystemHookCount() noexcept {
 extern "C" __declspec(dllexport) BOOL BoltSandboxFlushEvents(
     const DWORD timeout_milliseconds) noexcept {
     return bolt::hook::WaitForEventSinkIdle(timeout_milliseconds) ? TRUE : FALSE;
+}
+
+extern "C" __declspec(dllexport) std::uint32_t
+BoltSandboxLastRegistryDenialReason() noexcept {
+    return bolt::registry::LastRegistryDenialReason();
+}
+
+extern "C" __declspec(dllexport) std::uint32_t
+BoltSandboxLastRegistryDenialDetails() noexcept {
+    return bolt::registry::LastRegistryDenialDetails();
+}
+
+extern "C" __declspec(dllexport) BOOL
+BoltSandboxLastRegistryDenialMatchesSuffix(const wchar_t* suffix) noexcept {
+    return bolt::registry::LastRegistryDenialMatchesSuffix(suffix) ? TRUE
+                                                                   : FALSE;
+}
+
+extern "C" __declspec(dllexport) std::uint32_t
+BoltSandboxCopyLastRegistryDenialName(
+    wchar_t* output,
+    const std::uint32_t capacity) noexcept {
+    return bolt::registry::CopyLastRegistryDenialName(output, capacity);
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) noexcept {
