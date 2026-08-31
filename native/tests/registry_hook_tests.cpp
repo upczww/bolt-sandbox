@@ -95,6 +95,163 @@ void DeleteKeyTreeInView(
     RegDeleteKeyExW(HKEY_CURRENT_USER, path.c_str(), view, 0);
 }
 
+bool QueryNativeKeyName(
+    const HKEY key,
+    std::wstring& name) {
+    name.clear();
+    using NtQueryKeyFunction = LONG(NTAPI*)(
+        HANDLE, ULONG, PVOID, ULONG, PULONG);
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto nt_query_key = ntdll == nullptr
+        ? nullptr
+        : reinterpret_cast<NtQueryKeyFunction>(
+              GetProcAddress(ntdll, "NtQueryKey"));
+    if (nt_query_key == nullptr) {
+        return false;
+    }
+    ULONG required = 0;
+    nt_query_key(key, 3, nullptr, 0, &required);
+    if (required < sizeof(ULONG) || required > 64U * 1'024U) {
+        return false;
+    }
+    std::vector<std::uint8_t> buffer(required);
+    if (nt_query_key(
+            key, 3, buffer.data(), required, &required) < 0 ||
+        required < sizeof(ULONG)) {
+        return false;
+    }
+    const ULONG name_bytes =
+        *reinterpret_cast<const ULONG*>(buffer.data());
+    if (name_bytes % sizeof(wchar_t) != 0 ||
+        name_bytes > required - sizeof(ULONG)) {
+        return false;
+    }
+    name.assign(
+        reinterpret_cast<const wchar_t*>(
+            buffer.data() + sizeof(ULONG)),
+        name_bytes / sizeof(wchar_t));
+    return !name.empty();
+}
+
+bool CreateRegistrySymbolicLink(
+    const std::wstring& link_path,
+    const std::wstring& target_path) {
+    HKEY target = nullptr;
+    std::wstring native_target;
+    if (RegOpenKeyExW(
+            HKEY_CURRENT_USER, target_path.c_str(), 0, KEY_READ,
+            &target) != ERROR_SUCCESS ||
+        !QueryNativeKeyName(target, native_target)) {
+        if (target != nullptr) {
+            RegCloseKey(target);
+        }
+        return false;
+    }
+    RegCloseKey(target);
+
+    HKEY link = nullptr;
+    DWORD disposition = 0;
+    const LSTATUS created = RegCreateKeyExW(
+        HKEY_CURRENT_USER, link_path.c_str(), 0, nullptr,
+        REG_OPTION_CREATE_LINK, KEY_SET_VALUE | KEY_CREATE_LINK | DELETE,
+        nullptr, &link, &disposition);
+    if (created != ERROR_SUCCESS) {
+        return false;
+    }
+    wchar_t symbolic_link_value_text[] = L"SymbolicLinkValue";
+    UNICODE_STRING symbolic_link_value{};
+    symbolic_link_value.Buffer = symbolic_link_value_text;
+    symbolic_link_value.Length = static_cast<USHORT>(
+        std::wcslen(symbolic_link_value_text) * sizeof(wchar_t));
+    symbolic_link_value.MaximumLength = symbolic_link_value.Length;
+    using NtSetValueKeyFunction = LONG(NTAPI*)(
+        HANDLE, PUNICODE_STRING, ULONG, ULONG, PVOID, ULONG);
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto nt_set_value_key = ntdll == nullptr
+        ? nullptr
+        : reinterpret_cast<NtSetValueKeyFunction>(
+              GetProcAddress(ntdll, "NtSetValueKey"));
+    const LONG linked = nt_set_value_key == nullptr
+        ? static_cast<LONG>(0xC0000002L)
+        : nt_set_value_key(
+              link, &symbolic_link_value, 0, REG_LINK,
+              native_target.data(),
+              static_cast<ULONG>(
+                  native_target.size() * sizeof(wchar_t)));
+    RegCloseKey(link);
+    return linked >= 0;
+}
+
+bool ValidateRegistrySymbolicLink(
+    const std::wstring& link_path,
+    const std::wstring& target_path) {
+    HKEY link = nullptr;
+    HKEY target = nullptr;
+    std::wstring link_name;
+    std::wstring target_name;
+    wchar_t value[16]{};
+    DWORD value_type = 0;
+    DWORD value_bytes = sizeof(value);
+    const LSTATUS link_open = RegOpenKeyExW(
+        HKEY_CURRENT_USER, link_path.c_str(), 0, KEY_READ, &link);
+    const LSTATUS target_open = RegOpenKeyExW(
+        HKEY_CURRENT_USER, target_path.c_str(), 0, KEY_READ, &target);
+    const LSTATUS value_query = link_open == ERROR_SUCCESS
+        ? RegQueryValueExW(
+              link, L"Seed", nullptr, &value_type,
+              reinterpret_cast<BYTE*>(value), &value_bytes)
+        : link_open;
+    const bool link_name_read =
+        link_open == ERROR_SUCCESS && QueryNativeKeyName(link, link_name);
+    const bool target_name_read =
+        target_open == ERROR_SUCCESS &&
+        QueryNativeKeyName(target, target_name);
+    const bool valid =
+        link_open == ERROR_SUCCESS &&
+        target_open == ERROR_SUCCESS &&
+        value_query == ERROR_SUCCESS &&
+        value_type == REG_SZ && std::wstring(value) == L"secret" &&
+        link_name_read && target_name_read;
+    if (link != nullptr) {
+        RegCloseKey(link);
+    }
+    if (target != nullptr) {
+        RegCloseKey(target);
+    }
+    if (!valid || link_name != target_name) {
+        std::fwprintf(
+            stderr,
+            L"registry symbolic-link fixture: valid=%d link_open=%ld "
+            L"target_open=%ld query=%ld link_name=%d target_name=%d "
+            L"link=%ls target=%ls\n",
+            valid ? 1 : 0, static_cast<long>(link_open),
+            static_cast<long>(target_open), static_cast<long>(value_query),
+            link_name_read ? 1 : 0, target_name_read ? 1 : 0,
+            link_name.c_str(), target_name.c_str());
+        return false;
+    }
+    return true;
+}
+
+void DeleteRegistrySymbolicLink(const std::wstring& link_path) {
+    HKEY link = nullptr;
+    if (RegOpenKeyExW(
+            HKEY_CURRENT_USER, link_path.c_str(), REG_OPTION_OPEN_LINK,
+            DELETE, &link) != ERROR_SUCCESS) {
+        return;
+    }
+    using NtDeleteKeyFunction = LONG(NTAPI*)(HANDLE);
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto nt_delete_key = ntdll == nullptr
+        ? nullptr
+        : reinterpret_cast<NtDeleteKeyFunction>(
+              GetProcAddress(ntdll, "NtDeleteKey"));
+    if (nt_delete_key != nullptr) {
+        nt_delete_key(link);
+    }
+    RegCloseKey(link);
+}
+
 std::vector<std::string> Components(
     const DWORD process_id,
     const char* const leaf) {
@@ -267,6 +424,8 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     const std::wstring allowed = root + L"\\Allowed";
     const std::wstring inherited = root + L"\\Inherited";
     const std::wstring outside = root + L"\\Outside";
+    const std::wstring link_to_sensitive =
+        root + L"\\Allowed\\LinkToSensitive";
     const std::wstring root_id =
         root.substr(root.find_last_of(L'\\') + 1);
     const std::wstring wow64_read_only =
@@ -415,6 +574,13 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
         HKEY_CURRENT_USER, outside.c_str(), 0, KEY_READ, &outside_key);
     if (outside_key != nullptr) {
         RegCloseKey(outside_key);
+    }
+    HKEY linked_sensitive_key = nullptr;
+    const LSTATUS linked_sensitive_open = RegOpenKeyExW(
+        HKEY_CURRENT_USER, link_to_sensitive.c_str(), 0, KEY_READ,
+        &linked_sensitive_key);
+    if (linked_sensitive_key != nullptr) {
+        RegCloseKey(linked_sensitive_key);
     }
 
     wchar_t inherited_value[16]{};
@@ -584,6 +750,15 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     if (outside_open != ERROR_ACCESS_DENIED || outside_key != nullptr) {
         return 704;
     }
+    if (linked_sensitive_open != ERROR_ACCESS_DENIED ||
+        linked_sensitive_key != nullptr) {
+        std::fprintf(
+            stderr,
+            "registry symbolic-link open status=%ld handle=%d\n",
+            static_cast<long>(linked_sensitive_open),
+            linked_sensitive_key != nullptr ? 1 : 0);
+        return 721;
+    }
     if (inherited_denied_query != ERROR_ACCESS_DENIED ||
         inherited_denied_set != ERROR_ACCESS_DENIED ||
         inherited_denied_enumerate != ERROR_ACCESS_DENIED ||
@@ -629,6 +804,9 @@ bool RunRegistryHookTests() {
         std::to_wstring(process_id);
     const std::wstring wow64_read_only =
         wow64_root + L"\\Wow64ReadOnly";
+    const std::wstring link_to_sensitive =
+        root + L"\\Allowed\\LinkToSensitive";
+    DeleteRegistrySymbolicLink(link_to_sensitive);
     RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
     DeleteKeyTreeInView(wow64_root, KEY_WOW64_32KEY);
     DeleteKeyTreeInView(wow64_root, KEY_WOW64_64KEY);
@@ -644,8 +822,13 @@ bool RunRegistryHookTests() {
         CreateKeyWithValueInView(
             wow64_read_only, KEY_WOW64_32KEY, L"Seed", L"seed") &&
         CreateKeyWithValueInView(
-            wow64_read_only, KEY_WOW64_64KEY, L"Seed", L"seed");
+            wow64_read_only, KEY_WOW64_64KEY, L"Seed", L"seed") &&
+        CreateRegistrySymbolicLink(
+            link_to_sensitive, root + L"\\Broad\\Sensitive") &&
+        ValidateRegistrySymbolicLink(
+            link_to_sensitive, root + L"\\Broad\\Sensitive");
     if (!prepared) {
+        DeleteRegistrySymbolicLink(link_to_sensitive);
         RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
         DeleteKeyTreeInView(wow64_root, KEY_WOW64_32KEY);
         DeleteKeyTreeInView(wow64_root, KEY_WOW64_64KEY);
@@ -796,6 +979,8 @@ bool RunRegistryHookTests() {
          CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
         {bolt::protocol::RegistryOperation::kOpen,
          CanonicalCurrentUserKey(root + L"\\Outside")},
+        {bolt::protocol::RegistryOperation::kOpen,
+         CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
         {bolt::protocol::RegistryOperation::kQuery,
          CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
         {bolt::protocol::RegistryOperation::kSetValue,
@@ -853,6 +1038,7 @@ bool RunRegistryHookTests() {
     CloseHandle(release);
     event_pipe.Close();
     RegCloseKey(inherited_denied_handle);
+    DeleteRegistrySymbolicLink(link_to_sensitive);
     RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
     DeleteKeyTreeInView(wow64_root, KEY_WOW64_32KEY);
     DeleteKeyTreeInView(wow64_root, KEY_WOW64_64KEY);
