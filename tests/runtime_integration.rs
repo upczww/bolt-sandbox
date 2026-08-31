@@ -618,3 +618,80 @@ fn rec_006_007_exact_quota_succeeds_and_next_byte_reports_typed_failure() {
     ));
     fs::remove_dir_all(fixture_root).expect("quota fixture must clean up");
 }
+
+#[test]
+fn rec_014_handle_delete_and_child_delete_share_execution_recovery() {
+    let Some((sandbox, component_root)) = configured_sandbox() else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let fixture_root = std::env::temp_dir().join(format!(
+        "bolt-sandbox-recovery-child-{}-{fixture_id}",
+        std::process::id()
+    ));
+    let work = fixture_root.join("work");
+    let recovery = fixture_root.join("recovery");
+    fs::create_dir_all(&work).expect("work directory must be created");
+    fs::create_dir_all(&recovery).expect("recovery directory must be created");
+    let handle_source = work.join("handle-delete.bin");
+    let child_source = work.join("child-delete.bin");
+    fs::write(&handle_source, b"handle-content").expect("handle fixture must be written");
+    fs::write(&child_source, b"child-content").expect("child fixture must be written");
+    let policy = SandboxPolicy {
+        recovery: RecoveryPolicy::Enabled(RecoveryLimits {
+            directory: recovery.clone(),
+            maximum_bytes: 1_048_576,
+            maximum_items: 16,
+        }),
+        ..SandboxPolicy::default()
+    };
+    let mut handle = sandbox
+        .start(SandboxRequest {
+            program: component_root.join("bolt-sandbox-native-tests.exe"),
+            arguments: vec![
+                OsString::from("--recovery-handle-child-fixture"),
+                handle_source.as_os_str().to_os_string(),
+                child_source.as_os_str().to_os_string(),
+            ],
+            cwd: work,
+            environment: BTreeMap::new(),
+            policy,
+            timeout: Some(Duration::from_secs(10)),
+        })
+        .expect("handle and child fixture must start");
+    let root_process_id = handle.process_id();
+    let stdout = handle.take_stdout().expect("stdout is available");
+    let stderr = handle.take_stderr().expect("stderr is available");
+    let events = handle.take_events().expect("events are available");
+    let (_stdout, _stderr, events, result) = collect_execution(handle, stdout, stderr, events);
+
+    assert!(!handle_source.exists());
+    assert!(!child_source.exists());
+    let mut contents: Vec<_> = recovery_files(&recovery)
+        .iter()
+        .map(|path| fs::read(path).expect("backup must be readable"))
+        .collect();
+    contents.sort();
+    assert_eq!(
+        contents,
+        vec![b"child-content".to_vec(), b"handle-content".to_vec()]
+    );
+    let artifact_processes: Vec<u32> = events
+        .iter()
+        .filter_map(|event| match event {
+            SandboxEvent::RecoveryArtifactCreated(artifact) => Some(artifact.process_id),
+            _ => None,
+        })
+        .collect();
+    assert!(artifact_processes.contains(&root_process_id));
+    assert!(
+        artifact_processes
+            .iter()
+            .any(|process_id| *process_id != root_process_id)
+    );
+    assert!(matches!(
+        result.terminal,
+        ExecutionTerminal::Process(ref exit) if exit.exit_code == Some(0)
+    ));
+    fs::remove_dir_all(fixture_root).expect("child fixture must clean up");
+}

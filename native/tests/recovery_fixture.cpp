@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <cwchar>
+#include <string>
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
@@ -12,6 +13,17 @@
 #include <detours.h>
 
 namespace {
+
+std::wstring CurrentExecutable() {
+    std::wstring path(32'768, L'\0');
+    const DWORD length = GetModuleFileNameW(
+        nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (length == 0 || length == path.size()) {
+        return {};
+    }
+    path.resize(length);
+    return path;
+}
 
 bool WriteExact(
     const HANDLE handle,
@@ -170,4 +182,50 @@ int RunRecoveryDeleteTwoFixture(
         return 348;
     }
     return DeleteFileW(arguments[3]) ? 0 : 349;
+}
+
+int RunRecoveryHandleAndChildFixture(
+    const int argument_count,
+    wchar_t** arguments) noexcept {
+    if (argument_count != 4) {
+        return 350;
+    }
+    const HANDLE handle = CreateFileW(
+        arguments[2], DELETE | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    FILE_DISPOSITION_INFO disposition{};
+    disposition.DeleteFile = TRUE;
+    const bool disposed = handle != INVALID_HANDLE_VALUE &&
+        SetFileInformationByHandle(
+            handle, FileDispositionInfo, &disposition, sizeof(disposition));
+    if (handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(handle);
+    }
+    if (!disposed) {
+        return 351;
+    }
+    const std::wstring executable = CurrentExecutable();
+    std::wstring command = L"\"" + executable +
+                           L"\" --recovery-delete-fixture \"" +
+                           arguments[3] + L"\"";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (executable.empty() ||
+        !CreateProcessW(
+            executable.c_str(), command.data(), nullptr, nullptr, TRUE, 0,
+            nullptr, nullptr, &startup, &process)) {
+        return 352;
+    }
+    const DWORD wait = WaitForSingleObject(process.hProcess, 10'000);
+    DWORD exit_code = 353;
+    if (wait != WAIT_OBJECT_0 ||
+        !GetExitCodeProcess(process.hProcess, &exit_code)) {
+        TerminateProcess(process.hProcess, 353);
+        WaitForSingleObject(process.hProcess, 5'000);
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return static_cast<int>(exit_code);
 }
