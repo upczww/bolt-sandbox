@@ -381,6 +381,17 @@ bool DuplicateIntoProcess(
                DUPLICATE_SAME_ACCESS) != FALSE;
 }
 
+bool DuplicateIntoProcessWithAccess(
+    const HANDLE process,
+    const HANDLE source,
+    const DWORD access,
+    HANDLE& remote) noexcept {
+    remote = nullptr;
+    return DuplicateHandle(
+               GetCurrentProcess(), source, process, &remote, access, FALSE,
+               0) != FALSE;
+}
+
 void AbortCreatedProcess(
     const LPPROCESS_INFORMATION process_information,
     const DWORD error) noexcept {
@@ -434,8 +445,12 @@ bool InstallDescendantRuntime(
         DuplicateIntoProcess(
             process_information->hProcess,
             HandleFromWire(g_runtime_payload.event_handle), remote_event) &&
-        DuplicateIntoProcess(process_information->hProcess, ready, remote_ready) &&
-        DuplicateIntoProcess(process_information->hProcess, release, remote_release) &&
+        DuplicateIntoProcessWithAccess(
+            process_information->hProcess, ready, EVENT_MODIFY_STATE,
+            remote_ready) &&
+        DuplicateIntoProcessWithAccess(
+            process_information->hProcess, release, SYNCHRONIZE,
+            remote_release) &&
         (!dns_proxy_configured ||
          (DuplicateIntoProcess(
               process_information->hProcess,

@@ -1516,7 +1516,7 @@ bool RunRegistryHookTests() {
         L" " + HandleText(reinterpret_cast<std::uintptr_t>(
                      inherited_race_denied_handle));
     const HANDLE inherited_handles[] = {
-        policy.handle(), event_client, release, inherited_denied_handle,
+        policy.handle(), event_client, inherited_denied_handle,
         inherited_read_only_handle, inherited_race_allowed_handle,
         inherited_race_denied_handle};
     const bolt::common::ProcessLaunchOptions options{

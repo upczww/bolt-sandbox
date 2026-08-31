@@ -82,6 +82,21 @@ bool ValidateInheritedHandles(const ProcessLaunchOptions& options) noexcept {
     return true;
 }
 
+void CloseRemoteHandle(
+    const HANDLE process,
+    const HANDLE remote_handle) noexcept {
+    if (process == nullptr || remote_handle == nullptr) {
+        return;
+    }
+    HANDLE local_copy = nullptr;
+    if (DuplicateHandle(
+            process, remote_handle, GetCurrentProcess(), &local_copy, 0, FALSE,
+            DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE) &&
+        local_copy != nullptr) {
+        CloseHandle(local_copy);
+    }
+}
+
 }  // namespace
 
 SuspendedProcess::~SuspendedProcess() noexcept {
@@ -176,7 +191,7 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
         initialization_started_) {
         return ProcessStatus::kInvalidState;
     }
-    const HANDLE handles[] = {policy_handle, event_handle, release_handle};
+    const HANDLE handles[] = {policy_handle, event_handle};
     for (const HANDLE handle : handles) {
         DWORD flags = 0;
         if (handle == nullptr || handle == INVALID_HANDLE_VALUE ||
@@ -184,6 +199,12 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
             return ProcessStatus::kInvalidRuntimePayload;
         }
     }
+    DWORD release_flags = 0;
+    if (release_handle == nullptr || release_handle == INVALID_HANDLE_VALUE ||
+        !GetHandleInformation(release_handle, &release_flags)) {
+        return ProcessStatus::kInvalidRuntimePayload;
+    }
+    static_cast<void>(release_flags);
     const bool dns_absent = dns_request_handle == nullptr &&
                             dns_response_handle == nullptr &&
                             dns_authentication_key == nullptr &&
@@ -227,12 +248,18 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
     if (process_id == 0) {
         return ProcessStatus::kInvalidRuntimePayload;
     }
+    HANDLE remote_release = nullptr;
+    if (!DuplicateHandle(
+            GetCurrentProcess(), release_handle, process_, &remote_release,
+            SYNCHRONIZE, FALSE, 0)) {
+        return ProcessStatus::kInvalidRuntimePayload;
+    }
     protocol::RuntimePayload payload{};
     payload.target_process_id = process_id;
     payload.policy_length = static_cast<std::uint32_t>(policy_length);
     payload.policy_handle = reinterpret_cast<std::uintptr_t>(policy_handle);
     payload.event_handle = reinterpret_cast<std::uintptr_t>(event_handle);
-    payload.release_handle = reinterpret_cast<std::uintptr_t>(release_handle);
+    payload.release_handle = reinterpret_cast<std::uintptr_t>(remote_release);
     payload.handshake_nonce = nonce;
     payload.descendant_startup_fault = descendant_startup_fault;
     if (!dns_absent) {
@@ -249,11 +276,13 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
     protocol::RuntimePayload checked{};
     if (protocol::DecodeRuntimePayload(encoded.data(), encoded.size(), checked) !=
         protocol::RuntimePayloadStatus::kSuccess) {
+        CloseRemoteHandle(process_, remote_release);
         return ProcessStatus::kInvalidRuntimePayload;
     }
     if (!DetourCopyPayloadToProcess(
             process_, protocol::kRuntimePayloadGuid, encoded.data(),
             static_cast<DWORD>(encoded.size()))) {
+        CloseRemoteHandle(process_, remote_release);
         return ProcessStatus::kPayloadCopyFailed;
     }
     payload_installed_ = true;

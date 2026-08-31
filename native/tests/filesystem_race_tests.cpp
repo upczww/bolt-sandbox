@@ -433,7 +433,7 @@ class RaceProcess final {
             second_path.wstring() + L"\" " + HandleText(start) + L" " +
             HandleText(ready_) + L" " + HandleText(extra_handle);
         std::vector<HANDLE> inherited = {
-            policy_.handle(), event_client, release_, start, ready_};
+            policy_.handle(), event_client, start, ready_};
         if (extra_handle != nullptr) {
             inherited.push_back(extra_handle);
         }

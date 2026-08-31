@@ -1110,7 +1110,7 @@ bool RunNetworkHookTests() {
     const std::wstring command_line =
         L"\"" + executable + L"\" --network-hook-child " +
         std::to_wstring(sibling_port);
-    const HANDLE inherited[] = {policy.handle(), event_client, release};
+    const HANDLE inherited[] = {policy.handle(), event_client};
     const bolt::common::ProcessLaunchOptions options{
         executable, command_line, L"", nullptr, inherited, std::size(inherited), 0};
     bolt::common::SuspendedProcess process;
@@ -1321,7 +1321,7 @@ bool RunNetworkUnrestrictedTests() {
         L"\"" + executable + L"\" --network-unrestricted-child " +
         std::to_wstring(port) + L" " + std::to_wstring(port) + L" " +
         std::to_wstring(refused_port);
-    const HANDLE inherited[] = {policy.handle(), event_client, release};
+    const HANDLE inherited[] = {policy.handle(), event_client};
     const bolt::common::ProcessLaunchOptions options{
         executable, command, L"", nullptr, inherited, std::size(inherited), 0};
     bolt::common::SuspendedProcess process;
@@ -2175,7 +2175,7 @@ bool RunNetworkAllowListTests() {
         std::to_wstring(denied_proxy_port) + L" " +
         std::to_wstring(denied_final_port);
     const HANDLE inherited[] = {
-        policy.handle(), event_client, release,
+        policy.handle(), event_client,
         dns_proxy->request_write_handle(), dns_proxy->response_read_handle()};
     const bolt::common::ProcessLaunchOptions options{
         executable, command_line, L"", nullptr, inherited, std::size(inherited), 0};

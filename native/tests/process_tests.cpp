@@ -3993,6 +3993,114 @@ bool RunStartupHandleListTest(
     return included_present && !ambient_file_leaked;
 }
 
+bool RunSessionHandleIsolationTest(const std::wstring& executable) {
+    const std::wstring pipe_name =
+        PipeName(GetCurrentProcessId() ^ 0x5100'0017U);
+    bolt::common::PrivatePipe server;
+    if (bolt::common::PrivatePipe::Create(pipe_name, server) !=
+        bolt::common::PipeStatus::kSuccess) {
+        return false;
+    }
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE client = CreateFileW(
+        pipe_name.c_str(), FILE_WRITE_DATA, 0, &inheritable, OPEN_EXISTING, 0,
+        nullptr);
+    if (client == INVALID_HANDLE_VALUE ||
+        server.Accept() != bolt::common::PipeStatus::kSuccess) {
+        if (client != INVALID_HANDLE_VALUE) {
+            CloseHandle(client);
+        }
+        return false;
+    }
+
+    std::wstring command = L"\"" + executable + L"\" --job-child";
+    const HANDLE inherited[] = {client};
+    const bolt::common::ProcessLaunchOptions options{
+        executable, command, L"", nullptr, inherited, std::size(inherited), 0};
+    bolt::common::SuspendedProcess process;
+    if (bolt::common::SuspendedProcess::Create(options, process) !=
+        bolt::common::ProcessStatus::kSuccess) {
+        CloseHandle(client);
+        return false;
+    }
+
+    HANDLE write_copy = nullptr;
+    const bool write_only_capability_present =
+        DuplicateHandle(
+            process.process_handle(), client, GetCurrentProcess(), &write_copy,
+            FILE_WRITE_DATA, FALSE, 0) != FALSE;
+    HANDLE read_copy = nullptr;
+    SetLastError(ERROR_SUCCESS);
+    const BOOL read_capability_leaked = DuplicateHandle(
+        process.process_handle(), client, GetCurrentProcess(), &read_copy,
+        FILE_READ_DATA, FALSE, 0);
+    const DWORD read_error = GetLastError();
+    HANDLE server_copy = nullptr;
+    SetLastError(ERROR_SUCCESS);
+    const BOOL server_handle_leaked = DuplicateHandle(
+        process.process_handle(), server.handle(), GetCurrentProcess(),
+        &server_copy, FILE_READ_DATA, FALSE, 0);
+    const DWORD server_error = GetLastError();
+
+    SetLastError(ERROR_SUCCESS);
+    const BOOL impersonated =
+        write_copy != nullptr && ImpersonateNamedPipeClient(write_copy);
+    const DWORD impersonation_error = GetLastError();
+    if (impersonated) {
+        RevertToSelf();
+    }
+
+    bolt::common::PrivatePipe second_server;
+    const auto second_server_status =
+        bolt::common::PrivatePipe::Create(pipe_name, second_server);
+    SetLastError(ERROR_SUCCESS);
+    const HANDLE second_client = CreateFileW(
+        pipe_name.c_str(), FILE_WRITE_DATA, 0, nullptr, OPEN_EXISTING, 0,
+        nullptr);
+    const DWORD second_client_error = GetLastError();
+
+    if (second_client != INVALID_HANDLE_VALUE) {
+        CloseHandle(second_client);
+    }
+    if (server_copy != nullptr) {
+        CloseHandle(server_copy);
+    }
+    if (read_copy != nullptr) {
+        CloseHandle(read_copy);
+    }
+    if (write_copy != nullptr) {
+        CloseHandle(write_copy);
+    }
+    process.Close();
+    CloseHandle(client);
+    const bool passed =
+        write_only_capability_present && !read_capability_leaked &&
+        read_error == ERROR_ACCESS_DENIED && !server_handle_leaked &&
+        server_error == ERROR_INVALID_HANDLE && !impersonated &&
+           (impersonation_error == ERROR_INVALID_FUNCTION ||
+            impersonation_error == ERROR_CANNOT_IMPERSONATE ||
+            impersonation_error == ERROR_ACCESS_DENIED) &&
+           second_server_status == bolt::common::PipeStatus::kCreateFailed &&
+           second_client == INVALID_HANDLE_VALUE &&
+           second_client_error == ERROR_PIPE_BUSY;
+    if (!passed) {
+        std::fprintf(
+            stderr,
+            "session handle isolation failed: write=%d read=%d read_error=%lu server=%d server_error=%lu impersonated=%d impersonation_error=%lu second_server=%u second_client=%p second_client_error=%lu\n",
+            write_only_capability_present ? 1 : 0,
+            read_capability_leaked ? 1 : 0,
+            static_cast<unsigned long>(read_error),
+            server_handle_leaked ? 1 : 0,
+            static_cast<unsigned long>(server_error), impersonated ? 1 : 0,
+            static_cast<unsigned long>(impersonation_error),
+            static_cast<unsigned int>(second_server_status), second_client,
+            static_cast<unsigned long>(second_client_error));
+    }
+    return passed;
+}
+
 bool RunInheritedProcessTest(
     const std::wstring& executable,
     const std::filesystem::path& hook_path,
@@ -4077,7 +4185,7 @@ bool RunInheritedProcessTest(
     if (association_probe != nullptr) {
         command_line += L" \"" + association_probe->script_path + L"\"";
     }
-    std::vector<HANDLE> inherited = {policy.handle(), event_client, release};
+    std::vector<HANDLE> inherited = {policy.handle(), event_client};
     if (exposed_job != nullptr) {
         inherited.push_back(exposed_job);
     }
@@ -4577,7 +4685,7 @@ bool RunInjectionFailureBeforeEntryTest(
     }
     const std::wstring command =
         L"\"" + executable + L"\" --entry-marker " + HandleText(marker);
-    const HANDLE inherited[] = {policy.handle(), event_write, release, marker};
+    const HANDLE inherited[] = {policy.handle(), event_write, marker};
     const bolt::common::ProcessLaunchOptions options{
         executable, command, L"", nullptr, inherited, std::size(inherited), 0};
     bolt::common::ExecutionJob job;
@@ -4759,6 +4867,9 @@ bool RunProcessTests() {
         return false;
     }
     if (!RunStartupHandleListTest(executable, test_root)) {
+        return false;
+    }
+    if (!RunSessionHandleIsolationTest(executable)) {
         return false;
     }
     const std::filesystem::path executable_volume_root =
@@ -5107,7 +5218,7 @@ bool RunProcessTests() {
                                        HandleText(inherited_denied_section) + L" " +
                                        HandleText(policy.handle());
     const HANDLE inherited[] = {
-        allowed, policy.handle(), event_client, release, denied_disposition_handle,
+        allowed, policy.handle(), event_client, denied_disposition_handle,
         denied_truncate_handle, denied_mapping_handle, read_only_mapping_handle,
         denied_directory_handle, denied_overlapped_handle};
     const HANDLE section_inherited[] = {
@@ -5139,6 +5250,20 @@ bool RunProcessTests() {
         release, policy.length(), event_client, release, nonce);
     const auto payload_status = process.InstallRuntimePayload(
         policy.handle(), policy.length(), event_client, release, nonce);
+    HANDLE leaked_release_control = nullptr;
+    const BOOL release_control_leaked = DuplicateHandle(
+        process.process_handle(), release, GetCurrentProcess(),
+        &leaked_release_control, EVENT_MODIFY_STATE, FALSE, 0);
+    HANDLE leaked_event_read = nullptr;
+    const BOOL event_read_leaked = DuplicateHandle(
+        process.process_handle(), event_client, GetCurrentProcess(),
+        &leaked_event_read, FILE_READ_DATA, FALSE, 0);
+    if (leaked_release_control != nullptr) {
+        CloseHandle(leaked_release_control);
+    }
+    if (leaked_event_read != nullptr) {
+        CloseHandle(leaked_event_read);
+    }
     const auto inject_status = process.Inject(hook_path.string());
     const auto initialization_status = process.BeginHookInitialization();
     if (!created || wait_suspended != bolt::common::ProcessStatus::kWaitTimeout ||
@@ -5147,6 +5272,7 @@ bool RunProcessTests() {
         assigned_resume != bolt::common::ProcessStatus::kInvalidState ||
         wrong_mapping_status != bolt::common::ProcessStatus::kInvalidRuntimePayload ||
         payload_status != bolt::common::ProcessStatus::kSuccess ||
+        release_control_leaked || event_read_leaked ||
         inject_status != bolt::common::ProcessStatus::kSuccess ||
         initialization_status != bolt::common::ProcessStatus::kSuccess) {
         return false;

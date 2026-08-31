@@ -469,6 +469,16 @@ started from an absolute Windows system directory with a minimal internal
 environment, so target-controlled `PATH`, `WINDIR`, and other environment state
 cannot redirect it or receive secrets.
 
+Runtime handles are transferred with capability-specific access, never ambient
+inheritance. Policy mappings carry `FILE_MAP_READ`; event clients carry
+`FILE_WRITE_DATA`; target and descendant release events carry only
+`SYNCHRONIZE`; descendant-ready events carry only `EVENT_MODIFY_STATE`. The
+trusted host retains the separate release-control handle. Pipe server, Job,
+launcher, host-process, and unrelated inheritable handles are absent from the
+target handle list. A write-only client endpoint cannot be upgraded to read,
+used with `ImpersonateNamedPipeClient`, or used to create a second server/client
+session; duplicate Ready frames are rejected by the session state machine.
+
 Launcher selection parses the target file identity's PE headers rather than
 assuming the host architecture or trusting its filename. The parser requires a
 complete 64-byte DOS header, `MZ` and `PE\0\0` signatures, a checked in-range

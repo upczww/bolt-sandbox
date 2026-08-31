@@ -647,8 +647,7 @@ bool RunShellFileOperationTests() {
         denied_rename_source.wstring() + L"\" \"" +
         denied_delete_source.wstring() + L"\" " + HandleText(completion) +
         L" unused unused";
-    const HANDLE inherited[] = {
-        policy.handle(), event_client, release, completion};
+    const HANDLE inherited[] = {policy.handle(), event_client, completion};
     const bolt::common::ProcessLaunchOptions options{
         executable, command_line, L"", nullptr, inherited,
         std::size(inherited), 0};

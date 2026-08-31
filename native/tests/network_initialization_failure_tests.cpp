@@ -132,7 +132,7 @@ bool RunMode(
     const std::wstring command =
         L"\"" + executable + L"\" --network-init-marker \"" +
         marker.wstring() + L"\"";
-    const HANDLE inherited[] = {policy.handle(), event_client, release};
+    const HANDLE inherited[] = {policy.handle(), event_client};
     const bolt::common::ProcessLaunchOptions options{
         executable, command, L"", nullptr, inherited, std::size(inherited), 0};
     constexpr std::array<std::uint8_t, 16> nonce = {0x7B};
