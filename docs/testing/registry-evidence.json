@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"id":"REG-001","status":"partial","reason":"Rust read_only read/enumerate decisions exist, but no injected registry query or enumeration executes against Windows.","evidence":[{"file":"src/policy/compiler.rs","anchor":"reg_001_to_007_registry_grants_and_default_deny_are_explicit"}]},
+    {"id":"REG-002","status":"partial","reason":"Rust read_only write denial exists, but create/set/delete side effects are not checked by native hooks.","evidence":[{"file":"src/policy/compiler.rs","anchor":"RegistryAccess::Write"}]},
+    {"id":"REG-003","status":"partial","reason":"Policy recursion is compiled, but subkey create/delete/rename is not intercepted.","evidence":[{"file":"src/policy/compiler.rs","anchor":"reg_001_to_007_registry_grants_and_default_deny_are_explicit"}]},
+    {"id":"REG-004","status":"partial","reason":"no_access decisions compile, but native query/enumerate/mutation output preservation is unimplemented.","evidence":[{"file":"src/policy/compiler.rs","anchor":"RegistryRuleKind::NoAccess"}]},
+    {"id":"REG-005","status":"partial","reason":"read_write decisions compile, but ordinary OS authorization and native mutations are not exercised.","evidence":[{"file":"src/policy/compiler.rs","anchor":"RegistryRuleKind::ReadWrite"}]},
+    {"id":"REG-006","status":"partial","reason":"inherit_user is represented in policy, but native calls do not preserve user ACL decisions yet.","evidence":[{"file":"src/policy/compiler.rs","anchor":"RegistryDecision::InheritUser"}]},
+    {"id":"REG-007","status":"partial","reason":"Rust default-deny behavior is tested, but no injected default-deny read/write fixture exists.","evidence":[{"file":"src/policy/compiler.rs","anchor":"reg_001_to_007_registry_grants_and_default_deny_are_explicit"}]},
+    {"id":"REG-008","status":"partial","reason":"Mandatory deny precedence compiles, but sensitive keys are not protected by native interception.","evidence":[{"file":"src/policy/compiler.rs","anchor":"pol_008_mandatory_registry_deny_overrides_broad_grant"}]},
+    {"id":"REG-009","status":"partial","reason":"Trusted mandatory deny input exists, but recursive host-added deny has no native bypass fixture.","evidence":[{"file":"src/policy/compiler.rs","anchor":"mandatory_registry_denies"}]},
+    {"id":"REG-010","status":"partial","reason":"Rust normalizes hive aliases, case, separators, and native prefixes, but native object names are not canonicalized at hook time.","evidence":[{"file":"src/policy/compiler.rs","anchor":"reg_010_registry_aliases_and_redundant_separators_share_one_rule"}]},
+    {"id":"REG-011","status":"gap","reason":"No WOW64 32-bit/64-bit view isolation fixture or hook implementation exists."},
+    {"id":"REG-012","status":"gap","reason":"No registry symbolic-link/final-identity or predefined-root-handle enforcement exists."},
+    {"id":"REG-013","status":"gap","reason":"No handle-based set/delete/rename re-evaluation exists."},
+    {"id":"REG-014","status":"gap","reason":"No duplicated or inherited registry-handle rights-amplification fixture exists."},
+    {"id":"REG-015","status":"gap","reason":"Required NT Native registry APIs are not intercepted."},
+    {"id":"REG-016","status":"gap","reason":"Win32 Reg* wrappers have no injected end-to-end parity fixture."},
+    {"id":"REG-017","status":"gap","reason":"Remote and transactional registry operations are not explicitly denied with typed events."},
+    {"id":"REG-018","status":"gap","reason":"No concurrent mutation/rename race fixture exists."},
+    {"id":"REG-019","status":"gap","reason":"No allowed-path control proves native ACL/missing-key errors remain unchanged without false violations."},
+    {"id":"REG-020","status":"gap","reason":"No registry event wire format or canary secret-disclosure test exists."}
+  ]
+}
