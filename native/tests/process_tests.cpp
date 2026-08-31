@@ -2923,6 +2923,12 @@ int RunFaultedDescendantParent(
     return WaitForSingleObject(marker, 0) == WAIT_TIMEOUT ? 0 : 348;
 }
 
+int RunAssociationLeaf(const int argument_count, wchar_t** arguments) {
+    static_cast<void>(argument_count);
+    static_cast<void>(arguments);
+    return 350;
+}
+
 int RunNestedProcess(const int argument_count, wchar_t** arguments) {
     if (argument_count != 4) {
         return 288;
@@ -3134,7 +3140,7 @@ int RunCompatibilityParent(const int argument_count, wchar_t** arguments) {
 }
 
 int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 5) {
+    if (argument_count != 5 && argument_count != 7) {
         return 222;
     }
     const HMODULE hook = GetModuleHandleW(arguments[2]);
@@ -3641,6 +3647,48 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
         return 240;
     }
 
+    if (argument_count == 7) {
+        const HANDLE association_event = OpenEventW(
+            SYNCHRONIZE, FALSE, arguments[6]);
+        if (association_event == nullptr) {
+            return 351;
+        }
+        SHELLEXECUTEINFOW association{};
+        association.cbSize = sizeof(association);
+        association.fMask =
+            SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+        association.lpVerb = L"open";
+        association.lpFile = arguments[5];
+        association.nShow = SW_HIDE;
+        const bool association_started =
+            ShellExecuteExW(&association) != FALSE &&
+            association.hProcess != nullptr;
+        const DWORD association_wait =
+            association_started
+                ? WaitForSingleObject(association.hProcess, 5'000)
+                : WAIT_FAILED;
+        DWORD association_exit_code = 0;
+        const bool association_exited =
+            association_wait == WAIT_OBJECT_0 &&
+            GetExitCodeProcess(
+                association.hProcess, &association_exit_code) != FALSE;
+        const bool leaf_entered =
+            association_exited && association_exit_code == 0 &&
+            WaitForSingleObject(association_event, 5'000) == WAIT_OBJECT_0;
+        if (association_started && !association_exited) {
+            TerminateProcess(association.hProcess, 352);
+            WaitForSingleObject(association.hProcess, 5'000);
+        }
+        if (association.hProcess != nullptr) {
+            CloseHandle(association.hProcess);
+        }
+        CloseHandle(association_event);
+        if (!association_exited || association_exit_code != 0 ||
+            !leaf_entered) {
+            return 352;
+        }
+    }
+
     const HANDLE native_entered =
         CreateEventW(&inheritable, TRUE, FALSE, nullptr);
     if (native_entered == nullptr) {
@@ -3824,6 +3872,11 @@ struct InjectionFailureProbe {
     bolt::protocol::ChildInjectionFailureReason reason;
 };
 
+struct AssociationProbe {
+    std::wstring script_path;
+    std::wstring event_name;
+};
+
 bool RunStartupHandleListTest(
     const std::wstring& executable,
     const std::filesystem::path& test_root) {
@@ -3913,7 +3966,8 @@ bool RunInheritedProcessTest(
     const std::uint8_t nonce_byte = 0x5A,
     const ParentExitProbe* parent_exit_probe = nullptr,
     const CompatibilityProbe* compatibility_probe = nullptr,
-    const InjectionFailureProbe* injection_failure_probe = nullptr) {
+    const InjectionFailureProbe* injection_failure_probe = nullptr,
+    const AssociationProbe* association_probe = nullptr) {
     std::vector<bolt::tests::FilesystemRule> policy_rules = {
         {bolt::tests::FilesystemRuleKind::kReadOnly,
          std::filesystem::path(executable).root_path()},
@@ -3977,13 +4031,17 @@ bool RunInheritedProcessTest(
         CloseHandle(release);
         return false;
     }
-    const std::wstring command_line = parent_arguments.empty()
+    std::wstring command_line = parent_arguments.empty()
                                           ? L"\"" + executable +
                                                 L"\" --inherit-parent " + hook_name +
                                                 L" " + HandleText(policy.handle()) +
                                                 L" " + HandleText(exposed_job)
-                                          : L"\"" + executable + L"\" " +
-                                                parent_arguments;
+                                           : L"\"" + executable + L"\" " +
+                                                 parent_arguments;
+    if (association_probe != nullptr) {
+        command_line += L" \"" + association_probe->script_path + L"\" " +
+                        association_probe->event_name;
+    }
     std::vector<HANDLE> inherited = {policy.handle(), event_client, release};
     if (exposed_job != nullptr) {
         inherited.push_back(exposed_job);
@@ -4197,6 +4255,54 @@ bool RunMitigationFailureTest(
         WaitForSingleObject(marker, 0) == WAIT_TIMEOUT;
     CloseHandle(marker);
     return passed && marker_absent;
+}
+
+bool RunAssociationLaunchTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    const wchar_t* hook_name) {
+    const std::wstring event_name =
+        L"Local\\BoltSandboxAssociation-" +
+        std::to_wstring(GetCurrentProcessId());
+    const HANDLE event =
+        CreateEventW(nullptr, TRUE, FALSE, event_name.c_str());
+    const auto script_path =
+        std::filesystem::temp_directory_path() /
+        (L"bolt-sandbox-association-" +
+         std::to_wstring(GetCurrentProcessId()) + L".cmd");
+    const std::string executable_ansi = AnsiPath(executable.c_str());
+    const std::string hook_ansi = AnsiPath(hook_name);
+    std::string event_ansi;
+    event_ansi.reserve(event_name.size());
+    for (const wchar_t value : event_name) {
+        if (value > 0x7f) {
+            event_ansi.clear();
+            break;
+        }
+        event_ansi.push_back(static_cast<char>(value));
+    }
+    const std::string script =
+        "@echo off\r\n\"" + executable_ansi +
+        "\" --association-leaf " + hook_ansi + " " + event_ansi +
+        "\r\nexit /b %errorlevel%\r\n";
+    if (event == nullptr || executable_ansi.empty() || hook_ansi.empty() ||
+        event_ansi.empty() || !WriteFixture(script_path, script)) {
+        if (event != nullptr) {
+            CloseHandle(event);
+        }
+        return false;
+    }
+    const AssociationProbe probe{script_path.wstring(), event_name};
+    const bool passed = RunInheritedProcessTest(
+        executable, hook_path, hook_name,
+        PipeName(GetCurrentProcessId() ^ 0x5100'0028U), {}, 0xA5, nullptr,
+        nullptr, nullptr, &probe);
+    const bool leaf_entered =
+        WaitForSingleObject(event, 0) == WAIT_OBJECT_0;
+    CloseHandle(event);
+    std::error_code error;
+    std::filesystem::remove(script_path, error);
+    return passed && leaf_entered;
 }
 
 bool RunUnicodeLaunchPathTest(
@@ -5625,6 +5731,7 @@ bool RunProcessTests() {
 
     event_pipe.Close();
     if (!RunMitigationFailureTest(executable, hook_path, hook_name) ||
+        !RunAssociationLaunchTest(executable, hook_path, hook_name) ||
         !RunUnicodeLaunchPathTest(executable, hook_path, hook_name, test_root) ||
         !RunCompatibilityToolTests(
             executable, hook_path, hook_name, test_root) ||

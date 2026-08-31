@@ -85,6 +85,7 @@ int RunArgumentObservationLeaf(int argument_count, wchar_t** arguments);
 int RunEntryMarkerChild(int argument_count, wchar_t** arguments);
 int RunCreationMitigationChild(int argument_count, wchar_t** arguments);
 int RunFaultedDescendantParent(int argument_count, wchar_t** arguments);
+int RunAssociationLeaf(int argument_count, wchar_t** arguments);
 int RunNestedProcess(int argument_count, wchar_t** arguments);
 int RunParentExitFixture(int argument_count, wchar_t** arguments);
 int RunPersistentLeaf(int argument_count, wchar_t** arguments);
@@ -532,6 +533,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count >= 2 &&
         std::wstring(arguments[1]) == L"--faulted-descendant-parent") {
         return RunFaultedDescendantParent(argument_count, arguments);
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--association-leaf") {
+        return RunAssociationLeaf(argument_count, arguments);
     }
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--nested-process") {
         return RunNestedProcess(argument_count, arguments);
