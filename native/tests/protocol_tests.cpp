@@ -330,6 +330,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
         return RunProcessStartupLatencyTests() ? 0 : 1;
     }
     if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--process-injection-failure-tests") {
+        return RunProcessTests() ? 0 : 1;
+    }
+    if (argument_count == 2 &&
         std::wstring(arguments[1]) == L"--shell-file-operation-tests") {
         return RunShellFileOperationTests() ? 0 : 1;
     }

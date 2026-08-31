@@ -4197,6 +4197,14 @@ bool RunCompatibilityToolTests(
     return true;
 }
 
+bool RunInjectionFailureBeforeEntryTest(
+    const std::wstring& executable,
+    const std::filesystem::path& test_root) {
+    static_cast<void>(executable);
+    static_cast<void>(test_root);
+    return false;
+}
+
 }  // namespace
 
 bool RunProcessTests() {
@@ -4216,7 +4224,6 @@ bool RunProcessTests() {
         filesystem_error) {
         return false;
     }
-
     const std::filesystem::path denied_path = denied_root / L"create.txt";
     const std::filesystem::path denied_delete_path = denied_root / L"delete.txt";
     const std::filesystem::path denied_create_directory = denied_root / L"mkdir";
@@ -4307,6 +4314,9 @@ bool RunProcessTests() {
         return false;
     }
     const std::wstring executable = CurrentExecutable();
+    if (!RunInjectionFailureBeforeEntryTest(executable, test_root)) {
+        return false;
+    }
     if (!RunStartupHandleListTest(executable, test_root)) {
         return false;
     }
