@@ -3155,6 +3155,33 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
             return 287;
         }
     }
+    constexpr auto unicode_environment_name = L"BOLT_PROC_025_UNICODE";
+    constexpr auto unicode_environment_value = L"value-\u4e2d-\U0001F680";
+    if (!SetEnvironmentVariableW(
+            unicode_environment_name, unicode_environment_value)) {
+        return 325;
+    }
+    LPWCH unicode_environment = GetEnvironmentStringsW();
+    std::wstring unicode_environment_command =
+        L"\"" + executable + L"\" --inherit-leaf " + arguments[2] + L" " +
+        unicode_environment_name + L" " + unicode_environment_value;
+    STARTUPINFOW unicode_environment_startup{};
+    unicode_environment_startup.cb = sizeof(unicode_environment_startup);
+    PROCESS_INFORMATION unicode_environment_process{};
+    const BOOL unicode_environment_created =
+        unicode_environment != nullptr &&
+        CreateProcessW(
+            executable.c_str(), unicode_environment_command.data(), nullptr,
+            nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT, unicode_environment,
+            nullptr, &unicode_environment_startup, &unicode_environment_process);
+    if (unicode_environment != nullptr) {
+        FreeEnvironmentStringsW(unicode_environment);
+    }
+    SetEnvironmentVariableW(unicode_environment_name, nullptr);
+    if (!unicode_environment_created ||
+        !WaitForSuccessfulChild(unicode_environment_process)) {
+        return 326;
+    }
     std::wstring nested_command =
         L"\"" + executable + L"\" --nested-process " + arguments[2] + L" 8";
     STARTUPINFOW nested_startup{};
