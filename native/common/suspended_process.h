@@ -23,6 +23,9 @@ struct ProcessLaunchOptions {
     const HANDLE* inherited_handles;
     std::size_t inherited_handle_count;
     DWORD creation_flags;
+    HANDLE standard_input = nullptr;
+    HANDLE standard_output = nullptr;
+    HANDLE standard_error = nullptr;
 };
 
 enum class ProcessStatus : std::uint8_t {

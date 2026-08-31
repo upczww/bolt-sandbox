@@ -82,6 +82,32 @@ bool ValidateInheritedHandles(const ProcessLaunchOptions& options) noexcept {
     return true;
 }
 
+bool IncludesHandle(
+    const ProcessLaunchOptions& options,
+    const HANDLE expected) noexcept {
+    for (std::size_t index = 0; index < options.inherited_handle_count; ++index) {
+        if (options.inherited_handles[index] == expected) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ValidateStandardHandles(const ProcessLaunchOptions& options) noexcept {
+    const bool any = options.standard_input != nullptr ||
+                     options.standard_output != nullptr ||
+                     options.standard_error != nullptr;
+    if (!any) {
+        return true;
+    }
+    return options.standard_input != nullptr &&
+           options.standard_output != nullptr &&
+           options.standard_error != nullptr &&
+           IncludesHandle(options, options.standard_input) &&
+           IncludesHandle(options, options.standard_output) &&
+           IncludesHandle(options, options.standard_error);
+}
+
 void CloseRemoteHandle(
     const HANDLE process,
     const HANDLE remote_handle) noexcept {
@@ -113,7 +139,8 @@ ProcessStatus SuspendedProcess::Create(
          (CREATE_BREAKAWAY_FROM_JOB | EXTENDED_STARTUPINFO_PRESENT)) != 0) {
         return ProcessStatus::kUnsupportedFlags;
     }
-    if (!ValidateInheritedHandles(options)) {
+    if (!ValidateInheritedHandles(options) ||
+        !ValidateStandardHandles(options)) {
         return ProcessStatus::kInvalidInheritedHandle;
     }
 
@@ -132,6 +159,12 @@ ProcessStatus SuspendedProcess::Create(
     AttributeList attributes;
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
+    if (options.standard_input != nullptr) {
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = options.standard_input;
+        startup.StartupInfo.hStdOutput = options.standard_output;
+        startup.StartupInfo.hStdError = options.standard_error;
+    }
     if (!attributes.Initialize(
             options.inherited_handles, options.inherited_handle_count)) {
         return ProcessStatus::kAttributeListFailed;
