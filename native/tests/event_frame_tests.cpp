@@ -190,6 +190,32 @@ bool RunEventFrameTests() {
         return false;
     }
 
+    std::array<std::uint8_t, bolt::protocol::kEventsDroppedFrameLength>
+        dropped_frame{};
+    std::array<std::uint8_t, bolt::protocol::kEventsDroppedFrameLength>
+        expected_dropped_frame = {
+            0x42, 0x4C, 0x54, 0x31, 0x01, 0x00, 0x09, 0x00,
+            0x0C, 0x00, 0x00, 0x00, 0x6C, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x04, 0x03, 0x02, 0x01, 0x08, 0x07, 0x06, 0x05,
+            0x04, 0x03, 0x02, 0x01,
+        };
+    bolt::protocol::RewriteFrameChecksum(
+        expected_dropped_frame.data(), expected_dropped_frame.size());
+    std::size_t dropped_length = 0;
+    if (bolt::protocol::EncodeEventsDroppedFrame(
+            0x01020304U, 0x0102030405060708ULL, 108,
+            dropped_frame.data(), dropped_frame.size(), dropped_length) !=
+            bolt::protocol::FrameEncodeStatus::kSuccess ||
+        dropped_length != dropped_frame.size() ||
+        dropped_frame != expected_dropped_frame ||
+        bolt::protocol::EncodeEventsDroppedFrame(
+            1, 0, 1, dropped_frame.data(), dropped_frame.size(),
+            dropped_length) !=
+            bolt::protocol::FrameEncodeStatus::kInvalidArgument) {
+        return false;
+    }
+
     std::wstring maximum_path(32'767, L'x');
     std::array<std::uint8_t, 1> too_small{};
     return bolt::protocol::FilesystemViolationFrameLength(maximum_path.c_str()) ==

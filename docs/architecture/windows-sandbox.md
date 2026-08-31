@@ -519,9 +519,12 @@ first occurrence; duplicates of retained entries continue incrementing their
 saturating duplicate counters. Non-violation lifecycle events bypass this
 aggregator.
 
-Event protocol version 1 reserves frame kinds 1 through 8 for `Ready`,
+Event protocol version 1 reserves frame kinds 1 through 9 for `Ready`,
 filesystem violation, registry violation, network violation, recovery artifact,
 child-injection failure, process exit, and process violation, respectively.
+Kind 9 is `EventsDropped` and carries the emitting process identity plus a
+nonzero saturating count. The DLL emits it after queue pressure subsides; it is
+not itself aggregated as a violation.
 Process-violation payloads contain only process identity and a fixed operation
 discriminant (`CreateWithToken`, `CreateWithLogon`, or `Elevation`); usernames,
 credentials, executable paths, Shell verbs, and command lines are

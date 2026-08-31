@@ -17,6 +17,7 @@ constexpr std::uint16_t kReadyKind = 1;
 constexpr std::uint16_t kFilesystemViolationKind = 2;
 constexpr std::uint16_t kNetworkViolationKind = 4;
 constexpr std::uint16_t kProcessViolationKind = 8;
+constexpr std::uint16_t kEventsDroppedKind = 9;
 constexpr std::size_t kFilesystemProcessIdOffset = kEventHeaderLength;
 constexpr std::size_t kFilesystemOperationOffset = kFilesystemProcessIdOffset + 4;
 constexpr std::size_t kFilesystemPathLengthOffset = kFilesystemOperationOffset + 1;
@@ -30,6 +31,9 @@ constexpr std::size_t kNetworkFamilyOffset = kNetworkOperationOffset + 1;
 constexpr std::size_t kNetworkAddressOffset = kNetworkFamilyOffset + 1;
 constexpr std::size_t kNetworkDomainLengthOffset = kNetworkFamilyOffset + 1;
 constexpr std::size_t kNetworkDomainOffset = kNetworkDomainLengthOffset + 4;
+constexpr std::size_t kEventsDroppedProcessIdOffset = kEventHeaderLength;
+constexpr std::size_t kEventsDroppedCountOffset =
+    kEventsDroppedProcessIdOffset + 4;
 
 void WriteU16(std::uint8_t* output, const std::size_t offset, const std::uint16_t value) noexcept {
     output[offset] = static_cast<std::uint8_t>(value);
@@ -348,6 +352,33 @@ FrameEncodeStatus EncodeDomainNetworkViolationFrame(
     std::copy_n(ascii_domain, domain_length, output + kNetworkDomainOffset);
     RewriteFrameChecksum(output, frame_length);
     written = frame_length;
+    return FrameEncodeStatus::kSuccess;
+}
+
+FrameEncodeStatus EncodeEventsDroppedFrame(
+    const std::uint32_t process_id,
+    const std::uint64_t dropped_count,
+    const std::uint64_t sequence,
+    std::uint8_t* const output,
+    const std::size_t capacity,
+    std::size_t& written) noexcept {
+    written = 0;
+    if (output == nullptr || dropped_count == 0) {
+        return FrameEncodeStatus::kInvalidArgument;
+    }
+    if (capacity < kEventsDroppedFrameLength) {
+        return FrameEncodeStatus::kInsufficientBuffer;
+    }
+    std::fill_n(output, kEventsDroppedFrameLength, std::uint8_t{0});
+    std::copy(kMagic.begin(), kMagic.end(), output);
+    WriteU16(output, kVersionOffset, kProtocolVersion);
+    WriteU16(output, kKindOffset, kEventsDroppedKind);
+    WriteU32(output, kLengthOffset, 12);
+    WriteU64(output, kSequenceOffset, sequence);
+    WriteU32(output, kEventsDroppedProcessIdOffset, process_id);
+    WriteU64(output, kEventsDroppedCountOffset, dropped_count);
+    RewriteFrameChecksum(output, kEventsDroppedFrameLength);
+    written = kEventsDroppedFrameLength;
     return FrameEncodeStatus::kSuccess;
 }
 

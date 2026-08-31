@@ -48,6 +48,7 @@ struct EventSinkState {
     std::size_t tail = 0;
     std::size_t count = 0;
     std::uint64_t next_sequence = 1;
+    std::uint64_t dropped_events = 0;
 };
 
 EventSinkState g_state;
@@ -78,6 +79,7 @@ void FailWriter() noexcept {
     g_state.head = 0;
     g_state.tail = 0;
     g_state.count = 0;
+    g_state.dropped_events = 0;
     SetEvent(g_state.idle_event);
     LeaveCriticalSection(&g_state.lock);
 }
@@ -90,54 +92,83 @@ DWORD WINAPI EventWriterThread(LPVOID parameter) noexcept {
             return 1;
         }
         for (;;) {
+            bool write_dropped_summary = false;
+            std::uint64_t dropped_count = 0;
+            std::uint64_t dropped_sequence = 0;
             EnterCriticalSection(&g_state.lock);
             if (g_state.count == 0) {
-                SetEvent(g_state.idle_event);
-                LeaveCriticalSection(&g_state.lock);
-                break;
+                if (g_state.dropped_events == 0) {
+                    SetEvent(g_state.idle_event);
+                    LeaveCriticalSection(&g_state.lock);
+                    break;
+                }
+                write_dropped_summary = true;
+                dropped_count = g_state.dropped_events;
+                g_state.dropped_events = 0;
+                dropped_sequence = g_state.next_sequence++;
             }
-            const EventRecord* queued = &g_state.records[g_state.head];
+            const EventRecord* queued = write_dropped_summary
+                                            ? nullptr
+                                            : &g_state.records[g_state.head];
             LeaveCriticalSection(&g_state.lock);
 
             std::size_t frame_length = 0;
             protocol::FrameEncodeStatus encode_status =
                 protocol::FrameEncodeStatus::kInvalidArgument;
-            switch (queued->kind) {
-                case EventRecordKind::kFilesystem:
-                    encode_status = protocol::EncodeFilesystemViolationFrame(
-                        queued->process_id, queued->operation, queued->path,
-                        queued->sequence, g_state.frame_buffer,
-                        kMaximumFrameLength, frame_length);
-                    break;
-                case EventRecordKind::kProcess:
-                    encode_status = protocol::EncodeProcessViolationFrame(
-                        queued->process_id, queued->process_operation,
-                        queued->sequence, g_state.frame_buffer,
-                        kMaximumFrameLength, frame_length);
-                    break;
-                case EventRecordKind::kNetwork:
-                    encode_status = protocol::EncodeNetworkViolationFrame(
-                        queued->process_id, queued->network_operation,
-                        queued->network_endpoint, queued->sequence,
-                        g_state.frame_buffer, kMaximumFrameLength, frame_length);
-                    break;
-                case EventRecordKind::kNetworkDomain:
-                    encode_status = protocol::EncodeDomainNetworkViolationFrame(
-                        queued->process_id, queued->network_operation,
-                        queued->domain, queued->sequence, g_state.frame_buffer,
-                        kMaximumFrameLength, frame_length);
-                    break;
+            if (write_dropped_summary) {
+                encode_status = protocol::EncodeEventsDroppedFrame(
+                    GetCurrentProcessId(), dropped_count, dropped_sequence,
+                    g_state.frame_buffer, kMaximumFrameLength, frame_length);
+            } else {
+                switch (queued->kind) {
+                    case EventRecordKind::kFilesystem:
+                        encode_status = protocol::EncodeFilesystemViolationFrame(
+                            queued->process_id, queued->operation, queued->path,
+                            queued->sequence, g_state.frame_buffer,
+                            kMaximumFrameLength, frame_length);
+                        break;
+                    case EventRecordKind::kProcess:
+                        encode_status = protocol::EncodeProcessViolationFrame(
+                            queued->process_id, queued->process_operation,
+                            queued->sequence, g_state.frame_buffer,
+                            kMaximumFrameLength, frame_length);
+                        break;
+                    case EventRecordKind::kNetwork:
+                        encode_status = protocol::EncodeNetworkViolationFrame(
+                            queued->process_id, queued->network_operation,
+                            queued->network_endpoint, queued->sequence,
+                            g_state.frame_buffer, kMaximumFrameLength,
+                            frame_length);
+                        break;
+                    case EventRecordKind::kNetworkDomain:
+                        encode_status =
+                            protocol::EncodeDomainNetworkViolationFrame(
+                                queued->process_id, queued->network_operation,
+                                queued->domain, queued->sequence,
+                                g_state.frame_buffer, kMaximumFrameLength,
+                                frame_length);
+                        break;
+                }
             }
             if (encode_status != protocol::FrameEncodeStatus::kSuccess ||
                 !WriteExact(g_state.event_handle, g_state.frame_buffer, frame_length)) {
                 FailWriter();
                 return 1;
             }
+            if (write_dropped_summary) {
+                continue;
+            }
             EnterCriticalSection(&g_state.lock);
             g_state.head = (g_state.head + 1U) % kQueueCapacity;
             --g_state.count;
             LeaveCriticalSection(&g_state.lock);
         }
+    }
+}
+
+void RecordDroppedEvent() noexcept {
+    if (g_state.dropped_events != UINT64_MAX) {
+        ++g_state.dropped_events;
     }
 }
 
@@ -249,6 +280,7 @@ bool TryReportFilesystemViolation(
     }
     EnterCriticalSection(&g_state.lock);
     if (g_state.count == kQueueCapacity) {
+        RecordDroppedEvent();
         LeaveCriticalSection(&g_state.lock);
         return false;
     }
@@ -275,6 +307,7 @@ bool TryReportProcessViolation(
     }
     EnterCriticalSection(&g_state.lock);
     if (g_state.count == kQueueCapacity) {
+        RecordDroppedEvent();
         LeaveCriticalSection(&g_state.lock);
         return false;
     }
@@ -302,6 +335,7 @@ bool TryReportNetworkViolation(
     }
     EnterCriticalSection(&g_state.lock);
     if (g_state.count == kQueueCapacity) {
+        RecordDroppedEvent();
         LeaveCriticalSection(&g_state.lock);
         return false;
     }
@@ -335,6 +369,7 @@ bool TryReportDomainNetworkViolation(
     }
     EnterCriticalSection(&g_state.lock);
     if (g_state.count == kQueueCapacity) {
+        RecordDroppedEvent();
         LeaveCriticalSection(&g_state.lock);
         return false;
     }

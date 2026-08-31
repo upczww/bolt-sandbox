@@ -7,6 +7,7 @@ pub enum SandboxEvent {
     FilesystemViolation(FilesystemViolation),
     RegistryViolation(RegistryViolation),
     NetworkViolation(NetworkViolation),
+    EventsDropped(EventsDropped),
     RecoveryArtifactCreated(RecoveryArtifact),
     ChildInjectionFailed(ChildInjectionFailure),
     ProcessViolation(ProcessViolation),
@@ -56,6 +57,12 @@ pub struct NetworkViolation {
     pub process_id: u32,
     pub operation: NetworkOperation,
     pub target: NetworkTarget,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventsDropped {
+    pub process_id: u32,
+    pub count: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

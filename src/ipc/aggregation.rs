@@ -82,11 +82,16 @@ const fn is_violation(event: &SandboxEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, path::PathBuf};
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        num::NonZeroUsize,
+        path::PathBuf,
+    };
 
     use super::*;
     use crate::{
-        FilesystemOperation, FilesystemViolation, ProcessOperation, ProcessViolation, SandboxEvent,
+        FilesystemOperation, FilesystemViolation, NetworkOperation, NetworkTarget,
+        NetworkViolation, ProcessOperation, ProcessViolation, SandboxEvent,
     };
 
     fn violation(process_id: u32, operation: FilesystemOperation, path: &str) -> SandboxEvent {
@@ -200,5 +205,56 @@ mod tests {
             Err(AggregationError::NotViolation)
         );
         assert!(aggregator.entries().is_empty());
+    }
+
+    #[test]
+    fn net_029_drop_summary_bypasses_violation_aggregation() {
+        let mut aggregator = ViolationAggregator::new(NonZeroUsize::new(1).expect("nonzero"));
+
+        assert_eq!(
+            aggregator.observe(SandboxEvent::EventsDropped(crate::EventsDropped {
+                process_id: 9,
+                count: 42,
+            })),
+            Err(AggregationError::NotViolation)
+        );
+        assert!(aggregator.entries().is_empty());
+    }
+
+    #[test]
+    fn net_029_network_duplicates_and_distinct_capacity_loss_remain_counted() {
+        let mut aggregator = ViolationAggregator::new(NonZeroUsize::new(1).expect("nonzero"));
+        let first = SandboxEvent::NetworkViolation(NetworkViolation {
+            process_id: 9,
+            operation: NetworkOperation::Connect,
+            target: NetworkTarget::Socket(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)),
+                443,
+            )),
+        });
+        let distinct = SandboxEvent::NetworkViolation(NetworkViolation {
+            process_id: 9,
+            operation: NetworkOperation::Send,
+            target: NetworkTarget::Socket(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(203, 0, 113, 8)),
+                53,
+            )),
+        });
+
+        assert_eq!(
+            aggregator.observe(first.clone()),
+            Ok(AggregationDisposition::Added)
+        );
+        assert_eq!(
+            aggregator.observe(first.clone()),
+            Ok(AggregationDisposition::Duplicate { duplicate_count: 1 })
+        );
+        assert_eq!(
+            aggregator.observe(distinct),
+            Ok(AggregationDisposition::DroppedDistinct { dropped_count: 1 })
+        );
+        assert_eq!(aggregator.entries()[0].event, first);
+        assert_eq!(aggregator.entries()[0].duplicate_count, 1);
+        assert_eq!(aggregator.dropped_distinct_count(), 1);
     }
 }

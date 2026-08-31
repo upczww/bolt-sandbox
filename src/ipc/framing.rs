@@ -27,6 +27,7 @@ pub(super) enum FrameKind {
     ChildInjectionFailed = 6,
     ProcessExited = 7,
     ProcessViolation = 8,
+    EventsDropped = 9,
 }
 
 impl TryFrom<u16> for FrameKind {
@@ -42,6 +43,7 @@ impl TryFrom<u16> for FrameKind {
             6 => Ok(Self::ChildInjectionFailed),
             7 => Ok(Self::ProcessExited),
             8 => Ok(Self::ProcessViolation),
+            9 => Ok(Self::EventsDropped),
             _ => Err(ProtocolError::UnknownFrameKind),
         }
     }

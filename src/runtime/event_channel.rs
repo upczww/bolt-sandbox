@@ -62,6 +62,7 @@ impl EventChannelDriver {
                     .map_err(EventChannelError::Lifecycle)?
             }
             SandboxEvent::Ready
+            | SandboxEvent::EventsDropped(_)
             | SandboxEvent::FilesystemViolation(_)
             | SandboxEvent::RegistryViolation(_)
             | SandboxEvent::NetworkViolation(_)

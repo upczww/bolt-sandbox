@@ -12,6 +12,7 @@ inline constexpr std::size_t kReadyFrameLength = kEventHeaderLength + kReadyNonc
 inline constexpr std::size_t kProcessViolationFrameLength = kEventHeaderLength + 5;
 inline constexpr std::size_t kIpv4NetworkViolationFrameLength = kEventHeaderLength + 12;
 inline constexpr std::size_t kIpv6NetworkViolationFrameLength = kEventHeaderLength + 24;
+inline constexpr std::size_t kEventsDroppedFrameLength = kEventHeaderLength + 12;
 inline constexpr std::size_t kMaximumEventDomainBytes = 253;
 inline constexpr std::size_t kMaximumEventPathCodeUnits = 32'767;
 
@@ -115,6 +116,14 @@ FrameEncodeStatus EncodeDomainNetworkViolationFrame(
     std::uint32_t process_id,
     NetworkOperation operation,
     const char* ascii_domain,
+    std::uint64_t sequence,
+    std::uint8_t* output,
+    std::size_t capacity,
+    std::size_t& written) noexcept;
+
+FrameEncodeStatus EncodeEventsDroppedFrame(
+    std::uint32_t process_id,
+    std::uint64_t dropped_count,
     std::uint64_t sequence,
     std::uint8_t* output,
     std::size_t capacity,

@@ -270,6 +270,7 @@ add_executable(bolt-sandbox-native-tests
     tests/network_policy_tests.cpp
     tests/system_dns_resolver_tests.cpp
     tests/network_hook_tests.cpp
+    tests/network_event_saturation_tests.cpp
     tests/winhttp_test_client.cpp
     tests/wininet_test_client.cpp
     tests/dns_binding_tests.cpp

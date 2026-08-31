@@ -42,6 +42,7 @@ bool RunShellFileOperationTests();
 bool RunNetworkPolicyTests();
 bool RunNetworkHookTests();
 bool RunNetworkUnrestrictedTests();
+bool RunNetworkEventSaturationTests();
 int RunNetworkUnrestrictedChild(int argument_count, wchar_t** arguments);
 bool RunDnsBindingTests();
 bool RunDnsProxyProtocolTests();
@@ -342,6 +343,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
         return RunNetworkHookTests() ? 0 : 1;
     }
     if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--network-event-saturation-tests") {
+        return RunNetworkEventSaturationTests() ? 0 : 1;
+    }
+    if (argument_count == 2 &&
         std::wstring(arguments[1]) == L"--network-unrestricted-tests") {
         return RunNetworkUnrestrictedTests() ? 0 : 1;
     }
@@ -581,6 +586,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunSocketTargetTableTests()) {
         return 36;
+    }
+    if (!RunNetworkEventSaturationTests()) {
+        return 42;
     }
     return 0;
 }

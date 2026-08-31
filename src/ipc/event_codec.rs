@@ -7,10 +7,10 @@ use std::{
 
 use super::framing::{self, Frame, FrameKind, ProtocolError};
 use crate::{
-    ChildInjectionFailure, ChildInjectionFailureReason, FilesystemOperation, FilesystemViolation,
-    NetworkOperation, NetworkTarget, NetworkViolation, ProcessExit, ProcessExitReason,
-    ProcessOperation, ProcessViolation, RecoveryArtifact, RegistryOperation, RegistryViolation,
-    SandboxEvent,
+    ChildInjectionFailure, ChildInjectionFailureReason, EventsDropped, FilesystemOperation,
+    FilesystemViolation, NetworkOperation, NetworkTarget, NetworkViolation, ProcessExit,
+    ProcessExitReason, ProcessOperation, ProcessViolation, RecoveryArtifact, RegistryOperation,
+    RegistryViolation, SandboxEvent,
 };
 
 const PROCESS_EXIT_PAYLOAD_LENGTH: usize = 10;
@@ -58,6 +58,9 @@ pub(crate) fn encode_event(event: &SandboxEvent, sequence: u64) -> Result<Vec<u8
             FrameKind::NetworkViolation,
             encode_network_violation(violation)?,
         ),
+        SandboxEvent::EventsDropped(events) => {
+            (FrameKind::EventsDropped, encode_events_dropped(events)?)
+        }
         SandboxEvent::RecoveryArtifactCreated(artifact) => (
             FrameKind::RecoveryArtifactCreated,
             encode_recovery_artifact(artifact)?,
@@ -99,6 +102,7 @@ pub(super) fn decode_event(encoded: &[u8]) -> Result<SequencedEvent, ProtocolErr
         FrameKind::FilesystemViolation => decode_filesystem_violation(&frame.payload)?,
         FrameKind::RegistryViolation => decode_registry_violation(&frame.payload)?,
         FrameKind::NetworkViolation => decode_network_violation(&frame.payload)?,
+        FrameKind::EventsDropped => decode_events_dropped(&frame.payload)?,
         FrameKind::RecoveryArtifactCreated => decode_recovery_artifact(&frame.payload)?,
         FrameKind::ChildInjectionFailed => decode_child_injection_failure(&frame.payload)?,
         FrameKind::ProcessViolation => decode_process_violation(&frame.payload)?,
@@ -206,6 +210,30 @@ fn decode_network_violation(payload: &[u8]) -> Result<SandboxEvent, ProtocolErro
         process_id,
         operation,
         target,
+    }))
+}
+
+fn encode_events_dropped(events: &EventsDropped) -> Result<Vec<u8>, ProtocolError> {
+    if events.count == 0 {
+        return Err(ProtocolError::InvalidPayload);
+    }
+    let mut payload = Vec::with_capacity(12);
+    push_u32(&mut payload, events.process_id);
+    payload.extend_from_slice(&events.count.to_le_bytes());
+    Ok(payload)
+}
+
+fn decode_events_dropped(payload: &[u8]) -> Result<SandboxEvent, ProtocolError> {
+    let mut reader = PayloadReader::new(payload);
+    let process_id = reader.read_u32()?;
+    let count = reader.read_u64()?;
+    reader.finish()?;
+    if count == 0 {
+        return Err(ProtocolError::InvalidPayload);
+    }
+    Ok(SandboxEvent::EventsDropped(EventsDropped {
+        process_id,
+        count,
     }))
 }
 
@@ -506,7 +534,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ChildInjectionFailure, ChildInjectionFailureReason, FilesystemOperation,
+        ChildInjectionFailure, ChildInjectionFailureReason, EventsDropped, FilesystemOperation,
         FilesystemViolation, NetworkOperation, NetworkTarget, NetworkViolation, ProcessExit,
         ProcessExitReason, ProcessOperation, ProcessViolation, RecoveryArtifact, RegistryOperation,
         RegistryViolation, SandboxEvent,
@@ -590,6 +618,29 @@ mod tests {
         let decoded = decode_event(&encoded).expect("domain event must decode");
 
         assert_eq!(decoded.event, event);
+    }
+
+    #[test]
+    fn net_029_events_dropped_round_trips_and_rejects_zero_count() {
+        let event = SandboxEvent::EventsDropped(EventsDropped {
+            process_id: 77,
+            count: 49_872,
+        });
+        let encoded = encode_event(&event, 129).expect("drop summary must encode");
+        let decoded = decode_event(&encoded).expect("drop summary must decode");
+
+        assert_eq!(decoded.sequence, 129);
+        assert_eq!(decoded.event, event);
+        assert_eq!(
+            encode_event(
+                &SandboxEvent::EventsDropped(EventsDropped {
+                    process_id: 77,
+                    count: 0,
+                }),
+                1,
+            ),
+            Err(ProtocolError::InvalidPayload)
+        );
     }
 
     #[test]
