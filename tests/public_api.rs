@@ -7,11 +7,12 @@ use std::{
 };
 
 use bolt_sandbox::{
-    ChildInjectionFailure, ChildInjectionFailureReason, ChildProcessPolicy, FilesystemOperation,
+    ChildInjectionFailure, ChildInjectionFailureReason, ChildProcessPolicy,
+    DEFAULT_STREAM_CAPACITY, ExecutionHandle, ExecutionResult, FilesystemOperation,
     FilesystemPolicy, FilesystemViolation, IpCidr, MAX_TIMEOUT, MIN_TIMEOUT, NetworkAllowList,
     NetworkPolicy, NetworkTarget, NetworkViolation, PortRange, ProcessExit, ProcessExitReason,
-    ProcessOperation, ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField, SandboxError,
-    SandboxEvent, SandboxPolicy, SandboxRequest,
+    ProcessOperation, ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField, Sandbox,
+    SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest,
 };
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {
@@ -177,4 +178,32 @@ fn req_013_network_policy_types_are_constructible_without_protocol_leakage() {
     });
 
     assert!(matches!(policy, NetworkPolicy::AllowList(_)));
+}
+
+fn assert_send<T: Send>() {}
+
+#[test]
+fn req_013_public_execution_types_are_thread_transferable() {
+    assert_send::<ExecutionHandle>();
+    assert_send::<ExecutionResult>();
+}
+
+#[test]
+fn req_001_public_start_rejects_invalid_request_before_component_access() {
+    let cwd = std::env::current_dir().expect("test working directory must be available");
+    let sandbox = Sandbox::new(SandboxConfig {
+        component_root: cwd.clone(),
+        credential_environment_variables: Vec::new(),
+        stream_capacity: DEFAULT_STREAM_CAPACITY,
+    })
+    .expect("absolute component root must configure the sandbox");
+    let request = minimal_request(Path::new("relative-program.exe"), &cwd);
+
+    assert!(matches!(
+        sandbox.start(request),
+        Err(SandboxError::InvalidRequest {
+            field: RequestField::Program,
+            ..
+        })
+    ));
 }

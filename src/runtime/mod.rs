@@ -38,3 +38,45 @@ mod startup;
     reason = "bounded stream buffers are connected to Windows pipe readers later"
 )]
 mod streams;
+
+use std::{ffi::OsString, path::Path};
+
+use crate::{ExecutionHandle, InitializationStage, SandboxError, SandboxRequest};
+
+pub(crate) fn start_execution(
+    request: SandboxRequest,
+    credential_names: &[OsString],
+    component_root: &Path,
+    _stream_capacity: usize,
+) -> Result<ExecutionHandle, SandboxError> {
+    let _prepared = preparation::prepare_launch(&request, credential_names, component_root)
+        .map_err(|error| match error {
+            preparation::LaunchPreparationError::Request(error) => error,
+            preparation::LaunchPreparationError::ProgramOpen
+            | preparation::LaunchPreparationError::InvalidProgramImage
+            | preparation::LaunchPreparationError::UnsupportedArchitecture { .. } => {
+                SandboxError::InitializationFailed {
+                    stage: InitializationStage::Program,
+                }
+            }
+            preparation::LaunchPreparationError::Component(_) => {
+                SandboxError::InitializationFailed {
+                    stage: InitializationStage::Components,
+                }
+            }
+            preparation::LaunchPreparationError::PolicyPayload => {
+                SandboxError::InitializationFailed {
+                    stage: InitializationStage::Policy,
+                }
+            }
+            preparation::LaunchPreparationError::ExecutionIdentity => {
+                SandboxError::InitializationFailed {
+                    stage: InitializationStage::Identity,
+                }
+            }
+        })?;
+    drop(request);
+    Err(SandboxError::InitializationFailed {
+        stage: InitializationStage::LauncherAdapter,
+    })
+}

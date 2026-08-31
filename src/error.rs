@@ -1,5 +1,7 @@
 use std::{error::Error, fmt};
 
+use crate::{ConfigurationErrorReason, ConfigurationField, InitializationStage};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequestField {
     Program,
@@ -35,6 +37,14 @@ pub enum SandboxError {
         field: RequestField,
         reason: InvalidRequestReason,
     },
+    InvalidConfiguration {
+        field: ConfigurationField,
+        reason: ConfigurationErrorReason,
+    },
+    InitializationFailed {
+        stage: InitializationStage,
+    },
+    ControlChannelClosed,
 }
 
 impl fmt::Display for SandboxError {
@@ -43,6 +53,16 @@ impl fmt::Display for SandboxError {
             Self::InvalidRequest { field, reason } => {
                 write!(formatter, "invalid request field {field:?}: {reason:?}")
             }
+            Self::InvalidConfiguration { field, reason } => {
+                write!(
+                    formatter,
+                    "invalid configuration field {field:?}: {reason:?}"
+                )
+            }
+            Self::InitializationFailed { stage } => {
+                write!(formatter, "sandbox initialization failed at {stage:?}")
+            }
+            Self::ControlChannelClosed => formatter.write_str("sandbox control channel closed"),
         }
     }
 }

@@ -2,6 +2,7 @@
 
 mod error;
 mod event;
+mod execution;
 mod ipc;
 mod policy;
 mod request;
@@ -13,6 +14,11 @@ pub use event::{
     FilesystemViolation, NetworkOperation, NetworkTarget, NetworkViolation, ProcessExit,
     ProcessExitReason, ProcessOperation, ProcessViolation, RecoveryArtifact, RegistryOperation,
     RegistryViolation, SandboxEvent,
+};
+pub use execution::{
+    ByteStream, ConfigurationErrorReason, ConfigurationField, DEFAULT_STREAM_CAPACITY, EventStream,
+    ExecutionControlError, ExecutionHandle, ExecutionResult, ExecutionTerminal,
+    InfrastructureFailure, InitializationStage, ReceiverLoss, Sandbox, SandboxConfig,
 };
 pub use policy::{
     ChildProcessPolicy, FilesystemPolicy, IpCidr, NetworkAllowList, NetworkPolicy, PortRange,
