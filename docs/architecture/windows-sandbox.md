@@ -409,6 +409,12 @@ request before image resolution or child creation, clears caller-visible
 process outputs, and emits a typed `Breakaway` process violation. Direct
 `NtCreateUserProcess` breakaway flags follow the same rule.
 
+Injected processes also intercept `SetInformationJobObject`. A Job whose process
+list contains the current confined process cannot be reconfigured, even if a
+caller obtains a handle with `JOB_OBJECT_SET_ATTRIBUTES`; the attempt returns
+`ERROR_ACCESS_DENIED` and emits `MitigationWeakening`. Unrelated Jobs remain
+configurable for compatibility.
+
 The initial release supports x64 and x86 on x64 Windows. ARM64 and ARM64EC are a
 separate compatibility milestone.
 

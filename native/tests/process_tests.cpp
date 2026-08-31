@@ -3912,9 +3912,14 @@ bool RunInheritedProcessTest(
         static_cast<bolt::protocol::ProcessOperation>(4);
     constexpr auto external_delegation_operation =
         static_cast<bolt::protocol::ProcessOperation>(5);
+    const bool job_limit_event_ok =
+        !parent_arguments.empty() ||
+        ReadProcessViolation(
+            event_pipe.handle(), parent_process_id,
+            mitigation_weakening_operation, 1);
     bool breakaway_event_ok = true;
     if (parent_arguments.empty()) {
-        for (std::uint64_t sequence = 1; sequence <= 7; ++sequence) {
+        for (std::uint64_t sequence = 2; sequence <= 8; ++sequence) {
             breakaway_event_ok =
                 breakaway_event_ok &&
                 ReadProcessViolation(
@@ -3922,25 +3927,28 @@ bool RunInheritedProcessTest(
                     breakaway_operation, sequence);
         }
     }
-    const bool mitigation_weakening_events_ok =
-        !parent_arguments.empty() ||
-        (ReadProcessViolation(
-             event_pipe.handle(), parent_process_id,
-             mitigation_weakening_operation, 8) &&
-         ReadProcessViolation(
-             event_pipe.handle(), parent_process_id,
-             mitigation_weakening_operation, 9));
+    bool mitigation_weakening_events_ok = true;
+    if (parent_arguments.empty()) {
+        for (std::uint64_t sequence = 9; sequence <= 10; ++sequence) {
+            mitigation_weakening_events_ok =
+                mitigation_weakening_events_ok &&
+                ReadProcessViolation(
+                    event_pipe.handle(), parent_process_id,
+                    mitigation_weakening_operation, sequence);
+        }
+    }
     const bool external_delegation_events_ok =
         !parent_arguments.empty() ||
         (ReadProcessViolation(
              event_pipe.handle(), parent_process_id,
-             external_delegation_operation, 10) &&
+             external_delegation_operation, 11) &&
          ReadProcessViolation(
              event_pipe.handle(), parent_process_id,
-             external_delegation_operation, 11));
+             external_delegation_operation, 12));
     DWORD exit_code = 0;
     const auto exit_status = process.ExitCode(exit_code);
     const bool passed = ready_ok && parent_exit_descendant_ok &&
+                        job_limit_event_ok &&
                         compatibility_event_ok &&
                         breakaway_event_ok &&
                         mitigation_weakening_events_ok &&

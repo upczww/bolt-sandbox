@@ -9,6 +9,7 @@
 #include "DetouredFunctionTypes.h"
 #include "DetouredScope.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <limits>
@@ -43,6 +44,8 @@ decltype(&CreateProcessWithLogonW) g_create_process_with_logon_w =
     CreateProcessWithLogonW;
 decltype(&SetProcessMitigationPolicy) g_set_process_mitigation_policy =
     SetProcessMitigationPolicy;
+decltype(&SetInformationJobObject) g_set_information_job_object =
+    SetInformationJobObject;
 native::RtlCreateUserProcessFunction g_rtl_create_user_process = nullptr;
 native::NtCreateUserProcessFunction g_nt_create_user_process = nullptr;
 ChildProcessPolicy g_child_process_policy = ChildProcessPolicy::kDeny;
@@ -605,6 +608,50 @@ BOOL WINAPI DetouredSetProcessMitigationPolicy(
     return g_set_process_mitigation_policy(policy, buffer, length);
 }
 
+bool JobContainsCurrentProcess(const HANDLE job) noexcept {
+    struct ProcessIdList {
+        DWORD assigned_processes;
+        DWORD process_count;
+        std::array<ULONG_PTR, 64> process_ids;
+    };
+    ProcessIdList processes{};
+    if (!QueryInformationJobObject(
+            job, JobObjectBasicProcessIdList, &processes, sizeof(processes),
+            nullptr)) {
+        return GetLastError() == ERROR_MORE_DATA;
+    }
+    const ULONG_PTR current = GetCurrentProcessId();
+    const std::size_t process_count =
+        (std::min)(
+            static_cast<std::size_t>(processes.process_count),
+            processes.process_ids.size());
+    return std::find(
+               processes.process_ids.begin(),
+               processes.process_ids.begin() + process_count,
+               current) !=
+           processes.process_ids.begin() + process_count;
+}
+
+BOOL WINAPI DetouredSetInformationJobObject(
+    const HANDLE job,
+    const JOBOBJECTINFOCLASS information_class,
+    const LPVOID information,
+    const DWORD information_length) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_set_information_job_object(
+            job, information_class, information, information_length);
+    }
+    if (JobContainsCurrentProcess(job)) {
+        hook::TryReportProcessViolation(
+            protocol::ProcessOperation::kMitigationWeakening);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return g_set_information_job_object(
+        job, information_class, information, information_length);
+}
+
 BOOL WINAPI DetouredCreateProcessW(
     const LPCWSTR application_name,
     const LPWSTR command_line,
@@ -1113,9 +1160,15 @@ LONG AttachProcessHooks() noexcept {
     if (logon_status != NO_ERROR) {
         return logon_status;
     }
-    return DetourAttach(
+    const LONG mitigation_status = DetourAttach(
         reinterpret_cast<PVOID*>(&g_set_process_mitigation_policy),
         reinterpret_cast<PVOID>(DetouredSetProcessMitigationPolicy));
+    if (mitigation_status != NO_ERROR) {
+        return mitigation_status;
+    }
+    return DetourAttach(
+        reinterpret_cast<PVOID*>(&g_set_information_job_object),
+        reinterpret_cast<PVOID>(DetouredSetInformationJobObject));
 }
 
 }  // namespace bolt::process
