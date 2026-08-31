@@ -9,6 +9,7 @@ pub enum SandboxEvent {
     NetworkViolation(NetworkViolation),
     EventsDropped(EventsDropped),
     RecoveryArtifactCreated(RecoveryArtifact),
+    RecoveryFailed(RecoveryFailure),
     ChildInjectionFailed(ChildInjectionFailure),
     ProcessViolation(ProcessViolation),
     ProcessExited(ProcessExit),
@@ -88,6 +89,22 @@ pub struct RecoveryArtifact {
     pub artifact_id: u64,
     pub original_path: PathBuf,
     pub byte_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryFailure {
+    pub process_id: u32,
+    pub reason: RecoveryFailureReason,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum RecoveryFailureReason {
+    QuotaExceeded,
+    SourceUnavailable,
+    StoreUnavailable,
+    UnsupportedObject,
+    CounterOverflow,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

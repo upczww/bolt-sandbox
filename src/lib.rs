@@ -12,8 +12,8 @@ pub use error::{InvalidRequestReason, RequestField, SandboxError};
 pub use event::{
     ChildInjectionFailure, ChildInjectionFailureReason, EventsDropped, FilesystemOperation,
     FilesystemViolation, NetworkOperation, NetworkTarget, NetworkViolation, ProcessExit,
-    ProcessExitReason, ProcessOperation, ProcessViolation, RecoveryArtifact, RegistryOperation,
-    RegistryViolation, SandboxEvent,
+    ProcessExitReason, ProcessOperation, ProcessViolation, RecoveryArtifact, RecoveryFailure,
+    RecoveryFailureReason, RegistryOperation, RegistryViolation, SandboxEvent,
 };
 pub use execution::{
     ByteStream, ConfigurationErrorReason, ConfigurationField, DEFAULT_STREAM_CAPACITY, EventStream,

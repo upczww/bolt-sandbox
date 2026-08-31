@@ -9,8 +9,8 @@ use super::framing::{self, Frame, FrameKind, ProtocolError};
 use crate::{
     ChildInjectionFailure, ChildInjectionFailureReason, EventsDropped, FilesystemOperation,
     FilesystemViolation, NetworkOperation, NetworkTarget, NetworkViolation, ProcessExit,
-    ProcessExitReason, ProcessOperation, ProcessViolation, RecoveryArtifact, RegistryOperation,
-    RegistryViolation, SandboxEvent,
+    ProcessExitReason, ProcessOperation, ProcessViolation, RecoveryArtifact, RecoveryFailure,
+    RecoveryFailureReason, RegistryOperation, RegistryViolation, SandboxEvent,
 };
 
 const PROCESS_EXIT_PAYLOAD_LENGTH: usize = 10;
@@ -65,6 +65,9 @@ pub(crate) fn encode_event(event: &SandboxEvent, sequence: u64) -> Result<Vec<u8
             FrameKind::RecoveryArtifactCreated,
             encode_recovery_artifact(artifact)?,
         ),
+        SandboxEvent::RecoveryFailed(failure) => {
+            (FrameKind::RecoveryFailed, encode_recovery_failure(failure))
+        }
         SandboxEvent::ChildInjectionFailed(failure) => (
             FrameKind::ChildInjectionFailed,
             encode_child_injection_failure(failure),
@@ -104,6 +107,7 @@ pub(super) fn decode_event(encoded: &[u8]) -> Result<SequencedEvent, ProtocolErr
         FrameKind::NetworkViolation => decode_network_violation(&frame.payload)?,
         FrameKind::EventsDropped => decode_events_dropped(&frame.payload)?,
         FrameKind::RecoveryArtifactCreated => decode_recovery_artifact(&frame.payload)?,
+        FrameKind::RecoveryFailed => decode_recovery_failure(&frame.payload)?,
         FrameKind::ChildInjectionFailed => decode_child_injection_failure(&frame.payload)?,
         FrameKind::ProcessViolation => decode_process_violation(&frame.payload)?,
         FrameKind::ProcessExited => decode_process_exit(&frame.payload)?,
@@ -258,6 +262,41 @@ fn decode_recovery_artifact(payload: &[u8]) -> Result<SandboxEvent, ProtocolErro
         artifact_id,
         original_path,
         byte_count,
+    }))
+}
+
+fn encode_recovery_failure(failure: &RecoveryFailure) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(5);
+    push_u32(&mut payload, failure.process_id);
+    payload.push(match failure.reason {
+        RecoveryFailureReason::QuotaExceeded => 0,
+        RecoveryFailureReason::SourceUnavailable => 1,
+        RecoveryFailureReason::StoreUnavailable => 2,
+        RecoveryFailureReason::UnsupportedObject => 3,
+        RecoveryFailureReason::CounterOverflow => 4,
+    });
+    payload
+}
+
+fn decode_recovery_failure(payload: &[u8]) -> Result<SandboxEvent, ProtocolError> {
+    if payload.len() != 5 {
+        return Err(ProtocolError::InvalidPayload);
+    }
+    let process_id = read_u32(payload, 0);
+    let reason = match payload[4] {
+        0 => RecoveryFailureReason::QuotaExceeded,
+        1 => RecoveryFailureReason::SourceUnavailable,
+        2 => RecoveryFailureReason::StoreUnavailable,
+        3 => RecoveryFailureReason::UnsupportedObject,
+        4 => RecoveryFailureReason::CounterOverflow,
+        _ => return Err(ProtocolError::InvalidPayload),
+    };
+    if process_id == 0 {
+        return Err(ProtocolError::InvalidPayload);
+    }
+    Ok(SandboxEvent::RecoveryFailed(RecoveryFailure {
+        process_id,
+        reason,
     }))
 }
 

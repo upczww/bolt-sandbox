@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::policy::compiler::{CompiledFilesystemPolicy, FilesystemAccess, FilesystemDecision};
-use crate::{RecoveryArtifact, SandboxEvent};
+use crate::{RecoveryArtifact, RecoveryFailure, RecoveryFailureReason, SandboxEvent};
 
 use super::{
     preparation::PreparedRecovery,
@@ -71,7 +71,7 @@ impl RecoveryCoordinator {
     }
 
     pub(super) fn backup(&mut self, request: &RecoveryRequest) -> RecoveryOutcome {
-        let failed = || RecoveryOutcome {
+        let silent_failure = || RecoveryOutcome {
             artifact_id: None,
             byte_count: 0,
             event: None,
@@ -84,31 +84,34 @@ impl RecoveryCoordinator {
                 | RecoveryOperation::Rename
         ) || !request.path.is_absolute()
         {
-            return failed();
+            return silent_failure();
         }
         if self
             .filesystem
             .decide(&request.path, FilesystemAccess::Write)
             != FilesystemDecision::Allow
         {
-            return failed();
+            return silent_failure();
         }
         let Ok(metadata) = fs::symlink_metadata(&request.path) else {
-            return failed();
+            return recovery_failure(request.process_id, RecoveryFailureReason::SourceUnavailable);
         };
         if !metadata.file_type().is_file() {
-            return failed();
+            return recovery_failure(request.process_id, RecoveryFailureReason::UnsupportedObject);
         }
         let byte_count = metadata.len();
         let Some(next_bytes) = self.used_bytes.checked_add(byte_count) else {
-            return failed();
+            return recovery_failure(request.process_id, RecoveryFailureReason::CounterOverflow);
         };
         let Some(next_items) = self.used_items.checked_add(1) else {
-            return failed();
+            return recovery_failure(request.process_id, RecoveryFailureReason::CounterOverflow);
         };
         if next_bytes > self.maximum_bytes || next_items > self.maximum_items {
-            return failed();
+            return recovery_failure(request.process_id, RecoveryFailureReason::QuotaExceeded);
         }
+        let Some(next_artifact_id) = self.next_artifact_id.checked_add(1) else {
+            return recovery_failure(request.process_id, RecoveryFailureReason::CounterOverflow);
+        };
         let artifact_id = self.next_artifact_id;
         let final_path = self
             .execution_directory
@@ -117,16 +120,16 @@ impl RecoveryCoordinator {
         let copied = fs::copy(&request.path, &temporary_path);
         let Ok(copied) = copied else {
             let _ = fs::remove_file(&temporary_path);
-            return failed();
+            return recovery_failure(request.process_id, RecoveryFailureReason::StoreUnavailable);
         };
         if copied != byte_count || fs::rename(&temporary_path, &final_path).is_err() {
             let _ = fs::remove_file(&temporary_path);
             let _ = fs::remove_file(&final_path);
-            return failed();
+            return recovery_failure(request.process_id, RecoveryFailureReason::StoreUnavailable);
         }
         self.used_bytes = next_bytes;
         self.used_items = next_items;
-        self.next_artifact_id = self.next_artifact_id.saturating_add(1);
+        self.next_artifact_id = next_artifact_id;
         RecoveryOutcome {
             artifact_id: Some(artifact_id),
             byte_count,
@@ -137,6 +140,17 @@ impl RecoveryCoordinator {
                 byte_count,
             })),
         }
+    }
+}
+
+fn recovery_failure(process_id: u32, reason: RecoveryFailureReason) -> RecoveryOutcome {
+    RecoveryOutcome {
+        artifact_id: None,
+        byte_count: 0,
+        event: Some(SandboxEvent::RecoveryFailed(RecoveryFailure {
+            process_id,
+            reason,
+        })),
     }
 }
 
