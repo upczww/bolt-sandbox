@@ -199,6 +199,27 @@ int RunDescendantDualStreamWriter(
     return static_cast<int>(exit_code);
 }
 
+int RunBlockingStreamFixture(const int argument_count) {
+    if (argument_count != 2) {
+        return 319;
+    }
+    constexpr std::array<std::uint8_t, 5> ready = {'r', 'e', 'a', 'd', 'y'};
+    DWORD written = 0;
+    if (!WriteFile(
+            GetStdHandle(STD_OUTPUT_HANDLE), ready.data(),
+            static_cast<DWORD>(ready.size()), &written, nullptr) ||
+        written != static_cast<DWORD>(ready.size())) {
+        return 320;
+    }
+    const HANDLE never = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (never == nullptr) {
+        return 321;
+    }
+    WaitForSingleObject(never, INFINITE);
+    CloseHandle(never);
+    return 322;
+}
+
 bool RunStreamTests() {
     SECURITY_ATTRIBUTES inheritable{};
     inheritable.nLength = sizeof(inheritable);

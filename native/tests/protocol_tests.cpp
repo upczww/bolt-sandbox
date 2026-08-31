@@ -28,6 +28,7 @@ bool RunLauncherStartupTests();
 bool RunStreamTests();
 int RunDualStreamWriter(int argument_count, wchar_t** arguments);
 int RunDescendantDualStreamWriter(int argument_count, wchar_t** arguments);
+int RunBlockingStreamFixture(int argument_count);
 int RunJobTreeParent(int argument_count, wchar_t** arguments);
 int RunIgnoreGracefulChild(int argument_count, wchar_t** arguments);
 bool RunNamedPipeTests();
@@ -503,6 +504,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count >= 2 &&
         std::wstring(arguments[1]) == L"--descendant-dual-stream-writer") {
         return RunDescendantDualStreamWriter(argument_count, arguments);
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--blocking-stream-fixture") {
+        return RunBlockingStreamFixture(argument_count);
     }
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--stream-tests") {
         return RunStreamTests() ? 0 : 1;
