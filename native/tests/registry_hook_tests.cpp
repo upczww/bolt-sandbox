@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
@@ -368,6 +369,77 @@ bool ReadRegistryViolationWithin(
     return false;
 }
 
+struct RegistryEventRecord {
+    bolt::protocol::RegistryOperation operation =
+        bolt::protocol::RegistryOperation::kOpen;
+    std::string key;
+};
+
+bool ReadRegistryViolationRecordWithin(
+    const HANDLE pipe,
+    const std::uint32_t process_id,
+    const std::uint64_t sequence,
+    RegistryEventRecord& record,
+    const DWORD timeout_milliseconds) {
+    const ULONGLONG deadline = GetTickCount64() + timeout_milliseconds;
+    while (GetTickCount64() < deadline) {
+        DWORD available = 0;
+        if (!PeekNamedPipe(
+                pipe, nullptr, 0, nullptr, &available, nullptr) ||
+            available < bolt::protocol::kEventHeaderLength) {
+            Sleep(10);
+            continue;
+        }
+        std::array<std::uint8_t, bolt::protocol::kEventHeaderLength>
+            header{};
+        if (!ReadExact(pipe, header.data(), header.size())) {
+            return false;
+        }
+        const std::size_t payload_length =
+            static_cast<std::size_t>(header[8]) |
+            static_cast<std::size_t>(header[9]) << 8U |
+            static_cast<std::size_t>(header[10]) << 16U |
+            static_cast<std::size_t>(header[11]) << 24U;
+        std::vector<std::uint8_t> actual(header.begin(), header.end());
+        actual.resize(header.size() + payload_length);
+        if (!ReadExact(
+                pipe, actual.data() + header.size(), payload_length) ||
+            actual.size() < 33) {
+            return false;
+        }
+        const std::uint16_t kind =
+            static_cast<std::uint16_t>(actual[6]) |
+            static_cast<std::uint16_t>(actual[7]) << 8U;
+        const std::size_t key_length =
+            static_cast<std::size_t>(actual[29]) |
+            static_cast<std::size_t>(actual[30]) << 8U |
+            static_cast<std::size_t>(actual[31]) << 16U |
+            static_cast<std::size_t>(actual[32]) << 24U;
+        if (kind != 3 || key_length > actual.size() - 33 ||
+            actual[28] > static_cast<std::uint8_t>(
+                             bolt::protocol::RegistryOperation::
+                                 kUnsupportedTransactional)) {
+            return false;
+        }
+        record.operation =
+            static_cast<bolt::protocol::RegistryOperation>(actual[28]);
+        record.key.assign(
+            reinterpret_cast<const char*>(actual.data() + 33), key_length);
+        const std::size_t expected_length =
+            bolt::protocol::RegistryViolationFrameLength(
+                record.key.c_str());
+        std::vector<std::uint8_t> expected(expected_length);
+        std::size_t written = 0;
+        return expected_length == actual.size() &&
+            bolt::protocol::EncodeRegistryViolationFrame(
+                process_id, record.operation, record.key.c_str(), sequence,
+                expected.data(), expected.size(), written) ==
+                bolt::protocol::FrameEncodeStatus::kSuccess &&
+            written == expected.size() && actual == expected;
+    }
+    return false;
+}
+
 std::string CanonicalCurrentUserKey(const std::wstring& relative) {
     std::string key = "HKEY_CURRENT_USER\\";
     for (const wchar_t value : relative) {
@@ -425,7 +497,7 @@ bool KeyMissing(const std::wstring& key_path) {
 }  // namespace
 
 int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 5) {
+    if (argument_count != 7) {
         return 700;
     }
     const std::wstring root = arguments[2];
@@ -433,6 +505,10 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
         static_cast<std::uintptr_t>(_wcstoui64(arguments[3], nullptr, 10)));
     const auto inherited_read_only = reinterpret_cast<HKEY>(
         static_cast<std::uintptr_t>(_wcstoui64(arguments[4], nullptr, 10)));
+    const auto inherited_race_allowed = reinterpret_cast<HKEY>(
+        static_cast<std::uintptr_t>(_wcstoui64(arguments[5], nullptr, 10)));
+    const auto inherited_race_denied = reinterpret_cast<HKEY>(
+        static_cast<std::uintptr_t>(_wcstoui64(arguments[6], nullptr, 10)));
     const std::wstring read_only = root + L"\\ReadOnly";
     const std::wstring denied = root + L"\\Broad\\Sensitive";
     const std::wstring allowed = root + L"\\Allowed";
@@ -1054,6 +1130,55 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
         RegCloseKey(transaction_current_user);
     }
 
+    constexpr std::size_t race_attempt_count = 16;
+    std::array<LONG, race_attempt_count> race_rename_statuses{};
+    std::array<LONG, race_attempt_count> race_set_statuses{};
+    const HANDLE race_start = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (race_start != nullptr && nt_rename_key != nullptr &&
+        nt_set_value_key != nullptr) {
+        wchar_t race_denied_text[] = L"Denied";
+        UNICODE_STRING race_denied_name{};
+        race_denied_name.Buffer = race_denied_text;
+        race_denied_name.Length = static_cast<USHORT>(
+            std::wcslen(race_denied_text) * sizeof(wchar_t));
+        race_denied_name.MaximumLength = race_denied_name.Length;
+        std::thread rename_thread([&] {
+            WaitForSingleObject(race_start, INFINITE);
+            for (std::size_t index = 0;
+                 index < race_rename_statuses.size(); ++index) {
+                race_rename_statuses[index] = nt_rename_key(
+                    inherited_race_allowed, &race_denied_name);
+            }
+        });
+        std::thread set_thread([&] {
+            WaitForSingleObject(race_start, INFINITE);
+            for (std::size_t index = 0;
+                 index < race_set_statuses.size(); ++index) {
+                race_set_statuses[index] = nt_set_value_key(
+                    inherited_race_denied, &denied_value_name, 0, REG_SZ,
+                    const_cast<wchar_t*>(changed),
+                    static_cast<ULONG>(sizeof(changed)));
+            }
+        });
+        SetEvent(race_start);
+        rename_thread.join();
+        set_thread.join();
+    }
+    if (race_start != nullptr) {
+        CloseHandle(race_start);
+    }
+    const bool race_operations_denied =
+        std::all_of(
+            race_rename_statuses.begin(), race_rename_statuses.end(),
+            [](const LONG status) {
+                return status == static_cast<LONG>(0xC0000022L);
+            }) &&
+        std::all_of(
+            race_set_statuses.begin(), race_set_statuses.end(),
+            [](const LONG status) {
+                return status == static_cast<LONG>(0xC0000022L);
+            });
+
     if (!value_enumerated || !key_enumerated) {
         return 716;
     }
@@ -1126,7 +1251,8 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     if (!inherit_user_allowed) {
         return 706;
     }
-    if (allowed_a.empty() || unsupported_create_a.empty() ||
+    if (!race_operations_denied ||
+        allowed_a.empty() || unsupported_create_a.empty() ||
         remote_status != ERROR_ACCESS_DENIED || remote_key != nullptr ||
         remote_status_a != ERROR_ACCESS_DENIED ||
         remote_key_a != nullptr ||
@@ -1193,6 +1319,9 @@ bool RunRegistryHookTests() {
         CreateKeyWithValue(root + L"\\Allowed", L"Seed", L"seed") &&
         CreateKeyWithValue(root + L"\\Inherited", L"Seed", L"seed") &&
         CreateKeyWithValue(root + L"\\Outside", L"Seed", L"outside") &&
+        CreateKeyWithValue(root + L"\\Race\\Allowed", L"Seed", L"seed") &&
+        CreateKeyWithValue(
+            root + L"\\Race\\Denied", L"Seed", L"secret") &&
         CreateKeyWithValueInView(
             wow64_read_only, KEY_WOW64_32KEY, L"Seed", L"seed") &&
         CreateKeyWithValueInView(
@@ -1210,6 +1339,8 @@ bool RunRegistryHookTests() {
     }
     HKEY inherited_denied_handle = nullptr;
     HKEY inherited_read_only_handle = nullptr;
+    HKEY inherited_race_allowed_handle = nullptr;
+    HKEY inherited_race_denied_handle = nullptr;
     if (RegOpenKeyExW(
             HKEY_CURRENT_USER, (root + L"\\Broad\\Sensitive").c_str(), 0,
             KEY_ALL_ACCESS, &inherited_denied_handle) != ERROR_SUCCESS ||
@@ -1221,12 +1352,31 @@ bool RunRegistryHookTests() {
             KEY_ALL_ACCESS, &inherited_read_only_handle) != ERROR_SUCCESS ||
         SetHandleInformation(
             inherited_read_only_handle, HANDLE_FLAG_INHERIT,
+            HANDLE_FLAG_INHERIT) == FALSE ||
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER, (root + L"\\Race\\Allowed").c_str(), 0,
+            KEY_ALL_ACCESS, &inherited_race_allowed_handle) !=
+            ERROR_SUCCESS ||
+        SetHandleInformation(
+            inherited_race_allowed_handle, HANDLE_FLAG_INHERIT,
+            HANDLE_FLAG_INHERIT) == FALSE ||
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER, (root + L"\\Race\\Denied").c_str(), 0,
+            KEY_ALL_ACCESS, &inherited_race_denied_handle) != ERROR_SUCCESS ||
+        SetHandleInformation(
+            inherited_race_denied_handle, HANDLE_FLAG_INHERIT,
             HANDLE_FLAG_INHERIT) == FALSE) {
         if (inherited_denied_handle != nullptr) {
             RegCloseKey(inherited_denied_handle);
         }
         if (inherited_read_only_handle != nullptr) {
             RegCloseKey(inherited_read_only_handle);
+        }
+        if (inherited_race_allowed_handle != nullptr) {
+            RegCloseKey(inherited_race_allowed_handle);
+        }
+        if (inherited_race_denied_handle != nullptr) {
+            RegCloseKey(inherited_race_denied_handle);
         }
         RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
         return false;
@@ -1250,6 +1400,12 @@ bool RunRegistryHookTests() {
         {bolt::tests::RegistryRuleKind::kReadOnly,
          bolt::tests::RegistryHive::kCurrentUser,
          ClassComponents(process_id, "WOW64READONLY")},
+        {bolt::tests::RegistryRuleKind::kReadWrite,
+         bolt::tests::RegistryHive::kCurrentUser,
+         Components(process_id, "RACE")},
+        {bolt::tests::RegistryRuleKind::kNoAccess,
+         bolt::tests::RegistryHive::kCurrentUser,
+         Components(process_id, "RACE", "DENIED")},
     };
     const std::wstring executable = CurrentExecutable();
     const auto payload = bolt::tests::SealPolicy(
@@ -1300,10 +1456,15 @@ bool RunRegistryHookTests() {
         L"\" " + HandleText(reinterpret_cast<std::uintptr_t>(
                        inherited_denied_handle)) +
         L" " + HandleText(reinterpret_cast<std::uintptr_t>(
-                     inherited_read_only_handle));
+                     inherited_read_only_handle)) +
+        L" " + HandleText(reinterpret_cast<std::uintptr_t>(
+                     inherited_race_allowed_handle)) +
+        L" " + HandleText(reinterpret_cast<std::uintptr_t>(
+                     inherited_race_denied_handle));
     const HANDLE inherited_handles[] = {
         policy.handle(), event_client, release, inherited_denied_handle,
-        inherited_read_only_handle};
+        inherited_read_only_handle, inherited_race_allowed_handle,
+        inherited_race_denied_handle};
     const bolt::common::ProcessLaunchOptions options{
         executable, command, L"", nullptr, inherited_handles,
         std::size(inherited_handles), 0};
@@ -1432,8 +1593,38 @@ bool RunRegistryHookTests() {
             expected_events[index].operation, expected_events[index].key,
             1'000);
     }
+    constexpr std::size_t expected_race_events = 32;
+    std::size_t race_rename_events = 0;
+    std::size_t race_set_events = 0;
+    const std::string race_denied_key =
+        CanonicalCurrentUserKey(root + L"\\Race\\Denied");
+    bool race_events_passed = events_passed;
+    for (std::size_t index = 0;
+         race_events_passed && index < expected_race_events; ++index) {
+        RegistryEventRecord record{};
+        race_events_passed = ReadRegistryViolationRecordWithin(
+            event_pipe.handle(), child_process_id,
+            expected_events.size() + index + 1, record, 1'000);
+        if (!race_events_passed || record.key != race_denied_key) {
+            race_events_passed = false;
+            break;
+        }
+        if (record.operation ==
+            bolt::protocol::RegistryOperation::kRename) {
+            ++race_rename_events;
+        } else if (
+            record.operation ==
+            bolt::protocol::RegistryOperation::kSetValue) {
+            ++race_set_events;
+        } else {
+            race_events_passed = false;
+        }
+    }
+    race_events_passed = race_events_passed &&
+        race_rename_events == expected_race_events / 2 &&
+        race_set_events == expected_race_events / 2;
     DWORD remaining_event_bytes = 0;
-    const bool no_extra_events = events_passed &&
+    const bool no_extra_events = race_events_passed &&
         (!PeekNamedPipe(
              event_pipe.handle(), nullptr, 0, nullptr,
              &remaining_event_bytes, nullptr) ||
@@ -1448,11 +1639,14 @@ bool RunRegistryHookTests() {
         KeyMissing(root + L"\\Broad\\Sensitive\\BlockedChild") &&
         KeyMissing(root + L"\\Broad\\RenamedSensitive") &&
         ValueEquals(root + L"\\Allowed", L"Changed", L"changed") &&
-        KeyMissing(root + L"\\Allowed\\Renamed");
+        KeyMissing(root + L"\\Allowed\\Renamed") &&
+        ValueEquals(root + L"\\Race\\Allowed", L"Seed", L"seed") &&
+        ValueEquals(root + L"\\Race\\Denied", L"Seed", L"secret");
     const bool unsupported_side_effects_absent =
         KeyMissing(root + L"\\Allowed\\UnsupportedCreate");
     const bool passed =
-        child_passed && events_passed && no_extra_events && side_effects_ok &&
+        child_passed && events_passed && race_events_passed &&
+        no_extra_events && side_effects_ok &&
         unsupported_side_effects_absent;
     if (!passed) {
         std::fprintf(
@@ -1468,6 +1662,8 @@ bool RunRegistryHookTests() {
     event_pipe.Close();
     RegCloseKey(inherited_denied_handle);
     RegCloseKey(inherited_read_only_handle);
+    RegCloseKey(inherited_race_allowed_handle);
+    RegCloseKey(inherited_race_denied_handle);
     DeleteRegistrySymbolicLink(link_to_sensitive);
     RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
     DeleteKeyTreeInView(wow64_root, KEY_WOW64_32KEY);
