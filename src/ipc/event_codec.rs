@@ -677,6 +677,7 @@ mod tests {
             ChildInjectionFailureReason::PolicyUnavailable,
             ChildInjectionFailureReason::InjectionFailed,
             ChildInjectionFailureReason::HandshakeFailed,
+            ChildInjectionFailureReason::MitigationFailed,
         ] {
             let event = SandboxEvent::ChildInjectionFailed(ChildInjectionFailure {
                 parent_process_id: 1,

@@ -18,6 +18,10 @@ bool RunRuntimePayloadTests() {
     expected.dns_maximum_frame_length = 1'024;
     expected.tcp_proxy_port = 32'123;
     expected.tcp_proxy_ipv6_port = 32'124;
+    expected.startup_fault =
+        bolt::protocol::RuntimeStartupFault::kMitigationFailure;
+    expected.descendant_startup_fault =
+        bolt::protocol::RuntimeStartupFault::kMitigationFailure;
 
     const auto encoded = bolt::protocol::EncodeRuntimePayload(expected);
     bolt::protocol::RuntimePayload decoded{};
@@ -32,6 +36,13 @@ bool RunRuntimePayloadTests() {
     if (bolt::protocol::DecodeRuntimePayload(
             invalid_magic.data(), invalid_magic.size(), decoded) !=
         bolt::protocol::RuntimePayloadStatus::kInvalidMagic) {
+        return false;
+    }
+    auto invalid_startup_fault = encoded;
+    invalid_startup_fault[124] = 0xFF;
+    if (bolt::protocol::DecodeRuntimePayload(
+            invalid_startup_fault.data(), invalid_startup_fault.size(), decoded) !=
+        bolt::protocol::RuntimePayloadStatus::kInvalidStartupFault) {
         return false;
     }
 

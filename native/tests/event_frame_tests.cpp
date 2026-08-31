@@ -6,6 +6,19 @@
 #include <string>
 
 bool RunEventFrameTests() {
+    std::array<std::uint8_t,
+               bolt::protocol::kChildInjectionFailureFrameLength>
+        child_failure{};
+    std::size_t child_failure_written = 0;
+    if (bolt::protocol::EncodeChildInjectionFailureFrame(
+            17, 18,
+            bolt::protocol::ChildInjectionFailureReason::kMitigationFailed, 1,
+            child_failure.data(), child_failure.size(),
+            child_failure_written) !=
+            bolt::protocol::FrameEncodeStatus::kSuccess ||
+        child_failure_written != child_failure.size()) {
+        return false;
+    }
     constexpr std::array<std::uint8_t, 16> nonce = {
         0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5,
         0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5,
