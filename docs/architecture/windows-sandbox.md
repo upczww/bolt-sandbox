@@ -456,6 +456,11 @@ when the transport connects. The origin is not resolved locally in this mode;
 the application proxy owns that resolution. Numeric IPv4 and IPv6 host strings
 are parsed locally by address-info APIs and are still authorized only when the
 subsequent endpoint connection passes the address and port rules.
+Because policy protocol version 1 has no interface-scope field, any IPv6 socket
+endpoint with a nonzero zone/scope ID is rejected rather than silently reduced
+to its 128-bit address. IPv4-mapped IPv6 values remain IPv6 identities and do
+not inherit IPv4 CIDR grants. Exact hostname rules do not treat a trailing dot
+or operating-system localhost aliases as equivalent names.
 
 The local TCP broker also inspects a bounded first HTTP request line when a
 client initiates a stream with `CONNECT `. The authority host/address and port

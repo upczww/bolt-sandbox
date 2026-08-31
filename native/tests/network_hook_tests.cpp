@@ -1400,6 +1400,35 @@ int RunNetworkAllowListLeaf(const int argument_count, wchar_t** arguments) {
         ntohs(ipv6_peer.sin6_port) ==
             static_cast<std::uint16_t>(_wtoi(arguments[4]));
     closesocket(ipv6_socket);
+    sockaddr_in6 scoped_endpoint{};
+    if (ipv6_results != nullptr &&
+        ipv6_results->ai_addrlen >= sizeof(scoped_endpoint)) {
+        std::memcpy(
+            &scoped_endpoint, ipv6_results->ai_addr,
+            sizeof(scoped_endpoint));
+    }
+    scoped_endpoint.sin6_scope_id = 1;
+    const SOCKET scoped_socket = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+    const int scoped_connect = connect(
+        scoped_socket, reinterpret_cast<const sockaddr*>(&scoped_endpoint),
+        sizeof(scoped_endpoint));
+    const int scoped_connect_error = WSAGetLastError();
+    closesocket(scoped_socket);
+    sockaddr_in6 mapped_endpoint{};
+    mapped_endpoint.sin6_family = AF_INET6;
+    mapped_endpoint.sin6_port = htons(
+        static_cast<std::uint16_t>(_wtoi(arguments[3])));
+    const bool mapped_parsed = InetPtonW(
+        AF_INET6, L"::ffff:127.0.0.1", &mapped_endpoint.sin6_addr) == 1;
+    const SOCKET mapped_socket = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+    const int mapped_connect = mapped_parsed
+        ? connect(
+              mapped_socket,
+              reinterpret_cast<const sockaddr*>(&mapped_endpoint),
+              sizeof(mapped_endpoint))
+        : 0;
+    const int mapped_connect_error = WSAGetLastError();
+    closesocket(mapped_socket);
     ADDRINFOW wide_hints{};
     wide_hints.ai_family = AF_INET;
     wide_hints.ai_socktype = SOCK_STREAM;
@@ -1658,6 +1687,13 @@ int RunNetworkAllowListLeaf(const int argument_count, wchar_t** arguments) {
     }
     if (!ipv6_peer_is_original_target) {
         return 236;
+    }
+    if (scoped_connect != SOCKET_ERROR || scoped_connect_error != WSAEACCES) {
+        return 238;
+    }
+    if (!mapped_parsed || mapped_connect != SOCKET_ERROR ||
+        mapped_connect_error != WSAEACCES) {
+        return 239;
     }
     if (!connect_ex_ready || !connect_ex_completed ||
         !connect_ex_peer_is_original) {

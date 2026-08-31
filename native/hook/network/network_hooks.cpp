@@ -744,6 +744,9 @@ bool ReadEndpoint(
         if (address->sa_family == AF_INET6 &&
             address_length >= static_cast<int>(sizeof(sockaddr_in6))) {
             const auto* ipv6 = reinterpret_cast<const sockaddr_in6*>(address);
+            if (ipv6->sin6_scope_id != 0) {
+                return false;
+            }
             endpoint.family = protocol::NetworkAddressFamily::kIpv6;
             std::memcpy(endpoint.address.data(), &ipv6->sin6_addr, 16);
             endpoint.port = ntohs(ipv6->sin6_port);

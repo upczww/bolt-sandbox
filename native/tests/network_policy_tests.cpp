@@ -75,6 +75,7 @@ bool RunNetworkPolicyTests() {
         policy->DecideDomain("example.org") != bolt::network::Decision::kDeny ||
         policy->DecideDomain("a.example.org") != bolt::network::Decision::kAllow ||
         policy->DecideDomain("evil-example.org") != bolt::network::Decision::kDeny ||
+        policy->DecideDomain("example.com.") != bolt::network::Decision::kDeny ||
         policy->DecidePort(443) != bolt::network::Decision::kAllow ||
         policy->DecidePort(8'050) != bolt::network::Decision::kAllow ||
         policy->DecidePort(0) != bolt::network::Decision::kDeny ||
@@ -92,6 +93,13 @@ bool RunNetworkPolicyTests() {
     allowed_ipv6[15] = 1;
     std::array<std::uint8_t, 16> denied_ipv6 = allowed_ipv6;
     denied_ipv6[3] = 0xb9;
+    std::array<std::uint8_t, 16> ipv4_mapped_ipv6{};
+    ipv4_mapped_ipv6[10] = 0xff;
+    ipv4_mapped_ipv6[11] = 0xff;
+    ipv4_mapped_ipv6[12] = 192;
+    ipv4_mapped_ipv6[13] = 0;
+    ipv4_mapped_ipv6[14] = 2;
+    ipv4_mapped_ipv6[15] = 1;
     const std::array<std::uint8_t, 4> allowed_prefix_ipv4 = {198, 51, 100, 255};
     const std::array<std::uint8_t, 4> denied_prefix_ipv4 = {198, 51, 100, 127};
     if (policy->DecideAddress(
@@ -107,11 +115,34 @@ bool RunNetworkPolicyTests() {
             bolt::network::AddressFamily::kIpv6, denied_ipv6.data(),
             denied_ipv6.size()) != bolt::network::Decision::kDeny ||
         policy->DecideAddress(
+            bolt::network::AddressFamily::kIpv6, ipv4_mapped_ipv6.data(),
+            ipv4_mapped_ipv6.size()) != bolt::network::Decision::kDeny ||
+        policy->DecideAddress(
             bolt::network::AddressFamily::kIpv4, allowed_prefix_ipv4.data(),
             allowed_prefix_ipv4.size()) != bolt::network::Decision::kAllow ||
         policy->DecideAddress(
             bolt::network::AddressFamily::kIpv4, denied_prefix_ipv4.data(),
             denied_prefix_ipv4.size()) != bolt::network::Decision::kDeny) {
+        return false;
+    }
+
+    const bolt::tests::NetworkAllowListRules localhost_allow_list{
+        {{false, "localhost"}}, {}, {{80, 80}}};
+    const auto localhost_payload = bolt::tests::SealPolicy(
+        {}, bolt::tests::ChildProcessPolicyKind::kInherit,
+        bolt::tests::NetworkPolicyKind::kAllowList, localhost_allow_list);
+    if (localhost_payload.empty() ||
+        bolt::network::NetworkPolicy::Load(
+            localhost_payload.data(), localhost_payload.size(), policy) !=
+            bolt::network::PolicyLoadStatus::kValid ||
+        policy->DecideDomain("localhost") !=
+            bolt::network::Decision::kAllow ||
+        policy->DecideDomain("LOCALHOST") !=
+            bolt::network::Decision::kAllow ||
+        policy->DecideDomain("localhost.") !=
+            bolt::network::Decision::kDeny ||
+        policy->DecideDomain("localhost.localdomain") !=
+            bolt::network::Decision::kDeny) {
         return false;
     }
 
