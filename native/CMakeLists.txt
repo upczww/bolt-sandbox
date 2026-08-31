@@ -206,6 +206,13 @@ target_link_libraries(bolt-sandbox-network PRIVATE
     ws2_32
 )
 
+add_library(bolt-sandbox-registry STATIC
+    hook/registry/registry_policy.cpp
+)
+bolt_native_warnings(bolt-sandbox-registry)
+target_include_directories(bolt-sandbox-registry PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(bolt-sandbox-registry PRIVATE bolt-sandbox-protocol)
+
 add_library(bolt-sandbox-filesystem STATIC
     hook/event_sink.cpp
     hook/filesystem/access_classifier.cpp
@@ -320,6 +327,7 @@ target_link_libraries(
     bolt-sandbox-native-tests PRIVATE
         bolt-sandbox-filesystem
         bolt-sandbox-network
+        bolt-sandbox-registry
         advapi32
         bcrypt
         dnsapi
