@@ -162,7 +162,7 @@ its catalog case ID and requirement IDs in machine-readable results.
 
 | Requirement ID | Architecture requirement | Catalog evidence | Status |
 | --- | --- | --- | --- |
-| ARC-DIST-001 | CLI, launcher, and x86/x64 DLLs ship as one compatible release | PKG-001, PKG-015 | Specified |
+| ARC-DIST-001 | CLI, x64/x86 launchers, and x86/x64 DLLs ship as one compatible release | PKG-001, PKG-015 | Specified |
 | ARC-DIST-002 | Signatures, hashes, and protocol versions are verified before execution | SEC-001..003, PKG-002, PKG-009..015 | Specified |
 | ARC-DIST-003 | Embedded extraction is atomic, per-version, access-controlled, and not shared writable temp | PKG-003..006, PKG-010, PKG-016 | Specified |
 | ARC-DIST-004 | Loaded image identity cannot change after verification or via DLL search order | PKG-009..014 | Specified |

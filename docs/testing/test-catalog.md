@@ -406,7 +406,7 @@ and reason code—not merely identical serialized bytes.
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |
-| PKG-001 | Build release component set | CLI/library, launcher, x64 DLL, and x86 DLL carry one compatible release/protocol identity |
+| PKG-001 | Build release component set | CLI/library, x64/x86 launchers, x64 DLL, and x86 DLL carry one compatible release/protocol identity |
 | PKG-002 | Verify signatures and hashes before first launch | Valid artifacts pass; any byte change fails before execution |
 | PKG-003 | Extract embedded artifacts | Extraction is atomic into per-version access-controlled directory, never shared writable temp |
 | PKG-004 | Two processes extract/use same version concurrently | No partial artifact, race, or deletion of in-use component occurs |

@@ -159,7 +159,7 @@ bolt-sandbox library
     |-- architecture selector
     |
     v
-bolt-sandbox-launcher.exe
+bolt-sandbox-launcher.exe or bolt-sandbox-launcher-x86.exe
     |
     | DetourCreateProcessWithDlls, suspended startup
     v
@@ -844,10 +844,11 @@ bolt-sandbox.exe run --policy policy.json --cwd C:\repo -- command args...
 The production package contains:
 
 - `bolt-sandbox.exe`, when the CLI integration is required.
-- `bolt-sandbox-launcher.exe`, a private implementation artifact.
+- `bolt-sandbox-launcher.exe` and `bolt-sandbox-launcher-x86.exe`, private
+  architecture-matched implementation artifacts.
 - `bolt-sandbox-x64.dll` and `bolt-sandbox-x86.dll`.
 
-The launcher and both DLLs must share a compatible protocol version and be
+Both launchers and both DLLs must share a compatible protocol version and be
 shipped, signed, integrity-checked, and updated as one unit. Packaging may embed
 the launcher and DLLs in the Agent-facing executable, but execution still
 requires architecture-specific DLLs to be extracted into a per-version,
@@ -1016,8 +1017,9 @@ Accepted:
 - Rust owns public APIs, policy, process lifecycle, and events.
 - The Rust library is the preferred Agent interface; an optional CLI is a thin
   adapter for standalone and cross-language use.
-- Releases are a compatible component set containing the launcher and x86/x64
-  hook DLLs, even when packaging presents a single executable to the user.
+- Releases are a compatible component set containing x64/x86 launchers and
+  x86/x64 hook DLLs, even when packaging presents a single executable to the
+  user.
 - Begin with one Rust crate and split the protocol only when reuse, fuzzing, or
   independent versioning requires it.
 - Detours and selected BuildXL native code provide the Windows hook foundation.

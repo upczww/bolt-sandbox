@@ -66,10 +66,11 @@ will provide the same behavior for standalone testing and non-Rust callers.
 The runtime is distributed as a component set rather than a single binary:
 
 - `bolt-sandbox.exe`, the optional Agent-facing CLI.
-- `bolt-sandbox-launcher.exe`, the private suspended-process launcher.
+- `bolt-sandbox-launcher.exe` and `bolt-sandbox-launcher-x86.exe`, the private
+  architecture-matched suspended-process launchers.
 - `bolt-sandbox-x64.dll` and `bolt-sandbox-x86.dll`, the injected hook DLLs.
 
-The selected Agent-facing interface and the three private runtime artifacts
+The selected Agent-facing interface and the four private runtime artifacts
 must be versioned, integrity-checked, and shipped as one compatible release.
 The private artifacts may later be embedded in the CLI for packaging
 convenience, but remain separate runtime components after secure extraction.

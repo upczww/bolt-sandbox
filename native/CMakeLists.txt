@@ -241,17 +241,22 @@ target_link_libraries(bolt-sandbox-filesystem PRIVATE
     shell32
 )
 
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    add_executable(bolt-sandbox-launcher
-        launcher/main.cpp
+add_executable(bolt-sandbox-launcher
+    launcher/main.cpp
+)
+bolt_native_warnings(bolt-sandbox-launcher)
+target_include_directories(bolt-sandbox-launcher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(bolt-sandbox-launcher PRIVATE
+    bolt-sandbox-common
+    bolt-sandbox-protocol
+)
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set_target_properties(
+        bolt-sandbox-launcher PROPERTIES OUTPUT_NAME bolt-sandbox-launcher-x86
     )
-    bolt_native_warnings(bolt-sandbox-launcher)
-    target_include_directories(bolt-sandbox-launcher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(bolt-sandbox-launcher PRIVATE
-        bolt-sandbox-common
-        bolt-sandbox-protocol
-    )
+endif()
 
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     add_executable(bolt-sandbox-dns-proxy
         dns_proxy/main.cpp
     )

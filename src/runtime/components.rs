@@ -54,7 +54,10 @@ pub(super) fn open_components(
         return Err(ComponentOpenError::RootNotAbsolute);
     }
 
-    let launcher_path = root.join(LAUNCHER_NAME);
+    let launcher_path = root.join(match target_architecture {
+        ImageArchitecture::X86 => X86_LAUNCHER_NAME,
+        ImageArchitecture::X64 => LAUNCHER_NAME,
+    });
     let hook_path = root.join(match target_architecture {
         ImageArchitecture::X86 => X86_HOOK_NAME,
         ImageArchitecture::X64 => X64_HOOK_NAME,
@@ -65,7 +68,7 @@ pub(super) fn open_components(
 
     let launcher_architecture = detect_image_architecture_from_reader(&mut launcher_handle)
         .map_err(|_| ComponentOpenError::InvalidLauncherImage)?;
-    if launcher_architecture != ImageArchitecture::X64 {
+    if launcher_architecture != target_architecture {
         return Err(ComponentOpenError::LauncherArchitectureMismatch);
     }
     let hook_architecture = detect_image_architecture_from_reader(&mut hook_handle)
@@ -149,10 +152,7 @@ mod tests {
         let x64 = open_components(&fixture.root, ImageArchitecture::X64)
             .expect("x64 components must open");
 
-        assert_eq!(
-            x86.launcher_path(),
-            fixture.root.join(X86_LAUNCHER_NAME)
-        );
+        assert_eq!(x86.launcher_path(), fixture.root.join(X86_LAUNCHER_NAME));
         assert_eq!(x86.hook_path(), fixture.root.join(X86_HOOK_NAME));
         assert_eq!(x64.hook_path(), fixture.root.join(X64_HOOK_NAME));
     }
@@ -183,6 +183,15 @@ mod tests {
     #[test]
     fn pkg_001_missing_or_wrong_architecture_components_fail_closed() {
         let fixture = Fixture::new();
+        fs::remove_file(fixture.root.join(X86_LAUNCHER_NAME))
+            .expect("x86 launcher must be removed");
+        assert!(matches!(
+            open_components(&fixture.root, ImageArchitecture::X86),
+            Err(ComponentOpenError::LauncherOpen)
+        ));
+        fs::write(fixture.root.join(X86_LAUNCHER_NAME), pe_image(0x014C))
+            .expect("x86 launcher fixture must be restored");
+
         fs::remove_file(fixture.root.join(X86_HOOK_NAME)).expect("x86 hook must be removed");
         assert!(matches!(
             open_components(&fixture.root, ImageArchitecture::X86),
