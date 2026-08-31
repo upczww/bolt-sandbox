@@ -190,6 +190,7 @@ WsaSendFunction g_wsa_send = WSASend;
 GetPeerNameFunction g_get_peer_name = getpeername;
 CloseSocketFunction g_close_socket = closesocket;
 constexpr GUID kConnectExGuid = WSAID_CONNECTEX;
+constexpr GUID kWsaSendMsgGuid = WSAID_WSASENDMSG;
 constexpr std::uint64_t kSyntheticAddressInfoMagic = 0x424c544144445231ULL;
 
 struct SyntheticAddressInfoHeader {
@@ -206,6 +207,14 @@ BOOL PASCAL DetouredConnectEx(
     DWORD send_length,
     LPDWORD bytes_sent,
     LPOVERLAPPED overlapped) noexcept;
+
+INT WSAAPI DetouredWsaSendMsg(
+    SOCKET socket,
+    LPWSAMSG message,
+    DWORD flags,
+    LPDWORD bytes_sent,
+    LPWSAOVERLAPPED overlapped,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE completion_routine) noexcept;
 
 bool NetworkIsDenied() noexcept {
     const auto* policy = g_policy.get();
@@ -632,16 +641,50 @@ void ReportDeniedResolution(const Character* domain) noexcept {
 }
 
 
-bool IsConnectExRequest(
+bool IsExtensionFunctionRequest(
     const DWORD control_code,
     const LPVOID input,
-    const DWORD input_length) noexcept {
+    const DWORD input_length,
+    const GUID& expected) noexcept {
     if (control_code != SIO_GET_EXTENSION_FUNCTION_POINTER || input == nullptr ||
         input_length < sizeof(GUID)) {
         return false;
     }
     __try {
-        return std::memcmp(input, &kConnectExGuid, sizeof(GUID)) == 0;
+        return std::memcmp(input, &expected, sizeof(GUID)) == 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool IsConnectExRequest(
+    const DWORD control_code,
+    const LPVOID input,
+    const DWORD input_length) noexcept {
+    return IsExtensionFunctionRequest(
+        control_code, input, input_length, kConnectExGuid);
+}
+
+bool IsWsaSendMsgRequest(
+    const DWORD control_code,
+    const LPVOID input,
+    const DWORD input_length) noexcept {
+    return IsExtensionFunctionRequest(
+        control_code, input, input_length, kWsaSendMsgGuid);
+}
+
+bool IsExtensionFunctionControl(const DWORD control_code) noexcept {
+    return control_code == SIO_GET_EXTENSION_FUNCTION_POINTER ||
+           control_code == SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER;
+}
+
+bool ClearBytesReturned(const LPDWORD bytes_returned) noexcept {
+    if (bytes_returned == nullptr) {
+        return false;
+    }
+    __try {
+        *bytes_returned = 0;
+        return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
@@ -658,6 +701,23 @@ bool WriteConnectExResult(
     __try {
         *static_cast<LPFN_CONNECTEX*>(output) = DetouredConnectEx;
         *bytes_returned = sizeof(LPFN_CONNECTEX);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool WriteWsaSendMsgResult(
+    const LPVOID output,
+    const DWORD output_length,
+    const LPDWORD bytes_returned) noexcept {
+    if (output == nullptr || output_length < sizeof(LPFN_WSASENDMSG) ||
+        bytes_returned == nullptr) {
+        return false;
+    }
+    __try {
+        *static_cast<LPFN_WSASENDMSG*>(output) = DetouredWsaSendMsg;
+        *bytes_returned = sizeof(LPFN_WSASENDMSG);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -1060,30 +1120,76 @@ int WSAAPI DetouredWsaIoctl(
     LPDWORD bytes_returned,
     LPWSAOVERLAPPED overlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE completion_routine) noexcept {
-    if (!NetworkIsDenied() ||
-        !IsConnectExRequest(control_code, input, input_length)) {
+    const bool connect_ex_request =
+        IsConnectExRequest(control_code, input, input_length);
+    const bool send_msg_request =
+        IsWsaSendMsgRequest(control_code, input, input_length);
+    if (!NetworkIsDenied() || !IsExtensionFunctionControl(control_code)) {
         return g_wsa_ioctl(
             socket, control_code, input, input_length, output, output_length,
             bytes_returned, overlapped, completion_routine);
     }
+    if (!connect_ex_request && !send_msg_request) {
+        if (!ClearBytesReturned(bytes_returned)) {
+            WSASetLastError(WSAEFAULT);
+            return SOCKET_ERROR;
+        }
+        WSASetLastError(WSAEACCES);
+        return SOCKET_ERROR;
+    }
 
-    GUID connect_ex_guid = kConnectExGuid;
-    LPFN_CONNECTEX provider_connect_ex = nullptr;
+    GUID extension_guid = connect_ex_request ? kConnectExGuid : kWsaSendMsgGuid;
+    std::array<std::uint8_t, sizeof(LPFN_CONNECTEX)> provider_function{};
     DWORD provider_bytes = 0;
     const int provider_status = g_wsa_ioctl(
-        socket, control_code, &connect_ex_guid, sizeof(connect_ex_guid),
-        &provider_connect_ex, sizeof(provider_connect_ex), &provider_bytes,
+        socket, control_code, &extension_guid, sizeof(extension_guid),
+        provider_function.data(), static_cast<DWORD>(provider_function.size()),
+        &provider_bytes,
         nullptr, nullptr);
     if (provider_status == SOCKET_ERROR) {
         return SOCKET_ERROR;
     }
-    if (provider_connect_ex == nullptr ||
-        provider_bytes != sizeof(provider_connect_ex) ||
-        !WriteConnectExResult(output, output_length, bytes_returned)) {
+    const bool provider_valid = provider_bytes == provider_function.size() &&
+        std::any_of(
+            provider_function.begin(), provider_function.end(),
+            [](const std::uint8_t byte) { return byte != 0; });
+    const bool output_written = connect_ex_request
+        ? WriteConnectExResult(output, output_length, bytes_returned)
+        : WriteWsaSendMsgResult(output, output_length, bytes_returned);
+    if (!provider_valid || !output_written) {
         WSASetLastError(WSAEFAULT);
         return SOCKET_ERROR;
     }
     return 0;
+}
+
+INT WSAAPI DetouredWsaSendMsg(
+    const SOCKET socket,
+    LPWSAMSG message,
+    const DWORD flags,
+    LPDWORD bytes_sent,
+    LPWSAOVERLAPPED overlapped,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE completion_routine) noexcept {
+    static_cast<void>(socket);
+    static_cast<void>(flags);
+    static_cast<void>(bytes_sent);
+    static_cast<void>(overlapped);
+    static_cast<void>(completion_routine);
+    sockaddr* destination = nullptr;
+    int destination_length = 0;
+    if (message == nullptr) {
+        WSASetLastError(WSAEFAULT);
+        return SOCKET_ERROR;
+    }
+    __try {
+        destination = message->name;
+        destination_length = message->namelen;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        WSASetLastError(WSAEFAULT);
+        return SOCKET_ERROR;
+    }
+    DenySend(destination, destination_length);
+    return SOCKET_ERROR;
 }
 
 INT WSAAPI DetouredGetAddrInfoA(

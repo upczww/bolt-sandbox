@@ -666,7 +666,56 @@ int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
         send_to_socket, datagram, 1, 0,
         reinterpret_cast<const sockaddr*>(&endpoint), sizeof(endpoint));
     const int send_to_error = WSAGetLastError();
+    GUID send_msg_guid = WSAID_WSASENDMSG;
+    LPFN_WSASENDMSG send_msg = nullptr;
+    DWORD send_msg_extension_bytes = 0;
+    const int send_msg_extension_status = WSAIoctl(
+        send_to_socket, SIO_GET_EXTENSION_FUNCTION_POINTER, &send_msg_guid,
+        sizeof(send_msg_guid), &send_msg, sizeof(send_msg),
+        &send_msg_extension_bytes, nullptr, nullptr);
+    WSABUF send_msg_buffer{};
+    send_msg_buffer.buf = datagram;
+    send_msg_buffer.len = 1;
+    WSAMSG send_msg_request{};
+    send_msg_request.name = reinterpret_cast<sockaddr*>(&endpoint);
+    send_msg_request.namelen = sizeof(endpoint);
+    send_msg_request.lpBuffers = &send_msg_buffer;
+    send_msg_request.dwBufferCount = 1;
+    DWORD send_msg_bytes = 99;
+    const int send_msg_status =
+        send_msg_extension_status == 0 && send_msg != nullptr
+            ? send_msg(
+                  send_to_socket, &send_msg_request, 0, &send_msg_bytes,
+                  nullptr, nullptr)
+            : SOCKET_ERROR;
+    const int send_msg_error = WSAGetLastError();
     closesocket(send_to_socket);
+
+    const SOCKET extension_socket =
+        WSASocketW(
+            AF_INET, SOCK_STREAM, IPPROTO_TCP, nullptr, 0,
+            WSA_FLAG_NO_HANDLE_INHERIT | WSA_FLAG_REGISTERED_IO);
+    const GUID unknown_extension = {
+        0x10203040, 0x5060, 0x7080,
+        {0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0, 0x01}};
+    void* unknown_function = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(1));
+    DWORD unknown_extension_bytes = 99;
+    const int unknown_extension_status = WSAIoctl(
+        extension_socket, SIO_GET_EXTENSION_FUNCTION_POINTER,
+        const_cast<GUID*>(&unknown_extension), sizeof(unknown_extension),
+        &unknown_function, sizeof(unknown_function), &unknown_extension_bytes,
+        nullptr, nullptr);
+    const int unknown_extension_error = WSAGetLastError();
+    GUID rio_guid = WSAID_MULTIPLE_RIO;
+    RIO_EXTENSION_FUNCTION_TABLE rio_table{};
+    DWORD rio_extension_bytes = 99;
+    const int rio_extension_status = WSAIoctl(
+        extension_socket, SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER,
+        &rio_guid, sizeof(rio_guid), &rio_table, sizeof(rio_table),
+        &rio_extension_bytes, nullptr, nullptr);
+    const int rio_extension_error = WSAGetLastError();
+    closesocket(extension_socket);
 
     const SOCKET wsa_send_to_socket = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
     WSABUF datagram_buffer{};
@@ -719,7 +768,16 @@ int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
     const bool datagram_passed =
         send_to_status == SOCKET_ERROR && send_to_error == WSAEACCES &&
         wsa_send_to_status == SOCKET_ERROR && wsa_send_to_error == WSAEACCES &&
-        datagram_bytes_sent == 99;
+        datagram_bytes_sent == 99 && send_msg_extension_status == 0 &&
+        send_msg_extension_bytes == sizeof(send_msg) && send_msg != nullptr &&
+        send_msg_status == SOCKET_ERROR && send_msg_error == WSAEACCES &&
+        send_msg_bytes == 99 && extension_socket != INVALID_SOCKET &&
+        unknown_extension_status == SOCKET_ERROR &&
+        unknown_extension_error == WSAEACCES && unknown_extension_bytes == 0 &&
+        unknown_function == reinterpret_cast<void*>(
+                                static_cast<std::uintptr_t>(1)) &&
+        rio_extension_status == SOCKET_ERROR &&
+        rio_extension_error == WSAEACCES && rio_extension_bytes == 0;
     const bool asynchronous_resolution_passed =
         asynchronous_resolve_status == WSAEACCES &&
         asynchronous_resolve_error == WSAEACCES && asynchronous_results_absent &&
@@ -1061,18 +1119,22 @@ bool RunNetworkHookTests() {
             bolt::protocol::NetworkOperation::kSend) &&
         ReadNetworkViolation(
             event_pipe.handle(), process_id, 13,
+            bolt::protocol::NetworkAddressFamily::kIpv4,
+            bolt::protocol::NetworkOperation::kSend) &&
+        ReadNetworkViolation(
+            event_pipe.handle(), process_id, 14,
             bolt::protocol::NetworkAddressFamily::kIpv6,
             bolt::protocol::NetworkOperation::kSend);
     const bool high_level_events_ok =
         datagram_events_ok &&
         ReadDomainNetworkViolation(
-            event_pipe.handle(), process_id, 14, "localhost",
-            bolt::protocol::NetworkOperation::kConnect) &&
-        ReadDomainNetworkViolation(
             event_pipe.handle(), process_id, 15, "localhost",
             bolt::protocol::NetworkOperation::kConnect) &&
         ReadDomainNetworkViolation(
             event_pipe.handle(), process_id, 16, "localhost",
+            bolt::protocol::NetworkOperation::kConnect) &&
+        ReadDomainNetworkViolation(
+            event_pipe.handle(), process_id, 17, "localhost",
             bolt::protocol::NetworkOperation::kConnect);
     CloseHandle(release);
     event_pipe.Close();
@@ -1521,6 +1583,33 @@ int RunNetworkAllowListLeaf(const int argument_count, wchar_t** arguments) {
                   static_cast<int>(results->ai_addrlen))
             : SOCKET_ERROR;
     const int allowed_udp_error = WSAGetLastError();
+    GUID allowed_send_msg_guid = WSAID_WSASENDMSG;
+    LPFN_WSASENDMSG allowed_send_msg = nullptr;
+    DWORD allowed_send_msg_extension_bytes = 0;
+    const int allowed_send_msg_extension_status = WSAIoctl(
+        allowed_udp, SIO_GET_EXTENSION_FUNCTION_POINTER,
+        &allowed_send_msg_guid, sizeof(allowed_send_msg_guid),
+        &allowed_send_msg, sizeof(allowed_send_msg),
+        &allowed_send_msg_extension_bytes, nullptr, nullptr);
+    WSABUF allowed_send_msg_buffer{};
+    allowed_send_msg_buffer.buf = &udp_byte;
+    allowed_send_msg_buffer.len = 1;
+    WSAMSG allowed_send_msg_request{};
+    allowed_send_msg_request.name =
+        results == nullptr ? nullptr : results->ai_addr;
+    allowed_send_msg_request.namelen =
+        results == nullptr ? 0 : static_cast<int>(results->ai_addrlen);
+    allowed_send_msg_request.lpBuffers = &allowed_send_msg_buffer;
+    allowed_send_msg_request.dwBufferCount = 1;
+    DWORD allowed_send_msg_bytes = 99;
+    const int allowed_send_msg_status =
+        allowed_send_msg_extension_status == 0 &&
+            allowed_send_msg != nullptr && results != nullptr
+        ? allowed_send_msg(
+              allowed_udp, &allowed_send_msg_request, 0,
+              &allowed_send_msg_bytes, nullptr, nullptr)
+        : SOCKET_ERROR;
+    const int allowed_send_msg_error = WSAGetLastError();
 
     if (results != nullptr) {
         freeaddrinfo(results);
@@ -1605,7 +1694,12 @@ int RunNetworkAllowListLeaf(const int argument_count, wchar_t** arguments) {
     if (wide_resolve_status != 0) {
         return 224;
     }
-    if (allowed_udp_send != SOCKET_ERROR || allowed_udp_error != WSAEACCES) {
+    if (allowed_udp_send != SOCKET_ERROR || allowed_udp_error != WSAEACCES ||
+        allowed_send_msg_extension_status != 0 ||
+        allowed_send_msg_extension_bytes != sizeof(allowed_send_msg) ||
+        allowed_send_msg == nullptr ||
+        allowed_send_msg_status != SOCKET_ERROR ||
+        allowed_send_msg_error != WSAEACCES || allowed_send_msg_bytes != 99) {
         return 225;
     }
     if (extended_status != 0) {

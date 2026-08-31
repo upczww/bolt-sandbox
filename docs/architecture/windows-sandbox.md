@@ -467,6 +467,11 @@ transparent.
 Required API coverage includes `connect`, `WSAConnect`, `ConnectEx`, synchronous
 and asynchronous DNS resolution, IPv4, and IPv6. UDP and custom protocol support
 must be explicitly tested and documented rather than implicitly allowed.
+Strict modes wrap the `WSASendMsg` extension returned by `WSAIoctl` and reject
+RIO multiple-extension tables and unknown provider extension GUIDs. Combined
+with denied `sendto` and `WSASendTo`, this keeps unsupported UDP, raw, QUIC, and
+provider-specific address-bearing send paths fail closed. Unrestricted mode
+passes extension discovery and native errors through unchanged.
 
 Hostname authorization must bind resolved addresses to the authorized hostname
 for a bounded lifetime. An IP appearing in an allow-listed DNS response must not
