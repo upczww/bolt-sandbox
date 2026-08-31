@@ -2999,7 +2999,7 @@ int RunCompatibilityParent(const int argument_count, wchar_t** arguments) {
 }
 
 int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 4) {
+    if (argument_count != 5) {
         return 222;
     }
     const HMODULE hook = GetModuleHandleW(arguments[2]);
@@ -3035,6 +3035,23 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
             CloseHandle(fake_policy);
         }
         return 334;
+    }
+    const HANDLE execution_job = reinterpret_cast<HANDLE>(
+        _wcstoui64(arguments[4], nullptr, 10));
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION weakened_job{};
+    SetLastError(ERROR_SUCCESS);
+    const BOOL weakened_job_applied = SetInformationJobObject(
+        execution_job, JobObjectExtendedLimitInformation, &weakened_job,
+        sizeof(weakened_job));
+    const DWORD weakened_job_error = GetLastError();
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION active_job{};
+    if (weakened_job_applied || weakened_job_error != ERROR_ACCESS_DENIED ||
+        !QueryInformationJobObject(
+            execution_job, JobObjectExtendedLimitInformation, &active_job,
+            sizeof(active_job), nullptr) ||
+        (active_job.BasicLimitInformation.LimitFlags &
+         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) == 0) {
+        return 335;
     }
 
     const std::wstring executable = CurrentExecutable();
@@ -3776,13 +3793,33 @@ bool RunInheritedProcessTest(
         return false;
     }
 
+    bolt::common::ExecutionJob job;
+    if (bolt::common::ExecutionJob::Create(job) !=
+        bolt::common::JobStatus::kSuccess) {
+        CloseHandle(event_client);
+        CloseHandle(release);
+        return false;
+    }
+    HANDLE exposed_job = nullptr;
+    if (parent_arguments.empty() &&
+        !DuplicateHandle(
+            GetCurrentProcess(), job.handle(), GetCurrentProcess(), &exposed_job,
+            JOB_OBJECT_QUERY | JOB_OBJECT_SET_ATTRIBUTES, TRUE, 0)) {
+        CloseHandle(event_client);
+        CloseHandle(release);
+        return false;
+    }
     const std::wstring command_line = parent_arguments.empty()
                                           ? L"\"" + executable +
                                                 L"\" --inherit-parent " + hook_name +
-                                                L" " + HandleText(policy.handle())
+                                                L" " + HandleText(policy.handle()) +
+                                                L" " + HandleText(exposed_job)
                                           : L"\"" + executable + L"\" " +
                                                 parent_arguments;
     std::vector<HANDLE> inherited = {policy.handle(), event_client, release};
+    if (exposed_job != nullptr) {
+        inherited.push_back(exposed_job);
+    }
     if (parent_exit_probe != nullptr) {
         inherited.push_back(parent_exit_probe->ready);
         inherited.push_back(parent_exit_probe->release);
@@ -3795,10 +3832,8 @@ bool RunInheritedProcessTest(
         executable, command_line, L"", nullptr, inherited.data(),
         inherited.size(), 0};
     bolt::common::SuspendedProcess process;
-    bolt::common::ExecutionJob job;
     const auto initialization_started_at = std::chrono::steady_clock::now();
     const bool initialized =
-        bolt::common::ExecutionJob::Create(job) == bolt::common::JobStatus::kSuccess &&
         bolt::common::SuspendedProcess::Create(options, process) ==
             bolt::common::ProcessStatus::kSuccess &&
         process.AssignTo(job) == bolt::common::ProcessStatus::kSuccess &&
@@ -3808,6 +3843,9 @@ bool RunInheritedProcessTest(
         process.Inject(hook_path.string()) == bolt::common::ProcessStatus::kSuccess &&
         process.BeginHookInitialization() == bolt::common::ProcessStatus::kSuccess;
     const auto initialization_finished_at = std::chrono::steady_clock::now();
+    if (exposed_job != nullptr) {
+        CloseHandle(exposed_job);
+    }
     CloseHandle(event_client);
     std::array<std::uint8_t, bolt::protocol::kReadyFrameLength> ready{};
     DWORD bytes_read = 0;
