@@ -69,6 +69,15 @@ std::vector<std::string> Components(
         std::to_string(process_id), leaf};
 }
 
+std::vector<std::string> Components(
+    const DWORD process_id,
+    const char* const parent,
+    const char* const leaf) {
+    return {
+        "SOFTWARE", "BOLTSANDBOXREGISTRYTESTS",
+        std::to_string(process_id), parent, leaf};
+}
+
 bool ReadExact(
     const HANDLE pipe,
     std::uint8_t* bytes,
@@ -212,7 +221,7 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     const auto inherited_denied = reinterpret_cast<HKEY>(
         static_cast<std::uintptr_t>(_wcstoui64(arguments[3], nullptr, 10)));
     const std::wstring read_only = root + L"\\ReadOnly";
-    const std::wstring denied = root + L"\\Denied";
+    const std::wstring denied = root + L"\\Broad\\Sensitive";
     const std::wstring allowed = root + L"\\Allowed";
     const std::wstring inherited = root + L"\\Inherited";
     const std::wstring outside = root + L"\\Outside";
@@ -225,6 +234,14 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
         ULONG, PULONG);
     const auto nt_create_key = reinterpret_cast<NtCreateKeyFunction>(
         GetProcAddress(ntdll, "NtCreateKey"));
+    using NtDeleteKeyFunction = LONG(NTAPI*)(HANDLE);
+    const auto nt_delete_key = reinterpret_cast<NtDeleteKeyFunction>(
+        GetProcAddress(ntdll, "NtDeleteKey"));
+    using NtDeleteValueKeyFunction = LONG(NTAPI*)(
+        HANDLE, PUNICODE_STRING);
+    const auto nt_delete_value_key =
+        reinterpret_cast<NtDeleteValueKeyFunction>(
+            GetProcAddress(ntdll, "NtDeleteValueKey"));
 
     HKEY read_key = nullptr;
     wchar_t value[16]{};
@@ -334,6 +351,52 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     const LSTATUS inherited_denied_enumerate = RegEnumValueW(
         inherited_denied, 0, inherited_enumerated,
         &inherited_enumerated_length, nullptr, nullptr, nullptr, nullptr);
+    wchar_t denied_value_text[] = L"Seed";
+    UNICODE_STRING denied_value_name{};
+    denied_value_name.Buffer = denied_value_text;
+    denied_value_name.Length = static_cast<USHORT>(
+        std::wcslen(denied_value_text) * sizeof(wchar_t));
+    denied_value_name.MaximumLength = denied_value_name.Length;
+    const LONG inherited_denied_delete_value =
+        nt_delete_value_key == nullptr
+        ? 0
+        : nt_delete_value_key(inherited_denied, &denied_value_name);
+    const LONG inherited_denied_delete_key =
+        nt_delete_key == nullptr ? 0 : nt_delete_key(inherited_denied);
+    wchar_t renamed_denied_text[] = L"RenamedSensitive";
+    UNICODE_STRING renamed_denied_name{};
+    renamed_denied_name.Buffer = renamed_denied_text;
+    renamed_denied_name.Length = static_cast<USHORT>(
+        std::wcslen(renamed_denied_text) * sizeof(wchar_t));
+    renamed_denied_name.MaximumLength = renamed_denied_name.Length;
+    const LONG inherited_denied_rename = nt_rename_key == nullptr
+        ? 0
+        : nt_rename_key(inherited_denied, &renamed_denied_name);
+    HKEY denied_blocked_child = nullptr;
+    DWORD denied_blocked_disposition = 99;
+    wchar_t denied_blocked_child_text[] = L"BlockedChild";
+    UNICODE_STRING denied_blocked_child_name{};
+    denied_blocked_child_name.Buffer = denied_blocked_child_text;
+    denied_blocked_child_name.Length = static_cast<USHORT>(
+        std::wcslen(denied_blocked_child_text) * sizeof(wchar_t));
+    denied_blocked_child_name.MaximumLength =
+        denied_blocked_child_name.Length;
+    OBJECT_ATTRIBUTES denied_blocked_child_attributes{};
+    denied_blocked_child_attributes.Length =
+        sizeof(denied_blocked_child_attributes);
+    denied_blocked_child_attributes.RootDirectory = inherited_denied;
+    denied_blocked_child_attributes.ObjectName =
+        &denied_blocked_child_name;
+    denied_blocked_child_attributes.Attributes = OBJ_CASE_INSENSITIVE;
+    const LONG inherited_denied_create = nt_create_key == nullptr
+        ? 0
+        : nt_create_key(
+              reinterpret_cast<PHANDLE>(&denied_blocked_child),
+              KEY_ALL_ACCESS, &denied_blocked_child_attributes, 0, nullptr,
+              0, &denied_blocked_disposition);
+    if (denied_blocked_child != nullptr) {
+        RegCloseKey(denied_blocked_child);
+    }
 
     HKEY current_user = nullptr;
     const LSTATUS current_user_status =
@@ -437,7 +500,13 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
     }
     if (inherited_denied_query != ERROR_ACCESS_DENIED ||
         inherited_denied_set != ERROR_ACCESS_DENIED ||
-        inherited_denied_enumerate != ERROR_ACCESS_DENIED) {
+        inherited_denied_enumerate != ERROR_ACCESS_DENIED ||
+        inherited_denied_delete_value != static_cast<LONG>(0xC0000022L) ||
+        inherited_denied_delete_key != static_cast<LONG>(0xC0000022L) ||
+        inherited_denied_rename != static_cast<LONG>(0xC0000022L) ||
+        inherited_denied_create != static_cast<LONG>(0xC0000022L) ||
+        denied_blocked_child != nullptr ||
+        denied_blocked_disposition != 99) {
         return 718;
     }
     if (direct_denied_open != static_cast<LONG>(0xC0000022L) ||
@@ -474,7 +543,8 @@ bool RunRegistryHookTests() {
         CreateKeyWithValue(root + L"\\ReadOnly", L"Seed", L"seed") &&
         CreateKeyWithValue(
             root + L"\\ReadOnly\\ExistingChild", L"Seed", L"seed") &&
-        CreateKeyWithValue(root + L"\\Denied", L"Seed", L"secret") &&
+        CreateKeyWithValue(
+            root + L"\\Broad\\Sensitive", L"Seed", L"secret") &&
         CreateKeyWithValue(root + L"\\Allowed", L"Seed", L"seed") &&
         CreateKeyWithValue(root + L"\\Inherited", L"Seed", L"seed") &&
         CreateKeyWithValue(root + L"\\Outside", L"Seed", L"outside");
@@ -484,7 +554,7 @@ bool RunRegistryHookTests() {
     }
     HKEY inherited_denied_handle = nullptr;
     if (RegOpenKeyExW(
-            HKEY_CURRENT_USER, (root + L"\\Denied").c_str(), 0,
+            HKEY_CURRENT_USER, (root + L"\\Broad\\Sensitive").c_str(), 0,
             KEY_ALL_ACCESS, &inherited_denied_handle) != ERROR_SUCCESS ||
         SetHandleInformation(
             inherited_denied_handle, HANDLE_FLAG_INHERIT,
@@ -501,7 +571,10 @@ bool RunRegistryHookTests() {
          Components(process_id, "READONLY")},
         {bolt::tests::RegistryRuleKind::kNoAccess,
          bolt::tests::RegistryHive::kCurrentUser,
-         Components(process_id, "DENIED")},
+         Components(process_id, "BROAD", "SENSITIVE")},
+        {bolt::tests::RegistryRuleKind::kReadWrite,
+         bolt::tests::RegistryHive::kCurrentUser,
+         Components(process_id, "BROAD")},
         {bolt::tests::RegistryRuleKind::kReadWrite,
          bolt::tests::RegistryHive::kCurrentUser,
          Components(process_id, "ALLOWED")},
@@ -614,17 +687,26 @@ bool RunRegistryHookTests() {
         {bolt::protocol::RegistryOperation::kRename,
          CanonicalCurrentUserKey(root + L"\\RenamedReadOnly")},
         {bolt::protocol::RegistryOperation::kOpen,
-         CanonicalCurrentUserKey(root + L"\\Denied")},
+         CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
         {bolt::protocol::RegistryOperation::kOpen,
          CanonicalCurrentUserKey(root + L"\\Outside")},
         {bolt::protocol::RegistryOperation::kQuery,
-         CanonicalCurrentUserKey(root + L"\\Denied")},
+         CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
         {bolt::protocol::RegistryOperation::kSetValue,
-         CanonicalCurrentUserKey(root + L"\\Denied")},
+         CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
         {bolt::protocol::RegistryOperation::kEnumerate,
-         CanonicalCurrentUserKey(root + L"\\Denied")},
+         CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
+        {bolt::protocol::RegistryOperation::kDelete,
+         CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
+        {bolt::protocol::RegistryOperation::kDelete,
+         CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
+        {bolt::protocol::RegistryOperation::kRename,
+         CanonicalCurrentUserKey(root + L"\\Broad\\RenamedSensitive")},
+        {bolt::protocol::RegistryOperation::kCreate,
+         CanonicalCurrentUserKey(
+             root + L"\\Broad\\Sensitive\\BlockedChild")},
         {bolt::protocol::RegistryOperation::kOpen,
-         CanonicalCurrentUserKey(root + L"\\Denied")},
+         CanonicalCurrentUserKey(root + L"\\Broad\\Sensitive")},
     };
     bool events_passed = child_passed && child_process_id != 0;
     for (std::size_t index = 0;
@@ -644,7 +726,10 @@ bool RunRegistryHookTests() {
         ValueEquals(root + L"\\ReadOnly", L"Seed", L"seed") &&
         KeyMissing(root + L"\\ReadOnly\\BlockedChild") &&
         !KeyMissing(root + L"\\ReadOnly") &&
-        ValueEquals(root + L"\\Denied", L"Seed", L"secret") &&
+        ValueEquals(
+            root + L"\\Broad\\Sensitive", L"Seed", L"secret") &&
+        KeyMissing(root + L"\\Broad\\Sensitive\\BlockedChild") &&
+        KeyMissing(root + L"\\Broad\\RenamedSensitive") &&
         ValueEquals(root + L"\\Allowed", L"Changed", L"changed") &&
         KeyMissing(root + L"\\Allowed\\Renamed");
     const bool passed =
