@@ -412,9 +412,12 @@ process outputs, and emits a typed `Breakaway` process violation. Direct
 The initial release supports x64 and x86 on x64 Windows. ARM64 and ARM64EC are a
 separate compatibility milestone.
 
-The descendant adapter duplicates the authenticated policy, event, private
-handshake, and configured network-proxy channel handles into a forcibly
-suspended child. The proxy authentication key and loopback endpoints remain in
+The descendant adapter retains the validated policy bytes and creates a fresh,
+non-inheritable read-only mapping for every child before duplicating that mapping,
+the event channel, private handshake, and configured network-proxy channel
+handles into a forcibly suspended child. It never reuses the publicly inherited
+parent policy-handle value, so closing and replacing that handle cannot alter or
+deny a descendant policy. The proxy authentication key and loopback endpoints remain in
 the integrity-checked runtime payload, so an inherited allow-list policy cannot
 silently degrade to an unproxied channel. It uses a private descendant readiness
 event so the public session has exactly one `Ready` frame, and restores

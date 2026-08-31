@@ -11,6 +11,7 @@
 
 #include <array>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,39 @@ bool g_prepared = false;
 bool g_runtime_configured = false;
 protocol::RuntimePayload g_runtime_payload{};
 std::string g_hook_dll_path;
+std::vector<std::uint8_t> g_policy_payload;
+
+bool CreateReadOnlyPolicyMapping(HANDLE& output) noexcept {
+    output = nullptr;
+    if (g_policy_payload.empty() ||
+        g_policy_payload.size() > (std::numeric_limits<DWORD>::max)()) {
+        return false;
+    }
+    const HANDLE writable = CreateFileMappingW(
+        INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+        static_cast<DWORD>(g_policy_payload.size()), nullptr);
+    if (writable == nullptr) {
+        return false;
+    }
+    void* const view = MapViewOfFile(
+        writable, FILE_MAP_WRITE, 0, 0, g_policy_payload.size());
+    if (view == nullptr) {
+        CloseHandle(writable);
+        return false;
+    }
+    std::memcpy(view, g_policy_payload.data(), g_policy_payload.size());
+    UnmapViewOfFile(view);
+    const BOOL duplicated = DuplicateHandle(
+        GetCurrentProcess(), writable, GetCurrentProcess(), &output,
+        FILE_MAP_READ, FALSE, 0);
+    const DWORD error = duplicated ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(writable);
+    if (!duplicated) {
+        SetLastError(error);
+        return false;
+    }
+    return true;
+}
 
 ProcessArchitecture QueryProcessArchitecture(const HANDLE process) noexcept {
     using IsWow64Process2Function = BOOL(WINAPI*)(HANDLE, USHORT*, USHORT*);
@@ -333,6 +367,7 @@ bool InstallDescendantRuntime(
         return false;
     }
 
+    HANDLE local_policy = nullptr;
     HANDLE remote_policy = nullptr;
     HANDLE remote_event = nullptr;
     HANDLE remote_ready = nullptr;
@@ -343,9 +378,9 @@ bool InstallDescendantRuntime(
         g_runtime_payload.dns_request_handle != 0 &&
         g_runtime_payload.dns_response_handle != 0;
     const bool duplicated =
+        CreateReadOnlyPolicyMapping(local_policy) &&
         DuplicateIntoProcess(
-            process_information->hProcess,
-            HandleFromWire(g_runtime_payload.policy_handle), remote_policy) &&
+            process_information->hProcess, local_policy, remote_policy) &&
         DuplicateIntoProcess(
             process_information->hProcess,
             HandleFromWire(g_runtime_payload.event_handle), remote_event) &&
@@ -360,11 +395,14 @@ bool InstallDescendantRuntime(
               process_information->hProcess,
               HandleFromWire(g_runtime_payload.dns_response_handle),
               remote_dns_response)));
+    const DWORD duplication_error = duplicated ? ERROR_SUCCESS : GetLastError();
+    if (local_policy != nullptr) {
+        CloseHandle(local_policy);
+    }
     if (!duplicated) {
-        const DWORD error = GetLastError();
         CloseHandle(ready);
         CloseHandle(release);
-        SetLastError(error);
+        SetLastError(duplication_error);
         return false;
     }
 
@@ -994,6 +1032,11 @@ ProcessHookPrepareStatus PrepareProcessHooks(
     }
     g_child_process_policy =
         static_cast<ChildProcessPolicy>(encoded_policy);
+    try {
+        g_policy_payload.assign(policy_payload, policy_payload + policy_length);
+    } catch (...) {
+        return ProcessHookPrepareStatus::kInvalidPolicy;
+    }
     g_prepared = true;
     return ProcessHookPrepareStatus::kSuccess;
 }
