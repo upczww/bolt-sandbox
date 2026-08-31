@@ -260,6 +260,38 @@ bool CreateDualLoopbackListeners(
     return true;
 }
 
+bool PipeHasNoNetworkEvents(const HANDLE pipe) {
+    constexpr std::uint16_t network_violation_kind = 4;
+    for (;;) {
+        std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
+        DWORD first_read = 0;
+        if (!ReadFile(
+                pipe, header.data(), static_cast<DWORD>(header.size()),
+                &first_read, nullptr)) {
+            return GetLastError() == ERROR_BROKEN_PIPE;
+        }
+        if (first_read == 0) {
+            return true;
+        }
+        if (first_read != header.size()) {
+            return false;
+        }
+        const std::uint16_t kind =
+            static_cast<std::uint16_t>(header[6]) |
+            static_cast<std::uint16_t>(header[7]) << 8U;
+        const std::size_t payload_length =
+            static_cast<std::size_t>(header[8]) |
+            static_cast<std::size_t>(header[9]) << 8U |
+            static_cast<std::size_t>(header[10]) << 16U |
+            static_cast<std::size_t>(header[11]) << 24U;
+        std::vector<std::uint8_t> payload(payload_length);
+        if (!ReadExact(pipe, payload.data(), payload.size()) ||
+            kind == network_violation_kind) {
+            return false;
+        }
+    }
+}
+
 SOCKET AcceptEitherWithTimeout(
     const SOCKET ipv4_listener,
     const SOCKET ipv6_listener,
@@ -713,6 +745,102 @@ int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
     return events_flushed ? 0 : 204;
 }
 
+int RunNetworkUnrestrictedChild(
+    const int argument_count,
+    wchar_t** arguments) {
+    if (argument_count != 4) {
+        return 500;
+    }
+    WSADATA winsock{};
+    if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
+        return 501;
+    }
+    const auto connect_family = [](const std::uint16_t port, const int family) {
+        const SOCKET client = socket(family, SOCK_STREAM, IPPROTO_TCP);
+        if (client == INVALID_SOCKET) {
+            return WSAGetLastError();
+        }
+        int connected = SOCKET_ERROR;
+        if (family == AF_INET) {
+            sockaddr_in endpoint{};
+            endpoint.sin_family = AF_INET;
+            endpoint.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            endpoint.sin_port = htons(port);
+            connected = connect(
+                client, reinterpret_cast<const sockaddr*>(&endpoint),
+                sizeof(endpoint));
+        } else {
+            sockaddr_in6 endpoint{};
+            endpoint.sin6_family = AF_INET6;
+            endpoint.sin6_addr = in6addr_loopback;
+            endpoint.sin6_port = htons(port);
+            connected = connect(
+                client, reinterpret_cast<const sockaddr*>(&endpoint),
+                sizeof(endpoint));
+        }
+        const int error = connected == 0 ? 0 : WSAGetLastError();
+        if (client != INVALID_SOCKET) {
+            closesocket(client);
+        }
+        return error;
+    };
+    const auto ipv4_port = static_cast<std::uint16_t>(_wtoi(arguments[2]));
+    const auto ipv6_port = static_cast<std::uint16_t>(_wtoi(arguments[3]));
+    const int ipv4_error =
+        connect_family(ipv4_port, AF_INET);
+    const int ipv6_error =
+        connect_family(ipv6_port, AF_INET6);
+    ADDRINFOA* synchronous_results = nullptr;
+    const bool synchronous_resolved =
+        getaddrinfo("localhost", nullptr, nullptr, &synchronous_results) == 0 &&
+        synchronous_results != nullptr;
+    if (synchronous_results != nullptr) {
+        freeaddrinfo(synchronous_results);
+    }
+
+    ADDRINFOEXW hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    ADDRINFOEXW* asynchronous_results = nullptr;
+    const HANDLE completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    OVERLAPPED overlapped{};
+    overlapped.hEvent = completed;
+    HANDLE cancellation = nullptr;
+    const int started = GetAddrInfoExW(
+        L"localhost", nullptr, NS_DNS, nullptr, &hints,
+        &asynchronous_results, nullptr, &overlapped, nullptr, &cancellation);
+    const bool asynchronous_resolved =
+        (started == 0 ||
+         (started == WSA_IO_PENDING && completed != nullptr &&
+          WaitForSingleObject(completed, 5'000) == WAIT_OBJECT_0 &&
+          GetAddrInfoExOverlappedResult(&overlapped) == 0)) &&
+        asynchronous_results != nullptr;
+    if (asynchronous_results != nullptr) {
+        FreeAddrInfoExW(asynchronous_results);
+    }
+    if (completed != nullptr) {
+        CloseHandle(completed);
+    }
+    if (ipv4_error != 0 || ipv6_error != 0 || !asynchronous_resolved) {
+        std::fprintf(
+            stderr,
+            "unrestricted child failed: ipv4=%d ipv6=%d async=%d start=%d wsa=%d\n",
+            ipv4_error == 0 ? 1 : 0, ipv6_error == 0 ? 1 : 0,
+            asynchronous_resolved ? 1 : 0, started, WSAGetLastError());
+    }
+    WSACleanup();
+    if (ipv4_error != 0) {
+        return 10'000 + ipv4_error;
+    }
+    if (ipv6_error != 0) {
+        return 20'000 + ipv6_error;
+    }
+    if (!synchronous_resolved) {
+        return 506;
+    }
+    return asynchronous_resolved ? 0 : 505;
+}
+
 bool RunNetworkHookTests() {
     const std::wstring executable = CurrentExecutable();
     if (executable.empty()) {
@@ -862,6 +990,132 @@ bool RunNetworkHookTests() {
             high_level_events_ok ? "valid" : "invalid");
     }
     return child_ok && high_level_events_ok;
+}
+
+bool RunNetworkUnrestrictedTests() {
+    WSADATA winsock{};
+    if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
+        return false;
+    }
+    SOCKET ipv4_listener = INVALID_SOCKET;
+    SOCKET ipv6_listener = INVALID_SOCKET;
+    std::uint16_t port = 0;
+    if (!CreateDualLoopbackListeners(
+            ipv4_listener, ipv6_listener, port)) {
+        WSACleanup();
+        return false;
+    }
+    const std::wstring executable = CurrentExecutable();
+#if defined(_WIN64)
+    constexpr auto hook_name = L"bolt-sandbox-x64.dll";
+#else
+    constexpr auto hook_name = L"bolt-sandbox-x86.dll";
+#endif
+    const auto hook_path =
+        std::filesystem::path(executable).parent_path() / hook_name;
+    const auto payload = bolt::tests::SealPolicy(
+        {{bolt::tests::FilesystemRuleKind::kReadOnly,
+          std::filesystem::path(executable).root_path()}},
+        bolt::tests::ChildProcessPolicyKind::kDeny,
+        bolt::tests::NetworkPolicyKind::kUnrestricted);
+    constexpr std::array<std::uint8_t, 16> nonce = {
+        0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
+        0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
+    };
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE release = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    bolt::common::ImmutablePolicyMapping policy;
+    bolt::common::PrivatePipe event_pipe;
+    const std::wstring pipe_name =
+        PipeName(GetCurrentProcessId() ^ 0x5500'0001U);
+    if (release == nullptr || payload.empty() ||
+        bolt::common::ImmutablePolicyMapping::Create(
+            payload.data(), payload.size(), policy) !=
+            bolt::common::PolicyMappingStatus::kSuccess ||
+        bolt::common::PrivatePipe::Create(pipe_name, event_pipe) !=
+            bolt::common::PipeStatus::kSuccess) {
+        return false;
+    }
+    HANDLE event_client = CreateFileW(
+        pipe_name.c_str(), FILE_WRITE_DATA, 0, &inheritable, OPEN_EXISTING, 0,
+        nullptr);
+    if (event_client == INVALID_HANDLE_VALUE ||
+        event_pipe.Accept() != bolt::common::PipeStatus::kSuccess) {
+        return false;
+    }
+    std::wstring command =
+        L"\"" + executable + L"\" --network-unrestricted-child " +
+        std::to_wstring(port) + L" " + std::to_wstring(port);
+    const HANDLE inherited[] = {policy.handle(), event_client, release};
+    const bolt::common::ProcessLaunchOptions options{
+        executable, command, L"", nullptr, inherited, std::size(inherited), 0};
+    bolt::common::SuspendedProcess process;
+    bolt::common::ExecutionJob job;
+    const bool initialized =
+        bolt::common::ExecutionJob::Create(job) ==
+            bolt::common::JobStatus::kSuccess &&
+        bolt::common::SuspendedProcess::Create(options, process) ==
+            bolt::common::ProcessStatus::kSuccess &&
+        process.AssignTo(job) == bolt::common::ProcessStatus::kSuccess &&
+        process.InstallRuntimePayload(
+            policy.handle(), policy.length(), event_client, release, nonce) ==
+            bolt::common::ProcessStatus::kSuccess &&
+        process.Inject(hook_path.string()) ==
+            bolt::common::ProcessStatus::kSuccess &&
+        process.BeginHookInitialization() ==
+            bolt::common::ProcessStatus::kSuccess;
+    CloseHandle(event_client);
+    std::array<std::uint8_t, bolt::protocol::kReadyFrameLength> ready{};
+    DWORD bytes_read = 0;
+    const bool ready_ok =
+        initialized &&
+        ReadFile(
+            event_pipe.handle(), ready.data(), static_cast<DWORD>(ready.size()),
+            &bytes_read, nullptr) != FALSE &&
+        bytes_read == ready.size() &&
+        bolt::protocol::ValidateReadyFrame(
+            ready.data(), ready.size(), nonce) ==
+            bolt::protocol::ReadyFrameStatus::kSuccess &&
+        process.ReleaseAfterReady() == bolt::common::ProcessStatus::kSuccess;
+    const SOCKET ipv4_accepted = ready_ok
+                                     ? AcceptWithTimeout(ipv4_listener, 3'000)
+                                     : INVALID_SOCKET;
+    const SOCKET ipv6_accepted = ready_ok
+                                     ? AcceptWithTimeout(ipv6_listener, 3'000)
+                                     : INVALID_SOCKET;
+    const bool waited =
+        ready_ok &&
+        process.Wait(5'000) == bolt::common::ProcessStatus::kSuccess;
+    DWORD exit_code = 0;
+    const bool passed =
+        waited && process.ExitCode(exit_code) ==
+                      bolt::common::ProcessStatus::kSuccess &&
+        exit_code == 0 && ipv4_accepted != INVALID_SOCKET &&
+        ipv6_accepted != INVALID_SOCKET &&
+        PipeHasNoNetworkEvents(event_pipe.handle());
+    if (!passed) {
+        std::fprintf(
+            stderr,
+            "unrestricted fixture failed: ready=%d waited=%d exit=%lu ipv4=%d ipv6=%d no_events=%d\n",
+            ready_ok ? 1 : 0, waited ? 1 : 0,
+            static_cast<unsigned long>(exit_code),
+            ipv4_accepted != INVALID_SOCKET ? 1 : 0,
+            ipv6_accepted != INVALID_SOCKET ? 1 : 0,
+            PipeHasNoNetworkEvents(event_pipe.handle()) ? 1 : 0);
+    }
+    if (ipv4_accepted != INVALID_SOCKET) {
+        closesocket(ipv4_accepted);
+    }
+    if (ipv6_accepted != INVALID_SOCKET) {
+        closesocket(ipv6_accepted);
+    }
+    closesocket(ipv4_listener);
+    closesocket(ipv6_listener);
+    CloseHandle(release);
+    WSACleanup();
+    return passed;
 }
 
 int RunNetworkAllowListChild(const int argument_count, wchar_t** arguments) {

@@ -17,6 +17,7 @@
 #include "hook/network/socket_target_table.h"
 #include "hook/network/tcp_proxy_client.h"
 #include "protocol/runtime_payload.h"
+#include "DetouredScope.h"
 
 #include <cstring>
 #include <algorithm>
@@ -60,6 +61,11 @@ std::unique_ptr<NetworkPolicy> g_policy;
 std::unique_ptr<DnsBindingTable> g_dns_bindings;
 std::unique_ptr<DnsProxyClientChannel> g_dns_channel;
 std::unique_ptr<SocketTargetTable> g_socket_targets;
+decltype(&socket) g_socket = socket;
+decltype(&WSASocketW) g_wsa_socket_w = WSASocketW;
+using WsaSocketAFunction = SOCKET(WSAAPI*)(
+    int, int, int, LPWSAPROTOCOL_INFOA, GROUP, DWORD);
+WsaSocketAFunction g_wsa_socket_a = nullptr;
 std::array<std::uint8_t, 16> g_dns_session_id{};
 protocol::DnsProxySession g_tcp_proxy_session{};
 std::uint16_t g_tcp_proxy_port = 0;
@@ -87,6 +93,50 @@ class TcpProxyLock final {
     TcpProxyLock(const TcpProxyLock&) = delete;
     TcpProxyLock& operator=(const TcpProxyLock&) = delete;
 };
+
+SOCKET WSAAPI DetouredSocket(
+    const int address_family,
+    const int type,
+    const int protocol) noexcept {
+    DetouredScope scope;
+    return g_socket(address_family, type, protocol);
+}
+
+SOCKET WSAAPI DetouredWsaSocketW(
+    const int address_family,
+    const int type,
+    const int protocol,
+    const LPWSAPROTOCOL_INFOW protocol_information,
+    const GROUP group,
+    const DWORD flags) noexcept {
+    DetouredScope scope;
+    return g_wsa_socket_w(
+        address_family, type, protocol, protocol_information, group, flags);
+}
+
+SOCKET WSAAPI DetouredWsaSocketA(
+    const int address_family,
+    const int type,
+    const int protocol,
+    const LPWSAPROTOCOL_INFOA protocol_information,
+    const GROUP group,
+    const DWORD flags) noexcept {
+    DetouredScope scope;
+    return g_wsa_socket_a(
+        address_family, type, protocol, protocol_information, group, flags);
+}
+
+bool AttachSocketCreationHooks() noexcept {
+    return DetourAttach(
+               reinterpret_cast<PVOID*>(&g_socket),
+               reinterpret_cast<PVOID>(DetouredSocket)) == NO_ERROR &&
+           DetourAttach(
+               reinterpret_cast<PVOID*>(&g_wsa_socket_w),
+               reinterpret_cast<PVOID>(DetouredWsaSocketW)) == NO_ERROR &&
+           DetourAttach(
+               reinterpret_cast<PVOID*>(&g_wsa_socket_a),
+               reinterpret_cast<PVOID>(DetouredWsaSocketA)) == NO_ERROR;
+}
 
 class HighLevelDnsSharedLock final {
   public:
@@ -1585,12 +1635,24 @@ HookInstallStatus InstallNetworkHooks(
     if (g_policy != nullptr) {
         return HookInstallStatus::kTransactionFailed;
     }
+    g_wsa_socket_a = reinterpret_cast<WsaSocketAFunction>(
+        GetProcAddress(GetModuleHandleW(L"ws2_32.dll"), "WSASocketA"));
+    if (g_wsa_socket_a == nullptr) {
+        return HookInstallStatus::kTransactionFailed;
+    }
     std::unique_ptr<NetworkPolicy> policy;
     if (NetworkPolicy::Load(policy_payload, policy_length, policy) !=
         PolicyLoadStatus::kValid) {
         return HookInstallStatus::kInvalidPolicy;
     }
     if (policy->mode() == Mode::kUnrestricted) {
+        if (DetourTransactionBegin() != NO_ERROR ||
+            DetourUpdateThread(GetCurrentThread()) != NO_ERROR ||
+            !AttachSocketCreationHooks() ||
+            DetourTransactionCommit() != NO_ERROR) {
+            DetourTransactionAbort();
+            return HookInstallStatus::kTransactionFailed;
+        }
         g_policy = std::move(policy);
         return HookInstallStatus::kSuccess;
     }
@@ -1631,6 +1693,7 @@ HookInstallStatus InstallNetworkHooks(
     }
     if (DetourTransactionBegin() != NO_ERROR ||
         DetourUpdateThread(GetCurrentThread()) != NO_ERROR ||
+        !AttachSocketCreationHooks() ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_connect),
             reinterpret_cast<PVOID>(DetouredConnect)) != NO_ERROR ||

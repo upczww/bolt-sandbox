@@ -41,6 +41,8 @@ bool RunFilesystemRaceTests();
 bool RunShellFileOperationTests();
 bool RunNetworkPolicyTests();
 bool RunNetworkHookTests();
+bool RunNetworkUnrestrictedTests();
+int RunNetworkUnrestrictedChild(int argument_count, wchar_t** arguments);
 bool RunDnsBindingTests();
 bool RunDnsProxyProtocolTests();
 bool RunTcpProxyProtocolTests();
@@ -331,8 +333,16 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count >= 2 && std::wstring(arguments[1]) == L"--network-hook-child") {
         return RunNetworkHookChild(argument_count, arguments);
     }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--network-unrestricted-child") {
+        return RunNetworkUnrestrictedChild(argument_count, arguments);
+    }
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--network-hook-tests") {
         return RunNetworkHookTests() ? 0 : 1;
+    }
+    if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--network-unrestricted-tests") {
+        return RunNetworkUnrestrictedTests() ? 0 : 1;
     }
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--dns-binding-tests") {
         return RunDnsBindingTests() ? 0 : 1;
@@ -506,6 +516,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunNetworkHookTests()) {
         return 17;
+    }
+    if (!RunNetworkUnrestrictedTests()) {
+        return 41;
     }
     if (!RunDnsBindingTests()) {
         return 18;

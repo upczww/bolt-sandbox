@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "cases": [
-    {"id":"NET-001","status":"gap","reason":"Unrestricted mode now takes the no-hook fast path, but no dual-stack loopback fixture proves native IPv4/IPv6 connections and absence of violations."},
-    {"id":"NET-002","status":"gap","reason":"No unrestricted sync/async DNS fixture compares normal OS behavior and confirms no network violation."},
+    {"id":"NET-001","status":"covered","evidence":[{"file":"native/tests/network_hook_tests.cpp","anchor":"RunNetworkUnrestrictedTests("},{"file":"native/tests/network_hook_tests.cpp","anchor":"ipv4_accepted != INVALID_SOCKET"},{"file":"native/tests/network_hook_tests.cpp","anchor":"ipv6_accepted != INVALID_SOCKET"}]},
+    {"id":"NET-002","status":"covered","evidence":[{"file":"native/tests/network_hook_tests.cpp","anchor":"synchronous_resolved"},{"file":"native/tests/network_hook_tests.cpp","anchor":"asynchronous_resolved"},{"file":"native/tests/network_hook_tests.cpp","anchor":"PipeHasNoNetworkEvents("}]},
     {"id":"NET-003","status":"covered","evidence":[{"file":"native/tests/network_hook_tests.cpp","anchor":"connect_error == WSAEACCES"},{"file":"native/tests/network_hook_tests.cpp","anchor":"connect_ex_result == FALSE"}]},
     {"id":"NET-004","status":"covered","evidence":[{"file":"native/tests/network_hook_tests.cpp","anchor":"send_to_status == SOCKET_ERROR"},{"file":"native/tests/network_hook_tests.cpp","anchor":"wsa_send_to_status == SOCKET_ERROR"}]},
     {"id":"NET-005","status":"covered","evidence":[{"file":"native/tests/network_hook_tests.cpp","anchor":"asynchronous_resolution_passed"},{"file":"native/tests/network_hook_tests.cpp","anchor":"dns_query_ex_passed"}]},

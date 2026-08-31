@@ -6,8 +6,8 @@
   "target_milliseconds": 100,
   "samples": {
     "x64": {
-      "cold": 28,
-      "warm": [26, 26, 26, 28, 26],
+      "cold": 30,
+      "warm": [27, 28, 26, 26, 26],
       "warm_max": 28
     },
     "x86": {

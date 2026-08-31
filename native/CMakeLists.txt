@@ -193,6 +193,7 @@ add_library(bolt-sandbox-network STATIC
 bolt_native_warnings(bolt-sandbox-network)
 target_include_directories(bolt-sandbox-network PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(bolt-sandbox-network PRIVATE
+    bolt-sandbox-buildxl
     bolt-sandbox-common
     bolt-sandbox-detours
     bolt-sandbox-protocol
