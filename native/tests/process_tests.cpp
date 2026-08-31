@@ -2660,7 +2660,7 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
 }
 
 int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
-    if (argument_count != 3 && argument_count != 4) {
+    if (argument_count != 3 && argument_count != 4 && argument_count != 5) {
         return 220;
     }
     const HMODULE hook = GetModuleHandleW(arguments[2]);
@@ -2703,6 +2703,19 @@ int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
             _wcstoui64(arguments[3], nullptr, 10));
         if (!SetEvent(entered)) {
             return 226;
+        }
+    }
+    if (argument_count == 5) {
+        const DWORD required = GetEnvironmentVariableW(arguments[3], nullptr, 0);
+        if (required == 0) {
+            return 327;
+        }
+        std::vector<wchar_t> value(required);
+        const DWORD written = GetEnvironmentVariableW(
+            arguments[3], value.data(), static_cast<DWORD>(value.size()));
+        if (written + 1 != required || std::wstring_view(value.data(), written) !=
+                                           std::wstring_view(arguments[4])) {
+            return 327;
         }
     }
     return 0;
