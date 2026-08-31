@@ -27,6 +27,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <objbase.h>
 #include <winioctl.h>
 #include <winternl.h>
 #include <shellapi.h>
@@ -3363,35 +3364,61 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
     if (system_length == 0 || system_length >= system_directory.size()) {
         return 321;
     }
-    for (const wchar_t* broker_name : {L"schtasks.exe", L"sc.exe"}) {
+    for (const wchar_t* broker_name : {
+             L"schtasks.exe", L"sc.exe", L"wmic.exe", L"at.exe"}) {
         const auto broker =
             std::filesystem::path(system_directory.data()) / broker_name;
-        if (!std::filesystem::is_regular_file(broker)) {
-            return 322;
+        for (const bool include_command_line : {true, false}) {
+            std::wstring broker_command =
+                L"\"" + broker.wstring() + L"\" /?";
+            STARTUPINFOW broker_startup{};
+            broker_startup.cb = sizeof(broker_startup);
+            PROCESS_INFORMATION broker_process{
+                INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 1, 1};
+            SetLastError(ERROR_SUCCESS);
+            const BOOL broker_created = CreateProcessW(
+                broker.c_str(),
+                include_command_line ? broker_command.data() : nullptr,
+                nullptr, nullptr, FALSE, 0, nullptr, nullptr, &broker_startup,
+                &broker_process);
+            const DWORD broker_error = GetLastError();
+            if (broker_created) {
+                TerminateProcess(broker_process.hProcess, 323);
+                WaitForSingleObject(broker_process.hProcess, 5'000);
+                CloseHandle(broker_process.hThread);
+                CloseHandle(broker_process.hProcess);
+                return 323;
+            }
+            if (broker_error != ERROR_ACCESS_DENIED ||
+                broker_process.hProcess != nullptr ||
+                broker_process.hThread != nullptr ||
+                broker_process.dwProcessId != 0 ||
+                broker_process.dwThreadId != 0) {
+                return 324;
+            }
         }
-        std::wstring broker_command = L"\"" + broker.wstring() + L"\" /?";
-        STARTUPINFOW broker_startup{};
-        broker_startup.cb = sizeof(broker_startup);
-        PROCESS_INFORMATION broker_process{
-            INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 1, 1};
-        SetLastError(ERROR_SUCCESS);
-        const BOOL broker_created = CreateProcessW(
-            broker.c_str(), broker_command.data(), nullptr, nullptr, FALSE, 0,
-            nullptr, nullptr, &broker_startup, &broker_process);
-        const DWORD broker_error = GetLastError();
-        if (broker_created) {
-            TerminateProcess(broker_process.hProcess, 323);
-            WaitForSingleObject(broker_process.hProcess, 5'000);
-            CloseHandle(broker_process.hThread);
-            CloseHandle(broker_process.hProcess);
-            return 323;
-        }
-        if (broker_error != ERROR_ACCESS_DENIED ||
-            broker_process.hProcess != nullptr ||
-            broker_process.hThread != nullptr || broker_process.dwProcessId != 0 ||
-            broker_process.dwThreadId != 0) {
-            return 324;
-        }
+    }
+    void* local_server = nullptr;
+    const HRESULT local_server_status = CoCreateInstance(
+        CLSID_NULL, nullptr, CLSCTX_LOCAL_SERVER, IID_IUnknown, &local_server);
+    void* class_factory = nullptr;
+    const HRESULT class_factory_status = CoGetClassObject(
+        CLSID_NULL, CLSCTX_LOCAL_SERVER, nullptr, IID_IUnknown,
+        &class_factory);
+    COSERVERINFO remote_server{};
+    remote_server.pwszName = const_cast<wchar_t*>(L"localhost");
+    MULTI_QI remote_query{};
+    remote_query.pIID = &IID_IUnknown;
+    remote_query.pItf = nullptr;
+    remote_query.hr = E_PENDING;
+    const HRESULT remote_server_status = CoCreateInstanceEx(
+        CLSID_NULL, nullptr, CLSCTX_REMOTE_SERVER, &remote_server, 1,
+        &remote_query);
+    if (local_server_status != E_ACCESSDENIED || local_server != nullptr ||
+        class_factory_status != E_ACCESSDENIED || class_factory != nullptr ||
+        remote_server_status != E_ACCESSDENIED ||
+        remote_query.pItf != nullptr || remote_query.hr != E_ACCESSDENIED) {
+        return 349;
     }
     constexpr std::array<DWORD, 3> confined_flag_families = {
         DETACHED_PROCESS,
@@ -4091,14 +4118,16 @@ bool RunInheritedProcessTest(
          ReadChildInjectionFailure(
              event_pipe.handle(), parent_process_id,
              injection_failure_probe->reason));
-    const bool external_delegation_events_ok =
-        !parent_arguments.empty() ||
-        (ReadProcessViolation(
-             event_pipe.handle(), parent_process_id,
-             external_delegation_operation, 11) &&
-         ReadProcessViolation(
-             event_pipe.handle(), parent_process_id,
-             external_delegation_operation, 12));
+    bool external_delegation_events_ok = true;
+    if (parent_arguments.empty()) {
+        for (std::uint64_t sequence = 11; sequence <= 21; ++sequence) {
+            external_delegation_events_ok =
+                external_delegation_events_ok &&
+                ReadProcessViolation(
+                    event_pipe.handle(), parent_process_id,
+                    external_delegation_operation, sequence);
+        }
+    }
     DWORD exit_code = 0;
     const auto exit_status = process.ExitCode(exit_code);
     const bool passed = ready_ok && parent_exit_descendant_ok &&
