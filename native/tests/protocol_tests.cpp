@@ -44,6 +44,8 @@ bool RunHttpConnectPolicyTests();
 bool RunNetworkHookTests();
 bool RunNetworkUnrestrictedTests();
 bool RunNetworkEventSaturationTests();
+bool RunNetworkStartupHandleTests();
+int RunNetworkStartupHandleChild(int argument_count, wchar_t** arguments);
 int RunNetworkUnrestrictedChild(int argument_count, wchar_t** arguments);
 bool RunDnsBindingTests();
 bool RunDnsRecordParserTests();
@@ -354,6 +356,14 @@ int wmain(const int argument_count, wchar_t** arguments) {
         return RunNetworkEventSaturationTests() ? 0 : 1;
     }
     if (argument_count == 2 &&
+        std::wstring(arguments[1]) == L"--network-startup-handle-tests") {
+        return RunNetworkStartupHandleTests() ? 0 : 1;
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--network-startup-handle-child") {
+        return RunNetworkStartupHandleChild(argument_count, arguments);
+    }
+    if (argument_count == 2 &&
         std::wstring(arguments[1]) == L"--network-unrestricted-tests") {
         return RunNetworkUnrestrictedTests() ? 0 : 1;
     }
@@ -613,6 +623,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunNetworkEventSaturationTests()) {
         return 42;
+    }
+    if (!RunNetworkStartupHandleTests()) {
+        return 46;
     }
     return 0;
 }

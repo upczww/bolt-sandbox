@@ -273,6 +273,12 @@ Responsibilities:
 The launcher must not parse agent prompts, settings files, or application
 configuration.
 
+Target creation always uses `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`; the global
+inheritable bit alone never grants a handle to the target. The list contains
+only validated policy, event, release, and configured proxy-channel handles.
+Ambient files and preconnected sockets are excluded before the suspended image
+can execute user code.
+
 The Rust startup coordinator permits only this action order: create suspended,
 assign the target to the execution Job, inject the architecture-matched hook,
 await authenticated `Ready`, then resume. A callback cannot skip or reorder a
