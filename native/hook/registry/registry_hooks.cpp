@@ -1,5 +1,6 @@
 #include "hook/registry/registry_hooks.h"
 
+#include "hook/event_sink.h"
 #include "hook/registry/registry_policy.h"
 
 #include <algorithm>
@@ -68,6 +69,7 @@ NtRenameKeyFunction g_nt_rename_key = nullptr;
 NtCloseFunction g_nt_close = nullptr;
 std::unique_ptr<RegistryPolicy> g_policy;
 std::wstring g_current_user_prefix;
+std::wstring g_current_user_classes_prefix;
 std::wstring g_active_control_set;
 
 bool NtSuccess(const NTSTATUS status) noexcept {
@@ -307,6 +309,19 @@ bool MapNativeName(
     std::wstring& relative) {
     static const std::wstring machine = L"\\REGISTRY\\MACHINE";
     static const std::wstring users = L"\\REGISTRY\\USER";
+    if (!g_current_user_classes_prefix.empty() &&
+        EqualPrefixIgnoreCase(native_name, g_current_user_classes_prefix) &&
+        (native_name.size() == g_current_user_classes_prefix.size() ||
+         native_name[g_current_user_classes_prefix.size()] == L'\\')) {
+        hive = RegistryHive::kCurrentUser;
+        relative = L"Software\\Classes";
+        if (native_name.size() > g_current_user_classes_prefix.size()) {
+            relative.push_back(L'\\');
+            relative.append(
+                native_name.substr(g_current_user_classes_prefix.size() + 1));
+        }
+        return true;
+    }
     if (!g_current_user_prefix.empty() &&
         EqualPrefixIgnoreCase(native_name, g_current_user_prefix) &&
         (native_name.size() == g_current_user_prefix.size() ||
@@ -401,11 +416,83 @@ bool AllowedHandle(const HANDLE key, const RegistryAccess access) {
     return QueryHandleName(key, name) && AllowedNativeName(name, access);
 }
 
+const wchar_t* HiveName(const RegistryHive hive) noexcept {
+    switch (hive) {
+        case RegistryHive::kClassesRoot:
+            return L"HKEY_CLASSES_ROOT";
+        case RegistryHive::kCurrentUser:
+            return L"HKEY_CURRENT_USER";
+        case RegistryHive::kLocalMachine:
+            return L"HKEY_LOCAL_MACHINE";
+        case RegistryHive::kUsers:
+            return L"HKEY_USERS";
+        case RegistryHive::kCurrentConfig:
+            return L"HKEY_CURRENT_CONFIG";
+    }
+    return nullptr;
+}
+
+bool CanonicalEventKey(
+    const std::wstring& native_name,
+    std::string& encoded) {
+    encoded.clear();
+    RegistryHive hive{};
+    std::wstring relative;
+    if (!MapNativeName(native_name, hive, relative)) {
+        return false;
+    }
+    const wchar_t* const hive_name = HiveName(hive);
+    if (hive_name == nullptr) {
+        return false;
+    }
+    std::wstring canonical(hive_name);
+    if (!relative.empty()) {
+        canonical.push_back(L'\\');
+        canonical.append(relative);
+    }
+    const int required = WideCharToMultiByte(
+        CP_UTF8, WC_ERR_INVALID_CHARS, canonical.data(),
+        static_cast<int>(canonical.size()), nullptr, 0, nullptr, nullptr);
+    if (required <= 0 || required > 4'096) {
+        return false;
+    }
+    encoded.resize(static_cast<std::size_t>(required));
+    return WideCharToMultiByte(
+               CP_UTF8, WC_ERR_INVALID_CHARS, canonical.data(),
+               static_cast<int>(canonical.size()), encoded.data(), required,
+               nullptr, nullptr) == required;
+}
+
+void ReportRegistryViolation(
+    const std::wstring& native_name,
+    const protocol::RegistryOperation operation) noexcept {
+    try {
+        std::string key;
+        if (CanonicalEventKey(native_name, key)) {
+            hook::TryReportRegistryViolation(operation, key.c_str());
+        }
+    } catch (...) {
+    }
+}
+
+void ReportHandleViolation(
+    const HANDLE key,
+    const protocol::RegistryOperation operation) noexcept {
+    try {
+        std::wstring name;
+        if (QueryHandleName(key, name)) {
+            ReportRegistryViolation(name, operation);
+        }
+    } catch (...) {
+    }
+}
+
 template <typename OpenCall>
 NTSTATUS GuardOpen(
     PHANDLE key,
     const ACCESS_MASK desired_access,
     const OBJECT_ATTRIBUTES* attributes,
+    const protocol::RegistryOperation operation,
     OpenCall&& call) {
     std::wstring requested;
     const RegistryAccess access = AccessForMask(desired_access);
@@ -415,11 +502,13 @@ NTSTATUS GuardOpen(
     }
     RegistryDecision requested_decision = RegistryDecision::kDeny;
     if (!DecideNativeName(requested, access, requested_decision)) {
+        ReportRegistryViolation(requested, operation);
         WriteNullHandle(key);
         return kStatusAccessDenied;
     }
     if (requested_decision == RegistryDecision::kDeny &&
         !AllowedNativeOpen(requested, access)) {
+        ReportRegistryViolation(requested, operation);
         WriteNullHandle(key);
         return kStatusAccessDenied;
     }
@@ -438,6 +527,8 @@ NTSTATUS GuardOpen(
     }
     g_nt_close(opened);
     WriteNullHandle(key);
+    ReportRegistryViolation(
+        final_name.empty() ? requested : final_name, operation);
     return kStatusAccessDenied;
 }
 
@@ -445,9 +536,11 @@ NTSTATUS NTAPI DetouredNtOpenKey(
     PHANDLE key,
     const ACCESS_MASK desired_access,
     POBJECT_ATTRIBUTES attributes) {
-    return GuardOpen(key, desired_access, attributes, [&] {
+    return GuardOpen(
+        key, desired_access, attributes, protocol::RegistryOperation::kOpen,
+        [&] {
         return g_nt_open_key(key, desired_access, attributes);
-    });
+        });
 }
 
 NTSTATUS NTAPI DetouredNtOpenKeyEx(
@@ -455,10 +548,12 @@ NTSTATUS NTAPI DetouredNtOpenKeyEx(
     const ACCESS_MASK desired_access,
     POBJECT_ATTRIBUTES attributes,
     const ULONG open_options) {
-    return GuardOpen(key, desired_access, attributes, [&] {
+    return GuardOpen(
+        key, desired_access, attributes, protocol::RegistryOperation::kOpen,
+        [&] {
         return g_nt_open_key_ex(
             key, desired_access, attributes, open_options);
-    });
+        });
 }
 
 NTSTATUS NTAPI DetouredNtCreateKey(
@@ -469,10 +564,12 @@ NTSTATUS NTAPI DetouredNtCreateKey(
     PUNICODE_STRING class_name,
     const ULONG create_options,
     PULONG disposition) {
-    return GuardOpen(key, RegistryAccess::kWrite == AccessForMask(desired_access)
-                              ? desired_access
-                              : desired_access | KEY_CREATE_SUB_KEY,
-                     attributes, [&] {
+    return GuardOpen(
+        key,
+        RegistryAccess::kWrite == AccessForMask(desired_access)
+            ? desired_access
+            : desired_access | KEY_CREATE_SUB_KEY,
+        attributes, protocol::RegistryOperation::kCreate, [&] {
                          return g_nt_create_key(
                              key, desired_access, attributes, title_index,
                              class_name, create_options, disposition);
@@ -494,6 +591,7 @@ NTSTATUS NTAPI DetouredNtQueryKey(
                   AllowedNativeOpen(name, RegistryAccess::kRead);
     }
     if (!allowed) {
+        ReportHandleViolation(key, protocol::RegistryOperation::kQuery);
         return kStatusAccessDenied;
     }
     return g_nt_query_key(
@@ -508,6 +606,7 @@ NTSTATUS NTAPI DetouredNtQueryValueKey(
     const ULONG length,
     PULONG result_length) {
     if (!AllowedHandle(key, RegistryAccess::kRead)) {
+        ReportHandleViolation(key, protocol::RegistryOperation::kQuery);
         return kStatusAccessDenied;
     }
     return g_nt_query_value_key(
@@ -523,6 +622,7 @@ NTSTATUS NTAPI DetouredNtEnumerateKey(
     const ULONG length,
     PULONG result_length) {
     if (!AllowedHandle(key, RegistryAccess::kEnumerate)) {
+        ReportHandleViolation(key, protocol::RegistryOperation::kEnumerate);
         return kStatusAccessDenied;
     }
     return g_nt_enumerate_key(
@@ -537,6 +637,7 @@ NTSTATUS NTAPI DetouredNtEnumerateValueKey(
     const ULONG length,
     PULONG result_length) {
     if (!AllowedHandle(key, RegistryAccess::kEnumerate)) {
+        ReportHandleViolation(key, protocol::RegistryOperation::kEnumerate);
         return kStatusAccessDenied;
     }
     return g_nt_enumerate_value_key(
@@ -550,24 +651,30 @@ NTSTATUS NTAPI DetouredNtSetValueKey(
     const ULONG type,
     PVOID data,
     const ULONG data_size) {
-    return AllowedHandle(key, RegistryAccess::kWrite)
-               ? g_nt_set_value_key(
-                     key, value_name, title_index, type, data, data_size)
-               : kStatusAccessDenied;
+    if (!AllowedHandle(key, RegistryAccess::kWrite)) {
+        ReportHandleViolation(key, protocol::RegistryOperation::kSetValue);
+        return kStatusAccessDenied;
+    }
+    return g_nt_set_value_key(
+        key, value_name, title_index, type, data, data_size);
 }
 
 NTSTATUS NTAPI DetouredNtDeleteKey(const HANDLE key) {
-    return AllowedHandle(key, RegistryAccess::kWrite)
-               ? g_nt_delete_key(key)
-               : kStatusAccessDenied;
+    if (!AllowedHandle(key, RegistryAccess::kWrite)) {
+        ReportHandleViolation(key, protocol::RegistryOperation::kDelete);
+        return kStatusAccessDenied;
+    }
+    return g_nt_delete_key(key);
 }
 
 NTSTATUS NTAPI DetouredNtDeleteValueKey(
     const HANDLE key,
     PUNICODE_STRING value_name) {
-    return AllowedHandle(key, RegistryAccess::kWrite)
-               ? g_nt_delete_value_key(key, value_name)
-               : kStatusAccessDenied;
+    if (!AllowedHandle(key, RegistryAccess::kWrite)) {
+        ReportHandleViolation(key, protocol::RegistryOperation::kDelete);
+        return kStatusAccessDenied;
+    }
+    return g_nt_delete_value_key(key, value_name);
 }
 
 NTSTATUS NTAPI DetouredNtRenameKey(
@@ -577,6 +684,7 @@ NTSTATUS NTAPI DetouredNtRenameKey(
     std::wstring leaf;
     if (!QueryHandleName(key, current) || !ReadUnicodeString(new_name, leaf) ||
         leaf.empty() || leaf.find(L'\\') != std::wstring::npos) {
+        ReportHandleViolation(key, protocol::RegistryOperation::kRename);
         return kStatusAccessDenied;
     }
     const std::size_t separator = current.find_last_of(L'\\');
@@ -584,10 +692,12 @@ NTSTATUS NTAPI DetouredNtRenameKey(
         return kStatusAccessDenied;
     }
     const std::wstring target = current.substr(0, separator + 1) + leaf;
-    return AllowedNativeName(current, RegistryAccess::kWrite) &&
-            AllowedNativeName(target, RegistryAccess::kWrite)
-        ? g_nt_rename_key(key, new_name)
-        : kStatusAccessDenied;
+    if (!AllowedNativeName(current, RegistryAccess::kWrite) ||
+        !AllowedNativeName(target, RegistryAccess::kWrite)) {
+        ReportRegistryViolation(target, protocol::RegistryOperation::kRename);
+        return kStatusAccessDenied;
+    }
+    return g_nt_rename_key(key, new_name);
 }
 
 template <typename Function>
@@ -675,6 +785,7 @@ RegistryHookInstallStatus InstallRegistryHooks(
         return RegistryHookInstallStatus::kTransactionFailed;
     }
     g_current_user_prefix = std::move(current_user_prefix);
+    g_current_user_classes_prefix = g_current_user_prefix + L"_Classes";
     g_active_control_set = std::move(active_control_set);
     g_policy = std::move(policy);
     return RegistryHookInstallStatus::kSuccess;

@@ -90,22 +90,65 @@ bool ReadRegistryViolationWithin(
     const std::string& key,
     const DWORD timeout_milliseconds) {
     const ULONGLONG deadline = GetTickCount64() + timeout_milliseconds;
-    const std::size_t length =
-        bolt::protocol::RegistryViolationFrameLength(key.c_str());
     while (GetTickCount64() < deadline) {
         DWORD available = 0;
         if (PeekNamedPipe(
                 pipe, nullptr, 0, nullptr, &available, nullptr) &&
-            available >= length) {
-            std::vector<std::uint8_t> actual(length);
-            std::vector<std::uint8_t> expected(length);
+            available >= bolt::protocol::kEventHeaderLength) {
+            std::array<std::uint8_t, bolt::protocol::kEventHeaderLength>
+                header{};
+            if (!ReadExact(pipe, header.data(), header.size())) {
+                return false;
+            }
+            const std::size_t payload_length =
+                static_cast<std::size_t>(header[8]) |
+                static_cast<std::size_t>(header[9]) << 8U |
+                static_cast<std::size_t>(header[10]) << 16U |
+                static_cast<std::size_t>(header[11]) << 24U;
+            std::vector<std::uint8_t> actual(header.begin(), header.end());
+            actual.resize(header.size() + payload_length);
+            const bool read = ReadExact(
+                pipe, actual.data() + header.size(), payload_length);
+            const std::size_t expected_length =
+                bolt::protocol::RegistryViolationFrameLength(key.c_str());
+            std::vector<std::uint8_t> expected(expected_length);
             std::size_t written = 0;
-            return ReadExact(pipe, actual.data(), actual.size()) &&
-                bolt::protocol::EncodeRegistryViolationFrame(
+            const bool encoded = bolt::protocol::EncodeRegistryViolationFrame(
                     process_id, operation, key.c_str(), sequence,
                     expected.data(), expected.size(), written) ==
-                    bolt::protocol::FrameEncodeStatus::kSuccess &&
+                bolt::protocol::FrameEncodeStatus::kSuccess;
+            const bool matched = read && encoded &&
                 written == expected.size() && actual == expected;
+            if (!matched && read && actual.size() >= 33) {
+                const std::uint16_t kind =
+                    static_cast<std::uint16_t>(actual[6]) |
+                    static_cast<std::uint16_t>(actual[7]) << 8U;
+                std::uint64_t actual_sequence = 0;
+                for (std::size_t index = 0; index < 8; ++index) {
+                    actual_sequence |=
+                        static_cast<std::uint64_t>(actual[12 + index]) <<
+                        (index * 8U);
+                }
+                const std::size_t key_length =
+                    static_cast<std::size_t>(actual[29]) |
+                    static_cast<std::size_t>(actual[30]) << 8U |
+                    static_cast<std::size_t>(actual[31]) << 16U |
+                    static_cast<std::size_t>(actual[32]) << 24U;
+                const std::string actual_key = key_length <= actual.size() - 33
+                    ? std::string(
+                          reinterpret_cast<const char*>(actual.data() + 33),
+                          key_length)
+                    : std::string("<invalid>");
+                std::fprintf(
+                    stderr,
+                    "registry event mismatch: kind=%u sequence=%llu op=%u "
+                    "key=%s expected=%s\n",
+                    static_cast<unsigned int>(kind),
+                    static_cast<unsigned long long>(actual_sequence),
+                    static_cast<unsigned int>(actual[28]),
+                    actual_key.c_str(), key.c_str());
+            }
+            return matched;
         }
         Sleep(10);
     }
@@ -271,6 +314,18 @@ bool RunRegistryHookTests() {
         {bolt::tests::RegistryRuleKind::kInheritUser,
          bolt::tests::RegistryHive::kLocalMachine,
          {"SYSTEM", "CURRENTCONTROLSET", "CONTROL", "SESSION MANAGER"}},
+        {bolt::tests::RegistryRuleKind::kInheritUser,
+         bolt::tests::RegistryHive::kLocalMachine,
+         {"SOFTWARE", "MICROSOFT", "OLE"}},
+        {bolt::tests::RegistryRuleKind::kInheritUser,
+         bolt::tests::RegistryHive::kLocalMachine,
+         {"SOFTWARE", "MICROSOFT", "APPMODEL", "LOOKASIDE", "MACHINE"}},
+        {bolt::tests::RegistryRuleKind::kInheritUser,
+         bolt::tests::RegistryHive::kLocalMachine,
+         {"SOFTWARE", "MICROSOFT", "APPMODEL", "LOOKASIDE", "USER"}},
+        {bolt::tests::RegistryRuleKind::kInheritUser,
+         bolt::tests::RegistryHive::kCurrentUser,
+         {"SOFTWARE", "CLASSES", "LOCAL SETTINGS"}},
     };
     const std::wstring executable = CurrentExecutable();
     const auto payload = bolt::tests::SealPolicy(
