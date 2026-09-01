@@ -36,7 +36,7 @@ mod streams;
     dead_code,
     reason = "transaction journal is consumed by the projected backend in the next phase"
 )]
-mod workspace;
+pub(crate) mod workspace;
 
 use crate::{
     CommandId, ExecutionAttribution, ExecutionHandle, ExecutionId, InitializationStage,

@@ -1,8 +1,10 @@
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
+    fmt::Write as _,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc::{Receiver, Sender},
     },
@@ -13,6 +15,23 @@ use crate::{
     SandboxError, SandboxEvent, SandboxRequest, ViolationAggregate, WorkspaceChange,
     WorkspaceControlError, WorkspaceTransactionId, runtime,
 };
+
+use crate::runtime::workspace::{
+    CommittedWorkspace, StagedWorkspaceTransaction, WorkspaceError,
+    WorkspaceLimits as RuntimeWorkspaceLimits,
+};
+
+#[derive(Debug)]
+enum WorkspaceTransactionRecord {
+    Pending {
+        transaction: StagedWorkspaceTransaction,
+        recovery_root: PathBuf,
+    },
+    Committed(CommittedWorkspace),
+}
+
+type WorkspaceTransactions =
+    Arc<Mutex<BTreeMap<WorkspaceTransactionId, WorkspaceTransactionRecord>>>;
 
 pub const DEFAULT_STREAM_CAPACITY: usize = 1_048_576;
 const MAX_STREAM_CAPACITY: usize = 64 * 1_048_576;
@@ -31,6 +50,7 @@ pub enum WorkspaceMode {
 pub struct ExecutionOptions {
     pub command_id: Option<CommandId>,
     pub workspace: WorkspaceMode,
+    pub workspace_limits: crate::WorkspaceLimits,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -48,6 +68,7 @@ pub struct SandboxConfig {
 pub struct Sandbox {
     config: SandboxConfig,
     next_policy_generation: Arc<AtomicU64>,
+    workspace_transactions: WorkspaceTransactions,
 }
 
 impl Sandbox {
@@ -86,6 +107,7 @@ impl Sandbox {
         Ok(Self {
             config,
             next_policy_generation: Arc::new(AtomicU64::new(1)),
+            workspace_transactions: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -112,7 +134,7 @@ impl Sandbox {
         options: ExecutionOptions,
     ) -> Result<ExecutionHandle, SandboxError> {
         request.validate()?;
-        if options.workspace != WorkspaceMode::Direct {
+        if options.workspace == WorkspaceMode::Projected {
             return Err(SandboxError::InitializationFailed {
                 stage: InitializationStage::Workspace,
             });
@@ -123,6 +145,9 @@ impl Sandbox {
             .map_err(|()| SandboxError::InitializationFailed {
                 stage: InitializationStage::Identity,
             })?;
+        if options.workspace == WorkspaceMode::Staged {
+            return self.start_staged(request, command_id, options.workspace_limits);
+        }
         self.start_validated(request, command_id)
     }
 
@@ -142,6 +167,7 @@ impl Sandbox {
             ExecutionOptions {
                 command_id: Some(command_id),
                 workspace: WorkspaceMode::Direct,
+                ..ExecutionOptions::default()
             },
         )
     }
@@ -169,6 +195,60 @@ impl Sandbox {
         })
     }
 
+    fn start_staged(
+        &self,
+        mut request: SandboxRequest,
+        command_id: CommandId,
+        limits: crate::WorkspaceLimits,
+    ) -> Result<ExecutionHandle, SandboxError> {
+        let transaction_id = WorkspaceTransactionId::generate().map_err(|()| {
+            SandboxError::InitializationFailed {
+                stage: InitializationStage::Identity,
+            }
+        })?;
+        let source_root = request.cwd.clone();
+        let parent = source_root
+            .parent()
+            .ok_or(SandboxError::InitializationFailed {
+                stage: InitializationStage::Workspace,
+            })?;
+        let suffix =
+            transaction_id
+                .as_bytes()
+                .iter()
+                .fold(String::with_capacity(32), |mut suffix, byte| {
+                    write!(&mut suffix, "{byte:02x}").expect("writing to a String cannot fail");
+                    suffix
+                });
+        let staging_root = parent.join(format!(".bolt-stage-{suffix}"));
+        let recovery_root = parent.join(format!(".bolt-recovery-{suffix}"));
+        let transaction = StagedWorkspaceTransaction::prepare(
+            &source_root,
+            &staging_root,
+            RuntimeWorkspaceLimits {
+                maximum_items: limits.maximum_items,
+                maximum_bytes: limits.maximum_bytes,
+            },
+        )
+        .map_err(|_| SandboxError::InitializationFailed {
+            stage: InitializationStage::Workspace,
+        })?;
+        request.cwd = transaction.execution_root().to_path_buf();
+        let mut config = self.config.clone();
+        config.mandatory_filesystem_denies.push(source_root);
+        let policy_generation = self.allocate_policy_generation()?;
+        let mut handle = runtime::start_execution(request, &config, command_id, policy_generation)?;
+        handle.attach_workspace(
+            transaction_id,
+            WorkspaceTransactionRecord::Pending {
+                transaction,
+                recovery_root,
+            },
+            Arc::clone(&self.workspace_transactions),
+        );
+        Ok(handle)
+    }
+
     /// Returns the canonical changes for a completed staged transaction.
     ///
     /// # Errors
@@ -177,9 +257,24 @@ impl Sandbox {
     /// transaction is owned by this sandbox coordinator.
     pub fn query_workspace_changes(
         &self,
-        _transaction_id: WorkspaceTransactionId,
+        transaction_id: WorkspaceTransactionId,
     ) -> Result<Vec<WorkspaceChange>, WorkspaceControlError> {
-        Err(WorkspaceControlError::NotFound)
+        let transactions = self
+            .workspace_transactions
+            .lock()
+            .map_err(|_| WorkspaceControlError::Io)?;
+        let record = transactions
+            .get(&transaction_id)
+            .ok_or(WorkspaceControlError::NotFound)?;
+        match record {
+            WorkspaceTransactionRecord::Pending { transaction, .. } => transaction
+                .query_changes()
+                .map(convert_changes)
+                .map_err(map_workspace_error),
+            WorkspaceTransactionRecord::Committed(committed) => {
+                Ok(convert_changes(committed.changes().to_vec()))
+            }
+        }
     }
 
     /// Commits a completed staged transaction through trusted Rust.
@@ -190,9 +285,33 @@ impl Sandbox {
     /// conflicted, unsupported, or cannot be committed atomically.
     pub fn commit_workspace(
         &self,
-        _transaction_id: WorkspaceTransactionId,
+        transaction_id: WorkspaceTransactionId,
     ) -> Result<Vec<WorkspaceChange>, WorkspaceControlError> {
-        Err(WorkspaceControlError::NotFound)
+        let record = self
+            .workspace_transactions
+            .lock()
+            .map_err(|_| WorkspaceControlError::Io)?
+            .remove(&transaction_id)
+            .ok_or(WorkspaceControlError::NotFound)?;
+        let WorkspaceTransactionRecord::Pending {
+            transaction,
+            recovery_root,
+        } = record
+        else {
+            return Err(WorkspaceControlError::Conflict);
+        };
+        let committed = transaction
+            .commit(&recovery_root)
+            .map_err(map_workspace_error)?;
+        let changes = convert_changes(committed.changes().to_vec());
+        self.workspace_transactions
+            .lock()
+            .map_err(|_| WorkspaceControlError::Io)?
+            .insert(
+                transaction_id,
+                WorkspaceTransactionRecord::Committed(committed),
+            );
+        Ok(changes)
     }
 
     /// Discards a completed staged transaction without mutating its source.
@@ -203,9 +322,55 @@ impl Sandbox {
     /// staging root cannot be removed safely.
     pub fn discard_workspace(
         &self,
-        _transaction_id: WorkspaceTransactionId,
+        transaction_id: WorkspaceTransactionId,
     ) -> Result<(), WorkspaceControlError> {
-        Err(WorkspaceControlError::NotFound)
+        let record = self
+            .workspace_transactions
+            .lock()
+            .map_err(|_| WorkspaceControlError::Io)?
+            .remove(&transaction_id)
+            .ok_or(WorkspaceControlError::NotFound)?;
+        match record {
+            WorkspaceTransactionRecord::Pending { transaction, .. } => {
+                transaction.discard().map_err(map_workspace_error)
+            }
+            WorkspaceTransactionRecord::Committed(_) => Ok(()),
+        }
+    }
+}
+
+fn convert_changes(
+    changes: Vec<crate::runtime::workspace::WorkspaceChange>,
+) -> Vec<WorkspaceChange> {
+    changes
+        .into_iter()
+        .map(|change| WorkspaceChange {
+            relative_path: change.relative_path,
+            kind: match change.kind {
+                crate::runtime::workspace::WorkspaceChangeKind::Created => {
+                    crate::WorkspaceChangeKind::Created
+                }
+                crate::runtime::workspace::WorkspaceChangeKind::Modified => {
+                    crate::WorkspaceChangeKind::Modified
+                }
+                crate::runtime::workspace::WorkspaceChangeKind::Deleted => {
+                    crate::WorkspaceChangeKind::Deleted
+                }
+            },
+        })
+        .collect()
+}
+
+const fn map_workspace_error(error: WorkspaceError) -> WorkspaceControlError {
+    match error {
+        WorkspaceError::InvalidRoot | WorkspaceError::UnsupportedObject => {
+            WorkspaceControlError::UnsupportedObject
+        }
+        WorkspaceError::QuotaExceeded => WorkspaceControlError::QuotaExceeded,
+        WorkspaceError::Conflict | WorkspaceError::RollbackFailed => {
+            WorkspaceControlError::Conflict
+        }
+        WorkspaceError::Io => WorkspaceControlError::Io,
     }
 }
 
@@ -291,6 +456,7 @@ pub enum ExecutionTerminal {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionResult {
     pub attribution: ExecutionAttribution,
+    pub workspace_transaction: Option<WorkspaceTransactionId>,
     pub terminal: ExecutionTerminal,
     pub receiver_loss: ReceiverLoss,
     pub violation_aggregates: Vec<ViolationAggregate>,
@@ -343,6 +509,13 @@ pub struct ExecutionHandle {
     events: Option<EventStream>,
     cancel: Sender<()>,
     completion: Receiver<Result<ExecutionResult, SandboxError>>,
+    pending_workspace: Option<PendingWorkspace>,
+}
+
+struct PendingWorkspace {
+    transaction_id: WorkspaceTransactionId,
+    record: WorkspaceTransactionRecord,
+    transactions: WorkspaceTransactions,
 }
 
 impl ExecutionHandle {
@@ -366,7 +539,21 @@ impl ExecutionHandle {
             }),
             cancel,
             completion,
+            pending_workspace: None,
         }
+    }
+
+    fn attach_workspace(
+        &mut self,
+        transaction_id: WorkspaceTransactionId,
+        record: WorkspaceTransactionRecord,
+        transactions: WorkspaceTransactions,
+    ) {
+        self.pending_workspace = Some(PendingWorkspace {
+            transaction_id,
+            record,
+            transactions,
+        });
     }
 
     #[must_use]
@@ -438,10 +625,22 @@ impl ExecutionHandle {
     ///
     /// Returns a typed runtime error when startup or lifecycle processing
     /// fails, including an unexpected completion-channel disconnect.
-    pub fn wait(self) -> Result<ExecutionResult, SandboxError> {
-        self.completion
+    pub fn wait(mut self) -> Result<ExecutionResult, SandboxError> {
+        let mut result = self
+            .completion
             .recv()
-            .map_err(|_| SandboxError::ControlChannelClosed)?
+            .map_err(|_| SandboxError::ControlChannelClosed)??;
+        if let Some(pending) = self.pending_workspace.take() {
+            pending
+                .transactions
+                .lock()
+                .map_err(|_| SandboxError::InitializationFailed {
+                    stage: InitializationStage::Workspace,
+                })?
+                .insert(pending.transaction_id, pending.record);
+            result.workspace_transaction = Some(pending.transaction_id);
+        }
+        Ok(result)
     }
 }
 
@@ -461,6 +660,7 @@ mod tests {
                 component_manifest_sha256: None,
             },
             next_policy_generation: Arc::new(AtomicU64::new(next)),
+            workspace_transactions: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 const WORKSPACE_TRANSACTION_ID_LENGTH: usize = 16;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct WorkspaceTransactionId([u8; WORKSPACE_TRANSACTION_ID_LENGTH]);
 
 impl WorkspaceTransactionId {
@@ -14,6 +14,27 @@ impl WorkspaceTransactionId {
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; WORKSPACE_TRANSACTION_ID_LENGTH] {
         &self.0
+    }
+
+    pub(crate) fn generate() -> Result<Self, ()> {
+        let mut bytes = [0_u8; WORKSPACE_TRANSACTION_ID_LENGTH];
+        getrandom::fill(&mut bytes).map_err(|_| ())?;
+        Self::new(bytes).ok_or(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkspaceLimits {
+    pub maximum_items: u32,
+    pub maximum_bytes: u64,
+}
+
+impl Default for WorkspaceLimits {
+    fn default() -> Self {
+        Self {
+            maximum_items: 100_000,
+            maximum_bytes: 4 * 1_024 * 1_024 * 1_024,
+        }
     }
 }
 

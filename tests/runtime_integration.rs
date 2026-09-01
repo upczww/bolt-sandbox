@@ -57,7 +57,10 @@ fn ws_016_staged_execution_requires_explicit_trusted_commit() {
     let events = handle.take_events().expect("events");
     let (_stdout, _stderr, _events, result) = collect_execution(handle, stdout, stderr, events);
 
-    assert_eq!(fs::read(source.join("file.txt")).expect("source"), b"before");
+    assert_eq!(
+        fs::read(source.join("file.txt")).expect("source"),
+        b"before"
+    );
     let transaction = result
         .workspace_transaction
         .expect("staged result must return transaction ID");
@@ -69,10 +72,10 @@ fn ws_016_staged_execution_requires_explicit_trusted_commit() {
     sandbox
         .commit_workspace(transaction)
         .expect("trusted commit must succeed");
-    assert!(String::from_utf8_lossy(
-        &fs::read(source.join("file.txt")).expect("committed source")
-    )
-    .contains("after"));
+    assert!(
+        String::from_utf8_lossy(&fs::read(source.join("file.txt")).expect("committed source"))
+            .contains("after")
+    );
     fs::remove_dir_all(source).expect("fixture must clean");
 }
 

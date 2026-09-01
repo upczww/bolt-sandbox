@@ -16,7 +16,7 @@ pub(super) enum WorkspaceKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum WorkspaceError {
+pub(crate) enum WorkspaceError {
     InvalidRoot,
     QuotaExceeded,
     UnsupportedObject,
@@ -26,22 +26,22 @@ pub(super) enum WorkspaceError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct WorkspaceLimits {
-    pub(super) maximum_items: u32,
-    pub(super) maximum_bytes: u64,
+pub(crate) struct WorkspaceLimits {
+    pub(crate) maximum_items: u32,
+    pub(crate) maximum_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum WorkspaceChangeKind {
+pub(crate) enum WorkspaceChangeKind {
     Created,
     Modified,
     Deleted,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct WorkspaceChange {
-    pub(super) relative_path: PathBuf,
-    pub(super) kind: WorkspaceChangeKind,
+pub(crate) struct WorkspaceChange {
+    pub(crate) relative_path: PathBuf,
+    pub(crate) kind: WorkspaceChangeKind,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,18 +57,21 @@ struct WorkspaceFingerprint {
     digest: [u8; 32],
 }
 
+#[derive(Debug)]
 pub(super) struct WorkspaceSnapshot {
     limits: WorkspaceLimits,
     entries: BTreeMap<PathBuf, WorkspaceFingerprint>,
 }
 
-pub(super) struct StagedWorkspaceTransaction {
+#[derive(Debug)]
+pub(crate) struct StagedWorkspaceTransaction {
     snapshot: WorkspaceSnapshot,
     source_root: PathBuf,
     staging_root: PathBuf,
 }
 
-pub(super) struct CommittedWorkspace {
+#[derive(Debug)]
+pub(crate) struct CommittedWorkspace {
     changes: Vec<WorkspaceChange>,
     source_root: PathBuf,
     discarded_root: PathBuf,
@@ -76,15 +79,15 @@ pub(super) struct CommittedWorkspace {
 }
 
 impl CommittedWorkspace {
-    pub(super) fn changes(&self) -> &[WorkspaceChange] {
+    pub(crate) fn changes(&self) -> &[WorkspaceChange] {
         &self.changes
     }
 
-    pub(super) fn recovery_root(&self) -> &Path {
+    pub(crate) fn recovery_root(&self) -> &Path {
         &self.recovery_root
     }
 
-    pub(super) fn revert(self) -> Result<(), WorkspaceError> {
+    pub(crate) fn revert(self) -> Result<(), WorkspaceError> {
         if !self.source_root.is_dir()
             || !self.recovery_root.is_dir()
             || self.discarded_root.exists()
@@ -102,8 +105,24 @@ impl CommittedWorkspace {
     }
 }
 
+impl Drop for StagedWorkspaceTransaction {
+    fn drop(&mut self) {
+        if self.staging_root.is_dir() {
+            let _ = fs::remove_dir_all(&self.staging_root);
+        }
+    }
+}
+
+impl Drop for CommittedWorkspace {
+    fn drop(&mut self) {
+        if self.recovery_root.is_dir() {
+            let _ = fs::remove_dir_all(&self.recovery_root);
+        }
+    }
+}
+
 impl StagedWorkspaceTransaction {
-    pub(super) fn prepare(
+    pub(crate) fn prepare(
         source_root: &Path,
         staging_root: &Path,
         limits: WorkspaceLimits,
@@ -127,19 +146,19 @@ impl StagedWorkspaceTransaction {
         })
     }
 
-    pub(super) fn execution_root(&self) -> &Path {
+    pub(crate) fn execution_root(&self) -> &Path {
         &self.staging_root
     }
 
-    pub(super) fn query_changes(&self) -> Result<Vec<WorkspaceChange>, WorkspaceError> {
+    pub(crate) fn query_changes(&self) -> Result<Vec<WorkspaceChange>, WorkspaceError> {
         self.snapshot.diff(&self.staging_root)
     }
 
-    pub(super) fn discard(self) -> Result<(), WorkspaceError> {
+    pub(crate) fn discard(self) -> Result<(), WorkspaceError> {
         fs::remove_dir_all(&self.staging_root).map_err(map_io)
     }
 
-    pub(super) fn commit(self, recovery_root: &Path) -> Result<CommittedWorkspace, WorkspaceError> {
+    pub(crate) fn commit(self, recovery_root: &Path) -> Result<CommittedWorkspace, WorkspaceError> {
         validate_recovery_root(&self.source_root, recovery_root)?;
         self.snapshot.validate_source_unchanged(&self.source_root)?;
         let changes = self.query_changes()?;
@@ -152,8 +171,8 @@ impl StagedWorkspaceTransaction {
         }
         Ok(CommittedWorkspace {
             changes,
-            source_root: self.source_root,
-            discarded_root: self.staging_root,
+            source_root: self.source_root.clone(),
+            discarded_root: self.staging_root.clone(),
             recovery_root: recovery_root.to_path_buf(),
         })
     }

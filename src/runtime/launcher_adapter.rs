@@ -544,6 +544,7 @@ impl TransportState {
         send_bounded(events, SandboxEvent::ProcessExited(process_exit.clone()));
         self.with_aggregates(ExecutionResult {
             attribution: self.attribution,
+            workspace_transaction: None,
             terminal: ExecutionTerminal::Process(process_exit),
             receiver_loss: public_receiver_loss(self.lifecycle.receiver_loss()),
             violation_aggregates: Vec::new(),
@@ -554,6 +555,7 @@ impl TransportState {
     fn infrastructure_result(&self, failure: crate::InfrastructureFailure) -> ExecutionResult {
         self.with_aggregates(ExecutionResult {
             attribution: self.attribution,
+            workspace_transaction: None,
             terminal: ExecutionTerminal::Infrastructure(failure),
             receiver_loss: public_receiver_loss(self.lifecycle.receiver_loss()),
             violation_aggregates: Vec::new(),
@@ -624,6 +626,7 @@ fn public_outcome(outcome: LifecycleOutcome, attribution: ExecutionAttribution) 
     };
     ExecutionResult {
         attribution,
+        workspace_transaction: None,
         terminal,
         receiver_loss: public_receiver_loss(outcome.receiver_loss),
         violation_aggregates: Vec::new(),

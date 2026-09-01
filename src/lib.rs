@@ -36,5 +36,6 @@ pub use policy::{
 };
 pub use request::{MAX_TIMEOUT, MIN_TIMEOUT, SandboxRequest};
 pub use workspace::{
-    WorkspaceChange, WorkspaceChangeKind, WorkspaceControlError, WorkspaceTransactionId,
+    WorkspaceChange, WorkspaceChangeKind, WorkspaceControlError, WorkspaceLimits,
+    WorkspaceTransactionId,
 };
