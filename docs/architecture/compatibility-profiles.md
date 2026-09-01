@@ -24,11 +24,12 @@ fields:
 kind|requiredness|base|suffix
 ```
 
-Supported kinds are `fs-ro` for recursive filesystem read-only and `reg-ro`
-for recursive registry read-only. Requiredness is `required`, which fails when
-the trusted base is absent, or `optional`, which skips only that entry.
+Supported kinds are `fs-ro` for recursive filesystem read-only, `fs-meta` for
+filesystem metadata-only access, and `reg-ro` for recursive registry read-only.
+Requiredness is `required`, which fails when the trusted base is absent, or
+`optional`, which skips only that entry.
 
-Filesystem bases are `system-root`, `program-dir`, `program-files`,
+Filesystem bases are `system-root`, `program-dir`, `cwd-parent`, `cwd-anchor`, `program-files`,
 `program-files-x86`, `program-data`, `local-app-data`, `cargo-home`,
 `rustup-home`, and `absolute`. Registry entries use base `registry` and a
 canonical `HKLM` or `HKCU` suffix. Version 1 deliberately has no write, delete,
@@ -41,6 +42,7 @@ Example:
 BSC1
 fs-ro|required|system-root|.
 fs-ro|required|program-dir|.
+fs-meta|required|cwd-anchor|.
 fs-ro|optional|program-files|Common Files\SSL\openssl.cnf
 fs-ro|optional|rustup-home|toolchains
 fs-ro|optional|cargo-home|registry\src
@@ -62,6 +64,12 @@ absolute target executable, never from the child environment carried in
   which means the base itself.
 - `program-dir` is skipped when the program is already beneath `cwd`, preserving
   the workspace read-write grant.
+- `cwd-parent` permits metadata only and exists for runtimes such as MSYS that
+  enumerate one parent while reconstructing the current directory.
+- `cwd-anchor` resolves to the first directory beneath the volume/share root and
+  permits metadata only. It supports MSYS traversal in a dedicated Agent
+  workspace root; resolution fails if that anchor would contain a mandatory
+  sensitive path.
 - A program directly at a filesystem root cannot create a root-wide allow.
 - An `absolute` entry cannot resolve to a volume, UNC share root, device path,
   user-profile root, or known mandatory-sensitive subtree.

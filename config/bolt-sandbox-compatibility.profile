@@ -2,6 +2,7 @@ BSC1
 # Filesystem runtime compatibility. Version 1 grants read-only access only.
 fs-ro|required|system-root|.
 fs-ro|required|program-dir|.
+fs-meta|required|cwd-anchor|.
 fs-ro|optional|program-files|Common Files\SSL\openssl.cnf
 
 # Public runtime and platform metadata.

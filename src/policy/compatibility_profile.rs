@@ -10,6 +10,7 @@ pub(crate) const MAX_PROFILE_RULES: usize = 512;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RuleKind {
     FilesystemReadOnly,
+    FilesystemMetadataRead,
     RegistryReadOnly,
 }
 
@@ -23,6 +24,8 @@ enum Requiredness {
 enum Base {
     SystemRoot,
     ProgramDirectory,
+    CurrentDirectoryParent,
+    CurrentDirectoryAnchor,
     ProgramFiles,
     ProgramFilesX86,
     ProgramData,
@@ -49,6 +52,7 @@ pub(crate) struct CompatibilityProfile {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedProfile {
     pub(crate) filesystem_read_only: Vec<PathBuf>,
+    pub(crate) filesystem_metadata_read: Vec<PathBuf>,
     pub(crate) registry_read_only: Vec<String>,
 }
 
@@ -128,6 +132,7 @@ pub(crate) fn parse_profile(input: &[u8]) -> Result<CompatibilityProfile, Profil
         let mut fields = line.split('|');
         let kind = match fields.next() {
             Some("fs-ro") => RuleKind::FilesystemReadOnly,
+            Some("fs-meta") => RuleKind::FilesystemMetadataRead,
             Some("reg-ro") => RuleKind::RegistryReadOnly,
             _ => return Err(ProfileError::InvalidSyntax),
         };
@@ -139,6 +144,8 @@ pub(crate) fn parse_profile(input: &[u8]) -> Result<CompatibilityProfile, Profil
         let base = match fields.next() {
             Some("system-root") => Base::SystemRoot,
             Some("program-dir") => Base::ProgramDirectory,
+            Some("cwd-parent") => Base::CurrentDirectoryParent,
+            Some("cwd-anchor") => Base::CurrentDirectoryAnchor,
             Some("program-files") => Base::ProgramFiles,
             Some("program-files-x86") => Base::ProgramFilesX86,
             Some("program-data") => Base::ProgramData,
@@ -152,7 +159,10 @@ pub(crate) fn parse_profile(input: &[u8]) -> Result<CompatibilityProfile, Profil
         let suffix = fields.next().ok_or(ProfileError::InvalidSyntax)?;
         if fields.next().is_some()
             || suffix.is_empty()
-            || (kind == RuleKind::FilesystemReadOnly && base == Base::Registry)
+            || (matches!(
+                kind,
+                RuleKind::FilesystemReadOnly | RuleKind::FilesystemMetadataRead
+            ) && base == Base::Registry)
             || (kind == RuleKind::RegistryReadOnly && base != Base::Registry)
             || !validate_suffix(kind, base, suffix)
         {
@@ -197,12 +207,13 @@ pub(crate) fn resolve_profile(
     context: &ResolutionContext,
 ) -> Result<ResolvedProfile, ProfileError> {
     let mut filesystem_read_only = Vec::new();
+    let mut filesystem_metadata_read = Vec::new();
     let mut registry_read_only = Vec::new();
     let mut filesystem_keys = BTreeSet::new();
     let mut registry_keys = BTreeSet::new();
     for rule in &profile.rules {
         match rule.kind {
-            RuleKind::FilesystemReadOnly => {
+            RuleKind::FilesystemReadOnly | RuleKind::FilesystemMetadataRead => {
                 let Some(path) = resolve_filesystem_rule(rule, context)? else {
                     continue;
                 };
@@ -218,7 +229,11 @@ pub(crate) fn resolve_profile(
                 if !filesystem_keys.insert(key) {
                     return Err(ProfileError::DuplicateRule);
                 }
-                filesystem_read_only.push(path);
+                match rule.kind {
+                    RuleKind::FilesystemReadOnly => filesystem_read_only.push(path),
+                    RuleKind::FilesystemMetadataRead => filesystem_metadata_read.push(path),
+                    RuleKind::RegistryReadOnly => unreachable!("registry handled separately"),
+                }
             }
             RuleKind::RegistryReadOnly => {
                 let key = normalize_registry_key(&rule.suffix)?;
@@ -232,6 +247,7 @@ pub(crate) fn resolve_profile(
     }
     Ok(ResolvedProfile {
         filesystem_read_only,
+        filesystem_metadata_read,
         registry_read_only,
     })
 }
@@ -245,14 +261,16 @@ fn resolve_filesystem_rule(
         return Ok(Some(path));
     }
     let base = match rule.base {
-        Base::SystemRoot => context.system_root.as_ref(),
-        Base::ProgramDirectory => context.program_dir.as_ref(),
-        Base::ProgramFiles => context.program_files.as_ref(),
-        Base::ProgramFilesX86 => context.program_files_x86.as_ref(),
-        Base::ProgramData => context.program_data.as_ref(),
-        Base::LocalAppData => context.local_app_data.as_ref(),
-        Base::CargoHome => context.cargo_home.as_ref(),
-        Base::RustupHome => context.rustup_home.as_ref(),
+        Base::SystemRoot => context.system_root.clone(),
+        Base::ProgramDirectory => context.program_dir.clone(),
+        Base::CurrentDirectoryParent => context.cwd.parent().map(Path::to_path_buf),
+        Base::CurrentDirectoryAnchor => cwd_anchor(&context.cwd),
+        Base::ProgramFiles => context.program_files.clone(),
+        Base::ProgramFilesX86 => context.program_files_x86.clone(),
+        Base::ProgramData => context.program_data.clone(),
+        Base::LocalAppData => context.local_app_data.clone(),
+        Base::CargoHome => context.cargo_home.clone(),
+        Base::RustupHome => context.rustup_home.clone(),
         Base::Absolute | Base::Registry => None,
     };
     let Some(base) = base else {
@@ -261,7 +279,7 @@ fn resolve_filesystem_rule(
             Requiredness::Optional => Ok(None),
         };
     };
-    let base = normalize_absolute_path(base)?;
+    let base = normalize_absolute_path(&base)?;
     if rule.base == Base::ProgramDirectory && is_same_or_ancestor(&context.cwd, &base) {
         return Ok(None);
     }
@@ -275,6 +293,31 @@ fn resolve_filesystem_rule(
         return Err(ProfileError::UnsafePath);
     }
     Ok(Some(normalized))
+}
+
+fn cwd_anchor(cwd: &Path) -> Option<PathBuf> {
+    let mut anchor = PathBuf::new();
+    let mut found_normal = false;
+    for component in cwd.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir if !found_normal => {
+                anchor.push(component.as_os_str());
+            }
+            Component::Normal(_) if !found_normal => {
+                anchor.push(component.as_os_str());
+                found_normal = true;
+                break;
+            }
+            Component::CurDir
+            | Component::ParentDir
+            | Component::Normal(_)
+            | Component::Prefix(_)
+            | Component::RootDir => {
+                return None;
+            }
+        }
+    }
+    found_normal.then_some(anchor)
 }
 
 fn normalize_absolute_path(path: &Path) -> Result<PathBuf, ProfileError> {

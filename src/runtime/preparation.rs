@@ -237,6 +237,10 @@ fn prepare_launch_with_identity_factory_and_denies(
         .read_only
         .extend(profile.filesystem_read_only);
     effective_policy
+        .filesystem
+        .metadata_read
+        .extend(profile.filesystem_metadata_read);
+    effective_policy
         .registry
         .read_only
         .extend(profile.registry_read_only);

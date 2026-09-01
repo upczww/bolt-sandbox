@@ -53,7 +53,8 @@ tool-specific allow paths.
 - Compatibility updates become auditable data changes.
 - The shipped profile is versioned, hashed, signed with the package, and easy to
   review independently from hook code.
-- Version 1 can grant only read access; write access remains task-specific.
+- Version 1 can grant only content-read or metadata-read access; write access
+  remains task-specific.
 - Explicit and mandatory denies continue to override compatibility grants.
 
 ### Negative

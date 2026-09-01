@@ -347,7 +347,13 @@ fn agent_git_status_runs_in_task_workspace_without_network() {
     assert!(initialized.success());
     fs::write(workspace.join("agent.txt"), b"sandbox\n").expect("Git fixture must be written");
 
-    let output = sandbox_command(&component_root, &workspace)
+    let mut command = sandbox_command(&component_root, &workspace);
+    command
+        .env("PWD", &workspace)
+        .env("HOME", &workspace)
+        .env("GIT_CONFIG_GLOBAL", "NUL")
+        .env("GIT_CONFIG_SYSTEM", "NUL");
+    let output = command
         .arg("--network")
         .arg("denied")
         .arg("--")
@@ -389,7 +395,13 @@ fn agent_cargo_metadata_runs_offline_with_read_only_toolchain() {
         .arg("denied")
         .arg("--")
         .arg(&cargo)
-        .args(["metadata", "--format-version", "1", "--no-deps", "--offline"])
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--offline",
+        ])
         .output()
         .expect("sandboxed Cargo must launch");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -421,10 +433,10 @@ fn sandbox_command(component_root: &Path, cwd: &Path) -> Command {
 
 fn agent_fixture_directory(kind: &str) -> PathBuf {
     let id = NEXT_AGENT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "bolt-agent-{kind}-{}-{id}",
-        std::process::id()
-    ))
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("agent-fixtures")
+        .join(format!("{kind}-{}-{id}", std::process::id()))
 }
 
 fn serve_one_http_request(listener: &TcpListener) -> bool {
