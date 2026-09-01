@@ -18,6 +18,19 @@ const MAX_STREAM_CAPACITY: usize = 64 * 1_048_576;
 pub const DEFAULT_VIOLATION_AGGREGATE_CAPACITY: usize = 1_024;
 pub const MAX_VIOLATION_AGGREGATE_CAPACITY: usize = 65_536;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WorkspaceMode {
+    #[default]
+    Direct,
+    Projected,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ExecutionOptions {
+    pub command_id: Option<CommandId>,
+    pub workspace: WorkspaceMode,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxConfig {
     pub component_root: PathBuf,
@@ -82,9 +95,30 @@ impl Sandbox {
     /// failures are returned as typed initialization stages; this function
     /// never falls back to an unsandboxed process.
     pub fn start(&self, request: SandboxRequest) -> Result<ExecutionHandle, SandboxError> {
+        self.start_with_options(request, ExecutionOptions::default())
+    }
+
+    /// Starts an execution with explicit attribution and workspace selection.
+    ///
+    /// # Errors
+    ///
+    /// Projected mode currently returns a typed workspace initialization
+    /// failure; it never falls back to direct execution.
+    pub fn start_with_options(
+        &self,
+        request: SandboxRequest,
+        options: ExecutionOptions,
+    ) -> Result<ExecutionHandle, SandboxError> {
         request.validate()?;
-        let command_id =
-            CommandId::generate().map_err(|()| SandboxError::InitializationFailed {
+        if options.workspace == WorkspaceMode::Projected {
+            return Err(SandboxError::InitializationFailed {
+                stage: InitializationStage::Workspace,
+            });
+        }
+        let command_id = options
+            .command_id
+            .map_or_else(CommandId::generate, Ok)
+            .map_err(|()| SandboxError::InitializationFailed {
                 stage: InitializationStage::Identity,
             })?;
         self.start_validated(request, command_id)
@@ -101,8 +135,13 @@ impl Sandbox {
         request: SandboxRequest,
         command_id: CommandId,
     ) -> Result<ExecutionHandle, SandboxError> {
-        request.validate()?;
-        self.start_validated(request, command_id)
+        self.start_with_options(
+            request,
+            ExecutionOptions {
+                command_id: Some(command_id),
+                workspace: WorkspaceMode::Direct,
+            },
+        )
     }
 
     fn start_validated(
