@@ -61,6 +61,48 @@ pub(super) struct WorkspaceSnapshot {
     entries: BTreeMap<PathBuf, WorkspaceFingerprint>,
 }
 
+pub(super) struct StagedWorkspaceTransaction {
+    snapshot: WorkspaceSnapshot,
+    staging_root: PathBuf,
+}
+
+impl StagedWorkspaceTransaction {
+    pub(super) fn prepare(
+        source_root: &Path,
+        staging_root: &Path,
+        limits: WorkspaceLimits,
+    ) -> Result<Self, WorkspaceError> {
+        validate_staging_root(source_root, staging_root)?;
+        let snapshot = WorkspaceSnapshot::capture(source_root, limits)?;
+        fs::create_dir(staging_root).map_err(map_io)?;
+        if let Err(error) = copy_snapshot(source_root, staging_root, &snapshot) {
+            let _ = fs::remove_dir_all(staging_root);
+            return Err(error);
+        }
+        let staged_entries = capture_entries(staging_root, limits)?;
+        if staged_entries != snapshot.entries {
+            let _ = fs::remove_dir_all(staging_root);
+            return Err(WorkspaceError::Conflict);
+        }
+        Ok(Self {
+            snapshot,
+            staging_root: staging_root.to_path_buf(),
+        })
+    }
+
+    pub(super) fn execution_root(&self) -> &Path {
+        &self.staging_root
+    }
+
+    pub(super) fn query_changes(&self) -> Result<Vec<WorkspaceChange>, WorkspaceError> {
+        self.snapshot.diff(&self.staging_root)
+    }
+
+    pub(super) fn discard(self) -> Result<(), WorkspaceError> {
+        fs::remove_dir_all(&self.staging_root).map_err(map_io)
+    }
+}
+
 impl WorkspaceSnapshot {
     pub(super) fn capture(root: &Path, limits: WorkspaceLimits) -> Result<Self, WorkspaceError> {
         Ok(Self {
@@ -166,6 +208,54 @@ fn capture_entries(
     Ok(entries)
 }
 
+fn validate_staging_root(source_root: &Path, staging_root: &Path) -> Result<(), WorkspaceError> {
+    if !source_root.is_absolute()
+        || !source_root.is_dir()
+        || !staging_root.is_absolute()
+        || staging_root.exists()
+    {
+        return Err(WorkspaceError::InvalidRoot);
+    }
+    let staging_parent = staging_root.parent().ok_or(WorkspaceError::InvalidRoot)?;
+    let staging_name = staging_root
+        .file_name()
+        .ok_or(WorkspaceError::InvalidRoot)?;
+    let canonical_source = fs::canonicalize(source_root).map_err(map_io)?;
+    let canonical_staging = fs::canonicalize(staging_parent)
+        .map_err(map_io)?
+        .join(staging_name);
+    if canonical_source.starts_with(&canonical_staging)
+        || canonical_staging.starts_with(&canonical_source)
+    {
+        return Err(WorkspaceError::InvalidRoot);
+    }
+    Ok(())
+}
+
+fn copy_snapshot(
+    source_root: &Path,
+    staging_root: &Path,
+    snapshot: &WorkspaceSnapshot,
+) -> Result<(), WorkspaceError> {
+    for (relative, fingerprint) in &snapshot.entries {
+        let source = source_root.join(relative);
+        let destination = staging_root.join(relative);
+        match fingerprint.kind {
+            WorkspaceEntryKind::Directory => fs::create_dir_all(&destination).map_err(map_io)?,
+            WorkspaceEntryKind::File => {
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent).map_err(map_io)?;
+                }
+                let copied = fs::copy(source, destination).map_err(map_io)?;
+                if copied != fingerprint.length {
+                    return Err(WorkspaceError::Conflict);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn hash_file(path: &Path) -> Result<[u8; 32], WorkspaceError> {
     let mut file = File::open(path).map_err(map_io)?;
     let mut digest = Sha256::new();
@@ -229,9 +319,8 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use super::{
-        DirectWorkspaceBackend, WorkspaceBackend, WorkspaceChange, WorkspaceChangeKind,
-        StagedWorkspaceTransaction, WorkspaceError, WorkspaceKind, WorkspaceLimits,
-        WorkspaceSnapshot,
+        DirectWorkspaceBackend, StagedWorkspaceTransaction, WorkspaceBackend, WorkspaceChange,
+        WorkspaceChangeKind, WorkspaceError, WorkspaceKind, WorkspaceLimits, WorkspaceSnapshot,
     };
 
     #[test]
@@ -327,10 +416,8 @@ mod tests {
 
     #[test]
     fn ws_007_staged_transaction_isolated_query_and_discard() {
-        let fixture = std::env::temp_dir().join(format!(
-            "bolt-workspace-stage-{}",
-            std::process::id()
-        ));
+        let fixture =
+            std::env::temp_dir().join(format!("bolt-workspace-stage-{}", std::process::id()));
         let source = fixture.join("source");
         let staged = fixture.join("staged");
         let _ = fs::remove_dir_all(&fixture);
@@ -348,7 +435,10 @@ mod tests {
         .expect("transaction must prepare");
         assert_eq!(transaction.execution_root(), staged);
         fs::write(staged.join(r"nested\file.txt"), b"after").expect("stage must mutate");
-        assert_eq!(fs::read(source.join(r"nested\file.txt")).expect("source"), b"before");
+        assert_eq!(
+            fs::read(source.join(r"nested\file.txt")).expect("source"),
+            b"before"
+        );
         assert_eq!(
             transaction.query_changes().expect("query must succeed"),
             vec![WorkspaceChange {
@@ -359,7 +449,10 @@ mod tests {
 
         transaction.discard().expect("discard must succeed");
         assert!(!staged.exists());
-        assert_eq!(fs::read(source.join(r"nested\file.txt")).expect("source"), b"before");
+        assert_eq!(
+            fs::read(source.join(r"nested\file.txt")).expect("source"),
+            b"before"
+        );
         fs::remove_dir_all(fixture).expect("fixture must clean");
     }
 }
