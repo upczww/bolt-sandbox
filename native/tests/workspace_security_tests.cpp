@@ -82,6 +82,18 @@ bool RunWorkspaceSecurityTests() {
         source, staged, 16);
     const auto after = bolt::common::VerifyWorkspaceAuthorization(
         source, staged, 16);
+    const auto created_path = staged / L"created.txt";
+    const HANDLE created_file = CreateFileW(
+        created_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    const bool created = created_file != INVALID_HANDLE_VALUE;
+    if (created) {
+        CloseHandle(created_file);
+    }
+    const bool created_mutation = created && SetDaclProtection(created_path, true);
+    const auto created_changed = bolt::common::VerifyWorkspaceAuthorization(
+        source, staged, 16);
+    std::filesystem::remove(created_path, cleanup_error);
     const bool mutation = SetDaclProtection(staged / L"nested", false);
     const auto changed = bolt::common::VerifyWorkspaceAuthorization(
         source, staged, 16);
@@ -90,6 +102,9 @@ bool RunWorkspaceSecurityTests() {
            before == bolt::common::WorkspaceSecurityStatus::kMismatch &&
            copied == bolt::common::WorkspaceSecurityStatus::kSuccess &&
            after == bolt::common::WorkspaceSecurityStatus::kSuccess &&
+           created_mutation &&
+           created_changed ==
+               bolt::common::WorkspaceSecurityStatus::kMismatch &&
            mutation &&
            changed == bolt::common::WorkspaceSecurityStatus::kMismatch &&
            !cleanup_error;
