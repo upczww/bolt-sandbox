@@ -667,12 +667,24 @@ bool TryGetHandlePath(const HANDLE handle, std::wstring& path) noexcept {
         return true;
     }
     constexpr DWORD flags = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS;
-    const DWORD required = GetFinalPathNameByHandleW(handle, nullptr, 0, flags);
-    if (required == 0) {
+    std::array<wchar_t, 1'024> common_path{};
+    const DWORD common_written = GetFinalPathNameByHandleW(
+        handle, common_path.data(), static_cast<DWORD>(common_path.size()),
+        flags);
+    if (common_written == 0) {
         return TryGetNtObjectPath(handle, path);
     }
+    if (common_written < common_path.size()) {
+        try {
+            path.assign(common_path.data(), common_written);
+            return true;
+        } catch (...) {
+            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+            return false;
+        }
+    }
     try {
-        path.assign(required, L'\0');
+        path.assign(static_cast<std::size_t>(common_written) + 1, L'\0');
     } catch (...) {
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         return false;
@@ -1169,6 +1181,10 @@ bool AuthorizeHandleIo(
         return false;
     }
     static_cast<void>(g_handle_access_cache.Store(file, cached_access));
+    if (cached_access != HandleAccess::kMetadata) {
+        static_cast<void>(
+            g_handle_access_cache.Store(file, HandleAccess::kMetadata));
+    }
     if (access == Access::kWrite) {
         InvalidateResolvedPathForMutation(
             EvaluatedPath(evaluation, source_path.c_str()), false);
@@ -1411,6 +1427,10 @@ bool AuthorizeOpenedFileHandle(
         : request.access == Access::kWrite ? HandleAccess::kWrite
                                           : HandleAccess::kMetadata;
     static_cast<void>(g_handle_access_cache.Store(file, cached_access));
+    if (cached_access != HandleAccess::kMetadata) {
+        static_cast<void>(
+            g_handle_access_cache.Store(file, HandleAccess::kMetadata));
+    }
     return true;
 }
 
@@ -1474,6 +1494,9 @@ bool AuthorizeCreateFile(
         ReportDenied(request.operation, EvaluatedPath(text_evaluation, path));
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
+    }
+    if (!RequiresPreOpenFinalResolution(request, flags_and_attributes)) {
+        return true;
     }
     std::wstring resolved_path;
     if (!ResolveCreateFileIdentity(
@@ -2808,7 +2831,8 @@ HANDLE WINAPI DetouredCreateFileW(
         SetLastError(ERROR_FILE_NOT_FOUND);
         return INVALID_HANDLE_VALUE;
     }
-    const auto request = ClassifyCreateFileRequest(desired_access, creation_disposition);
+    const auto request = ClassifyCreateFileRequestWithFlags(
+        desired_access, creation_disposition, flags_and_attributes);
     if (!AuthorizeCreateFile(filename, request, flags_and_attributes)) {
         return INVALID_HANDLE_VALUE;
     }
@@ -2848,7 +2872,8 @@ HANDLE WINAPI DetouredCreateFileA(
             creation_disposition, flags_and_attributes, template_file);
     }
     std::wstring filename_wide;
-    const auto request = ClassifyCreateFileRequest(desired_access, creation_disposition);
+    const auto request = ClassifyCreateFileRequestWithFlags(
+        desired_access, creation_disposition, flags_and_attributes);
     if (!ConvertAnsiPath(filename, filename_wide)) {
         return INVALID_HANDLE_VALUE;
     }

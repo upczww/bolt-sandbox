@@ -40,4 +40,22 @@ ClassifiedAccess ClassifyCreateFileRequest(
     return {Access::kMetadata, protocol::FilesystemOperation::kMetadata};
 }
 
+ClassifiedAccess ClassifyCreateFileRequestWithFlags(
+    const std::uint32_t desired_access,
+    const std::uint32_t creation_disposition,
+    const std::uint32_t flags_and_attributes) noexcept {
+    if ((flags_and_attributes & FILE_FLAG_DELETE_ON_CLOSE) != 0) {
+        return {Access::kWrite, protocol::FilesystemOperation::kDelete};
+    }
+    return ClassifyCreateFileRequest(desired_access, creation_disposition);
+}
+
+bool RequiresPreOpenFinalResolution(
+    const ClassifiedAccess& request,
+    const std::uint32_t flags_and_attributes) noexcept {
+    return request.access == Access::kWrite ||
+           (flags_and_attributes &
+            (FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_OPEN_REPARSE_POINT)) != 0;
+}
+
 }  // namespace bolt::filesystem
