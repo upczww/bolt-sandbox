@@ -150,6 +150,14 @@ impl StagedWorkspaceTransaction {
         &self.staging_root
     }
 
+    pub(crate) fn source_root(&self) -> &Path {
+        &self.source_root
+    }
+
+    pub(crate) const fn maximum_items(&self) -> u32 {
+        self.snapshot.limits.maximum_items
+    }
+
     pub(crate) fn query_changes(&self) -> Result<Vec<WorkspaceChange>, WorkspaceError> {
         self.snapshot.diff(&self.staging_root)
     }

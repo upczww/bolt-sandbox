@@ -21,12 +21,14 @@ use crate::runtime::workspace::{
     CommittedWorkspace, StagedWorkspaceTransaction, WorkspaceError,
     WorkspaceLimits as RuntimeWorkspaceLimits,
 };
+use crate::runtime::workspace_security::WorkspaceSecurityClient;
 
 #[derive(Debug)]
 enum WorkspaceTransactionRecord {
     Pending {
         transaction: StagedWorkspaceTransaction,
         recovery_root: PathBuf,
+        security_client: WorkspaceSecurityClient,
     },
     Committed(CommittedWorkspace),
 }
@@ -305,6 +307,19 @@ impl Sandbox {
         .map_err(|_| SandboxError::InitializationFailed {
             stage: InitializationStage::Workspace,
         })?;
+        let security_client = WorkspaceSecurityClient::new(
+            &self.config.component_root,
+            self.config.component_manifest_sha256,
+        );
+        security_client
+            .copy(
+                &source_root,
+                transaction.execution_root(),
+                limits.maximum_items,
+            )
+            .map_err(|_| SandboxError::InitializationFailed {
+                stage: InitializationStage::Workspace,
+            })?;
         request.cwd = transaction.execution_root().to_path_buf();
         let mut config = self.config.clone();
         config.mandatory_filesystem_denies.push(source_root);
@@ -316,6 +331,7 @@ impl Sandbox {
             WorkspaceTransactionRecord::Pending {
                 transaction,
                 recovery_root,
+                security_client,
             },
             Arc::clone(&self.workspace_transactions),
             limits.maximum_retained_transactions,
@@ -374,10 +390,18 @@ impl Sandbox {
         let WorkspaceTransactionRecord::Pending {
             transaction,
             recovery_root,
+            security_client,
         } = &mut stored.record
         else {
             return Err(WorkspaceControlError::Conflict);
         };
+        security_client
+            .verify(
+                transaction.source_root(),
+                transaction.execution_root(),
+                transaction.maximum_items(),
+            )
+            .map_err(map_workspace_error)?;
         let committed = transaction
             .commit(recovery_root)
             .map_err(map_workspace_error)?;
