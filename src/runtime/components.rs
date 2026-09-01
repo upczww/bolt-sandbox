@@ -1,11 +1,13 @@
 use std::{
     fs::{File, OpenOptions},
+    io::Read,
     os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
 use super::architecture::{ImageArchitecture, detect_image_architecture_from_reader};
 use super::component_manifest::{ManifestError, read_manifest, verify_component};
+use crate::policy::compatibility_profile::{MAX_PROFILE_LENGTH, PROFILE_NAME};
 
 const LAUNCHER_NAME: &str = "bolt-sandbox-launcher.exe";
 const X86_LAUNCHER_NAME: &str = "bolt-sandbox-launcher-x86.exe";
@@ -28,6 +30,8 @@ pub(super) struct OpenedComponents {
     hook_handle: File,
     dns_proxy_path: Option<PathBuf>,
     dns_proxy_handle: Option<File>,
+    compatibility_profile_handle: File,
+    compatibility_profile_bytes: Vec<u8>,
 }
 
 impl OpenedComponents {
@@ -54,6 +58,14 @@ impl OpenedComponents {
     pub(super) const fn dns_proxy_handle(&self) -> Option<&File> {
         self.dns_proxy_handle.as_ref()
     }
+
+    pub(super) const fn compatibility_profile_handle(&self) -> &File {
+        &self.compatibility_profile_handle
+    }
+
+    pub(super) fn compatibility_profile_bytes(&self) -> &[u8] {
+        &self.compatibility_profile_bytes
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,6 +74,7 @@ pub(super) enum ComponentOpenError {
     LauncherOpen,
     HookOpen,
     DnsProxyOpen,
+    CompatibilityProfileOpen,
     InvalidLauncherImage,
     InvalidHookImage,
     InvalidDnsProxyImage,
@@ -73,6 +86,7 @@ pub(super) enum ComponentOpenError {
     LauncherHashMismatch,
     HookHashMismatch,
     DnsProxyHashMismatch,
+    CompatibilityProfileHashMismatch,
     ManifestHashMismatch,
 }
 
@@ -115,6 +129,7 @@ pub(super) fn open_components_with_manifest_digest_and_network_proxy(
         ImageArchitecture::X64 => X64_HOOK_NAME,
     });
     let dns_proxy_path = require_network_proxy.then(|| root.join(DNS_PROXY_NAME));
+    let compatibility_profile_path = root.join(PROFILE_NAME);
     let mut launcher_handle =
         open_read_lease(&launcher_path).map_err(|_| ComponentOpenError::LauncherOpen)?;
     let mut hook_handle = open_read_lease(&hook_path).map_err(|_| ComponentOpenError::HookOpen)?;
@@ -123,6 +138,8 @@ pub(super) fn open_components_with_manifest_digest_and_network_proxy(
         .map(open_read_lease)
         .transpose()
         .map_err(|_| ComponentOpenError::DnsProxyOpen)?;
+    let mut compatibility_profile_handle = open_read_lease(&compatibility_profile_path)
+        .map_err(|_| ComponentOpenError::CompatibilityProfileOpen)?;
     let manifest =
         read_manifest(root, expected_manifest_digest).map_err(map_manifest_open_error)?;
     let launcher_name = launcher_path
@@ -139,10 +156,27 @@ pub(super) fn open_components_with_manifest_digest_and_network_proxy(
     let hook_record = manifest
         .get(hook_name)
         .ok_or(ComponentOpenError::InvalidManifest)?;
+    let compatibility_profile_record = manifest
+        .get(PROFILE_NAME)
+        .ok_or(ComponentOpenError::InvalidManifest)?;
     verify_component(&mut launcher_handle, launcher_record)
         .map_err(|_| ComponentOpenError::LauncherHashMismatch)?;
     verify_component(&mut hook_handle, hook_record)
         .map_err(|_| ComponentOpenError::HookHashMismatch)?;
+    verify_component(
+        &mut compatibility_profile_handle,
+        compatibility_profile_record,
+    )
+    .map_err(|_| ComponentOpenError::CompatibilityProfileHashMismatch)?;
+    if compatibility_profile_record.length
+        > u64::try_from(MAX_PROFILE_LENGTH).expect("profile limit fits u64")
+    {
+        return Err(ComponentOpenError::CompatibilityProfileHashMismatch);
+    }
+    let mut compatibility_profile_bytes = Vec::new();
+    compatibility_profile_handle
+        .read_to_end(&mut compatibility_profile_bytes)
+        .map_err(|_| ComponentOpenError::CompatibilityProfileHashMismatch)?;
     if let (Some(path), Some(handle)) = (dns_proxy_path.as_deref(), dns_proxy_handle.as_mut()) {
         let name = path
             .file_name()
@@ -177,6 +211,8 @@ pub(super) fn open_components_with_manifest_digest_and_network_proxy(
         hook_handle,
         dns_proxy_path,
         dns_proxy_handle,
+        compatibility_profile_handle,
+        compatibility_profile_bytes,
     })
 }
 
@@ -442,18 +478,19 @@ mod tests {
             b"BSC1\nfs-ro|required|system-root|.\n"
         );
         assert!(components.compatibility_profile_handle().metadata().is_ok());
-        assert!(fs::rename(
-            fixture.root.join(PROFILE_NAME),
-            fixture.root.join("moved.profile")
-        )
-        .is_err());
+        assert!(
+            fs::rename(
+                fixture.root.join(PROFILE_NAME),
+                fixture.root.join("moved.profile")
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn compat_012_missing_unmanifested_and_tampered_profiles_fail_closed() {
         let fixture = Fixture::new();
-        fs::remove_file(fixture.root.join(PROFILE_NAME))
-            .expect("profile fixture must be removed");
+        fs::remove_file(fixture.root.join(PROFILE_NAME)).expect("profile fixture must be removed");
         assert_eq!(
             open_components(&fixture.root, ImageArchitecture::X64).err(),
             Some(ComponentOpenError::CompatibilityProfileOpen)
