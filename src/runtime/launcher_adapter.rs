@@ -697,7 +697,10 @@ fn initialization_failure() -> SandboxError {
 
 #[cfg(test)]
 mod tests {
+    use std::{num::NonZeroUsize, sync::mpsc};
+
     use super::*;
+    use crate::{FilesystemOperation, FilesystemViolation};
 
     #[test]
     fn launcher_ack_requires_magic_version_length_and_nonzero_pid() {
@@ -709,5 +712,51 @@ mod tests {
         acknowledgment[0] ^= 1;
         acknowledgment[8..12].fill(0);
         assert_eq!(decode_acknowledgment(&acknowledgment), None);
+    }
+
+    #[test]
+    fn evt_004_runtime_publishes_first_violation_and_aggregates_duplicates() {
+        const NONCE: [u8; 16] = [0x5a; 16];
+        let mut state = TransportState::new(NONCE, 42, NonZeroUsize::new(2).expect("nonzero"));
+        let (stdout_sender, _stdout) = mpsc::sync_channel(4);
+        let (stderr_sender, _stderr) = mpsc::sync_channel(4);
+        let (event_sender, event_receiver) = mpsc::sync_channel(8);
+        let first = SandboxEvent::FilesystemViolation(FilesystemViolation {
+            process_id: 42,
+            operation: FilesystemOperation::Write,
+            path: std::path::PathBuf::from(r"C:\denied.txt"),
+        });
+
+        for frame in [
+            crate::ipc::event_codec::encode_ready(NONCE, 0).expect("ready encodes"),
+            crate::ipc::event_codec::encode_event(&first, 1).expect("first encodes"),
+            crate::ipc::event_codec::encode_event(&first, 2).expect("duplicate encodes"),
+        ] {
+            state
+                .dispatch(
+                    TransportFrame {
+                        kind: TransportKind::Event,
+                        payload: frame,
+                    },
+                    &stdout_sender,
+                    &stderr_sender,
+                    &event_sender,
+                )
+                .expect("event dispatches");
+        }
+
+        assert_eq!(
+            event_receiver.try_iter().collect::<Vec<_>>(),
+            vec![SandboxEvent::Ready, first.clone()]
+        );
+        let result = state.infrastructure_result(crate::InfrastructureFailure::LauncherExited);
+        assert_eq!(
+            result.violation_aggregates,
+            vec![crate::ViolationAggregate {
+                event: first,
+                duplicate_count: 1,
+            }]
+        );
+        assert_eq!(result.dropped_distinct_violations, 0);
     }
 }

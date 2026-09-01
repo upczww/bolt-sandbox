@@ -8,11 +8,12 @@ use std::{
 
 use bolt_sandbox::{
     ChildInjectionFailure, ChildInjectionFailureReason, ChildProcessPolicy,
-    DEFAULT_STREAM_CAPACITY, ExecutionHandle, ExecutionResult, FilesystemOperation,
-    FilesystemPolicy, FilesystemViolation, IpCidr, MAX_TIMEOUT, MIN_TIMEOUT, NetworkAllowList,
-    NetworkPolicy, NetworkTarget, NetworkViolation, PortRange, ProcessExit, ProcessExitReason,
-    ProcessOperation, ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField, Sandbox,
-    SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest,
+    DEFAULT_STREAM_CAPACITY, DEFAULT_VIOLATION_AGGREGATE_CAPACITY, ExecutionHandle,
+    ExecutionResult, FilesystemOperation, FilesystemPolicy, FilesystemViolation, IpCidr,
+    MAX_TIMEOUT, MAX_VIOLATION_AGGREGATE_CAPACITY, MIN_TIMEOUT, NetworkAllowList, NetworkPolicy,
+    NetworkTarget, NetworkViolation, PortRange, ProcessExit, ProcessExitReason, ProcessOperation,
+    ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField, Sandbox, SandboxConfig,
+    SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest, ViolationAggregate,
 };
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {
@@ -110,6 +111,24 @@ fn req_013_typed_security_events_are_public_without_native_status_types() {
 }
 
 #[test]
+fn evt_004_public_violation_aggregate_preserves_first_event_and_count() {
+    let first = SandboxEvent::FilesystemViolation(FilesystemViolation {
+        process_id: 7,
+        operation: FilesystemOperation::Write,
+        path: PathBuf::from(r"C:\denied.txt"),
+    });
+    let aggregate = ViolationAggregate {
+        event: first.clone(),
+        duplicate_count: 3,
+    };
+
+    assert_eq!(aggregate.event, first);
+    assert_eq!(aggregate.duplicate_count, 3);
+    assert_eq!(DEFAULT_VIOLATION_AGGREGATE_CAPACITY, 1_024);
+    assert!(MAX_VIOLATION_AGGREGATE_CAPACITY >= DEFAULT_VIOLATION_AGGREGATE_CAPACITY);
+}
+
+#[test]
 fn evt_001_public_process_exit_is_typed_without_native_status_types() {
     let event = SandboxEvent::ProcessExited(ProcessExit {
         process_id: 1234,
@@ -195,6 +214,7 @@ fn req_001_public_start_rejects_invalid_request_before_component_access() {
         component_root: cwd.clone(),
         credential_environment_variables: Vec::new(),
         stream_capacity: DEFAULT_STREAM_CAPACITY,
+        violation_aggregate_capacity: DEFAULT_VIOLATION_AGGREGATE_CAPACITY,
         mandatory_filesystem_denies: Vec::new(),
         mandatory_registry_denies: Vec::new(),
         component_manifest_sha256: None,
@@ -206,6 +226,28 @@ fn req_001_public_start_rejects_invalid_request_before_component_access() {
         sandbox.start(request),
         Err(SandboxError::InvalidRequest {
             field: RequestField::Program,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn evt_006_zero_violation_aggregate_capacity_is_rejected() {
+    let cwd = std::env::current_dir().expect("test working directory must be available");
+    let result = Sandbox::new(SandboxConfig {
+        component_root: cwd,
+        credential_environment_variables: Vec::new(),
+        stream_capacity: DEFAULT_STREAM_CAPACITY,
+        violation_aggregate_capacity: 0,
+        mandatory_filesystem_denies: Vec::new(),
+        mandatory_registry_denies: Vec::new(),
+        component_manifest_sha256: None,
+    });
+
+    assert!(matches!(
+        result,
+        Err(SandboxError::InvalidConfiguration {
+            field: bolt_sandbox::ConfigurationField::ViolationAggregateCapacity,
             ..
         })
     ));
