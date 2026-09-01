@@ -127,6 +127,23 @@ fn read_u64(input: &[u8], offset: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::assert_total_parser;
+
+    fn valid_request() -> Vec<u8> {
+        let path: Vec<u16> = r"C:\work\delete.bin".encode_utf16().collect();
+        let mut request = Vec::from(REQUEST_MAGIC);
+        request.extend_from_slice(&VERSION.to_le_bytes());
+        request.extend_from_slice(&(REQUEST_HEADER_LENGTH as u16).to_le_bytes());
+        request.extend_from_slice(&(REQUEST_HEADER_LENGTH as u32 + path.len() as u32 * 2).to_le_bytes());
+        request.extend_from_slice(&(path.len() as u32).to_le_bytes());
+        request.extend_from_slice(&7_u64.to_le_bytes());
+        request.extend_from_slice(&42_u32.to_le_bytes());
+        request.extend_from_slice(&[RecoveryOperation::Delete as u8, 0, 0, 0]);
+        for unit in path {
+            request.extend_from_slice(&unit.to_le_bytes());
+        }
+        request
+    }
 
     #[test]
     fn recovery_request_decodes_and_response_has_stable_shape() {
@@ -166,5 +183,10 @@ mod tests {
         assert_eq!(response[20], 0);
         assert_eq!(&response[24..32], &9_u64.to_le_bytes());
         assert_eq!(&response[32..40], &123_u64.to_le_bytes());
+    }
+
+    #[test]
+    fn fuzz_005_recovery_request_parser_is_total_for_bounded_mutations() {
+        assert_total_parser("recovery request", &[valid_request()], decode_request);
     }
 }

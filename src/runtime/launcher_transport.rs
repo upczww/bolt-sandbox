@@ -123,6 +123,7 @@ mod tests {
     use std::io::{self, Cursor, Read};
 
     use super::*;
+    use crate::test_support::assert_total_parser;
 
     fn encoded(kind: u16, payload: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::from(*b"BLX1");
@@ -212,5 +213,13 @@ mod tests {
         let mut timeout = Vec::new();
         write_control(&mut timeout, ControlKind::Timeout).expect("timeout must encode");
         assert_eq!(timeout, b"BLC1\x01\x00\x02\x00");
+    }
+
+    #[test]
+    fn fuzz_004_launcher_transport_parser_is_total_for_bounded_mutations() {
+        let seeds = [encoded(1, b"stdout"), encoded(3, b"event")];
+        assert_total_parser("launcher transport", &seeds, |bytes| {
+            read_frame(&mut Cursor::new(bytes))
+        });
     }
 }

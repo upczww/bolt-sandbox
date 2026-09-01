@@ -548,6 +548,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+    use crate::test_support::assert_total_parser;
     use crate::policy::{
         ChildProcessPolicy, FilesystemPolicy, NetworkAllowList, NetworkPolicy, RegistryPolicy,
         SandboxPolicy,
@@ -977,5 +978,12 @@ mod tests {
 
         assert_eq!(verified.version(), POLICY_PAYLOAD_VERSION);
         assert_eq!(verified.body(), &encoded[HEADER_LENGTH..]);
+    }
+
+
+    #[test]
+    fn fuzz_006_policy_payload_parser_is_total_for_bounded_mutations() {
+        let encoded = signed_body(&body_with_network(&[1]));
+        assert_total_parser("policy payload", &[encoded], verify);
     }
 }

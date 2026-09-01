@@ -322,6 +322,7 @@ fn read_u64(input: &[u8], offset: usize) -> Result<u64, LauncherProtocolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::assert_total_parser;
 
     fn request<'a>(
         program: &'a [u16],
@@ -428,5 +429,25 @@ mod tests {
             )),
             Err(LauncherProtocolError::InvalidField)
         );
+    }
+
+    #[test]
+    fn fuzz_003_launcher_request_parser_is_total_for_bounded_mutations() {
+        let program: Vec<u16> = r"C:\tool.exe".encode_utf16().collect();
+        let cwd: Vec<u16> = r"C:\work".encode_utf16().collect();
+        let command: Vec<u16> = "tool\0".encode_utf16().collect();
+        let environment: Vec<u16> = "A=B\0\0".encode_utf16().collect();
+        let hook: Vec<u16> = r"C:\hook.dll".encode_utf16().collect();
+        let encoded = encode_start_request(request(
+            &program,
+            &cwd,
+            &command,
+            &environment,
+            b"sealed-policy",
+            &hook,
+        ))
+        .expect("valid launcher request must encode");
+
+        assert_total_parser("launcher request", &[encoded], decode_start_request);
     }
 }

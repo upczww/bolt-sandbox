@@ -575,6 +575,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::test_support::assert_total_parser;
     use crate::{
         ChildInjectionFailure, ChildInjectionFailureReason, EventsDropped, FilesystemOperation,
         FilesystemViolation, NetworkOperation, NetworkTarget, NetworkViolation, ProcessExit,
@@ -589,6 +590,15 @@ mod tests {
             exit_code: Some(7),
             reason: ProcessExitReason::Exited,
         })
+    }
+
+    #[test]
+    fn fuzz_007_event_frame_parser_is_total_for_bounded_mutations() {
+        let seeds = [
+            encode_event(&SandboxEvent::Ready, 1).expect("ready event must encode"),
+            encode_event(&exited_event(), 2).expect("exit event must encode"),
+        ];
+        assert_total_parser("event frame", &seeds, decode_event);
     }
 
     #[test]

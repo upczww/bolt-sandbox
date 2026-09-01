@@ -149,3 +149,30 @@ fn read_u64(input: &[u8], offset: usize) -> Result<u64, ManifestError> {
         bytes.try_into().map_err(|_| ManifestError::Invalid)?,
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::assert_total_parser;
+
+    fn valid_manifest() -> Vec<u8> {
+        let name = b"bolt-sandbox.exe";
+        let mut encoded = Vec::from(MAGIC);
+        encoded.extend_from_slice(&VERSION.to_le_bytes());
+        encoded.extend_from_slice(&(HEADER_LENGTH as u16).to_le_bytes());
+        encoded.extend_from_slice(&1_u16.to_le_bytes());
+        encoded.extend_from_slice(&crate::ipc::framing::PROTOCOL_VERSION.to_le_bytes());
+        encoded.extend_from_slice(&[0; 4]);
+        encoded.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        encoded.extend_from_slice(&0_u16.to_le_bytes());
+        encoded.extend_from_slice(&42_u64.to_le_bytes());
+        encoded.extend_from_slice(&[0x5a; 32]);
+        encoded.extend_from_slice(name);
+        encoded
+    }
+
+    #[test]
+    fn fuzz_002_component_manifest_parser_is_total_for_bounded_mutations() {
+        assert_total_parser("component manifest", &[valid_manifest()], parse_manifest);
+    }
+}
