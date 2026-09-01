@@ -3380,14 +3380,12 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
     }
 
     const HANDLE nested_job = CreateJobObjectW(nullptr, nullptr);
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION strengthened_job{};
-    strengthened_job.BasicLimitInformation.LimitFlags =
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION nested_job_defaults{};
     if (nested_job == nullptr ||
         !AssignProcessToJobObject(nested_job, GetCurrentProcess()) ||
         !SetInformationJobObject(
-            nested_job, JobObjectExtendedLimitInformation, &strengthened_job,
-            sizeof(strengthened_job))) {
+            nested_job, JobObjectExtendedLimitInformation,
+            &nested_job_defaults, sizeof(nested_job_defaults))) {
         if (nested_job != nullptr) {
             CloseHandle(nested_job);
         }
