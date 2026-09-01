@@ -22,6 +22,7 @@ pub(super) enum WorkspaceError {
     UnsupportedObject,
     Io,
     Conflict,
+    RollbackFailed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,7 +64,23 @@ pub(super) struct WorkspaceSnapshot {
 
 pub(super) struct StagedWorkspaceTransaction {
     snapshot: WorkspaceSnapshot,
+    source_root: PathBuf,
     staging_root: PathBuf,
+}
+
+pub(super) struct CommittedWorkspace {
+    changes: Vec<WorkspaceChange>,
+    recovery_root: PathBuf,
+}
+
+impl CommittedWorkspace {
+    pub(super) fn changes(&self) -> &[WorkspaceChange] {
+        &self.changes
+    }
+
+    pub(super) fn recovery_root(&self) -> &Path {
+        &self.recovery_root
+    }
 }
 
 impl StagedWorkspaceTransaction {
@@ -86,6 +103,7 @@ impl StagedWorkspaceTransaction {
         }
         Ok(Self {
             snapshot,
+            source_root: source_root.to_path_buf(),
             staging_root: staging_root.to_path_buf(),
         })
     }
@@ -100,6 +118,23 @@ impl StagedWorkspaceTransaction {
 
     pub(super) fn discard(self) -> Result<(), WorkspaceError> {
         fs::remove_dir_all(&self.staging_root).map_err(map_io)
+    }
+
+    pub(super) fn commit(self, recovery_root: &Path) -> Result<CommittedWorkspace, WorkspaceError> {
+        validate_recovery_root(&self.source_root, recovery_root)?;
+        self.snapshot.validate_source_unchanged(&self.source_root)?;
+        let changes = self.query_changes()?;
+        fs::rename(&self.source_root, recovery_root).map_err(map_io)?;
+        if fs::rename(&self.staging_root, &self.source_root).is_err() {
+            if fs::rename(recovery_root, &self.source_root).is_err() {
+                return Err(WorkspaceError::RollbackFailed);
+            }
+            return Err(WorkspaceError::Io);
+        }
+        Ok(CommittedWorkspace {
+            changes,
+            recovery_root: recovery_root.to_path_buf(),
+        })
     }
 }
 
@@ -221,11 +256,30 @@ fn validate_staging_root(source_root: &Path, staging_root: &Path) -> Result<(), 
         .file_name()
         .ok_or(WorkspaceError::InvalidRoot)?;
     let canonical_source = fs::canonicalize(source_root).map_err(map_io)?;
-    let canonical_staging = fs::canonicalize(staging_parent)
-        .map_err(map_io)?
-        .join(staging_name);
+    let canonical_source_parent = canonical_source
+        .parent()
+        .ok_or(WorkspaceError::InvalidRoot)?;
+    let canonical_staging_parent = fs::canonicalize(staging_parent).map_err(map_io)?;
+    if canonical_source_parent != canonical_staging_parent {
+        return Err(WorkspaceError::InvalidRoot);
+    }
+    let canonical_staging = canonical_staging_parent.join(staging_name);
     if canonical_source.starts_with(&canonical_staging)
         || canonical_staging.starts_with(&canonical_source)
+    {
+        return Err(WorkspaceError::InvalidRoot);
+    }
+    Ok(())
+}
+
+fn validate_recovery_root(source_root: &Path, recovery_root: &Path) -> Result<(), WorkspaceError> {
+    if !recovery_root.is_absolute() || recovery_root.exists() {
+        return Err(WorkspaceError::InvalidRoot);
+    }
+    let source_parent = source_root.parent().ok_or(WorkspaceError::InvalidRoot)?;
+    let recovery_parent = recovery_root.parent().ok_or(WorkspaceError::InvalidRoot)?;
+    if fs::canonicalize(source_parent).map_err(map_io)?
+        != fs::canonicalize(recovery_parent).map_err(map_io)?
     {
         return Err(WorkspaceError::InvalidRoot);
     }
@@ -458,10 +512,8 @@ mod tests {
 
     #[test]
     fn ws_016_commit_swaps_complete_workspace_and_retains_recovery_root() {
-        let fixture = std::env::temp_dir().join(format!(
-            "bolt-workspace-commit-{}",
-            std::process::id()
-        ));
+        let fixture =
+            std::env::temp_dir().join(format!("bolt-workspace-commit-{}", std::process::id()));
         let source = fixture.join("source");
         let staged = fixture.join("staged");
         let recovery = fixture.join("recovery");
