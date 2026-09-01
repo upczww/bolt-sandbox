@@ -25,7 +25,6 @@ bool RunRuntimePayloadTests() {
     expected.isolated_console = true;
     expected.standard_output_handle = 0x777;
     expected.standard_error_handle = 0x888;
-    expected.event_sequence_handle = 0x999;
     expected.event_write_mutex_handle = 0xAAA;
     expected.recovery_request_handle = 0xBBB;
     expected.recovery_response_handle = 0xCCC;

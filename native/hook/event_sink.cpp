@@ -50,14 +50,13 @@ struct EventSinkState {
     HANDLE wake_event = nullptr;
     HANDLE idle_event = nullptr;
     HANDLE worker_thread = nullptr;
-    HANDLE sequence_mapping_handle = nullptr;
     HANDLE write_mutex_handle = nullptr;
-    volatile LONG64* sequence = nullptr;
     EventRecord* records = nullptr;
     std::uint8_t* frame_buffer = nullptr;
     std::size_t head = 0;
     std::size_t tail = 0;
     std::size_t count = 0;
+    std::uint64_t next_sequence = 1;
     std::uint64_t dropped_events = 0;
 };
 
@@ -99,7 +98,11 @@ bool AcquireWriteSequence(std::uint64_t& sequence) noexcept {
     if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
         return false;
     }
-    sequence = 1;
+    if (g_state.next_sequence == UINT64_MAX) {
+        ReleaseMutex(g_state.write_mutex_handle);
+        return false;
+    }
+    sequence = g_state.next_sequence++;
     return true;
 }
 
@@ -229,51 +232,23 @@ std::size_t BoundedPathLength(const wchar_t* path) noexcept {
 
 EventSinkStatus InitializeEventSink(
     const HANDLE event_handle,
-    const HANDLE sequence_mapping_handle,
     const HANDLE write_mutex_handle) noexcept {
     DWORD handle_flags = 0;
     if (event_handle == nullptr || event_handle == INVALID_HANDLE_VALUE ||
         !GetHandleInformation(event_handle, &handle_flags)) {
         return EventSinkStatus::kInvalidHandle;
     }
-    const bool shared_sequence_absent =
-        sequence_mapping_handle == nullptr && write_mutex_handle == nullptr;
-    if (!shared_sequence_absent &&
-        (sequence_mapping_handle == nullptr ||
-         sequence_mapping_handle == INVALID_HANDLE_VALUE ||
-         write_mutex_handle == nullptr ||
-         write_mutex_handle == INVALID_HANDLE_VALUE ||
-         !GetHandleInformation(sequence_mapping_handle, &handle_flags) ||
+    if (write_mutex_handle == INVALID_HANDLE_VALUE ||
+        (write_mutex_handle != nullptr &&
          !GetHandleInformation(write_mutex_handle, &handle_flags))) {
         return EventSinkStatus::kInvalidHandle;
     }
-    HANDLE selected_mapping = sequence_mapping_handle;
     HANDLE selected_mutex = write_mutex_handle;
-    if (shared_sequence_absent) {
-        selected_mapping = CreateFileMappingW(
-            INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
-            sizeof(LONG64), nullptr);
+    if (selected_mutex == nullptr) {
         selected_mutex = CreateMutexW(nullptr, FALSE, nullptr);
     }
-    auto* sequence = selected_mapping == nullptr
-                         ? nullptr
-                         : static_cast<volatile LONG64*>(MapViewOfFile(
-                               selected_mapping,
-                               FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
-                               sizeof(LONG64)));
-    if (selected_mapping == nullptr || selected_mutex == nullptr ||
-        sequence == nullptr) {
-        if (sequence != nullptr) {
-            UnmapViewOfFile(const_cast<LONG64*>(sequence));
-        }
-        if (shared_sequence_absent) {
-            CloseHandle(selected_mapping);
-            CloseHandle(selected_mutex);
-        }
+    if (selected_mutex == nullptr) {
         return EventSinkStatus::kSynchronizationFailed;
-    }
-    if (shared_sequence_absent) {
-        InterlockedExchange64(sequence, 0);
     }
     if (InterlockedCompareExchange(&g_state.initialization_state, -1, 0) != 0) {
         return EventSinkStatus::kAlreadyInitialized;
@@ -298,9 +273,7 @@ EventSinkStatus InitializeEventSink(
         return EventSinkStatus::kSynchronizationFailed;
     }
     g_state.event_handle = event_handle;
-    g_state.sequence_mapping_handle = selected_mapping;
     g_state.write_mutex_handle = selected_mutex;
-    g_state.sequence = sequence;
     g_state.worker_thread = CreateThread(nullptr, 0, EventWriterThread, nullptr, 0, nullptr);
     if (g_state.worker_thread == nullptr) {
         InterlockedExchange(&g_state.initialization_state, 0);

@@ -20,7 +20,6 @@ enum class EventSinkStatus : std::uint8_t {
 
 EventSinkStatus InitializeEventSink(
     HANDLE event_handle,
-    HANDLE sequence_mapping_handle = nullptr,
     HANDLE write_mutex_handle = nullptr) noexcept;
 
 bool IsEventSinkHandle(HANDLE handle) noexcept;

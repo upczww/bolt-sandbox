@@ -30,12 +30,11 @@ constexpr std::size_t kIsolatedConsoleOffset = 126;
 constexpr std::size_t kReservedOffset = 127;
 constexpr std::size_t kStandardOutputHandleOffset = 128;
 constexpr std::size_t kStandardErrorHandleOffset = 136;
-constexpr std::size_t kEventSequenceHandleOffset = 144;
-constexpr std::size_t kEventWriteMutexHandleOffset = 152;
-constexpr std::size_t kRecoveryRequestHandleOffset = 160;
-constexpr std::size_t kRecoveryResponseHandleOffset = 168;
-constexpr std::size_t kRecoveryMutexHandleOffset = 176;
-constexpr std::size_t kRecoveryCounterHandleOffset = 184;
+constexpr std::size_t kEventWriteMutexHandleOffset = 144;
+constexpr std::size_t kRecoveryRequestHandleOffset = 152;
+constexpr std::size_t kRecoveryResponseHandleOffset = 160;
+constexpr std::size_t kRecoveryMutexHandleOffset = 168;
+constexpr std::size_t kRecoveryCounterHandleOffset = 176;
 constexpr std::size_t kMinimumPolicyLength = kPolicyEnvelopeLength;
 constexpr std::size_t kMaximumPolicyLength = kPolicyEnvelopeLength + kPolicyMaximumBodyLength;
 
@@ -129,9 +128,6 @@ std::array<std::uint8_t, kRuntimePayloadLength> EncodeRuntimePayload(
         encoded.data(), kStandardErrorHandleOffset,
         payload.standard_error_handle);
     WriteU64(
-        encoded.data(), kEventSequenceHandleOffset,
-        payload.event_sequence_handle);
-    WriteU64(
         encoded.data(), kEventWriteMutexHandleOffset,
         payload.event_write_mutex_handle);
     WriteU64(
@@ -200,8 +196,6 @@ RuntimePayloadStatus DecodeRuntimePayload(
         ReadU64(encoded, kStandardOutputHandleOffset);
     decoded.standard_error_handle =
         ReadU64(encoded, kStandardErrorHandleOffset);
-    decoded.event_sequence_handle =
-        ReadU64(encoded, kEventSequenceHandleOffset);
     decoded.event_write_mutex_handle =
         ReadU64(encoded, kEventWriteMutexHandleOffset);
     decoded.recovery_request_handle =
@@ -234,8 +228,7 @@ RuntimePayloadStatus DecodeRuntimePayload(
     if (!standard_streams_absent && !standard_streams_valid) {
         return RuntimePayloadStatus::kInvalidHandle;
     }
-    if (!IsValidHandleValue(decoded.event_sequence_handle) ||
-        !IsValidHandleValue(decoded.event_write_mutex_handle)) {
+    if (!IsValidHandleValue(decoded.event_write_mutex_handle)) {
         return RuntimePayloadStatus::kInvalidHandle;
     }
     const std::array<std::uint64_t, 4> recovery_handles = {

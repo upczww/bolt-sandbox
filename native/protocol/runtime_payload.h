@@ -8,7 +8,7 @@
 
 namespace bolt::protocol {
 
-inline constexpr std::size_t kRuntimePayloadLength = 192;
+inline constexpr std::size_t kRuntimePayloadLength = 184;
 inline constexpr GUID kRuntimePayloadGuid = {
     0x4f8a6d21, 0x91c7, 0x4bb7, {0xa6, 0x7e, 0x31, 0x57, 0x2b, 0xd9, 0x46, 0x10}};
 
@@ -39,7 +39,6 @@ struct RuntimePayload {
     bool isolated_console = false;
     std::uint64_t standard_output_handle = 0;
     std::uint64_t standard_error_handle = 0;
-    std::uint64_t event_sequence_handle = 0;
     std::uint64_t event_write_mutex_handle = 0;
     std::uint64_t recovery_request_handle = 0;
     std::uint64_t recovery_response_handle = 0;
@@ -63,7 +62,6 @@ struct RuntimePayload {
                isolated_console == other.isolated_console &&
                standard_output_handle == other.standard_output_handle &&
                standard_error_handle == other.standard_error_handle &&
-               event_sequence_handle == other.event_sequence_handle &&
                event_write_mutex_handle == other.event_write_mutex_handle &&
                recovery_request_handle == other.recovery_request_handle &&
                recovery_response_handle == other.recovery_response_handle &&

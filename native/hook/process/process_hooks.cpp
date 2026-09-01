@@ -437,7 +437,6 @@ bool InstallDescendantRuntime(
     HANDLE remote_dns_response = nullptr;
     HANDLE remote_standard_output = nullptr;
     HANDLE remote_standard_error = nullptr;
-    HANDLE remote_event_sequence = nullptr;
     HANDLE remote_event_write_mutex = nullptr;
     HANDLE remote_recovery_request = nullptr;
     HANDLE remote_recovery_response = nullptr;
@@ -467,10 +466,6 @@ bool InstallDescendantRuntime(
         DuplicateIntoProcessWithAccess(
             process_information->hProcess, release, SYNCHRONIZE,
             remote_release) &&
-        DuplicateIntoProcess(
-            process_information->hProcess,
-            HandleFromWire(g_runtime_payload.event_sequence_handle),
-            remote_event_sequence) &&
         DuplicateIntoProcessWithAccess(
             process_information->hProcess,
             HandleFromWire(g_runtime_payload.event_write_mutex_handle),
@@ -531,8 +526,6 @@ bool InstallDescendantRuntime(
     child_payload.release_handle = reinterpret_cast<std::uintptr_t>(remote_release);
     child_payload.descendant_ready_handle =
         reinterpret_cast<std::uintptr_t>(remote_ready);
-    child_payload.event_sequence_handle =
-        reinterpret_cast<std::uintptr_t>(remote_event_sequence);
     child_payload.event_write_mutex_handle =
         reinterpret_cast<std::uintptr_t>(remote_event_write_mutex);
     child_payload.startup_fault = g_runtime_payload.descendant_startup_fault;

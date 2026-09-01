@@ -91,7 +91,7 @@ RuntimeInitializationStatus InitializeRuntime(const HINSTANCE instance) noexcept
         return failed();
     }
     if (bolt::hook::InitializeEventSink(
-            event_handle, HandleFromWire(payload.event_sequence_handle),
+            event_handle,
             HandleFromWire(payload.event_write_mutex_handle)) !=
         bolt::hook::EventSinkStatus::kSuccess) {
         return failed();
