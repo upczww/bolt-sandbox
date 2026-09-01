@@ -985,6 +985,9 @@ fn wait_for_connection(listener: &TcpListener, duration: Duration) -> bool {
 }
 
 fn respond_ok(stream: &mut TcpStream) -> bool {
+    if stream.set_nonblocking(false).is_err() {
+        return false;
+    }
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let mut request = [0_u8; 4_096];
     if !matches!(stream.read(&mut request), Ok(bytes) if bytes != 0) {
