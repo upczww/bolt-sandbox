@@ -73,3 +73,26 @@ fn perf_003_read_workload_fixture_reports_internal_time_for_driver_cleanup() {
     );
     fs::remove_dir_all(root).expect("benchmark driver must clean fixture tree");
 }
+
+#[test]
+fn perf_003_path_churn_fixture_remains_separate_from_steady_state() {
+    let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let root =
+        std::env::temp_dir().join(format!("bolt-path-benchmark-{}-{id}", std::process::id()));
+    let output = benchmark()
+        .args(["--filesystem-path-fixture"])
+        .arg(&root)
+        .arg("16")
+        .output()
+        .expect("path benchmark fixture must run");
+
+    assert!(output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<u64>()
+            .is_ok()
+    );
+    assert!(root.is_dir());
+    fs::remove_dir_all(root).expect("benchmark driver must clean path fixture tree");
+}
