@@ -1278,6 +1278,7 @@ mod tests {
         net::{IpAddr, Ipv4Addr, Ipv6Addr},
         os::windows::ffi::OsStringExt,
         path::{Path, PathBuf},
+        time::Duration,
     };
 
     use super::*;
@@ -2498,5 +2499,32 @@ mod tests {
             ),
             FilesystemDecision::Deny
         );
+    }
+
+    #[test]
+    fn rec_008_recovery_retention_must_be_nonzero_and_bounded() {
+        let policy = SandboxPolicy {
+            recovery: RecoveryPolicy::Enabled(RecoveryLimits {
+                directory: PathBuf::from(r"C:\trusted-recovery"),
+                maximum_bytes: 1_024,
+                maximum_items: 4,
+                retention: Duration::from_secs(24 * 60 * 60),
+            }),
+            ..SandboxPolicy::default()
+        };
+        assert!(compile(&policy, Path::new(r"C:\work")).is_ok());
+
+        let mut zero = policy.clone();
+        let RecoveryPolicy::Enabled(limits) = &mut zero.recovery else {
+            unreachable!();
+        };
+        limits.retention = Duration::ZERO;
+        assert!(matches!(
+            compile(&zero, Path::new(r"C:\work")),
+            Err(SandboxError::InvalidRequest {
+                field: RequestField::RecoveryPolicy,
+                reason: InvalidRequestReason::OutOfRange,
+            })
+        ));
     }
 }
