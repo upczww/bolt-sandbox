@@ -33,19 +33,12 @@ pub(crate) enum PolicyPayloadError {
 }
 
 #[derive(Debug)]
-#[allow(
-    dead_code,
-    reason = "sealed policy is passed to the native launcher in a later phase"
-)]
 pub(crate) struct SealedPolicy {
     bytes: Vec<u8>,
 }
 
-#[allow(
-    dead_code,
-    reason = "sealed policy is passed to the native launcher in a later phase"
-)]
 impl SealedPolicy {
+    #[cfg(test)]
     pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -54,6 +47,7 @@ impl SealedPolicy {
         self.bytes
     }
 
+    #[cfg(test)]
     pub(super) fn digest(&self) -> &[u8] {
         &self.bytes[DIGEST_OFFSET..DIGEST_OFFSET + DIGEST_LENGTH]
     }
@@ -79,10 +73,6 @@ impl VerifiedPolicy<'_> {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "policy sealing is connected to the native launcher in a later phase"
-)]
 pub(crate) fn seal(policy: &CompiledPolicy) -> Result<SealedPolicy, PolicyPayloadError> {
     let body = encode_body(policy)?;
     let body_length = u32::try_from(body.len()).map_err(|_| PolicyPayloadError::PayloadTooLarge)?;

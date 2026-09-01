@@ -1,52 +1,36 @@
 #[allow(
     dead_code,
-    reason = "image architecture selection is connected to launcher component selection later"
+    reason = "path wrapper is retained for architecture parser contract tests"
 )]
 mod architecture;
 mod component_manifest;
 #[allow(
     dead_code,
-    reason = "opened native components are connected to the launcher adapter later"
+    reason = "opened component handles are intentionally retained as execution identity leases"
 )]
 mod components;
-#[allow(
-    dead_code,
-    reason = "event channel driver is connected to the Windows named-pipe reader later"
-)]
+#[cfg(test)]
 mod event_channel;
 mod launcher_adapter;
 #[allow(
     dead_code,
-    reason = "launcher stdio protocol is connected to the native adapter next"
+    reason = "Rust decoder is retained for native launcher protocol parity and fuzz tests"
 )]
 mod launcher_protocol;
-#[allow(
-    dead_code,
-    reason = "multiplexed launcher frames are connected after the native transport lands"
-)]
 mod launcher_transport;
 mod lifecycle;
 #[allow(
     dead_code,
-    reason = "launch preparation is connected to the native launcher adapter later"
+    reason = "prepared target and component handles are intentionally retained through execution"
 )]
 mod preparation;
-#[allow(
-    dead_code,
-    reason = "process observation is connected to the public execution handle later"
-)]
+#[cfg(test)]
 mod process_observer;
 mod recovery;
 mod recovery_protocol;
-#[allow(
-    dead_code,
-    reason = "startup orchestration is connected to the native launcher adapter later"
-)]
+#[cfg(test)]
 mod startup;
-#[allow(
-    dead_code,
-    reason = "bounded stream buffers are connected to Windows pipe readers later"
-)]
+#[cfg(test)]
 mod streams;
 
 use crate::{ExecutionHandle, InitializationStage, SandboxConfig, SandboxError, SandboxRequest};

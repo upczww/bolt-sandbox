@@ -223,27 +223,15 @@ fn push_repeated(encoded: &mut Vec<u16>, code_unit: u16, count: usize) {
     encoded.resize(encoded.len() + count, code_unit);
 }
 
-#[allow(
-    dead_code,
-    reason = "prepared environment is consumed by the process runtime in the next phase"
-)]
 pub(crate) struct PreparedEnvironment {
     pub(crate) variables: BTreeMap<OsString, OsString>,
     pub(crate) diagnostic: EnvironmentSanitization,
 }
 
-#[allow(
-    dead_code,
-    reason = "sanitization diagnostics are emitted by the process runtime in the next phase"
-)]
 pub(crate) struct EnvironmentSanitization {
     pub(crate) stripped_credentials: usize,
 }
 
-#[allow(
-    dead_code,
-    reason = "environment preparation is wired into child creation in the next phase"
-)]
 pub(crate) fn prepare_environment(
     environment: &BTreeMap<OsString, OsString>,
     credential_names: &[OsString],
@@ -272,10 +260,6 @@ pub(crate) fn prepare_environment(
     })
 }
 
-#[allow(
-    dead_code,
-    reason = "encoded environment block is passed to CreateProcessW in the runtime phase"
-)]
 pub(crate) fn encode_environment_block(
     environment: &BTreeMap<OsString, OsString>,
 ) -> Result<Vec<u16>, SandboxError> {

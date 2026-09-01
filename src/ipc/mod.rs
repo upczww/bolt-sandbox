@@ -2,17 +2,17 @@ pub(crate) mod aggregation;
 pub(crate) mod event_codec;
 #[allow(
     dead_code,
-    reason = "private protocol encoder is wired into the launcher IPC transport in the next phase"
+    reason = "checksum mutation helper is compiled for protocol integrity tests"
 )]
 pub(crate) mod framing;
 mod handshake;
 #[allow(
     dead_code,
-    reason = "execution identity is connected to secure named-pipe creation later"
+    reason = "opaque endpoint identity remains reserved for the restricted pipe transport"
 )]
 pub(crate) mod identity;
 #[allow(
     dead_code,
-    reason = "session protocol is wired into the launcher IPC transport in the next phase"
+    reason = "session state accessor is used by protocol state-machine tests"
 )]
 pub(crate) mod session;
