@@ -3188,6 +3188,8 @@ BOOL WINAPI DetouredSetFileInformationByHandle(
             return FALSE;
         }
         InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, source_path.c_str()), false);
+        recovery::BackupPath(
+            source_path.c_str(), protocol::RecoveryOperation::kDelete);
         return g_set_file_information_by_handle(
             file, information_class, information, information_size);
     }
