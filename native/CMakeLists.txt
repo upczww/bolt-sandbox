@@ -350,6 +350,7 @@ add_executable(bolt-sandbox-native-tests
     tests/projected_workspace_provider_tests.cpp
     tests/projected_workspace_protocol_tests.cpp
     tests/immutable_mapping_tests.cpp
+    tests/inherited_handle_payload_tests.cpp
     tests/process_tests.cpp
     tests/protocol_mutation_tests.cpp
     tests/protocol_tests.cpp

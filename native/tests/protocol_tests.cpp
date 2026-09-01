@@ -60,6 +60,7 @@ bool RunWorkspaceSecurityProtocolTests();
 bool RunWorkspaceSecurityLauncherTests(const std::filesystem::path& directory);
 int RunWorkspaceAclMutationFixture(int argument_count, wchar_t** arguments) noexcept;
 bool RunRuntimePayloadTests();
+bool RunInheritedHandlePayloadTests();
 bool RunBuildXlTreeTests();
 bool RunFilesystemPolicyTests();
 bool RunHandleAccessCacheTests();
@@ -711,6 +712,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunRuntimePayloadTests()) {
         return 11;
+    }
+    if (!RunInheritedHandlePayloadTests()) {
+        return 59;
     }
     if (!RunBuildXlTreeTests()) {
         return 12;
