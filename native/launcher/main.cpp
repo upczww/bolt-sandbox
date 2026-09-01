@@ -4,12 +4,14 @@
 #include "protocol/event_frame.h"
 #include "protocol/policy_payload.h"
 #include "protocol/recovery_protocol.h"
+#include "protocol/workspace_security_protocol.h"
 
 #include "common/execution_job.h"
 #include "common/immutable_policy_mapping.h"
 #include "common/private_pipe.h"
 #include "common/pseudo_console.h"
 #include "common/suspended_process.h"
+#include "common/workspace_security.h"
 #include "hook/network/dns_proxy_process.h"
 #include "hook/network/network_policy.h"
 
@@ -1069,12 +1071,96 @@ int RunStdioSession() noexcept {
     return RunDecodedSession(request);
 }
 
+bolt::protocol::WorkspaceSecurityResult MapWorkspaceSecurityStatus(
+    const bolt::common::WorkspaceSecurityStatus status) noexcept {
+    using Native = bolt::common::WorkspaceSecurityStatus;
+    using Protocol = bolt::protocol::WorkspaceSecurityResult;
+    switch (status) {
+        case Native::kSuccess:
+            return Protocol::kSuccess;
+        case Native::kInvalidRoot:
+            return Protocol::kInvalidRoot;
+        case Native::kUnsupportedObject:
+            return Protocol::kUnsupportedObject;
+        case Native::kQuotaExceeded:
+            return Protocol::kQuotaExceeded;
+        case Native::kSecurityQueryFailed:
+            return Protocol::kSecurityQueryFailed;
+        case Native::kSecurityApplyFailed:
+            return Protocol::kSecurityApplyFailed;
+        case Native::kMismatch:
+            return Protocol::kMismatch;
+    }
+    return Protocol::kProtocolError;
+}
+
+int RunWorkspaceSecuritySession() noexcept {
+    const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    const HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (input == nullptr || input == INVALID_HANDLE_VALUE || output == nullptr ||
+        output == INVALID_HANDLE_VALUE) {
+        return ERROR_INVALID_HANDLE;
+    }
+    std::vector<std::uint8_t> encoded;
+    try {
+        encoded.resize(bolt::protocol::kWorkspaceSecurityHeaderLength);
+    } catch (...) {
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    if (!ReadExact(input, encoded.data(), encoded.size())) {
+        return ERROR_INVALID_DATA;
+    }
+    std::uint32_t total_length = 0;
+    std::memcpy(&total_length, encoded.data() + 8, sizeof(total_length));
+    if (total_length < bolt::protocol::kWorkspaceSecurityHeaderLength ||
+        total_length > bolt::protocol::kWorkspaceSecurityMaximumRequestLength) {
+        return ERROR_INVALID_DATA;
+    }
+    try {
+        encoded.resize(total_length);
+    } catch (...) {
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    if (!ReadExact(
+            input,
+            encoded.data() + bolt::protocol::kWorkspaceSecurityHeaderLength,
+            encoded.size() -
+                bolt::protocol::kWorkspaceSecurityHeaderLength)) {
+        return ERROR_INVALID_DATA;
+    }
+    bolt::protocol::WorkspaceSecurityRequest request{};
+    if (bolt::protocol::DecodeWorkspaceSecurityRequest(
+            encoded.data(), encoded.size(), request) !=
+        bolt::protocol::WorkspaceSecurityProtocolStatus::kSuccess) {
+        return ERROR_INVALID_DATA;
+    }
+    const auto source = std::filesystem::path(request.source_root);
+    const auto destination =
+        std::filesystem::path(request.destination_root);
+    const auto status =
+        request.operation ==
+                bolt::protocol::WorkspaceSecurityOperation::kCopy
+            ? bolt::common::CopyWorkspaceAuthorization(
+                  source, destination, request.maximum_items)
+            : bolt::common::VerifyWorkspaceAuthorization(
+                  source, destination, request.maximum_items);
+    const auto response = bolt::protocol::EncodeWorkspaceSecurityResponse(
+        MapWorkspaceSecurityStatus(status));
+    return WriteExact(output, response.data(), response.size())
+               ? ERROR_SUCCESS
+               : ERROR_BROKEN_PIPE;
+}
+
 }  // namespace
 
 int wmain(const int argument_count, wchar_t** arguments) noexcept {
     if (argument_count == 2 &&
         std::wcscmp(arguments[1], L"--stdio-session") == 0) {
         return RunStdioSession();
+    }
+    if (argument_count == 2 &&
+        std::wcscmp(arguments[1], L"--workspace-security") == 0) {
+        return RunWorkspaceSecuritySession();
     }
     if (argument_count != 8 ||
         std::wcscmp(arguments[1], L"--supervise-job") != 0) {
