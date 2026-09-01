@@ -509,6 +509,7 @@ and reason code—not merely identical serialized bytes.
 | COMPAT-012 | The Agent workspace path contains spaces and non-ASCII characters | Every supported tool preserves the path and keeps all generated state beneath the workspace |
 | COMPAT-013 | Compatibility Profile declares the users-hive root | Only exact-read-only `HKU` is accepted; recursive or SID-subtree grants fail closed |
 | COMPAT-014 | Agent tool scenarios are loaded from the checked-in matrix | Required tool families are complete; duplicate, malformed, privileged-by-default, absolute-machine-path, and silently skipped required scenarios fail validation |
+| COMPAT-015 | Required tools available on the host execute from declarative scenarios | Each runs once in a non-ASCII workspace, receives only configured read/metadata roots and private state, produces configured evidence, and never silently retries or writes outside the workspace |
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |
