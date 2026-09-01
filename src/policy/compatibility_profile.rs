@@ -692,6 +692,30 @@ mod tests {
     }
 
     #[test]
+    fn compat_031_exact_read_only_devices_are_data_driven_and_bounded() {
+        let profile = parse_profile(
+            b"BSC1\ndevice-ro|required|device|\\Device\\DeviceApi\\CMApi\n",
+        )
+        .expect("exact device rule must parse");
+        let resolved = resolve_profile(&profile, &context()).expect("device rule must resolve");
+        assert_eq!(
+            resolved.device_read_only,
+            [String::from(r"\Device\DeviceApi\CMApi")]
+        );
+
+        for device in [
+            r"\Device",
+            r"\Device\",
+            r"\Device\DeviceApi\..\KsecDD",
+            r"\Device\DeviceApi\*",
+            r"C:\Device\CMApi",
+        ] {
+            let encoded = format!("BSC1\ndevice-ro|required|device|{device}\n");
+            assert!(parse_profile(encoded.as_bytes()).is_err(), "accepted {device}");
+        }
+    }
+
+    #[test]
     fn compat_013_users_hive_profile_access_is_limited_to_exact_root_read() {
         let profile = parse_profile(b"BSC1\nreg-exact-ro|required|registry|HKU\n")
             .expect("exact users-hive root rule must parse");
