@@ -48,6 +48,12 @@ evidence.
   redirected to task-private storage.
 - npm/pnpm runs an offline local-package script without global tokens.
 - Available .NET and Java fixtures run when their runtimes are declared required.
+- One workspace containing spaces and non-ASCII characters runs cmd, PowerShell,
+  Python, Node, Git, Cargo/Rust, and an available GCC-compatible or MSVC native
+  compiler without retries or per-command policy prompts. Every generated file,
+  private home, temporary directory, cache, and build output remains beneath the
+  workspace. Compiler SDK roots are host-discovered or explicitly supplied and
+  granted read-only; they are never embedded in product code.
 
 ## Network Workflows
 

@@ -505,6 +505,8 @@ and reason code—not merely identical serialized bytes.
 | COMPAT-008 | Supported Windows/architecture CI matrix runs full release suite | Every required cell passes and records versions/artifacts |
 | COMPAT-009 | Unsupported Windows or architecture is used | Typed unsupported result is returned, never silent partial enforcement |
 | COMPAT-010 | Paths/profile/tool output use non-ASCII locale | Policy, process, streams, and events preserve meaning without lossy conversion |
+| COMPAT-011 | One Agent workspace runs shell, PowerShell, Python, Node, Git, Cargo/Rust, and a declared native compiler | All in-workspace file, child-process, cache, build, and executable workflows succeed on the first attempt; external toolchain roots are data-driven and read-only |
+| COMPAT-012 | The Agent workspace path contains spaces and non-ASCII characters | Every supported tool preserves the path and keeps all generated state beneath the workspace |
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |

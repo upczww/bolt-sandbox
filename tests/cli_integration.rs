@@ -625,6 +625,195 @@ fn agent_cargo_metadata_runs_offline_with_private_home() {
     let _ = fs::remove_dir_all(&workspace);
 }
 
+#[test]
+fn agent_workspace_toolchain_matrix_stays_inside_workspace() {
+    let _guard = scenario_guard();
+    let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
+    else {
+        return;
+    };
+    let required_tool = |name: &str| {
+        let path = std::env::var_os(name)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| panic!("{name} must be declared by the Agent scenario harness"));
+        assert!(path.is_file(), "{name} executable must exist: {path:?}");
+        path
+    };
+    let shell = required_tool("BOLT_TEST_SHELL");
+    let powershell = required_tool("BOLT_TEST_POWERSHELL");
+    let python = required_tool("BOLT_TEST_PYTHON");
+    let node = required_tool("BOLT_TEST_NODE");
+    let git = required_tool("BOLT_TEST_GIT");
+    let cargo = required_tool("BOLT_TEST_CARGO");
+    let native_compiler = required_tool("BOLT_TEST_NATIVE_COMPILER");
+    let native_compiler_kind = std::env::var("BOLT_TEST_NATIVE_COMPILER_KIND")
+        .expect("native compiler kind must be declared");
+    let workspace = agent_fixture_directory("工具链 workspace");
+    let private_home = workspace.join(".agent-home");
+    let private_temp = workspace.join(".agent-temp");
+    fs::create_dir_all(&private_home).expect("private home must be created");
+    fs::create_dir_all(&private_temp).expect("private temp must be created");
+
+    let run = |label: &str, program: &Path, args: &[&str], read_roots: &[PathBuf]| {
+        let mut command = sandbox_command(&component_root, &workspace);
+        for root in read_roots {
+            command.arg("--read-only").arg(root);
+        }
+        command
+            .args(["--network", "denied", "--"])
+            .arg(program)
+            .args(args)
+            .env("HOME", &private_home)
+            .env("USERPROFILE", &private_home)
+            .env("TEMP", &private_temp)
+            .env("TMP", &private_temp);
+        let output = command
+            .output()
+            .unwrap_or_else(|error| panic!("{label} must launch once: {error}"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{label} failed in workspace: stderr={stderr}"
+        );
+        assert!(
+            !stderr.contains("sandbox-event filesystem-violation")
+                && !stderr.contains("sandbox-event network-violation"),
+            "{label} needed an unexpected policy exception: {stderr}"
+        );
+    };
+
+    run(
+        "cmd",
+        &shell,
+        &[
+            "/d",
+            "/s",
+            "/c",
+            "mkdir shell && echo shell>shell\\result.txt",
+        ],
+        &[],
+    );
+    run(
+        "PowerShell",
+        &powershell,
+        &[
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$ErrorActionPreference='Stop'; New-Item -ItemType Directory -Force ps | Out-Null; Set-Content -NoNewline ps/result.txt powershell; & $env:ComSpec /d /c exit 0",
+        ],
+        &[],
+    );
+    run(
+        "Python",
+        &python,
+        &[
+            "-I",
+            "-c",
+            "import pathlib,subprocess,sys; pathlib.Path('python').mkdir(); pathlib.Path('python/result.txt').write_text('python',encoding='utf-8'); subprocess.run([sys.executable,'-I','-c','import pathlib;pathlib.Path(r\"python/child.txt\").write_text(\"child\")'],check=True)",
+        ],
+        &[],
+    );
+    run(
+        "Node",
+        &node,
+        &[
+            "-e",
+            "const fs=require('fs'),cp=require('child_process');fs.mkdirSync('node');fs.writeFileSync('node/result.txt','node');const r=cp.spawnSync(process.execPath,['-e',\"require('fs').writeFileSync('node/child.txt','child')\"],{stdio:'inherit'});process.exit(r.status??1);",
+        ],
+        &[],
+    );
+
+    run("Git init", &git, &["init", "--quiet"], &[]);
+    fs::write(workspace.join("tracked.txt"), "tracked\n").expect("Git input must be written");
+    run("Git add", &git, &["add", "tracked.txt"], &[]);
+    run(
+        "Git status",
+        &git,
+        &["status", "--porcelain", "--untracked-files=all"],
+        &[],
+    );
+
+    let cargo_project = workspace.join("rust");
+    fs::create_dir_all(cargo_project.join("src")).expect("Rust source directory must be created");
+    fs::write(
+        cargo_project.join("Cargo.toml"),
+        "[package]\nname='agent-workspace'\nversion='0.1.0'\nedition='2024'\n",
+    )
+    .expect("Cargo manifest must be written");
+    fs::write(cargo_project.join("src/main.rs"), "fn main() {}\n")
+        .expect("Rust source must be written");
+    run(
+        "Cargo check",
+        &cargo,
+        &[
+            "check",
+            "--offline",
+            "--manifest-path",
+            "rust/Cargo.toml",
+            "--target-dir",
+            "rust/target",
+        ],
+        &[],
+    );
+
+    fs::create_dir_all(workspace.join("native")).expect("native source directory must be created");
+    fs::write(
+        workspace.join("native/hello.c"),
+        "#include <stdio.h>\nint main(void) { puts(\"native-ok\"); return 0; }\n",
+    )
+    .expect("native source must be written");
+    let compiler_read_roots = std::env::var_os("BOLT_TEST_NATIVE_COMPILER_READ_ROOTS")
+        .map(|roots| std::env::split_paths(&roots).collect::<Vec<_>>())
+        .unwrap_or_default();
+    match native_compiler_kind.as_str() {
+        "msvc" => run(
+            "MSVC",
+            &native_compiler,
+            &[
+                "/nologo",
+                "/TC",
+                "native/hello.c",
+                "/Fo:native/hello.obj",
+                "/Fe:native/hello.exe",
+            ],
+            &compiler_read_roots,
+        ),
+        "gcc" => run(
+            "GCC",
+            &native_compiler,
+            &["native/hello.c", "-o", "native/hello.exe"],
+            &compiler_read_roots,
+        ),
+        other => panic!("unsupported native compiler kind: {other}"),
+    }
+    run(
+        "compiled native program",
+        &workspace.join("native/hello.exe"),
+        &[],
+        &[],
+    );
+
+    for relative in [
+        "shell/result.txt",
+        "ps/result.txt",
+        "python/result.txt",
+        "python/child.txt",
+        "node/result.txt",
+        "node/child.txt",
+        "rust/target/debug/.fingerprint",
+        "native/hello.exe",
+    ] {
+        assert!(
+            workspace.join(relative).exists(),
+            "Agent output must remain in workspace: {relative}"
+        );
+    }
+    fs::remove_dir_all(&workspace).expect("Agent workspace fixture must be removed");
+}
+
 fn sandbox_command(component_root: &Path, cwd: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_bolt-sandbox"));
     command
