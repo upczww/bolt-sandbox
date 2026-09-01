@@ -57,6 +57,7 @@ bool RunCase(
     const bolt::protocol::TcpProxyResult result,
     const std::uint32_t response_error,
     const bool tamper_response,
+    const bool nonblocking_client,
     const bolt::network::TcpProxyClientStatus expected_status,
     const std::uint32_t expected_error) {
     const SOCKET listener = WSASocketW(
@@ -85,7 +86,22 @@ bool RunCase(
     session.authentication_key[0] = 2;
     bool server_valid = false;
     std::thread server([&] {
+        fd_set readable{};
+        FD_ZERO(&readable);
+        FD_SET(listener, &readable);
+        timeval wait{};
+        wait.tv_sec = 2;
+        if (select(0, &readable, nullptr, nullptr, &wait) != 1) {
+            return;
+        }
         const SOCKET accepted = accept(listener, nullptr, nullptr);
+        constexpr DWORD receive_timeout = 2'000;
+        if (accepted != INVALID_SOCKET) {
+            setsockopt(
+                accepted, SOL_SOCKET, SO_RCVTIMEO,
+                reinterpret_cast<const char*>(&receive_timeout),
+                sizeof(receive_timeout));
+        }
         std::array<std::uint8_t, 4> prefix{};
         std::vector<std::uint8_t> request;
         if (accepted != INVALID_SOCKET &&
@@ -129,13 +145,21 @@ bool RunCase(
     target[1] = 0;
     target[2] = 2;
     target[3] = 20;
+    u_long nonblocking = nonblocking_client ? 1 : 0;
+    if (ioctlsocket(client, FIONBIO, &nonblocking) != 0) {
+        closesocket(client);
+        closesocket(listener);
+        server.join();
+        return false;
+    }
     std::uint32_t network_error = 0;
     const auto status = bolt::network::ConnectTcpSocketThroughProxy(
         client, connect, ntohs(endpoint.sin_port), session, 7, 99,
         bolt::network::AddressFamily::kIpv4, target.data(), 4, 443,
         "api.example", network_error);
-    server.join();
+    shutdown(client, SD_BOTH);
     closesocket(client);
+    server.join();
     closesocket(listener);
     return server_valid && status == expected_status &&
            network_error == expected_error;
@@ -240,17 +264,20 @@ bool RunTcpProxyClientTests() {
     }
     const bool passed =
         RunCase(
-            bolt::protocol::TcpProxyResult::kConnected, 0, false,
+            bolt::protocol::TcpProxyResult::kConnected, 0, false, false,
             bolt::network::TcpProxyClientStatus::kConnected, 0) &&
         RunCase(
-            bolt::protocol::TcpProxyResult::kDenied, 0, false,
+            bolt::protocol::TcpProxyResult::kConnected, 0, false, true,
+            bolt::network::TcpProxyClientStatus::kConnected, 0) &&
+        RunCase(
+            bolt::protocol::TcpProxyResult::kDenied, 0, false, false,
             bolt::network::TcpProxyClientStatus::kDenied, WSAEACCES) &&
         RunCase(
             bolt::protocol::TcpProxyResult::kConnectFailed, WSAECONNREFUSED,
-            false, bolt::network::TcpProxyClientStatus::kConnectFailed,
+            false, false, bolt::network::TcpProxyClientStatus::kConnectFailed,
             WSAECONNREFUSED) &&
         RunCase(
-            bolt::protocol::TcpProxyResult::kConnected, 0, true,
+            bolt::protocol::TcpProxyResult::kConnected, 0, true, false,
             bolt::network::TcpProxyClientStatus::kProtocolFailed,
             WSAEPROTONOSUPPORT) &&
         RunIpv6Case();
