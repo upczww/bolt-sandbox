@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 
 use bolt_sandbox::{
-    CompatibilityCapability, CompatibilityCommandOutcome, CompatibilityGrant,
+    CompatibilityApprovalScope, CompatibilityCapability, CompatibilityCommandOutcome,
+    CompatibilityDecision, CompatibilityDecisionCache, CompatibilityGrant,
     CompatibilityGrantContext, CompatibilityGrantResolver, CompatibilityNoPromptReason,
-    CompatibilityResolution, FilesystemOperation, FilesystemViolation, SandboxEvent,
-    ViolationAggregate,
+    CompatibilityPromptAction, CompatibilityResolution, FilesystemOperation, FilesystemViolation,
+    SandboxEvent, ViolationAggregate,
 };
 
 fn context() -> CompatibilityGrantContext {
@@ -122,4 +123,85 @@ fn compat_019_incomplete_violation_evidence_never_guesses_a_grant() {
         unavailable.capabilities,
         [CompatibilityCapability::IncompleteEvidence]
     );
+}
+
+fn read_proposal() -> bolt_sandbox::CompatibilityGrantProposal {
+    let resolver = CompatibilityGrantResolver::new(context()).expect("valid context");
+    let CompatibilityResolution::NeedsAuthorization(proposal) = resolver.resolve(
+        CompatibilityCommandOutcome::Failed,
+        &[filesystem_violation(
+            FilesystemOperation::Read,
+            r"C:\SDK\toolchain\stdlib.lib",
+        )],
+        0,
+    ) else {
+        panic!("fixture must produce a proposal");
+    };
+    proposal
+}
+
+#[test]
+fn compat_022_rejected_proposal_is_not_prompted_repeatedly() {
+    let proposal = read_proposal();
+    let mut cache = CompatibilityDecisionCache::new(32).expect("valid cache");
+    assert_eq!(cache.action(&proposal), CompatibilityPromptAction::Prompt);
+
+    cache
+        .record(
+            &proposal,
+            CompatibilityDecision::Rejected,
+            CompatibilityApprovalScope::Workspace,
+        )
+        .expect("rejection must record");
+    assert_eq!(
+        cache.action(&proposal),
+        CompatibilityPromptAction::SuppressRejected
+    );
+}
+
+#[test]
+fn compat_023_once_approval_is_consumed_by_exactly_one_restart() {
+    let proposal = read_proposal();
+    let mut cache = CompatibilityDecisionCache::new(32).expect("valid cache");
+    cache
+        .record(
+            &proposal,
+            CompatibilityDecision::Approved,
+            CompatibilityApprovalScope::Once,
+        )
+        .expect("approval must record");
+
+    assert_eq!(
+        cache.action(&proposal),
+        CompatibilityPromptAction::UseApproved
+    );
+    assert!(cache.consume_approval(&proposal));
+    assert_eq!(cache.action(&proposal), CompatibilityPromptAction::Prompt);
+    assert!(!cache.consume_approval(&proposal));
+}
+
+#[test]
+fn compat_024_workspace_approval_reuses_only_identical_tool_and_grants() {
+    let proposal = read_proposal();
+    let mut cache = CompatibilityDecisionCache::new(32).expect("valid cache");
+    cache
+        .record(
+            &proposal,
+            CompatibilityDecision::Approved,
+            CompatibilityApprovalScope::Workspace,
+        )
+        .expect("approval must record");
+    assert_eq!(
+        cache.action(&proposal),
+        CompatibilityPromptAction::UseApproved
+    );
+    assert!(cache.consume_approval(&proposal));
+    assert_eq!(
+        cache.action(&proposal),
+        CompatibilityPromptAction::UseApproved
+    );
+
+    let mut changed = proposal;
+    changed.executable_sha256[0] ^= 1;
+    assert_eq!(cache.action(&changed), CompatibilityPromptAction::Prompt);
 }

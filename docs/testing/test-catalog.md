@@ -516,6 +516,9 @@ and reason code—not merely identical serialized bytes.
 | COMPAT-019 | Distinct violation evidence was dropped or is incomplete | Resolver refuses to guess a grant and returns `IncompleteEvidence` |
 | COMPAT-020 | Trusted host requests isolated named-pipe compatibility | Default remains deny; explicit isolated mode rewrites only local Win32 pipe names into an execution-private namespace while remote/arbitrary native namespace access remains denied |
 | COMPAT-021 | Tool queries free-space metadata for the workspace volume | Capacity query succeeds without granting a root directory handle, file enumeration, content read, or another volume/share |
+| COMPAT-022 | User rejects one aggregated compatibility proposal | Identical proposal is suppressed in its workspace scope without hiding final audit evidence |
+| COMPAT-023 | User approves a proposal for one restart | Approval is consumable exactly once, then the same proposal requires a new decision |
+| COMPAT-024 | User approves a proposal for the workspace | Identical tool identity and grants reuse approval; changed executable hash, workspace, or proposal content does not |
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |
