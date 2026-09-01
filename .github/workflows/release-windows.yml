@@ -57,7 +57,36 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & target/native/x86/Release/bolt-sandbox-native-tests.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo build --release --bin bolt-sandbox
+          cargo build --release --bin bolt-sandbox --bin bolt-sandbox-benchmark
+
+      - name: Enforce release performance budgets
+        shell: pwsh
+        run: |
+          $componentRoot = (Resolve-Path `
+            'target/native/x64/Release').Path
+          $benchmark = (Resolve-Path `
+            'target/release/bolt-sandbox-benchmark.exe').Path
+          $evidence = Join-Path $PWD `
+            'target/performance-evidence-x64.json'
+          pwsh scripts/measure-windows-performance.ps1 `
+            -ComponentRoot $componentRoot `
+            -BenchmarkPath $benchmark `
+            -EvidencePath $evidence `
+            -WarmupSamples 1 `
+            -MeasuredSamples 7 `
+            -FilesystemIterations 1000 `
+            -TimeoutSeconds 180
+          pwsh scripts/verify-performance-evidence.ps1 `
+            -BudgetPath docs/testing/performance-budgets.json `
+            -EvidencePath $evidence
+
+      - name: Upload release performance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: performance-evidence-x64-${{ inputs.version }}
+          path: target/performance-evidence-x64.json
+          if-no-files-found: warn
 
       - name: Import signing certificate
         id: certificate
