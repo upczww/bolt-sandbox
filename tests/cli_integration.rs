@@ -657,7 +657,11 @@ fn serve_one_http_request(listener: &TcpListener) -> bool {
     let deadline = Instant::now() + Duration::from_secs(7);
     while Instant::now() < deadline {
         match listener.accept() {
-            Ok((mut stream, _)) => return respond_ok(&mut stream),
+            Ok((mut stream, _)) => {
+                if respond_ok(&mut stream) {
+                    return true;
+                }
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));
             }
@@ -684,7 +688,7 @@ fn wait_for_connection(listener: &TcpListener, duration: Duration) -> bool {
 fn respond_ok(stream: &mut TcpStream) -> bool {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let mut request = [0_u8; 4_096];
-    if stream.read(&mut request).is_err() {
+    if !matches!(stream.read(&mut request), Ok(bytes) if bytes != 0) {
         return false;
     }
     stream
