@@ -222,7 +222,7 @@ mod tests {
 
     use super::{
         DirectWorkspaceBackend, WorkspaceBackend, WorkspaceChange, WorkspaceChangeKind,
-        WorkspaceKind, WorkspaceLimits, WorkspaceSnapshot,
+        WorkspaceError, WorkspaceKind, WorkspaceLimits, WorkspaceSnapshot,
     };
 
     #[test]
@@ -284,6 +284,36 @@ mod tests {
                     kind: WorkspaceChangeKind::Modified,
                 },
             ]
+        );
+        fs::remove_dir_all(fixture).expect("fixture must clean");
+    }
+
+    #[test]
+    fn ws_018_snapshot_rejects_external_source_conflicts() {
+        let fixture = std::env::temp_dir().join(format!(
+            "bolt-workspace-conflict-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&fixture);
+        fs::create_dir_all(&fixture).expect("fixture must create");
+        fs::write(fixture.join("source.txt"), b"before").expect("seed must write");
+        let snapshot = WorkspaceSnapshot::capture(
+            &fixture,
+            WorkspaceLimits {
+                maximum_items: 8,
+                maximum_bytes: 1_048_576,
+            },
+        )
+        .expect("snapshot must capture");
+
+        snapshot
+            .validate_source_unchanged(&fixture)
+            .expect("unchanged source must validate");
+        fs::write(fixture.join("source.txt"), b"external-change")
+            .expect("external mutation must write");
+        assert_eq!(
+            snapshot.validate_source_unchanged(&fixture),
+            Err(WorkspaceError::Conflict)
         );
         fs::remove_dir_all(fixture).expect("fixture must clean");
     }
