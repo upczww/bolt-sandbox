@@ -110,6 +110,11 @@ impl Sandbox {
         request: SandboxRequest,
         command_id: CommandId,
     ) -> Result<ExecutionHandle, SandboxError> {
+        let policy_generation = self.allocate_policy_generation()?;
+        runtime::start_execution(request, &self.config, command_id, policy_generation)
+    }
+
+    fn allocate_policy_generation(&self) -> Result<PolicyGeneration, SandboxError> {
         let generation = self
             .next_policy_generation
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
@@ -118,11 +123,9 @@ impl Sandbox {
             .map_err(|_| SandboxError::InitializationFailed {
                 stage: InitializationStage::Identity,
             })?;
-        let policy_generation =
-            PolicyGeneration::new(generation).ok_or(SandboxError::InitializationFailed {
-                stage: InitializationStage::Identity,
-            })?;
-        runtime::start_execution(request, &self.config, command_id, policy_generation)
+        PolicyGeneration::new(generation).ok_or(SandboxError::InitializationFailed {
+            stage: InitializationStage::Identity,
+        })
     }
 }
 
@@ -384,8 +387,14 @@ mod tests {
     #[test]
     fn attr_003_policy_generations_are_nonzero_monotonic_and_do_not_wrap() {
         let sandbox = sandbox_with_generation(1);
-        assert_eq!(sandbox.allocate_policy_generation().expect("first").get(), 1);
-        assert_eq!(sandbox.allocate_policy_generation().expect("second").get(), 2);
+        assert_eq!(
+            sandbox.allocate_policy_generation().expect("first").get(),
+            1
+        );
+        assert_eq!(
+            sandbox.allocate_policy_generation().expect("second").get(),
+            2
+        );
 
         let exhausted = sandbox_with_generation(u64::MAX);
         assert!(matches!(
