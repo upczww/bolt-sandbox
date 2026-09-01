@@ -56,6 +56,22 @@ pub enum WorkspaceMode {
     Direct,
     Staged,
     Projected,
+    AutoTransactional,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WorkspaceBackend {
+    #[default]
+    Direct,
+    Staged,
+    Projected,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkspaceCapabilities {
+    pub direct: bool,
+    pub staged: bool,
+    pub projected: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -204,9 +220,47 @@ impl Sandbox {
                     options.terminal,
                 );
             }
+            WorkspaceMode::AutoTransactional => {
+                return if self.workspace_capabilities()?.projected {
+                    self.start_projected(
+                        request,
+                        command_id,
+                        options.workspace_limits,
+                        options.terminal,
+                    )
+                } else {
+                    self.start_staged(
+                        request,
+                        command_id,
+                        options.workspace_limits,
+                        options.terminal,
+                    )
+                };
+            }
             WorkspaceMode::Direct => {}
         }
         self.start_validated(request, command_id, options.terminal)
+    }
+
+    /// Reports trusted workspace backend availability without starting a target.
+    ///
+    /// # Errors
+    ///
+    /// Returns a workspace initialization error when the verified component
+    /// set cannot perform an authoritative `ProjFS` capability probe.
+    pub fn workspace_capabilities(&self) -> Result<WorkspaceCapabilities, SandboxError> {
+        let projected = crate::runtime::workspace_security::projfs_available(
+            &self.config.component_root,
+            self.config.component_manifest_sha256.as_ref(),
+        )
+        .map_err(|_| SandboxError::InitializationFailed {
+            stage: InitializationStage::Workspace,
+        })?;
+        Ok(WorkspaceCapabilities {
+            direct: true,
+            staged: true,
+            projected,
+        })
     }
 
     /// Starts one execution associated with a caller-provided opaque command ID.
@@ -336,6 +390,7 @@ impl Sandbox {
                 projection_controller: None,
             },
             Arc::clone(&self.workspace_transactions),
+            WorkspaceBackend::Staged,
             limits.maximum_retained_transactions,
             limits.retention,
         );
@@ -429,6 +484,7 @@ impl Sandbox {
                 projection_controller: Some(Box::new(projection_controller)),
             },
             Arc::clone(&self.workspace_transactions),
+            WorkspaceBackend::Projected,
             limits.maximum_retained_transactions,
             limits.retention,
         );
@@ -778,6 +834,7 @@ pub enum ExecutionTerminal {
 pub struct ExecutionResult {
     pub attribution: ExecutionAttribution,
     pub workspace_transaction: Option<WorkspaceTransactionId>,
+    pub workspace_backend: WorkspaceBackend,
     pub terminal: ExecutionTerminal,
     pub receiver_loss: ReceiverLoss,
     pub violation_aggregates: Vec<ViolationAggregate>,
@@ -847,6 +904,7 @@ struct PendingWorkspace {
     transaction_id: WorkspaceTransactionId,
     record: WorkspaceTransactionRecord,
     transactions: WorkspaceTransactions,
+    backend: WorkspaceBackend,
     maximum_retained_transactions: u32,
     retention: Duration,
 }
@@ -887,6 +945,7 @@ impl ExecutionHandle {
         transaction_id: WorkspaceTransactionId,
         record: WorkspaceTransactionRecord,
         transactions: WorkspaceTransactions,
+        backend: WorkspaceBackend,
         maximum_retained_transactions: u32,
         retention: Duration,
     ) {
@@ -894,6 +953,7 @@ impl ExecutionHandle {
             transaction_id,
             record,
             transactions,
+            backend,
             maximum_retained_transactions,
             retention,
         });
@@ -1048,6 +1108,7 @@ impl ExecutionHandle {
                 },
             );
             result.workspace_transaction = Some(pending.transaction_id);
+            result.workspace_backend = pending.backend;
         }
         Ok(result)
     }

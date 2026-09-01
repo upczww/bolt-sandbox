@@ -177,6 +177,43 @@ pub(crate) fn verified_workspace_helper(
     Ok((helper_path, helper_lease))
 }
 
+pub(crate) fn projfs_available(
+    component_root: &Path,
+    expected_manifest_digest: Option<&[u8; 32]>,
+) -> Result<bool, WorkspaceError> {
+    const ERROR_NOT_SUPPORTED: i32 = 50;
+    let (helper_path, helper_lease) =
+        verified_workspace_helper(component_root, expected_manifest_digest)?;
+    let mut child = Command::new(helper_path)
+        .arg("--projfs-capability")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|_| WorkspaceError::Io)?;
+    let deadline = Instant::now() + HELPER_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                drop(helper_lease);
+                return match status.code() {
+                    Some(0) => Ok(true),
+                    Some(ERROR_NOT_SUPPORTED) => Ok(false),
+                    Some(_) | None => Err(WorkspaceError::Io),
+                };
+            }
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Ok(None) | Err(_) => {
+                terminate_helper(&mut child);
+                return Err(WorkspaceError::Io);
+            }
+        }
+    }
+}
+
 fn wait_until(child: &mut std::process::Child, deadline: Instant) -> bool {
     loop {
         match child.try_wait() {

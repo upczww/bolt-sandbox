@@ -259,6 +259,13 @@ The provider, projection materializer, and authorization verifier are bounded;
 source and materialization paths travel only in integrity-protected private IPC,
 not command lines or environments.
 
+General-purpose agents can request `WorkspaceMode::AutoTransactional`. The
+trusted host probes the verified system API before target creation, chooses
+`Projected` when available and `Staged` otherwise, and records the selected
+`WorkspaceBackend` in `ExecutionResult`. It never chooses `Direct` and never
+falls back to an unsandboxed process. Call `Sandbox::workspace_capabilities`
+when the agent needs to show or log backend availability before execution.
+
 On an elevated host, enable the component once with
 `Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart`
 and reboot only if Windows requests it. Then verify the real provider and its

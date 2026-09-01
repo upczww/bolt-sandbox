@@ -577,6 +577,7 @@ impl TransportState {
         self.with_aggregates(ExecutionResult {
             attribution: self.attribution,
             workspace_transaction: None,
+            workspace_backend: crate::WorkspaceBackend::Direct,
             terminal: ExecutionTerminal::Process(process_exit),
             receiver_loss: public_receiver_loss(self.lifecycle.receiver_loss()),
             violation_aggregates: Vec::new(),
@@ -588,6 +589,7 @@ impl TransportState {
         self.with_aggregates(ExecutionResult {
             attribution: self.attribution,
             workspace_transaction: None,
+            workspace_backend: crate::WorkspaceBackend::Direct,
             terminal: ExecutionTerminal::Infrastructure(failure),
             receiver_loss: public_receiver_loss(self.lifecycle.receiver_loss()),
             violation_aggregates: Vec::new(),
@@ -659,6 +661,7 @@ fn public_outcome(outcome: LifecycleOutcome, attribution: ExecutionAttribution) 
     ExecutionResult {
         attribution,
         workspace_transaction: None,
+        workspace_backend: crate::WorkspaceBackend::Direct,
         terminal,
         receiver_loss: public_receiver_loss(outcome.receiver_loss),
         violation_aggregates: Vec::new(),

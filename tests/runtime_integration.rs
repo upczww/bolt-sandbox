@@ -58,6 +58,7 @@ fn ws_016_staged_execution_requires_explicit_trusted_commit() {
     let events = handle.take_events().expect("events");
     let (_stdout, _stderr, _events, result) = collect_execution(handle, stdout, stderr, events);
 
+    assert_eq!(result.workspace_backend, WorkspaceBackend::Staged);
     assert_eq!(
         fs::read(source.join("file.txt")).expect("source"),
         b"before"
@@ -152,6 +153,7 @@ fn ws_005_projected_mode_never_falls_back_when_optional_component_is_unavailable
                 "cold projected startup must stay within 250 ms"
             );
             let result = handle.wait().expect("projected execution must finish");
+            assert_eq!(result.workspace_backend, WorkspaceBackend::Projected);
             let transaction = result
                 .workspace_transaction
                 .expect("projected execution must return transaction");
@@ -178,6 +180,13 @@ fn ws_025_auto_transactional_uses_staged_when_projfs_is_unavailable() {
     ));
     fs::create_dir_all(&source).expect("source must create");
     let system_root = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"));
+    let projected_available = system_root.join(r"System32\ProjectedFSLib.dll").is_file();
+    let capabilities = sandbox
+        .workspace_capabilities()
+        .expect("verified capability probe must succeed");
+    assert!(capabilities.direct);
+    assert!(capabilities.staged);
+    assert_eq!(capabilities.projected, projected_available);
     let handle = sandbox
         .start_with_options(
             SandboxRequest {
@@ -199,9 +208,6 @@ fn ws_025_auto_transactional_uses_staged_when_projfs_is_unavailable() {
         )
         .expect("auto transactional execution must start");
     let result = handle.wait().expect("auto execution must finish");
-    let projected_available = system_root
-        .join(r"System32\ProjectedFSLib.dll")
-        .is_file();
     assert_eq!(
         result.workspace_backend,
         if projected_available {
@@ -681,6 +687,7 @@ fn assert_dual_stream_execution(mode: &str) {
         ExecutionTerminal::Process(ref exit)
             if exit.exit_code == Some(0) && exit.reason == ProcessExitReason::Exited
     ));
+    assert_eq!(result.workspace_backend, WorkspaceBackend::Direct);
     assert_eq!(result.receiver_loss, ReceiverLoss::default());
 }
 

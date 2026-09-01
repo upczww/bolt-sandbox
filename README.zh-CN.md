@@ -233,6 +233,12 @@ Mandatory Deny 路径与 Staged Root 重叠时也会在复制和启动前 Fail C
 启用 Windows `Client-ProjFS` 可选组件。Provider、投影固化器和授权校验器都有
 配额；源路径与固化路径只在完整性保护的私有 IPC 中传输，不进入命令行或环境。
 
+通用 Agent 可显式请求 `WorkspaceMode::AutoTransactional`。可信宿主会在创建目标
+前探测已验证的系统 API：可用时选择 `Projected`，否则选择 `Staged`，并在
+`ExecutionResult.workspace_backend` 中报告实际后端。它绝不会选择 `Direct`，
+更不会退回无沙箱执行。需要在执行前展示能力时，可调用
+`Sandbox::workspace_capabilities`。
+
 在管理员 PowerShell 中执行
 `Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart`
 即可启用组件；仅在 Windows 提示时重启。随后用以下命令验证真实 Provider 以及

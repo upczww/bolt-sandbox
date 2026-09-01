@@ -1333,6 +1333,19 @@ int RunProjectedWorkspaceSession() noexcept {
                : ERROR_BROKEN_PIPE;
 }
 
+int RunProjfsCapability() noexcept {
+    bolt::common::ProjfsApi api;
+    switch (bolt::common::ProjfsApi::Load(api)) {
+        case bolt::common::ProjfsStatus::kSuccess:
+            return ERROR_SUCCESS;
+        case bolt::common::ProjfsStatus::kUnavailable:
+            return ERROR_NOT_SUPPORTED;
+        case bolt::common::ProjfsStatus::kInvalidExports:
+            return ERROR_INVALID_DATA;
+    }
+    return ERROR_INVALID_DATA;
+}
+
 }  // namespace
 
 int wmain(const int argument_count, wchar_t** arguments) noexcept {
@@ -1347,6 +1360,10 @@ int wmain(const int argument_count, wchar_t** arguments) noexcept {
     if (argument_count == 2 &&
         std::wcscmp(arguments[1], L"--projected-workspace") == 0) {
         return RunProjectedWorkspaceSession();
+    }
+    if (argument_count == 2 &&
+        std::wcscmp(arguments[1], L"--projfs-capability") == 0) {
+        return RunProjfsCapability();
     }
     if (argument_count != 8 ||
         std::wcscmp(arguments[1], L"--supervise-job") != 0) {

@@ -87,6 +87,9 @@ an ordinary transaction root before Rust exposes it. Provider callbacks and
 materialization are exercised through an injected fake ProjFS function table;
 the current workstation additionally verifies the real unavailable-component
 path before target creation because `Client-ProjFS` is not installed.
+`AutoTransactional` performs this authoritative probe through the verified
+launcher and selects only between Projected and Staged; explicit Projected
+requests retain strict no-fallback semantics.
 
 ### Phase 4: transactional commit and recovery
 
