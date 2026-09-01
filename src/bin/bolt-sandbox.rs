@@ -8,8 +8,9 @@ use std::{
 };
 
 use bolt_sandbox::{
-    DEFAULT_STREAM_CAPACITY, ExecutionTerminal, ProcessExitReason, Sandbox, SandboxConfig,
-    SandboxEvent, SandboxPolicy, SandboxRequest,
+    ChildProcessPolicy, DEFAULT_STREAM_CAPACITY, ExecutionTerminal, NetworkPolicy,
+    ProcessExitReason, RecoveryLimits, RecoveryPolicy, Sandbox, SandboxConfig, SandboxEvent,
+    SandboxPolicy, SandboxRequest,
 };
 
 struct RunArguments {
@@ -18,6 +19,7 @@ struct RunArguments {
     timeout: Option<Duration>,
     program: PathBuf,
     arguments: Vec<OsString>,
+    policy: SandboxPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,7 +60,7 @@ fn run(arguments: Vec<OsString>) -> Result<u32, CliError> {
             arguments: parsed.arguments,
             cwd: parsed.cwd,
             environment,
-            policy: SandboxPolicy::default(),
+            policy: parsed.policy,
             timeout: parsed.timeout,
         })
         .map_err(|_| CliError::Sandbox)?;
@@ -82,6 +84,10 @@ fn run(arguments: Vec<OsString>) -> Result<u32, CliError> {
     Ok(exit_code(&result.terminal))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the flat CLI grammar is kept in one auditable option table"
+)]
 fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliError> {
     let mut arguments = arguments.into_iter();
     if arguments.next().as_deref() != Some(std::ffi::OsStr::new("run")) {
@@ -90,6 +96,12 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
     let mut component_root = None;
     let mut cwd = None;
     let mut timeout = None;
+    let mut policy = SandboxPolicy::default();
+    let mut network_set = false;
+    let mut child_processes_set = false;
+    let mut recovery_directory = None;
+    let mut recovery_maximum_bytes = None;
+    let mut recovery_maximum_items = None;
     let mut program_and_arguments = None;
     while let Some(argument) = arguments.next() {
         if argument == "--" {
@@ -111,6 +123,62 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
                     .ok_or(CliError::InvalidArguments)?;
                 timeout = Some(Duration::from_millis(milliseconds));
             }
+            Some("--read-write") => policy
+                .filesystem
+                .read_write
+                .push(next_path(&mut arguments)?),
+            Some("--read-only") => policy.filesystem.read_only.push(next_path(&mut arguments)?),
+            Some("--deny") => policy.filesystem.deny.push(next_path(&mut arguments)?),
+            Some("--metadata-read") => policy
+                .filesystem
+                .metadata_read
+                .push(next_path(&mut arguments)?),
+            Some("--inherit-user") => policy
+                .filesystem
+                .inherit_user
+                .push(next_path(&mut arguments)?),
+            Some("--registry-no-access") => {
+                policy.registry.no_access.push(next_string(&mut arguments)?);
+            }
+            Some("--registry-read-only") => {
+                policy.registry.read_only.push(next_string(&mut arguments)?);
+            }
+            Some("--registry-inherit-user") => policy
+                .registry
+                .inherit_user
+                .push(next_string(&mut arguments)?),
+            Some("--registry-read-write") => policy
+                .registry
+                .read_write
+                .push(next_string(&mut arguments)?),
+            Some("--network") if !network_set => {
+                policy.network = match next_string(&mut arguments)?.as_str() {
+                    "unrestricted" => NetworkPolicy::Unrestricted,
+                    "denied" => NetworkPolicy::Denied,
+                    _ => return Err(CliError::InvalidArguments),
+                };
+                network_set = true;
+            }
+            Some("--child-processes") if !child_processes_set => {
+                policy.child_processes = match next_string(&mut arguments)?.as_str() {
+                    "inherit" => ChildProcessPolicy::Inherit,
+                    "deny" => ChildProcessPolicy::Deny,
+                    _ => return Err(CliError::InvalidArguments),
+                };
+                child_processes_set = true;
+            }
+            Some("--recovery-dir") if recovery_directory.is_none() => {
+                recovery_directory = Some(next_path(&mut arguments)?);
+            }
+            Some("--recovery-max-bytes") if recovery_maximum_bytes.is_none() => {
+                recovery_maximum_bytes = Some(next_nonzero_u64(&mut arguments)?);
+            }
+            Some("--recovery-max-items") if recovery_maximum_items.is_none() => {
+                recovery_maximum_items = Some(
+                    u32::try_from(next_nonzero_u64(&mut arguments)?)
+                        .map_err(|_| CliError::InvalidArguments)?,
+                );
+            }
             _ => return Err(CliError::InvalidArguments),
         }
     }
@@ -119,13 +187,51 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
         return Err(CliError::InvalidArguments);
     }
     let program = PathBuf::from(program_and_arguments.remove(0));
+    match (
+        recovery_directory,
+        recovery_maximum_bytes,
+        recovery_maximum_items,
+    ) {
+        (None, None, None) => {}
+        (Some(directory), Some(maximum_bytes), Some(maximum_items)) => {
+            policy.recovery = RecoveryPolicy::Enabled(RecoveryLimits {
+                directory,
+                maximum_bytes,
+                maximum_items,
+            });
+        }
+        _ => return Err(CliError::InvalidArguments),
+    }
     Ok(RunArguments {
         component_root: component_root.ok_or(CliError::InvalidArguments)?,
         cwd: cwd.ok_or(CliError::InvalidArguments)?,
         timeout,
         program,
         arguments: program_and_arguments,
+        policy,
     })
+}
+
+fn next_path(arguments: &mut impl Iterator<Item = OsString>) -> Result<PathBuf, CliError> {
+    arguments
+        .next()
+        .map(PathBuf::from)
+        .ok_or(CliError::InvalidArguments)
+}
+
+fn next_string(arguments: &mut impl Iterator<Item = OsString>) -> Result<String, CliError> {
+    arguments
+        .next()
+        .and_then(|value| value.into_string().ok())
+        .ok_or(CliError::InvalidArguments)
+}
+
+fn next_nonzero_u64(arguments: &mut impl Iterator<Item = OsString>) -> Result<u64, CliError> {
+    next_string(arguments)?
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value != 0)
+        .ok_or(CliError::InvalidArguments)
 }
 
 fn copy_stream(stream: bolt_sandbox::ByteStream, mut output: impl Write) -> io::Result<()> {
@@ -301,10 +407,7 @@ mod tests {
             parsed.policy.filesystem.read_only,
             [PathBuf::from(r"C:\sdk")]
         );
-        assert_eq!(
-            parsed.policy.filesystem.deny,
-            [PathBuf::from(r"C:\secret")]
-        );
+        assert_eq!(parsed.policy.filesystem.deny, [PathBuf::from(r"C:\secret")]);
         assert_eq!(
             parsed.policy.registry.read_only,
             [String::from(r"HKCU\SOFTWARE\Example")]
