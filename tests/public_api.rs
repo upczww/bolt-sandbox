@@ -15,7 +15,7 @@ use bolt_sandbox::{
     NetworkViolation, PolicyGeneration, PortRange, ProcessExit, ProcessExitReason,
     ProcessOperation, ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField, Sandbox,
     SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest, ViolationAggregate,
-    WorkspaceMode,
+    WorkspaceChange, WorkspaceControlError, WorkspaceMode, WorkspaceTransactionId,
 };
 
 fn assert_attributed_stream<T: Iterator<Item = AttributedSandboxEvent>>() {}
@@ -79,6 +79,22 @@ fn ws_002_projected_mode_is_explicit_and_fails_before_component_fallback() {
             stage: bolt_sandbox::InitializationStage::Workspace
         })
     ));
+}
+
+#[test]
+fn ws_014_public_transaction_control_stays_in_trusted_sandbox() {
+    assert_ne!(WorkspaceMode::Staged, WorkspaceMode::Direct);
+    assert!(WorkspaceTransactionId::new([0; 16]).is_none());
+    let _: fn(
+        &Sandbox,
+        WorkspaceTransactionId,
+    ) -> Result<Vec<WorkspaceChange>, WorkspaceControlError> = Sandbox::query_workspace_changes;
+    let _: fn(
+        &Sandbox,
+        WorkspaceTransactionId,
+    ) -> Result<Vec<WorkspaceChange>, WorkspaceControlError> = Sandbox::commit_workspace;
+    let _: fn(&Sandbox, WorkspaceTransactionId) -> Result<(), WorkspaceControlError> =
+        Sandbox::discard_workspace;
 }
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {
