@@ -80,6 +80,14 @@ Execution Job -> launcher -> injected hook -> complete descendant tree
   loss, or provider shutdown.
 - Support create, modify, delete, rename, non-ASCII, case, and large-file cases.
 
+Implemented: the provider dynamically loads only the system ProjFS library,
+uses bounded callback pools, validates final source handles, rejects links,
+reparse ambiguity and alternate streams, and materializes the merged view into
+an ordinary transaction root before Rust exposes it. Provider callbacks and
+materialization are exercised through an injected fake ProjFS function table;
+the current workstation additionally verifies the real unavailable-component
+path before target creation because `Client-ProjFS` is not installed.
+
 ### Phase 4: transactional commit and recovery
 
 - Query and classify changes before commit.
@@ -104,8 +112,8 @@ Execution Job -> launcher -> injected hook -> complete descendant tree
 - Reject stale broker state and terminate associated Jobs if the broker exits.
 - Do not ship the broker if improvement is less than 10 ms.
 
-Decision: no broker ships by default. Seven current release samples measured
-36.522–38.498 ms warm Direct startup (37.445 ms mean), and no bounded broker
+Decision: no broker ships by default. Seven final release samples measured
+39.161–42.918 ms warm Direct startup (40.946 ms mean), and no bounded broker
 prototype has demonstrated the required repeatable 10 ms improvement. See
 ADR-0003. The no-evidence case fails the feature gate closed.
 

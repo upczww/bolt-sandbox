@@ -82,6 +82,19 @@ Apache License, Version 2.0.
 The dependency revision is pinned in `Cargo.toml` and resolved checksums are
 recorded in `Cargo.lock`.
 
+## winapi-util 0.1.11
+
+Bolt Sandbox uses the safe `winapi-util` file-information wrapper to reject
+multi-link Windows files before copying or projecting workspace content. The
+crate is licensed under the Unlicense or MIT License.
+
+- Source: https://github.com/BurntSushi/winapi-util/tree/0.1.11
+- Package: https://crates.io/crates/winapi-util/0.1.11
+- License: Unlicense OR MIT
+
+The dependency revision is pinned in `Cargo.toml`; it and its Windows bindings
+are checksum-locked in `Cargo.lock`.
+
 ## idna 1.1.0
 
 Bolt Sandbox depends on the `idna` Rust crate for UTS #46 and Punycode domain

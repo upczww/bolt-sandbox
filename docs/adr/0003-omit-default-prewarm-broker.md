@@ -11,8 +11,8 @@ cross-command state, crash fan-out, stale component/profile handling, and new
 resource-growth failure modes. The evolution plan therefore requires measured
 improvement of at least 10 ms before such a broker ships.
 
-Current release evidence on the representative workstation records seven warm
-Direct starts between 36.522 ms and 38.498 ms (37.445 ms mean), while the
+Final release evidence on the representative workstation records seven warm
+Direct starts between 39.161 ms and 42.918 ms (40.946 ms mean), while the
 existing 100 ms release gate passes. No broker prototype has demonstrated a
 repeatable 10 ms improvement after charging its IPC, identity, validation, and
 cleanup costs.
@@ -31,7 +31,7 @@ concurrency, crash cleanup, stale state, handles, threads, and private bytes.
 
 ## Consequences
 
-- Default warm startup remains approximately 38 ms without a resident service.
+- Default warm startup remains approximately 41 ms without a resident service.
 - There is no broker control endpoint or cross-command authority to attack.
 - A future broker must be introduced by a new ADR and pass BRK-001..010 and
   PERF-015; this decision does not weaken those requirements.

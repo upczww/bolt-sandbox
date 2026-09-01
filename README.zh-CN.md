@@ -78,10 +78,11 @@ Native 代码负责最小化 Windows Launcher、基于 Detours 的拦截和有�
 ## 当前状态与性能
 
 当前实现包括 Rust 库与 CLI、x64/x86 Launcher 和 Hook DLL、文件/进程/网络/
-注册表策略、有界恢复、事务式 Staged Workspace、显式 ConPTY、组件 Manifest、
-ACL 加固打包、Rust 与 Native 协议 Mutation 测试，以及签名发布工作流。
-ProjFS 目前是可选能力探测：主机未安装 Windows 功能时，请求 `Projected` 会
-明确失败，绝不回退到 Direct。
+注册表策略、有界恢复、事务式 Staged 与可选 ProjFS Workspace、显式 ConPTY、
+组件 Manifest、ACL 加固打包、Rust 与 Native 协议 Mutation 测试，以及签名
+发布工作流。`Projected` 会启动有界的进程外 Provider，以只读方式提供源内容，
+目标退出后固化最终合并视图，再复用可信的 query/commit/discard/revert 协调器。
+主机未安装 ProjFS Windows 功能时，会在创建目标前明确失败，绝不回退 Direct。
 
 当前发布预算要求：
 
@@ -227,6 +228,10 @@ Agent 集成原则：
 `query_workspace_changes`、`commit_workspace`、`discard_workspace` 或
 `revert_workspace`。Commit 前会重新校验源目录，检测到外部修改就拒绝；任何
 Mandatory Deny 路径与 Staged Root 重叠时也会在复制和启动前 Fail Closed。
+
+`WorkspaceMode::Projected` 使用相同事务 API，但不预先复制全部源内容。它要求
+启用 Windows `Client-ProjFS` 可选组件。Provider、投影固化器和授权校验器都有
+配额；源路径与固化路径只在完整性保护的私有 IPC 中传输，不进入命令行或环境。
 
 交互工具需要显式选择
 `TerminalMode::PseudoConsole(PseudoConsoleSize::new(columns, rows).unwrap())`，

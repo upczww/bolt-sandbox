@@ -87,11 +87,13 @@ licenses; no closed-source product code is copied.
 
 The implementation includes the Rust library and CLI, x64/x86 launchers and
 hook DLLs, filesystem/process/network/registry enforcement, bounded recovery,
-transactional staged workspaces, explicit ConPTY sessions, component manifests,
-ACL-hardened packaging, deterministic Rust and native protocol mutation tests,
-and a signed-release workflow. ProjFS remains an optional capability probe:
-requesting `Projected` on a host without the Windows feature fails explicitly
-and never falls back to Direct.
+transactional staged and optional ProjFS workspaces, explicit ConPTY sessions,
+component manifests, ACL-hardened packaging, deterministic Rust and native
+protocol mutation tests, and a signed-release workflow. `Projected` starts a
+bounded out-of-process provider, serves source content read-only, materializes
+the final merged view after target exit, and then uses the same trusted
+query/commit/discard/revert coordinator as `Staged`. A host without the Windows
+ProjFS feature fails before target creation and never falls back to Direct.
 
 The checked release budgets currently require:
 
@@ -250,6 +252,12 @@ completed transaction. Trusted host code can then call
 `revert_workspace`. Commit revalidates the source and fails on external
 conflicts. Mandatory-deny paths may not overlap a staged root, so staging cannot
 copy secrets into a newly readable namespace.
+
+`WorkspaceMode::Projected` uses the same transaction API while avoiding an
+eager source copy. It requires the Windows `Client-ProjFS` optional component.
+The provider, projection materializer, and authorization verifier are bounded;
+source and materialization paths travel only in integrity-protected private IPC,
+not command lines or environments.
 
 Interactive tools opt in with
 `TerminalMode::PseudoConsole(PseudoConsoleSize::new(columns, rows).unwrap())`.
