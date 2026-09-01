@@ -14,6 +14,8 @@ pub struct SandboxConfig {
     pub component_root: PathBuf,
     pub credential_environment_variables: Vec<OsString>,
     pub stream_capacity: usize,
+    pub mandatory_filesystem_denies: Vec<PathBuf>,
+    pub mandatory_registry_denies: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -29,6 +31,7 @@ impl Sandbox {
     /// Returns a typed configuration error before opening any runtime
     /// component when the component root or stream capacity is invalid.
     pub fn new(config: SandboxConfig) -> Result<Self, SandboxError> {
+        let mut config = config;
         if !config.component_root.is_absolute() || !config.component_root.is_dir() {
             return Err(SandboxError::InvalidConfiguration {
                 field: ConfigurationField::ComponentRoot,
@@ -41,6 +44,12 @@ impl Sandbox {
                 reason: ConfigurationErrorReason::OutOfRange,
             });
         }
+        config
+            .mandatory_filesystem_denies
+            .extend(default_sensitive_filesystem_paths());
+        config
+            .mandatory_registry_denies
+            .extend(default_sensitive_registry_keys().map(str::to_owned));
         Ok(Self { config })
     }
 
@@ -58,8 +67,45 @@ impl Sandbox {
             &self.config.credential_environment_variables,
             &self.config.component_root,
             self.config.stream_capacity,
+            &self.config.mandatory_filesystem_denies,
+            &self.config.mandatory_registry_denies,
         )
     }
+}
+
+fn default_sensitive_filesystem_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(profile) = std::env::var_os("USERPROFILE").map(PathBuf::from) {
+        for relative in [
+            ".ssh",
+            ".gnupg",
+            ".aws",
+            ".azure",
+            ".kube",
+            ".docker",
+            ".config\\gh",
+        ] {
+            paths.push(profile.join(relative));
+        }
+    }
+    if let Some(roaming) = std::env::var_os("APPDATA").map(PathBuf::from) {
+        paths.push(roaming.join("gnupg"));
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        paths.push(local.join("Google\\Chrome\\User Data"));
+        paths.push(local.join("Microsoft\\Edge\\User Data"));
+    }
+    paths.retain(|path| path.is_absolute());
+    paths
+}
+
+fn default_sensitive_registry_keys() -> impl Iterator<Item = &'static str> {
+    [
+        r"HKCU\SOFTWARE\Microsoft\Credentials",
+        r"HKCU\SOFTWARE\Microsoft\IdentityCRL",
+        r"HKCU\SOFTWARE\Microsoft\OneDrive\Accounts",
+    ]
+    .into_iter()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

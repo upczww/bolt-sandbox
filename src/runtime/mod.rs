@@ -57,33 +57,37 @@ pub(crate) fn start_execution(
     credential_names: &[OsString],
     component_root: &Path,
     stream_capacity: usize,
+    mandatory_filesystem_denies: &[std::path::PathBuf],
+    mandatory_registry_denies: &[String],
 ) -> Result<ExecutionHandle, SandboxError> {
-    let prepared = preparation::prepare_launch(&request, credential_names, component_root)
-        .map_err(|error| match error {
-            preparation::LaunchPreparationError::Request(error) => error,
-            preparation::LaunchPreparationError::ProgramOpen
-            | preparation::LaunchPreparationError::InvalidProgramImage
-            | preparation::LaunchPreparationError::UnsupportedArchitecture { .. } => {
-                SandboxError::InitializationFailed {
-                    stage: InitializationStage::Program,
-                }
+    let prepared = preparation::prepare_launch_with_security_denies(
+        &request,
+        credential_names,
+        component_root,
+        mandatory_filesystem_denies,
+        mandatory_registry_denies,
+    )
+    .map_err(|error| match error {
+        preparation::LaunchPreparationError::Request(error) => error,
+        preparation::LaunchPreparationError::ProgramOpen
+        | preparation::LaunchPreparationError::InvalidProgramImage
+        | preparation::LaunchPreparationError::UnsupportedArchitecture { .. } => {
+            SandboxError::InitializationFailed {
+                stage: InitializationStage::Program,
             }
-            preparation::LaunchPreparationError::Component(_) => {
-                SandboxError::InitializationFailed {
-                    stage: InitializationStage::Components,
-                }
+        }
+        preparation::LaunchPreparationError::Component(_) => SandboxError::InitializationFailed {
+            stage: InitializationStage::Components,
+        },
+        preparation::LaunchPreparationError::PolicyPayload => SandboxError::InitializationFailed {
+            stage: InitializationStage::Policy,
+        },
+        preparation::LaunchPreparationError::ExecutionIdentity => {
+            SandboxError::InitializationFailed {
+                stage: InitializationStage::Identity,
             }
-            preparation::LaunchPreparationError::PolicyPayload => {
-                SandboxError::InitializationFailed {
-                    stage: InitializationStage::Policy,
-                }
-            }
-            preparation::LaunchPreparationError::ExecutionIdentity => {
-                SandboxError::InitializationFailed {
-                    stage: InitializationStage::Identity,
-                }
-            }
-        })?;
+        }
+    })?;
     drop(request);
     launcher_adapter::start(&prepared, stream_capacity)
 }

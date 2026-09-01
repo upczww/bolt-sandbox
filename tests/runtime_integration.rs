@@ -36,6 +36,8 @@ fn assert_dual_stream_execution(mode: &str) {
         component_root: component_root.clone(),
         credential_environment_variables: Vec::new(),
         stream_capacity: 512 * 1_024,
+        mandatory_filesystem_denies: Vec::new(),
+        mandatory_registry_denies: Vec::new(),
     })
     .expect("native component root must be valid");
     let mut handle = sandbox
@@ -159,6 +161,8 @@ fn configured_sandbox() -> Option<(Sandbox, PathBuf)> {
         component_root: component_root.clone(),
         credential_environment_variables: Vec::new(),
         stream_capacity: 512 * 1_024,
+        mandatory_filesystem_denies: Vec::new(),
+        mandatory_registry_denies: Vec::new(),
     })
     .expect("native component root must be valid");
     Some((sandbox, component_root))

@@ -121,9 +121,24 @@ pub(super) fn prepare_launch(
     credential_names: &[OsString],
     component_root: &Path,
 ) -> Result<PreparedLaunch, LaunchPreparationError> {
-    prepare_launch_with_identity_factory(request_value, credential_names, component_root, || {
-        ExecutionIdentity::generate().map_err(|_| LaunchPreparationError::ExecutionIdentity)
-    })
+    prepare_launch_with_security_denies(request_value, credential_names, component_root, &[], &[])
+}
+
+pub(super) fn prepare_launch_with_security_denies(
+    request_value: &SandboxRequest,
+    credential_names: &[OsString],
+    component_root: &Path,
+    mandatory_filesystem_denies: &[PathBuf],
+    mandatory_registry_denies: &[String],
+) -> Result<PreparedLaunch, LaunchPreparationError> {
+    prepare_launch_with_identity_factory_and_denies(
+        request_value,
+        credential_names,
+        component_root,
+        || ExecutionIdentity::generate().map_err(|_| LaunchPreparationError::ExecutionIdentity),
+        mandatory_filesystem_denies,
+        mandatory_registry_denies,
+    )
 }
 
 fn prepare_launch_with_identity_factory(
@@ -131,6 +146,24 @@ fn prepare_launch_with_identity_factory(
     credential_names: &[OsString],
     component_root: &Path,
     create_identity: impl FnOnce() -> Result<ExecutionIdentity, LaunchPreparationError>,
+) -> Result<PreparedLaunch, LaunchPreparationError> {
+    prepare_launch_with_identity_factory_and_denies(
+        request_value,
+        credential_names,
+        component_root,
+        create_identity,
+        &[],
+        &[],
+    )
+}
+
+fn prepare_launch_with_identity_factory_and_denies(
+    request_value: &SandboxRequest,
+    credential_names: &[OsString],
+    component_root: &Path,
+    create_identity: impl FnOnce() -> Result<ExecutionIdentity, LaunchPreparationError>,
+    mandatory_filesystem_denies: &[PathBuf],
+    mandatory_registry_denies: &[String],
 ) -> Result<PreparedLaunch, LaunchPreparationError> {
     request_value
         .validate()
@@ -144,8 +177,13 @@ fn prepare_launch_with_identity_factory(
             .map_err(LaunchPreparationError::Request)?;
     let environment_block = request::encode_environment_block(&prepared_environment.variables)
         .map_err(LaunchPreparationError::Request)?;
-    let compiled_policy = compiler::compile(&request_value.policy, &request_value.cwd)
-        .map_err(LaunchPreparationError::Request)?;
+    let compiled_policy = compiler::compile_with_security_denies(
+        &request_value.policy,
+        &request_value.cwd,
+        mandatory_filesystem_denies,
+        mandatory_registry_denies,
+    )
+    .map_err(LaunchPreparationError::Request)?;
     let recovery = match &compiled_policy.recovery {
         CompiledRecoveryPolicy::Disabled => None,
         CompiledRecoveryPolicy::Enabled(limits) => Some(PreparedRecovery {
