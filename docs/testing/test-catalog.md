@@ -510,6 +510,10 @@ and reason code—not merely identical serialized bytes.
 | COMPAT-013 | Compatibility Profile declares the users-hive root | Only exact-read-only `HKU` is accepted; recursive or SID-subtree grants fail closed |
 | COMPAT-014 | Agent tool scenarios are loaded from the checked-in matrix | Required tool families are complete; duplicate, malformed, privileged-by-default, absolute-machine-path, and silently skipped required scenarios fail validation |
 | COMPAT-015 | Required tools available on the host execute from declarative scenarios | Each runs once in a non-ASCII workspace, receives only configured read/metadata roots and private state, produces configured evidence, and never silently retries or writes outside the workspace |
+| COMPAT-016 | A command succeeds after denied optional probes | Resolver returns `NoPrompt(CommandSucceeded)` and no authority suggestion |
+| COMPAT-017 | A failed command has duplicate canonical external read violations | Resolver returns one exact read-only candidate with stable proposal identity and duplicate count |
+| COMPAT-018 | Violations overlap mandatory-sensitive content or request host writes | No ordinary grant is proposed; typed unavailable capabilities identify the boundary |
+| COMPAT-019 | Distinct violation evidence was dropped or is incomplete | Resolver refuses to guess a grant and returns `IncompleteEvidence` |
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |
