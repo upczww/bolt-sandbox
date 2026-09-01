@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <cwctype>
 #include <limits>
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <objbase.h>
 
 namespace bolt::common {
 namespace {
@@ -352,6 +354,375 @@ ProjectedWorkspaceStatus ProjectedWorkspaceSource::Read(
         total += read;
     }
     return ProjectedWorkspaceStatus::kSuccess;
+}
+
+namespace {
+
+HRESULT StatusToHresult(const ProjectedWorkspaceStatus status) noexcept {
+    switch (status) {
+        case ProjectedWorkspaceStatus::kSuccess:
+            return S_OK;
+        case ProjectedWorkspaceStatus::kNotFound:
+            return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+        case ProjectedWorkspaceStatus::kInvalidRoot:
+        case ProjectedWorkspaceStatus::kInvalidPath:
+        case ProjectedWorkspaceStatus::kUnsupportedObject:
+            return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+        case ProjectedWorkspaceStatus::kQuotaExceeded:
+            return HRESULT_FROM_WIN32(ERROR_DISK_FULL);
+        case ProjectedWorkspaceStatus::kInvalidRange:
+            return HRESULT_FROM_WIN32(ERROR_HANDLE_EOF);
+        case ProjectedWorkspaceStatus::kIo:
+        case ProjectedWorkspaceStatus::kUnavailable:
+            return E_FAIL;
+    }
+    return E_UNEXPECTED;
+}
+
+PRJ_FILE_BASIC_INFO ToBasicInfo(
+    const ProjectedWorkspaceEntry& entry) noexcept {
+    PRJ_FILE_BASIC_INFO information{};
+    information.IsDirectory = entry.is_directory ? TRUE : FALSE;
+    information.FileSize = static_cast<INT64>(entry.size);
+    information.CreationTime.QuadPart = entry.creation_time;
+    information.LastAccessTime.QuadPart = entry.last_access_time;
+    information.LastWriteTime.QuadPart = entry.last_write_time;
+    information.ChangeTime.QuadPart = entry.change_time;
+    information.FileAttributes = entry.attributes;
+    return information;
+}
+
+}  // namespace
+
+bool ProjfsFunctionTable::complete() const noexcept {
+    return mark_directory != nullptr && start != nullptr && stop != nullptr &&
+           write_placeholder != nullptr && write_data != nullptr &&
+           fill_entry != nullptr && file_name_match != nullptr &&
+           allocate_buffer != nullptr && free_buffer != nullptr &&
+           instance_info != nullptr;
+}
+
+ProjectedWorkspaceProvider::~ProjectedWorkspaceProvider() noexcept {
+    Stop();
+}
+
+ProjectedWorkspaceStatus ProjectedWorkspaceProvider::Start(
+    const ProjectedWorkspaceSource& source,
+    const std::filesystem::path& projection_root,
+    ProjectedWorkspaceProvider& output) noexcept {
+    std::unique_ptr<ProjfsApi> api;
+    try {
+        api = std::make_unique<ProjfsApi>();
+    } catch (...) {
+        return ProjectedWorkspaceStatus::kIo;
+    }
+    if (ProjfsApi::Load(*api) != ProjfsStatus::kSuccess) {
+        return ProjectedWorkspaceStatus::kUnavailable;
+    }
+    const ProjfsFunctionTable functions{
+        api->mark_directory_as_placeholder(),
+        api->start_virtualizing(),
+        api->stop_virtualizing(),
+        api->write_placeholder_info(),
+        api->write_file_data(),
+        api->fill_dir_entry_buffer(),
+        api->file_name_match(),
+        api->allocate_aligned_buffer(),
+        api->free_aligned_buffer(),
+        api->get_virtualization_instance_info()};
+    const auto started =
+        StartWithFunctions(source, projection_root, functions, output);
+    if (started == ProjectedWorkspaceStatus::kSuccess) {
+        output.system_api_ = std::move(api);
+    }
+    return started;
+}
+
+ProjectedWorkspaceStatus ProjectedWorkspaceProvider::StartWithFunctions(
+    const ProjectedWorkspaceSource& source,
+    const std::filesystem::path& projection_root,
+    const ProjfsFunctionTable& functions,
+    ProjectedWorkspaceProvider& output) noexcept {
+    output.Stop();
+    if (!functions.complete() || source.root().empty() ||
+        !projection_root.is_absolute()) {
+        return ProjectedWorkspaceStatus::kInvalidRoot;
+    }
+    try {
+        if (!std::filesystem::is_directory(projection_root) ||
+            !std::filesystem::is_empty(projection_root)) {
+            return ProjectedWorkspaceStatus::kInvalidRoot;
+        }
+    } catch (...) {
+        return ProjectedWorkspaceStatus::kInvalidRoot;
+    }
+    const DWORD attributes = GetFileAttributesW(projection_root.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        return ProjectedWorkspaceStatus::kUnsupportedObject;
+    }
+    const auto source_key = PathKey(source.root());
+    const auto projection_key = PathKey(projection_root);
+    if (IsSameOrDescendant(source_key, projection_key) ||
+        IsSameOrDescendant(projection_key, source_key)) {
+        return ProjectedWorkspaceStatus::kInvalidRoot;
+    }
+    GUID instance_id{};
+    if (FAILED(CoCreateGuid(&instance_id)) ||
+        FAILED(functions.mark_directory(
+            projection_root.c_str(), nullptr, nullptr, &instance_id))) {
+        return ProjectedWorkspaceStatus::kIo;
+    }
+    output.source_ = source;
+    output.functions_ = functions;
+    output.callbacks_ = PRJ_CALLBACKS{};
+    output.callbacks_.StartDirectoryEnumerationCallback =
+        StartEnumerationCallback;
+    output.callbacks_.EndDirectoryEnumerationCallback = EndEnumerationCallback;
+    output.callbacks_.GetDirectoryEnumerationCallback = GetEnumerationCallback;
+    output.callbacks_.GetPlaceholderInfoCallback = GetPlaceholderCallback;
+    output.callbacks_.GetFileDataCallback = GetFileDataCallback;
+    output.callbacks_.QueryFileNameCallback = QueryFileNameCallback;
+    PRJ_STARTVIRTUALIZING_OPTIONS options{};
+    options.Flags = PRJ_FLAG_NONE;
+    options.ConcurrentThreadCount = 2;
+    options.PoolThreadCount = 4;
+    if (FAILED(functions.start(
+            projection_root.c_str(), &output.callbacks_, &output, &options,
+            &output.context_)) ||
+        output.context_ == nullptr) {
+        output.context_ = nullptr;
+        output.functions_ = ProjfsFunctionTable{};
+        return ProjectedWorkspaceStatus::kIo;
+    }
+    return ProjectedWorkspaceStatus::kSuccess;
+}
+
+void ProjectedWorkspaceProvider::Stop() noexcept {
+    if (context_ != nullptr && functions_.stop != nullptr) {
+        functions_.stop(context_);
+    }
+    context_ = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(enumerations_mutex_);
+        enumerations_.clear();
+    }
+    callbacks_ = PRJ_CALLBACKS{};
+    functions_ = ProjfsFunctionTable{};
+    system_api_.reset();
+}
+
+std::array<std::uint8_t, 16> ProjectedWorkspaceProvider::EnumerationKey(
+    const GUID& value) noexcept {
+    std::array<std::uint8_t, 16> key{};
+    static_assert(sizeof(value) == key.size());
+    std::memcpy(key.data(), &value, key.size());
+    return key;
+}
+
+ProjectedWorkspaceProvider* ProjectedWorkspaceProvider::FromCallback(
+    const PRJ_CALLBACK_DATA* const callback_data) noexcept {
+    if (callback_data == nullptr ||
+        callback_data->Size < sizeof(PRJ_CALLBACK_DATA) ||
+        callback_data->InstanceContext == nullptr) {
+        return nullptr;
+    }
+    return static_cast<ProjectedWorkspaceProvider*>(
+        callback_data->InstanceContext);
+}
+
+HRESULT CALLBACK ProjectedWorkspaceProvider::StartEnumerationCallback(
+    const PRJ_CALLBACK_DATA* const callback_data,
+    const GUID* const enumeration_id) noexcept {
+    auto* const provider = FromCallback(callback_data);
+    return provider == nullptr || enumeration_id == nullptr
+               ? E_INVALIDARG
+               : provider->StartEnumeration(*callback_data, *enumeration_id);
+}
+
+HRESULT CALLBACK ProjectedWorkspaceProvider::EndEnumerationCallback(
+    const PRJ_CALLBACK_DATA* const callback_data,
+    const GUID* const enumeration_id) noexcept {
+    auto* const provider = FromCallback(callback_data);
+    return provider == nullptr || enumeration_id == nullptr
+               ? E_INVALIDARG
+               : provider->EndEnumeration(*enumeration_id);
+}
+
+HRESULT CALLBACK ProjectedWorkspaceProvider::GetEnumerationCallback(
+    const PRJ_CALLBACK_DATA* const callback_data,
+    const GUID* const enumeration_id,
+    PCWSTR const search_expression,
+    const PRJ_DIR_ENTRY_BUFFER_HANDLE buffer) noexcept {
+    auto* const provider = FromCallback(callback_data);
+    return provider == nullptr || enumeration_id == nullptr || buffer == nullptr
+               ? E_INVALIDARG
+               : provider->GetEnumeration(
+                     *callback_data, *enumeration_id, search_expression,
+                     buffer);
+}
+
+HRESULT CALLBACK ProjectedWorkspaceProvider::GetPlaceholderCallback(
+    const PRJ_CALLBACK_DATA* const callback_data) noexcept {
+    auto* const provider = FromCallback(callback_data);
+    return provider == nullptr ? E_INVALIDARG
+                               : provider->GetPlaceholder(*callback_data);
+}
+
+HRESULT CALLBACK ProjectedWorkspaceProvider::GetFileDataCallback(
+    const PRJ_CALLBACK_DATA* const callback_data,
+    const UINT64 offset,
+    const UINT32 length) noexcept {
+    auto* const provider = FromCallback(callback_data);
+    return provider == nullptr
+               ? E_INVALIDARG
+               : provider->GetFileData(*callback_data, offset, length);
+}
+
+HRESULT CALLBACK ProjectedWorkspaceProvider::QueryFileNameCallback(
+    const PRJ_CALLBACK_DATA* const callback_data) noexcept {
+    auto* const provider = FromCallback(callback_data);
+    return provider == nullptr ? E_INVALIDARG
+                               : provider->QueryFileName(*callback_data);
+}
+
+HRESULT ProjectedWorkspaceProvider::StartEnumeration(
+    const PRJ_CALLBACK_DATA& callback_data,
+    const GUID& enumeration_id) noexcept {
+    if (callback_data.FilePathName == nullptr) {
+        return E_INVALIDARG;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(enumerations_mutex_);
+        const auto [_, inserted] = enumerations_.emplace(
+            EnumerationKey(enumeration_id),
+            EnumerationSession{callback_data.FilePathName});
+        return inserted ? S_OK : E_INVALIDARG;
+    } catch (...) {
+        return E_OUTOFMEMORY;
+    }
+}
+
+HRESULT ProjectedWorkspaceProvider::EndEnumeration(
+    const GUID& enumeration_id) noexcept {
+    std::lock_guard<std::mutex> lock(enumerations_mutex_);
+    return enumerations_.erase(EnumerationKey(enumeration_id)) == 1
+               ? S_OK
+               : E_INVALIDARG;
+}
+
+HRESULT ProjectedWorkspaceProvider::GetEnumeration(
+    const PRJ_CALLBACK_DATA& callback_data,
+    const GUID& enumeration_id,
+    PCWSTR const search_expression,
+    const PRJ_DIR_ENTRY_BUFFER_HANDLE buffer) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(enumerations_mutex_);
+        const auto found = enumerations_.find(EnumerationKey(enumeration_id));
+        if (found == enumerations_.end()) {
+            return E_INVALIDARG;
+        }
+        auto& session = found->second;
+        if ((callback_data.Flags & PRJ_CB_DATA_FLAG_ENUM_RESTART_SCAN) != 0) {
+            session.initialized = false;
+            session.next = 0;
+        }
+        if (!session.initialized) {
+            session.entries.clear();
+            session.search_expression =
+                search_expression == nullptr ? L"*" : search_expression;
+            const auto status =
+                source_.Enumerate(session.directory, session.entries);
+            if (status != ProjectedWorkspaceStatus::kSuccess) {
+                return StatusToHresult(status);
+            }
+            session.entries.erase(
+                std::remove_if(
+                    session.entries.begin(), session.entries.end(),
+                    [this, &session](const auto& entry) {
+                        return functions_.file_name_match(
+                                   entry.name.c_str(),
+                                   session.search_expression.c_str()) == FALSE;
+                    }),
+                session.entries.end());
+            session.next = 0;
+            session.initialized = true;
+        }
+        while (session.next < session.entries.size()) {
+            auto information = ToBasicInfo(session.entries[session.next]);
+            const HRESULT filled = functions_.fill_entry(
+                session.entries[session.next].name.c_str(), &information,
+                buffer);
+            if (filled == HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER)) {
+                break;
+            }
+            if (FAILED(filled)) {
+                return filled;
+            }
+            ++session.next;
+            if ((callback_data.Flags &
+                 PRJ_CB_DATA_FLAG_ENUM_RETURN_SINGLE_ENTRY) != 0) {
+                break;
+            }
+        }
+        return S_OK;
+    } catch (...) {
+        return E_OUTOFMEMORY;
+    }
+}
+
+HRESULT ProjectedWorkspaceProvider::GetPlaceholder(
+    const PRJ_CALLBACK_DATA& callback_data) noexcept {
+    if (callback_data.FilePathName == nullptr) {
+        return E_INVALIDARG;
+    }
+    ProjectedWorkspaceEntry entry{};
+    const auto status = source_.Lookup(callback_data.FilePathName, entry);
+    if (status != ProjectedWorkspaceStatus::kSuccess) {
+        return StatusToHresult(status);
+    }
+    PRJ_PLACEHOLDER_INFO information{};
+    information.FileBasicInfo = ToBasicInfo(entry);
+    return functions_.write_placeholder(
+        callback_data.NamespaceVirtualizationContext,
+        callback_data.FilePathName, &information,
+        FIELD_OFFSET(PRJ_PLACEHOLDER_INFO, VariableData));
+}
+
+HRESULT ProjectedWorkspaceProvider::GetFileData(
+    const PRJ_CALLBACK_DATA& callback_data,
+    const UINT64 offset,
+    const UINT32 length) noexcept {
+    if (callback_data.FilePathName == nullptr || length == 0) {
+        return E_INVALIDARG;
+    }
+    std::vector<std::uint8_t> data;
+    const auto status =
+        source_.Read(callback_data.FilePathName, offset, length, data);
+    if (status != ProjectedWorkspaceStatus::kSuccess) {
+        return StatusToHresult(status);
+    }
+    void* const buffer = functions_.allocate_buffer(
+        callback_data.NamespaceVirtualizationContext, data.size());
+    if (buffer == nullptr) {
+        return E_OUTOFMEMORY;
+    }
+    std::memcpy(buffer, data.data(), data.size());
+    const HRESULT written = functions_.write_data(
+        callback_data.NamespaceVirtualizationContext,
+        &callback_data.DataStreamId, buffer, offset, length);
+    functions_.free_buffer(buffer);
+    return written;
+}
+
+HRESULT ProjectedWorkspaceProvider::QueryFileName(
+    const PRJ_CALLBACK_DATA& callback_data) noexcept {
+    if (callback_data.FilePathName == nullptr) {
+        return E_INVALIDARG;
+    }
+    ProjectedWorkspaceEntry entry{};
+    return StatusToHresult(
+        source_.Lookup(callback_data.FilePathName, entry));
 }
 
 }  // namespace bolt::common

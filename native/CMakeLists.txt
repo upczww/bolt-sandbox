@@ -160,7 +160,7 @@ add_library(bolt-sandbox-common STATIC
 )
 bolt_native_warnings(bolt-sandbox-common)
 target_include_directories(bolt-sandbox-common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(bolt-sandbox-common PUBLIC advapi32)
+target_link_libraries(bolt-sandbox-common PUBLIC advapi32 ole32)
 target_link_libraries(bolt-sandbox-common PRIVATE bolt-sandbox-detours)
 target_link_libraries(bolt-sandbox-common PRIVATE bolt-sandbox-protocol)
 
