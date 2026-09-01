@@ -52,6 +52,7 @@ bool RunEventFrameTests();
 bool RunPolicyMappingTests();
 bool RunProjfsApiTests();
 bool RunProjectedWorkspaceProviderTests();
+bool RunProjectedWorkspaceProtocolTests();
 bool RunWorkspaceSecurityTests();
 bool RunWorkspaceSecurityProtocolTests();
 bool RunWorkspaceSecurityLauncherTests(const std::filesystem::path& directory);
@@ -685,6 +686,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunProjectedWorkspaceProviderTests()) {
         return 57;
+    }
+    if (!RunProjectedWorkspaceProtocolTests()) {
+        return 58;
     }
     if (!RunWorkspaceSecurityTests()) {
         return 54;
