@@ -231,24 +231,12 @@ fn prepare_launch_with_identity_factory_and_denies(
         ),
     )
     .map_err(|_| LaunchPreparationError::CompatibilityProfile)?;
-    let mut effective_policy = request_value.policy.clone();
-    effective_policy
-        .filesystem
-        .read_only
-        .extend(profile.filesystem_read_only);
-    effective_policy
-        .filesystem
-        .metadata_read
-        .extend(profile.filesystem_metadata_read);
-    effective_policy
-        .registry
-        .read_only
-        .extend(profile.registry_read_only);
-    let compiled_policy = compiler::compile_with_security_denies(
-        &effective_policy,
+    let compiled_policy = compiler::compile_with_security_denies_and_compatibility(
+        &request_value.policy,
         &request_value.cwd,
         mandatory_filesystem_denies,
         mandatory_registry_denies,
+        &profile,
     )
     .map_err(LaunchPreparationError::Request)?;
     let recovery = match &compiled_policy.recovery {

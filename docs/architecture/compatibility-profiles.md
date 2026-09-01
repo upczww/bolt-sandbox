@@ -25,9 +25,10 @@ kind|requiredness|base|suffix
 ```
 
 Supported kinds are `fs-ro` for recursive filesystem read-only, `fs-meta` for
-filesystem metadata-only access, and `reg-ro` for recursive registry read-only.
-Requiredness is `required`, which fails when the trusted base is absent, or
-`optional`, which skips only that entry.
+filesystem metadata-only access, `reg-ro` for recursive registry read-only,
+`reg-exact-ro` for one exact registry key, and `reg-hide` for a trusted probe
+that must appear absent. Requiredness is `required`, which fails when the
+trusted base is absent, or `optional`, which skips only that entry.
 
 Filesystem bases are `system-root`, `program-dir`, `cwd-parent`, `cwd-anchor`, `program-files`,
 `program-files-x86`, `program-data`, `local-app-data`, `user-profile`, and
@@ -50,6 +51,8 @@ fs-ro|optional|user-profile|.cargo\registry\cache
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Cryptography
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\SystemCertificates
 reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\SystemCertificates
+reg-exact-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion
+reg-hide|required|registry|HKCU\Environment
 ```
 
 ## 3. Resolution Rules

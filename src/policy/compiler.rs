@@ -9,6 +9,7 @@ use std::{
 use super::{
     ChildProcessPolicy, FilesystemPolicy, IpCidr, NetworkAllowList, NetworkPolicy, PortRange,
     RecoveryPolicy, RegistryPolicy, SandboxPolicy,
+    compatibility_profile::{MAX_PROFILE_RULES, ResolvedProfile},
 };
 use crate::{InvalidRequestReason, RequestField, SandboxError};
 
@@ -21,93 +22,7 @@ const MAX_TOTAL_FILESYSTEM_RULES: usize = 2_048;
 const MAX_FILESYSTEM_PATH_CODE_UNITS: usize = 32_767;
 const MAX_REGISTRY_RULES_PER_CATEGORY: usize = 1_024;
 const MAX_TOTAL_REGISTRY_RULES: usize = 2_048;
-const DEFAULT_REGISTRY_EXACT_READ_ONLY_COMPATIBILITY_GRANTS: &[&str] = &[
-    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion",
-];
-const DEFAULT_REGISTRY_HIDDEN_COMPATIBILITY_KEYS: &[&str] = &[r"HKCU\Environment"];
-const DEFAULT_REGISTRY_COMPATIBILITY_GRANTS: &[&str] = &[
-    r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager",
-    r"HKLM\SYSTEM\CurrentControlSet\Services\WinSock2",
-    r"HKLM\SYSTEM\CurrentControlSet\Services\WinSock",
-    r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters",
-    r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Winsock",
-    r"HKLM\SOFTWARE\Microsoft\OLE",
-    r"HKLM\SOFTWARE\Microsoft\AppModel\Lookaside\machine",
-    r"HKLM\SOFTWARE\Microsoft\AppModel\Lookaside\user",
-    r"HKLM\SOFTWARE\Microsoft\Wow64\x86\xtajit",
-    r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Option",
-    r"HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters",
-    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers",
-    r"HKCU\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers",
-    r"HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
-    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Containers",
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\SideBySide",
-    r"HKLM\SOFTWARE\Microsoft\LanguageOverlay\OverlayPackages",
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings",
-    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings",
-    r"HKLM\SOFTWARE\Policies\Microsoft\Internet Explorer\Main",
-    r"HKCU\SOFTWARE\Policies\Microsoft\Internet Explorer\Main",
-    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings",
-    r"HKCU\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings",
-    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\MpeHttpExt\Payload",
-    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\TenantRestrictions\Payload",
-    r"HKLM\SOFTWARE\Microsoft\Rpc",
-    r"HKLM\SYSTEM\CurrentControlSet\Services\CCG",
-    r"HKLM\SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName",
-    r"HKLM\SYSTEM\Setup",
-    r"HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Rpc",
-    r"HKLM\SYSTEM\CurrentControlSet\Control\Nls\Sorting\Ids",
-    r"HKLM\SOFTWARE\Policies\Microsoft\PeerDist\Service",
-    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PeerDist\Service",
-    r"HKLM\SYSTEM\CurrentControlSet\Control\Hvsi",
-    r"HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders",
-    r"HKLM\SYSTEM\CurrentControlSet\Control\Lsa\SspiCache",
-    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\System",
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer",
-    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer",
-    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer",
-    r"HKCU\SOFTWARE\Policies\Microsoft\Windows\Explorer",
-    r"HKLM\SOFTWARE\Microsoft\OLEAUT",
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\ShellCompatibility\Applications",
-    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\NonEnum",
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\NonEnum",
-    r"HKLM\SOFTWARE\Microsoft\COM3",
-    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer",
-    r"HKLM\SOFTWARE\Microsoft\WindowsRuntime",
-    r"HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters",
-    r"HKLM\ZoneMap\Ranges",
-    r"HKCU\ZoneMap\Ranges",
-    r"HKCU\SOFTWARE\Microsoft\Internet Explorer\Main",
-    r"HKLM\SOFTWARE\Microsoft\Internet Explorer\Main",
-    r"HKCU\SOFTWARE\Microsoft\Internet Explorer\Security",
-    r"HKLM\SOFTWARE\Microsoft\Internet Explorer\Security",
-    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList",
-    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked",
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked",
-    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags",
-    r"HKLM\OSDATA\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags",
-    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Cached",
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Cached",
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\ShellCompatibility\Objects",
-    r"HKCU\SOFTWARE\Policies\Microsoft\Windows\Appx",
-    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\Appx",
-    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock",
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock",
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Diagnostics\DiagTrack\Partners\COM\RundownIIDsOfInterest",
-    r"HKLM\SYSTEM\CurrentControlSet\Control\MUI\StringCacheSettings",
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer",
-    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server",
-    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\PropertySystem",
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\PropertySystem",
-    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths",
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths",
-];
-const MAX_COMPILED_REGISTRY_RULES: usize = MAX_TOTAL_REGISTRY_RULES
-    + DEFAULT_REGISTRY_EXACT_READ_ONLY_COMPATIBILITY_GRANTS.len()
-    + DEFAULT_REGISTRY_HIDDEN_COMPATIBILITY_KEYS.len()
-    + DEFAULT_REGISTRY_COMPATIBILITY_GRANTS.len();
+const MAX_COMPILED_REGISTRY_RULES: usize = MAX_TOTAL_REGISTRY_RULES + MAX_PROFILE_RULES;
 const MAX_REGISTRY_KEY_CODE_UNITS: usize = 255;
 const MAX_RECOVERY_RETENTION: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
@@ -129,6 +44,38 @@ pub(crate) fn compile_with_security_denies(
     mandatory_filesystem_denies: &[std::path::PathBuf],
     mandatory_registry_denies: &[String],
 ) -> Result<CompiledPolicy, SandboxError> {
+    compile_internal(
+        policy,
+        cwd,
+        mandatory_filesystem_denies,
+        mandatory_registry_denies,
+        None,
+    )
+}
+
+pub(crate) fn compile_with_security_denies_and_compatibility(
+    policy: &SandboxPolicy,
+    cwd: &Path,
+    mandatory_filesystem_denies: &[std::path::PathBuf],
+    mandatory_registry_denies: &[String],
+    compatibility: &ResolvedProfile,
+) -> Result<CompiledPolicy, SandboxError> {
+    compile_internal(
+        policy,
+        cwd,
+        mandatory_filesystem_denies,
+        mandatory_registry_denies,
+        Some(compatibility),
+    )
+}
+
+fn compile_internal(
+    policy: &SandboxPolicy,
+    cwd: &Path,
+    mandatory_filesystem_denies: &[std::path::PathBuf],
+    mandatory_registry_denies: &[String],
+    compatibility: Option<&ResolvedProfile>,
+) -> Result<CompiledPolicy, SandboxError> {
     validate_filesystem_policy_limits(&policy.filesystem)?;
     let mut filesystem = CompiledFilesystemPolicy::default();
     filesystem.add_rule(cwd, FilesystemRuleKind::ReadWrite)?;
@@ -144,9 +91,20 @@ pub(crate) fn compile_with_security_denies(
         &policy.filesystem.inherit_user,
         FilesystemRuleKind::InheritUser,
     )?;
+    if let Some(compatibility) = compatibility {
+        filesystem.add_compatibility_rules(
+            &compatibility.filesystem_read_only,
+            FilesystemRuleKind::ReadOnly,
+        )?;
+        filesystem.add_compatibility_rules(
+            &compatibility.filesystem_metadata_read,
+            FilesystemRuleKind::MetadataRead,
+        )?;
+    }
 
     let network = compile_network_policy(&policy.network)?;
-    let registry = compile_registry_policy(&policy.registry, mandatory_registry_denies)?;
+    let registry =
+        compile_registry_policy(&policy.registry, mandatory_registry_denies, compatibility)?;
     let recovery = compile_recovery_policy(&policy.recovery)?;
     if let CompiledRecoveryPolicy::Enabled(limits) = &recovery {
         filesystem.add_rule(limits.directory(), FilesystemRuleKind::Deny)?;
@@ -691,6 +649,7 @@ impl CompiledRegistryPolicy {
 fn compile_registry_policy(
     policy: &RegistryPolicy,
     mandatory_denies: &[String],
+    compatibility: Option<&ResolvedProfile>,
 ) -> Result<CompiledRegistryPolicy, SandboxError> {
     validate_registry_rule_counts(policy, mandatory_denies)?;
     let mut compiled = RegistryPolicyBuilder::default();
@@ -698,19 +657,19 @@ fn compile_registry_policy(
     compiled.add_rules(&policy.read_only, RegistryRuleKind::ReadOnly)?;
     compiled.add_rules(&policy.no_access, RegistryRuleKind::NoAccess)?;
     compiled.add_rules(mandatory_denies, RegistryRuleKind::NoAccess)?;
-    compiled.add_compatibility_rules(
-        DEFAULT_REGISTRY_EXACT_READ_ONLY_COMPATIBILITY_GRANTS,
-        RegistryRuleKind::ReadOnlyKey,
-    )?;
-    compiled.add_compatibility_rules(
-        DEFAULT_REGISTRY_HIDDEN_COMPATIBILITY_KEYS,
-        RegistryRuleKind::HideKey,
-    )?;
-    compiled.add_compatibility_rules(
-        DEFAULT_REGISTRY_COMPATIBILITY_GRANTS,
-        RegistryRuleKind::InheritUser,
-    )?;
     compiled.add_rules(&policy.inherit_user, RegistryRuleKind::InheritUser)?;
+    if let Some(compatibility) = compatibility {
+        compiled.add_compatibility_rules(
+            &compatibility.registry_read_only,
+            RegistryRuleKind::ReadOnly,
+        )?;
+        compiled.add_compatibility_rules(
+            &compatibility.registry_exact_read_only,
+            RegistryRuleKind::ReadOnlyKey,
+        )?;
+        compiled
+            .add_compatibility_rules(&compatibility.registry_hidden, RegistryRuleKind::HideKey)?;
+    }
     compiled
         .rules
         .sort_by(|left, right| left.root.cmp(&right.root).then(left.kind.cmp(&right.kind)));
@@ -778,19 +737,12 @@ impl RegistryPolicyBuilder {
 
     fn add_compatibility_rules(
         &mut self,
-        keys: &[&str],
+        keys: &[String],
         kind: RegistryRuleKind,
     ) -> Result<(), SandboxError> {
         for key in keys {
             let root = NormalizedRegistryKey::parse(key)?;
             if self.rules.iter().any(|rule| rule.root == root) {
-                continue;
-            }
-            if kind == RegistryRuleKind::InheritUser
-                && self.rules.iter().any(|rule| {
-                    rule.kind == RegistryRuleKind::ReadOnly && rule.root.contains(&root)
-                })
-            {
                 continue;
             }
             self.rules.push(RegistryRule { root, kind });
@@ -1001,6 +953,21 @@ impl CompiledFilesystemPolicy {
             }
         }
         self.rules.push(FilesystemRule { root, kind });
+        Ok(())
+    }
+
+    fn add_compatibility_rules(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        kind: FilesystemRuleKind,
+    ) -> Result<(), SandboxError> {
+        for path in paths {
+            let root = NormalizedPath::from_path(path)?;
+            if self.rules.iter().any(|rule| rule.root == root) {
+                continue;
+            }
+            self.rules.push(FilesystemRule { root, kind });
+        }
         Ok(())
     }
 
@@ -2131,108 +2098,21 @@ mod tests {
         );
     }
 
-    fn assert_default_registry_metadata_rules(compiled: &CompiledPolicy) {
-        for exact_metadata_key in DEFAULT_REGISTRY_EXACT_READ_ONLY_COMPATIBILITY_GRANTS {
-            assert_eq!(
-                compiled
-                    .registry
-                    .decide(exact_metadata_key, RegistryAccess::Read),
-                RegistryDecision::Allow
-            );
-            assert_eq!(
-                compiled
-                    .registry
-                    .decide(exact_metadata_key, RegistryAccess::Write),
-                RegistryDecision::Deny
-            );
-            assert_eq!(
-                compiled.registry.decide(
-                    &format!(r"{exact_metadata_key}\UnlistedSensitive"),
-                    RegistryAccess::Read,
-                ),
-                RegistryDecision::Deny
-            );
-        }
-        for hidden_key in DEFAULT_REGISTRY_HIDDEN_COMPATIBILITY_KEYS {
-            assert_eq!(
-                compiled.registry.decide(hidden_key, RegistryAccess::Read),
-                RegistryDecision::NotFound
-            );
-            assert_eq!(
-                compiled
-                    .registry
-                    .decide(hidden_key, RegistryAccess::Enumerate),
-                RegistryDecision::NotFound
-            );
-            assert_eq!(
-                compiled.registry.decide(hidden_key, RegistryAccess::Write),
-                RegistryDecision::Deny
-            );
-            assert_eq!(
-                compiled.registry.decide(
-                    &format!(r"{hidden_key}\UnlistedSensitive"),
-                    RegistryAccess::Read,
-                ),
-                RegistryDecision::Deny
-            );
-        }
-    }
-
     #[test]
-    fn reg_default_compatibility_grants_are_explicit_and_narrow() {
+    fn reg_default_policy_has_no_embedded_compatibility_paths() {
         let compiled = compile(&SandboxPolicy::default(), Path::new(r"C:\work\project"))
-            .expect("default compatibility registry grants must compile");
-
-        for &key in DEFAULT_REGISTRY_COMPATIBILITY_GRANTS {
+            .expect("default registry policy must compile");
+        for key in [
+            r"HKLM\SOFTWARE\Microsoft\Rpc",
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            r"HKCU\Environment",
+        ] {
             assert_eq!(
                 compiled.registry.decide(key, RegistryAccess::Read),
-                RegistryDecision::InheritUser,
-                "read: {key}"
-            );
-            assert_eq!(
-                compiled.registry.decide(key, RegistryAccess::Write),
-                RegistryDecision::InheritUser,
-                "write: {key}"
+                RegistryDecision::Deny,
+                "embedded compatibility path: {key}"
             );
         }
-        assert_default_registry_metadata_rules(&compiled);
-        assert_eq!(
-            compiled.registry.decide(
-                r"HKLM\SOFTWARE\Microsoft\AppModel\Unrelated",
-                RegistryAccess::Read,
-            ),
-            RegistryDecision::Deny
-        );
-
-        let mut explicitly_denied = SandboxPolicy::default();
-        explicitly_denied
-            .registry
-            .no_access
-            .push(r"HKLM\SOFTWARE\Microsoft\Rpc".into());
-        let explicitly_denied = compile(&explicitly_denied, Path::new(r"C:\work\project"))
-            .expect("an explicit deny must replace the compatibility grant");
-        assert_eq!(
-            explicitly_denied.registry.decide(
-                r"HKLM\SOFTWARE\Microsoft\Rpc\SecurityService",
-                RegistryAccess::Read,
-            ),
-            RegistryDecision::Deny
-        );
-
-        let mandatorily_denied = compile_with_security_denies(
-            &SandboxPolicy::default(),
-            Path::new(r"C:\work\project"),
-            &[],
-            &[r"HKLM\SOFTWARE\Microsoft\Rpc".into()],
-        )
-        .expect("a mandatory deny must replace the compatibility grant");
-        assert_eq!(
-            mandatorily_denied.registry.decide(
-                r"HKLM\SOFTWARE\Microsoft\Rpc\SecurityService",
-                RegistryAccess::Read,
-            ),
-            RegistryDecision::Deny
-        );
     }
 
     #[test]
@@ -2274,10 +2154,9 @@ mod tests {
             RegistryDecision::Allow
         );
         assert_eq!(
-            compiled.registry.decide(
-                r"HKLM\SOFTWARE\Metadata\Child",
-                RegistryAccess::Read,
-            ),
+            compiled
+                .registry
+                .decide(r"HKLM\SOFTWARE\Metadata\Child", RegistryAccess::Read,),
             RegistryDecision::Deny
         );
         assert_eq!(

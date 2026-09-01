@@ -12,6 +12,8 @@ enum RuleKind {
     FilesystemReadOnly,
     FilesystemMetadataRead,
     RegistryReadOnly,
+    RegistryExactReadOnly,
+    RegistryHidden,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,6 +55,8 @@ pub(crate) struct ResolvedProfile {
     pub(crate) filesystem_read_only: Vec<PathBuf>,
     pub(crate) filesystem_metadata_read: Vec<PathBuf>,
     pub(crate) registry_read_only: Vec<String>,
+    pub(crate) registry_exact_read_only: Vec<String>,
+    pub(crate) registry_hidden: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -131,6 +135,8 @@ pub(crate) fn parse_profile(input: &[u8]) -> Result<CompatibilityProfile, Profil
             Some("fs-ro") => RuleKind::FilesystemReadOnly,
             Some("fs-meta") => RuleKind::FilesystemMetadataRead,
             Some("reg-ro") => RuleKind::RegistryReadOnly,
+            Some("reg-exact-ro") => RuleKind::RegistryExactReadOnly,
+            Some("reg-hide") => RuleKind::RegistryHidden,
             _ => return Err(ProfileError::InvalidSyntax),
         };
         let requiredness = match fields.next() {
@@ -159,7 +165,7 @@ pub(crate) fn parse_profile(input: &[u8]) -> Result<CompatibilityProfile, Profil
                 kind,
                 RuleKind::FilesystemReadOnly | RuleKind::FilesystemMetadataRead
             ) && base == Base::Registry)
-            || (kind == RuleKind::RegistryReadOnly && base != Base::Registry)
+            || (is_registry_kind(kind) && base != Base::Registry)
             || !validate_suffix(kind, base, suffix)
         {
             return Err(ProfileError::InvalidSyntax);
@@ -177,11 +183,18 @@ pub(crate) fn parse_profile(input: &[u8]) -> Result<CompatibilityProfile, Profil
     Ok(CompatibilityProfile { rules })
 }
 
+const fn is_registry_kind(kind: RuleKind) -> bool {
+    matches!(
+        kind,
+        RuleKind::RegistryReadOnly | RuleKind::RegistryExactReadOnly | RuleKind::RegistryHidden
+    )
+}
+
 fn validate_suffix(kind: RuleKind, base: Base, suffix: &str) -> bool {
     if suffix.contains(['\0', '/', '*', '?']) || suffix.starts_with(r"\\?\") {
         return false;
     }
-    if kind == RuleKind::RegistryReadOnly {
+    if is_registry_kind(kind) {
         return !suffix.contains(':');
     }
     if base == Base::Absolute {
@@ -205,6 +218,8 @@ pub(crate) fn resolve_profile(
     let mut filesystem_read_only = Vec::new();
     let mut filesystem_metadata_read = Vec::new();
     let mut registry_read_only = Vec::new();
+    let mut registry_exact_read_only = Vec::new();
+    let mut registry_hidden = Vec::new();
     let mut filesystem_keys = BTreeSet::new();
     let mut registry_keys = BTreeSet::new();
     for rule in &profile.rules {
@@ -228,16 +243,29 @@ pub(crate) fn resolve_profile(
                 match rule.kind {
                     RuleKind::FilesystemReadOnly => filesystem_read_only.push(path),
                     RuleKind::FilesystemMetadataRead => filesystem_metadata_read.push(path),
-                    RuleKind::RegistryReadOnly => unreachable!("registry handled separately"),
+                    RuleKind::RegistryReadOnly
+                    | RuleKind::RegistryExactReadOnly
+                    | RuleKind::RegistryHidden => {
+                        unreachable!("registry handled separately")
+                    }
                 }
             }
-            RuleKind::RegistryReadOnly => {
+            RuleKind::RegistryReadOnly
+            | RuleKind::RegistryExactReadOnly
+            | RuleKind::RegistryHidden => {
                 let key = normalize_registry_key(&rule.suffix)?;
                 let comparison = key.to_lowercase();
                 if !registry_keys.insert(comparison) {
                     return Err(ProfileError::DuplicateRule);
                 }
-                registry_read_only.push(key);
+                match rule.kind {
+                    RuleKind::RegistryReadOnly => registry_read_only.push(key),
+                    RuleKind::RegistryExactReadOnly => registry_exact_read_only.push(key),
+                    RuleKind::RegistryHidden => registry_hidden.push(key),
+                    RuleKind::FilesystemReadOnly | RuleKind::FilesystemMetadataRead => {
+                        unreachable!("filesystem handled separately")
+                    }
+                }
             }
         }
     }
@@ -254,10 +282,14 @@ pub(crate) fn resolve_profile(
             .then_with(|| windows_path_key(left).cmp(&windows_path_key(right)))
     });
     registry_read_only.sort_by_key(|key| key.to_lowercase());
+    registry_exact_read_only.sort_by_key(|key| key.to_lowercase());
+    registry_hidden.sort_by_key(|key| key.to_lowercase());
     Ok(ResolvedProfile {
         filesystem_read_only,
         filesystem_metadata_read,
         registry_read_only,
+        registry_exact_read_only,
+        registry_hidden,
     })
 }
 

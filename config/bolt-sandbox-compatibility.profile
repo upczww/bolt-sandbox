@@ -27,3 +27,86 @@ reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\Windows\Safer
 reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\Srp
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Server
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Time Zones
+
+# Exact metadata and hidden compatibility probes.
+reg-exact-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion
+reg-exact-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion
+reg-hide|required|registry|HKCU\Environment
+
+# Legacy runtime compatibility is intentionally read-only in the Profile.
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\Session Manager
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\WinSock2
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\WinSock
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Winsock
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\OLE
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\AppModel\Lookaside\machine
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\AppModel\Lookaside\user
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Wow64\x86\xtajit
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Option
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters
+reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers
+reg-ro|required|registry|HKCU\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Containers
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\SideBySide
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\LanguageOverlay\OverlayPackages
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings
+reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\Internet Explorer\Main
+reg-ro|required|registry|HKCU\SOFTWARE\Policies\Microsoft\Internet Explorer\Main
+reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings
+reg-ro|required|registry|HKCU\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings
+reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\Windows\MpeHttpExt\Payload
+reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\Windows\TenantRestrictions\Payload
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Rpc
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\CCG
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName
+reg-ro|required|registry|HKLM\SYSTEM\Setup
+reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Rpc
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\Nls\Sorting\Ids
+reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\PeerDist\Service
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PeerDist\Service
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\Hvsi
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\Lsa\SspiCache
+reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\Windows\System
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize
+reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer
+reg-ro|required|registry|HKCU\SOFTWARE\Policies\Microsoft\Windows\Explorer
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\OLEAUT
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\ShellCompatibility\Applications
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\NonEnum
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\NonEnum
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\COM3
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\WindowsRuntime
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters
+reg-ro|required|registry|HKLM\ZoneMap\Ranges
+reg-ro|required|registry|HKCU\ZoneMap\Ranges
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Internet Explorer\Main
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Internet Explorer\Main
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Internet Explorer\Security
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Internet Explorer\Security
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags
+reg-ro|required|registry|HKLM\OSDATA\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Cached
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Cached
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\ShellCompatibility\Objects
+reg-ro|required|registry|HKCU\SOFTWARE\Policies\Microsoft\Windows\Appx
+reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\Windows\Appx
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Diagnostics\DiagTrack\Partners\COM\RundownIIDsOfInterest
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\MUI\StringCacheSettings
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\PropertySystem
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\PropertySystem
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths
