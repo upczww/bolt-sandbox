@@ -273,6 +273,7 @@ impl Sandbox {
         })?;
         let source_root = request.cwd.clone();
         if workspace_overlaps_mandatory_deny(&source_root, &self.config.mandatory_filesystem_denies)
+            || staged_policy_exposes_sibling_namespace(&source_root, &request.policy)
         {
             return Err(SandboxError::InitializationFailed {
                 stage: InitializationStage::Workspace,
@@ -536,6 +537,28 @@ fn workspace_overlaps_mandatory_deny(source: &std::path::Path, denies: &[PathBuf
         };
         is_same_or_ancestor_key(&source, &deny) || is_same_or_ancestor_key(&deny, &source)
     })
+}
+
+fn staged_policy_exposes_sibling_namespace(
+    source: &std::path::Path,
+    policy: &crate::SandboxPolicy,
+) -> bool {
+    let Some(source) = safe_windows_path_key(source) else {
+        return true;
+    };
+    policy
+        .filesystem
+        .read_write
+        .iter()
+        .chain(&policy.filesystem.read_only)
+        .chain(&policy.filesystem.metadata_read)
+        .chain(&policy.filesystem.inherit_user)
+        .any(|grant| {
+            let Some(grant) = safe_windows_path_key(grant) else {
+                return true;
+            };
+            grant != source && is_same_or_ancestor_key(&grant, &source)
+        })
 }
 
 fn safe_windows_path_key(path: &std::path::Path) -> Option<String> {
