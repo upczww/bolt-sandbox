@@ -209,6 +209,68 @@ fn rec_021_completed_staged_transaction_expires_and_removes_session_state() {
 }
 
 #[test]
+fn ws_018_conflicted_commit_preserves_inspectable_transaction() {
+    let Some((sandbox, _component_root)) = configured_sandbox() else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let source = std::env::temp_dir().join(format!(
+        "bolt-sandbox-staged-conflict-{}-{fixture_id}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&source).expect("source must create");
+    fs::write(source.join("file.txt"), b"before").expect("source must seed");
+    let command = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+        .join(r"System32\cmd.exe");
+    let handle = sandbox
+        .start_with_options(
+            SandboxRequest {
+                program: command,
+                arguments: vec![
+                    OsString::from("/d"),
+                    OsString::from("/c"),
+                    OsString::from("echo staged>file.txt"),
+                ],
+                cwd: source.clone(),
+                environment: BTreeMap::new(),
+                policy: SandboxPolicy::default(),
+                timeout: Some(Duration::from_secs(5)),
+            },
+            ExecutionOptions {
+                workspace: WorkspaceMode::Staged,
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("staged execution must start");
+    let transaction = handle
+        .wait()
+        .expect("execution must finish")
+        .workspace_transaction
+        .expect("transaction must complete");
+    fs::write(source.join("file.txt"), b"external").expect("external change must apply");
+
+    assert_eq!(
+        sandbox.commit_workspace(transaction),
+        Err(WorkspaceControlError::Conflict)
+    );
+    assert_eq!(
+        sandbox
+            .query_workspace_changes(transaction)
+            .expect("conflicted transaction must remain inspectable")
+            .len(),
+        1
+    );
+    sandbox
+        .discard_workspace(transaction)
+        .expect("conflicted transaction must remain discardable");
+    assert_eq!(
+        fs::read(source.join("file.txt")).expect("source must remain external version"),
+        b"external"
+    );
+    fs::remove_dir_all(source).expect("fixture must clean");
+}
+
+#[test]
 fn life_012_public_runtime_transports_arbitrary_binary_stdout_and_stderr() {
     assert_dual_stream_execution("--dual-stream-writer");
 }
