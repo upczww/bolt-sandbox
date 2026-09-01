@@ -42,7 +42,7 @@ fn perf_014_zero_sample_count_is_rejected_before_component_access() {
 }
 
 #[test]
-fn perf_003_read_workload_fixture_reports_internal_time_and_cleans_up() {
+fn perf_003_read_workload_fixture_reports_internal_time_for_driver_cleanup() {
     let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
     let root =
         std::env::temp_dir().join(format!("bolt-read-benchmark-{}-{id}", std::process::id()));
@@ -64,8 +64,12 @@ fn perf_003_read_workload_fixture_reports_internal_time_and_cleans_up() {
             .parse::<u64>()
             .is_ok()
     );
-    assert!(!root.exists());
-    if root.exists() {
-        fs::remove_dir_all(root).expect("failed fixture must clean up");
-    }
+    assert!(root.is_dir());
+    assert!(
+        fs::read_dir(&root)
+            .expect("fixture tree must be readable")
+            .next()
+            .is_some()
+    );
+    fs::remove_dir_all(root).expect("benchmark driver must clean fixture tree");
 }
