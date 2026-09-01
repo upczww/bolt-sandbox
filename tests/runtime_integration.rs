@@ -8,13 +8,73 @@ use std::{
 };
 
 use bolt_sandbox::{
-    AttributedSandboxEvent, ExecutionTerminal, InfrastructureFailure, ProcessExitReason,
-    ReceiverLoss, RecoveryFailureReason, RecoveryLimits, RecoveryPolicy, Sandbox, SandboxConfig,
-    SandboxEvent, SandboxPolicy, SandboxRequest,
+    AttributedSandboxEvent, ExecutionOptions, ExecutionTerminal, InfrastructureFailure,
+    ProcessExitReason, ReceiverLoss, RecoveryFailureReason, RecoveryLimits, RecoveryPolicy,
+    Sandbox, SandboxConfig, SandboxEvent, SandboxPolicy, SandboxRequest, WorkspaceChangeKind,
+    WorkspaceMode,
 };
 
 const STREAM_BYTES: usize = 256 * 1_024;
 static NEXT_RECOVERY_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn ws_016_staged_execution_requires_explicit_trusted_commit() {
+    let Some((sandbox, _component_root)) = configured_sandbox() else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let source = std::env::temp_dir().join(format!(
+        "bolt-sandbox-staged-public-{}-{fixture_id}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&source).expect("source must create");
+    fs::write(source.join("file.txt"), b"before").expect("source must seed");
+    let command = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+        .join(r"System32\cmd.exe");
+    let request = SandboxRequest {
+        program: command,
+        arguments: vec![
+            OsString::from("/d"),
+            OsString::from("/c"),
+            OsString::from("echo after>file.txt"),
+        ],
+        cwd: source.clone(),
+        environment: BTreeMap::new(),
+        policy: SandboxPolicy::default(),
+        timeout: Some(Duration::from_secs(5)),
+    };
+    let mut handle = sandbox
+        .start_with_options(
+            request,
+            ExecutionOptions {
+                workspace: WorkspaceMode::Staged,
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("staged execution must start");
+    let stdout = handle.take_stdout().expect("stdout");
+    let stderr = handle.take_stderr().expect("stderr");
+    let events = handle.take_events().expect("events");
+    let (_stdout, _stderr, _events, result) = collect_execution(handle, stdout, stderr, events);
+
+    assert_eq!(fs::read(source.join("file.txt")).expect("source"), b"before");
+    let transaction = result
+        .workspace_transaction
+        .expect("staged result must return transaction ID");
+    let changes = sandbox
+        .query_workspace_changes(transaction)
+        .expect("changes must query");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].kind, WorkspaceChangeKind::Modified);
+    sandbox
+        .commit_workspace(transaction)
+        .expect("trusted commit must succeed");
+    assert!(String::from_utf8_lossy(
+        &fs::read(source.join("file.txt")).expect("committed source")
+    )
+    .contains("after"));
+    fs::remove_dir_all(source).expect("fixture must clean");
+}
 
 #[test]
 fn life_012_public_runtime_transports_arbitrary_binary_stdout_and_stderr() {
