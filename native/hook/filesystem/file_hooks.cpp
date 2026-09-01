@@ -1493,6 +1493,28 @@ bool AuthorizeNativeFileOpen(
     return AuthorizeCreateFile(path.c_str(), request, flags);
 }
 
+bool IsAuthorizedExactDeviceOpen(
+    const POBJECT_ATTRIBUTES object_attributes,
+    const ClassifiedAccess& request) noexcept {
+    if (request.access == Access::kWrite) {
+        return false;
+    }
+    std::wstring path;
+    constexpr wchar_t device_prefix[] = L"\\Device\\";
+    constexpr int device_prefix_length =
+        static_cast<int>(std::size(device_prefix) - 1);
+    if (!TryGetObjectAttributesPath(object_attributes, path) ||
+        path.size() <= static_cast<std::size_t>(device_prefix_length) ||
+        CompareStringOrdinal(
+            path.data(), device_prefix_length, device_prefix,
+            device_prefix_length, TRUE) != CSTR_EQUAL) {
+        return false;
+    }
+    const auto* policy = g_policy.get();
+    return policy != nullptr &&
+           policy->Decide(path.c_str(), request.access) == Decision::kAllow;
+}
+
 NTSTATUS DenyNativeFileOpen(
     const PHANDLE file,
     const PIO_STATUS_BLOCK io_status) noexcept {
@@ -1817,6 +1839,13 @@ NTSTATUS NTAPI DetouredNtCreateFile(
             file_attributes, share_access, create_disposition, create_options,
             ea_buffer, ea_length);
     }
+    auto request = ClassifyCreateFileRequest(
+        desired_access, MapNtCreateDisposition(create_disposition));
+    if ((create_options & FILE_DELETE_ON_CLOSE) != 0) {
+        request = {Access::kWrite, protocol::FilesystemOperation::kDelete};
+    }
+    const bool exact_device_open =
+        IsAuthorizedExactDeviceOpen(object_attributes, request);
     if (!AuthorizeNativeFileOpen(
             desired_access, object_attributes, create_disposition,
             create_options)) {
@@ -1827,12 +1856,8 @@ NTSTATUS NTAPI DetouredNtCreateFile(
         file_attributes, share_access, create_disposition, create_options,
         ea_buffer, ea_length);
     if (result >= 0 && file != nullptr && *file != nullptr) {
-        auto request = ClassifyCreateFileRequest(
-            desired_access, MapNtCreateDisposition(create_disposition));
-        if ((create_options & FILE_DELETE_ON_CLOSE) != 0) {
-            request = {Access::kWrite, protocol::FilesystemOperation::kDelete};
-        }
-        if (!AuthorizeOpenedFileHandle(*file, request)) {
+        if (!exact_device_open &&
+            !AuthorizeOpenedFileHandle(*file, request)) {
             CloseHandle(*file);
             return DenyNativeFileOpen(file, io_status);
         }

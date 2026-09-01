@@ -152,15 +152,21 @@ bool ValidateFilesystem(Reader& reader) noexcept {
         Reader record(record_bytes, record_length);
         std::uint8_t kind = 0;
         std::size_t component_count = 0;
-        if (!record.ReadU8(kind) || kind > 4 || !record.ReadCount(component_count)) {
+        if (!record.ReadU8(kind) || kind > 5 ||
+            !record.ReadCount(component_count) ||
+            (kind == 5 && component_count != 1)) {
             return false;
         }
         for (std::size_t component = 0; component < component_count; ++component) {
             std::uint8_t component_kind = 0;
             std::size_t code_units = 0;
             const std::uint8_t* ignored = nullptr;
-            if (!record.ReadU8(component_kind) || component_kind > 2 ||
-                !record.ReadCount(code_units) || (component_kind == 1 && code_units != 0) ||
+            if (!record.ReadU8(component_kind) ||
+                !record.ReadCount(code_units) ||
+                (kind == 5 && (component_kind != 3 || code_units == 0)) ||
+                (kind != 5 &&
+                 (component_kind > 2 ||
+                  (component_kind == 1 && code_units != 0))) ||
                 code_units > std::numeric_limits<std::size_t>::max() / 2 ||
                 !record.ReadBytes(code_units * 2, ignored)) {
                 return false;

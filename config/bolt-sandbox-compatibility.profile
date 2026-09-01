@@ -6,6 +6,9 @@ fs-meta|required|cwd-anchor|.
 fs-ro|optional|program-files|Common Files\SSL\openssl.cnf
 fs-ro|optional|user-profile|.rustup\toolchains
 
+# Exact read-only kernel metadata devices required by standard runtimes.
+device-ro|required|device|\Device\DeviceApi\CMApi
+
 # Public runtime and platform metadata.
 reg-ro|required|registry|HKCU\SOFTWARE\Classes
 reg-ro|required|registry|HKLM\SOFTWARE\Classes

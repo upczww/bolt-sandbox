@@ -25,7 +25,8 @@ kind|requiredness|base|suffix
 ```
 
 Supported kinds are `fs-ro` for recursive filesystem read-only, `fs-meta` for
-filesystem metadata-only access, `reg-ro` for recursive registry read-only,
+filesystem metadata-only access, `device-ro` for one exact NT device opened
+read-only, `reg-ro` for recursive registry read-only,
 `reg-exact-ro` for one exact registry key, and `reg-hide` for a trusted probe
 that must appear absent. Requiredness is `required`, which fails when the
 trusted base is absent, or `optional`, which skips only that entry.
@@ -48,6 +49,7 @@ fs-ro|optional|program-files|Common Files\SSL\openssl.cnf
 fs-ro|optional|user-profile|.rustup\toolchains
 fs-ro|optional|user-profile|.cargo\registry\src
 fs-ro|optional|user-profile|.cargo\registry\cache
+device-ro|required|device|\Device\DeviceApi\CMApi
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Cryptography
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\SystemCertificates
 reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\SystemCertificates
@@ -77,6 +79,11 @@ absolute target executable, never from the child environment carried in
 - An `absolute` entry cannot resolve to a volume, UNC share root, device path,
   user-profile root, or known mandatory-sensitive subtree.
 - Duplicate normalized rules are rejected rather than silently accepted.
+- A `device-ro` entry must use base `device`, start with `\Device\`, and name
+  one exact object. Roots, descendants, globs, parent components, alternate
+  separators, optional rules, and every write operation remain invalid or
+  denied. Device rules are evaluated before ordinary filesystem
+  canonicalization because NT device handles do not expose Win32 final paths.
 - Registry roots remain invalid except `reg-exact-ro|...|HKU`, which authorizes
   only the users-hive root object and never a SID subtree or hive enumeration.
 - An existing exact-read-only registry key may attenuate a create-or-open call

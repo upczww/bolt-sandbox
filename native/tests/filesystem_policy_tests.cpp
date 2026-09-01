@@ -46,6 +46,16 @@ void append_rule(
     body.insert(body.end(), record.begin(), record.end());
 }
 
+void append_device_rule(
+    std::vector<std::uint8_t>& body,
+    const std::wstring& device) {
+    std::vector<std::uint8_t> record{5};
+    append_u32(record, 1);
+    append_component(record, 3, device);
+    append_u32(body, record.size());
+    body.insert(body.end(), record.begin(), record.end());
+}
+
 bool hash_payload(std::vector<std::uint8_t>& payload) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
@@ -79,13 +89,14 @@ bool hash_payload(std::vector<std::uint8_t>& payload) {
 
 std::vector<std::uint8_t> policy_payload() {
     std::vector<std::uint8_t> body{0};
-    append_u32(body, 6);
+    append_u32(body, 7);
     append_rule(body, 0, {L"work"});
     append_rule(body, 2, {L"work", L"secret"});
     append_rule(body, 1, {L"sdk"});
     append_rule(body, 0, {L"sdk", L"cache"});
     append_rule(body, 3, {L"metadata"});
     append_rule(body, 4, {L"user"});
+    append_device_rule(body, L"\\Device\\DeviceApi\\CMApi");
     body.push_back(0);
     append_u32(body, 0);
 
@@ -202,6 +213,11 @@ bool RunFilesystemPolicyTests() {
            policy->Decide(L"C:\\metadata\\item", Access::kMetadata) == Decision::kAllow &&
            policy->Decide(L"C:\\metadata\\item", Access::kRead) == Decision::kDeny &&
            policy->Decide(L"C:\\user\\item", Access::kRead) == Decision::kInheritUser &&
+           policy->Decide(L"\\Device\\DeviceApi\\CMApi", Access::kRead) == Decision::kAllow &&
+           policy->Decide(L"\\device\\deviceapi\\cmapi", Access::kMetadata) == Decision::kAllow &&
+           policy->Decide(L"\\Device\\DeviceApi\\CMApi", Access::kWrite) == Decision::kDeny &&
+           policy->Decide(L"\\Device\\DeviceApi\\CMApi\\child", Access::kRead) == Decision::kDeny &&
+           policy->Decide(L"\\Device\\DeviceApi\\CMApi-lookalike", Access::kRead) == Decision::kDeny &&
            policy->Decide(L"C:\\worker\\lookalike", Access::kRead) == Decision::kDeny &&
            policy->Decide(L"C:\\outside\\item", Access::kRead) == Decision::kDeny;
 }

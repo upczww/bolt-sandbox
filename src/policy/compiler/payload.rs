@@ -1,4 +1,4 @@
-use std::{net::IpAddr, os::windows::ffi::OsStrExt};
+use std::{ffi::OsStr, net::IpAddr, os::windows::ffi::OsStrExt};
 
 use sha2::{Digest, Sha256};
 
@@ -153,15 +153,21 @@ fn validate_filesystem_body(reader: &mut BodyReader<'_>) -> Result<(), PolicyPay
     for _ in 0..rule_count {
         let record_length = reader.read_count()?;
         let mut record = BodyReader::new(reader.read_exact(record_length)?);
-        match record.read_u8()? {
-            0..=4 => {}
+        let rule_kind = record.read_u8()?;
+        match rule_kind {
+            0..=5 => {}
             _ => return Err(PolicyPayloadError::InvalidBody),
         }
         let component_count = record.read_count()?;
+        if rule_kind == 5 && component_count != 1 {
+            return Err(PolicyPayloadError::InvalidBody);
+        }
         for _ in 0..component_count {
             let kind = record.read_u8()?;
             let code_unit_count = record.read_count()?;
-            if kind > 2 || (kind == 1 && code_unit_count != 0) {
+            if (rule_kind == 5 && (kind != 3 || code_unit_count == 0))
+                || (rule_kind != 5 && (kind > 2 || (kind == 1 && code_unit_count != 0)))
+            {
                 return Err(PolicyPayloadError::InvalidBody);
             }
             let byte_count = code_unit_count
@@ -347,6 +353,14 @@ fn encode_filesystem(
         .iter()
         .map(encode_filesystem_rule)
         .collect::<Result<Vec<_>, _>>()?;
+    records.extend(
+        policy
+            .filesystem
+            .device_read_only
+            .iter()
+            .map(|device| encode_device_rule(device))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
     records.sort_unstable();
     writer.write_count(records.len())?;
     for record in records {
@@ -354,6 +368,15 @@ fn encode_filesystem(
         writer.write_bytes(&record)?;
     }
     Ok(())
+}
+
+fn encode_device_rule(device: &str) -> Result<Vec<u8>, PolicyPayloadError> {
+    let mut writer = BoundedWriter::default();
+    writer.write_u8(5)?;
+    writer.write_count(1)?;
+    writer.write_u8(3)?;
+    writer.write_canonical_os_str(OsStr::new(device))?;
+    Ok(writer.bytes)
 }
 
 fn encode_filesystem_rule(rule: &super::FilesystemRule) -> Result<Vec<u8>, PolicyPayloadError> {

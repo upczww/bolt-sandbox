@@ -100,6 +100,7 @@ fn compile_internal(
             &compatibility.filesystem_metadata_read,
             FilesystemRuleKind::MetadataRead,
         )?;
+        filesystem.add_compatibility_devices(&compatibility.device_read_only);
     }
 
     let network = compile_network_policy(&policy.network)?;
@@ -931,9 +932,17 @@ impl RegistryHive {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CompiledFilesystemPolicy {
     rules: Vec<FilesystemRule>,
+    device_read_only: Vec<String>,
 }
 
 impl CompiledFilesystemPolicy {
+    fn add_compatibility_devices(&mut self, devices: &[String]) {
+        self.device_read_only.extend_from_slice(devices);
+        self.device_read_only
+            .sort_by_key(|device| device.to_lowercase());
+        self.device_read_only
+            .dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    }
     fn add_rules(
         &mut self,
         paths: &[std::path::PathBuf],
@@ -2133,6 +2142,7 @@ mod tests {
         let compatibility = crate::policy::compatibility_profile::ResolvedProfile {
             filesystem_read_only: vec![std::path::PathBuf::from(r"C:\SDK")],
             filesystem_metadata_read: vec![],
+            device_read_only: vec![],
             registry_read_only: vec![r"HKLM\SOFTWARE\Explicit".into()],
             registry_exact_read_only: vec![r"HKLM\SOFTWARE\Metadata".into()],
             registry_hidden: vec![r"HKCU\Environment".into()],

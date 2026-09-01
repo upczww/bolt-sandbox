@@ -11,6 +11,7 @@ pub(crate) const MAX_PROFILE_RULES: usize = 512;
 enum RuleKind {
     FilesystemReadOnly,
     FilesystemMetadataRead,
+    DeviceReadOnly,
     RegistryReadOnly,
     RegistryExactReadOnly,
     RegistryHidden,
@@ -34,6 +35,7 @@ enum Base {
     LocalAppData,
     UserProfile,
     Absolute,
+    Device,
     Registry,
 }
 
@@ -54,6 +56,7 @@ pub(crate) struct CompatibilityProfile {
 pub(crate) struct ResolvedProfile {
     pub(crate) filesystem_read_only: Vec<PathBuf>,
     pub(crate) filesystem_metadata_read: Vec<PathBuf>,
+    pub(crate) device_read_only: Vec<String>,
     pub(crate) registry_read_only: Vec<String>,
     pub(crate) registry_exact_read_only: Vec<String>,
     pub(crate) registry_hidden: Vec<String>,
@@ -134,6 +137,7 @@ pub(crate) fn parse_profile(input: &[u8]) -> Result<CompatibilityProfile, Profil
         let kind = match fields.next() {
             Some("fs-ro") => RuleKind::FilesystemReadOnly,
             Some("fs-meta") => RuleKind::FilesystemMetadataRead,
+            Some("device-ro") => RuleKind::DeviceReadOnly,
             Some("reg-ro") => RuleKind::RegistryReadOnly,
             Some("reg-exact-ro") => RuleKind::RegistryExactReadOnly,
             Some("reg-hide") => RuleKind::RegistryHidden,
@@ -155,6 +159,7 @@ pub(crate) fn parse_profile(input: &[u8]) -> Result<CompatibilityProfile, Profil
             Some("local-app-data") => Base::LocalAppData,
             Some("user-profile") => Base::UserProfile,
             Some("absolute") => Base::Absolute,
+            Some("device") => Base::Device,
             Some("registry") => Base::Registry,
             _ => return Err(ProfileError::InvalidSyntax),
         };
@@ -165,6 +170,9 @@ pub(crate) fn parse_profile(input: &[u8]) -> Result<CompatibilityProfile, Profil
                 kind,
                 RuleKind::FilesystemReadOnly | RuleKind::FilesystemMetadataRead
             ) && base == Base::Registry)
+            || (kind == RuleKind::DeviceReadOnly
+                && (base != Base::Device || requiredness != Requiredness::Required))
+            || (kind != RuleKind::DeviceReadOnly && base == Base::Device)
             || (is_registry_kind(kind) && base != Base::Registry)
             || !validate_suffix(kind, base, suffix)
         {
@@ -191,6 +199,15 @@ const fn is_registry_kind(kind: RuleKind) -> bool {
 }
 
 fn validate_suffix(kind: RuleKind, base: Base, suffix: &str) -> bool {
+    if kind == RuleKind::DeviceReadOnly {
+        return suffix.starts_with(r"\Device\")
+            && !suffix.ends_with('\\')
+            && !suffix.contains(['\0', '/', '*', '?', ':'])
+            && suffix
+                .split('\\')
+                .skip(2)
+                .all(|component| !component.is_empty() && component != "." && component != "..");
+    }
     if suffix.contains(['\0', '/', '*', '?']) || suffix.starts_with(r"\\?\") {
         return false;
     }
@@ -217,11 +234,13 @@ pub(crate) fn resolve_profile(
 ) -> Result<ResolvedProfile, ProfileError> {
     let mut filesystem_read_only = Vec::new();
     let mut filesystem_metadata_read = Vec::new();
+    let mut device_read_only = Vec::new();
     let mut registry_read_only = Vec::new();
     let mut registry_exact_read_only = Vec::new();
     let mut registry_hidden = Vec::new();
     let mut filesystem_keys = BTreeSet::new();
     let mut registry_keys = BTreeSet::new();
+    let mut device_keys = BTreeSet::new();
     for rule in &profile.rules {
         match rule.kind {
             RuleKind::FilesystemReadOnly | RuleKind::FilesystemMetadataRead => {
@@ -252,10 +271,18 @@ pub(crate) fn resolve_profile(
                     RuleKind::FilesystemMetadataRead => filesystem_metadata_read.push(path),
                     RuleKind::RegistryReadOnly
                     | RuleKind::RegistryExactReadOnly
-                    | RuleKind::RegistryHidden => {
+                    | RuleKind::RegistryHidden
+                    | RuleKind::DeviceReadOnly => {
                         unreachable!("registry handled separately")
                     }
                 }
+            }
+            RuleKind::DeviceReadOnly => {
+                let comparison = rule.suffix.to_lowercase();
+                if !device_keys.insert(comparison) {
+                    return Err(ProfileError::DuplicateRule);
+                }
+                device_read_only.push(rule.suffix.clone());
             }
             RuleKind::RegistryReadOnly
             | RuleKind::RegistryExactReadOnly
@@ -269,7 +296,9 @@ pub(crate) fn resolve_profile(
                     RuleKind::RegistryReadOnly => registry_read_only.push(key),
                     RuleKind::RegistryExactReadOnly => registry_exact_read_only.push(key),
                     RuleKind::RegistryHidden => registry_hidden.push(key),
-                    RuleKind::FilesystemReadOnly | RuleKind::FilesystemMetadataRead => {
+                    RuleKind::FilesystemReadOnly
+                    | RuleKind::FilesystemMetadataRead
+                    | RuleKind::DeviceReadOnly => {
                         unreachable!("filesystem handled separately")
                     }
                 }
@@ -288,12 +317,14 @@ pub(crate) fn resolve_profile(
             .cmp(&right.components().count())
             .then_with(|| windows_path_key(left).cmp(&windows_path_key(right)))
     });
+    device_read_only.sort_by_key(|device| device.to_lowercase());
     registry_read_only.sort_by_key(|key| key.to_lowercase());
     registry_exact_read_only.sort_by_key(|key| key.to_lowercase());
     registry_hidden.sort_by_key(|key| key.to_lowercase());
     Ok(ResolvedProfile {
         filesystem_read_only,
         filesystem_metadata_read,
+        device_read_only,
         registry_read_only,
         registry_exact_read_only,
         registry_hidden,
@@ -318,7 +349,7 @@ fn resolve_filesystem_rule(
         Base::ProgramData => context.program_data.clone(),
         Base::LocalAppData => context.local_app_data.clone(),
         Base::UserProfile => context.user_profile.clone(),
-        Base::Absolute | Base::Registry => None,
+        Base::Absolute | Base::Device | Base::Registry => None,
     };
     let Some(base) = base else {
         return match rule.requiredness {
@@ -693,10 +724,9 @@ mod tests {
 
     #[test]
     fn compat_031_exact_read_only_devices_are_data_driven_and_bounded() {
-        let profile = parse_profile(
-            b"BSC1\ndevice-ro|required|device|\\Device\\DeviceApi\\CMApi\n",
-        )
-        .expect("exact device rule must parse");
+        let profile =
+            parse_profile(b"BSC1\ndevice-ro|required|device|\\Device\\DeviceApi\\CMApi\n")
+                .expect("exact device rule must parse");
         let resolved = resolve_profile(&profile, &context()).expect("device rule must resolve");
         assert_eq!(
             resolved.device_read_only,
@@ -711,7 +741,10 @@ mod tests {
             r"C:\Device\CMApi",
         ] {
             let encoded = format!("BSC1\ndevice-ro|required|device|{device}\n");
-            assert!(parse_profile(encoded.as_bytes()).is_err(), "accepted {device}");
+            assert!(
+                parse_profile(encoded.as_bytes()).is_err(),
+                "accepted {device}"
+            );
         }
     }
 

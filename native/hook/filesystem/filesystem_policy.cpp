@@ -30,6 +30,7 @@ enum class RuleKind : std::uint8_t {
     kDeny,
     kMetadataRead,
     kInheritUser,
+    kDeviceReadOnly,
 };
 
 struct Rule {
@@ -113,12 +114,56 @@ bool HasSeparator(const std::wstring& value) noexcept {
     return value.find_first_of(L"\\/") != std::wstring::npos;
 }
 
+bool ValidExactDevicePath(const std::wstring& value) noexcept {
+    constexpr wchar_t prefix[] = L"\\Device\\";
+    constexpr std::size_t prefix_length = std::size(prefix) - 1;
+    if (value.size() <= prefix_length || value.size() > 1'024 ||
+        value.back() == L'\\' ||
+        CompareStringOrdinal(
+            value.data(), static_cast<int>(prefix_length), prefix,
+            static_cast<int>(prefix_length), TRUE) != CSTR_EQUAL ||
+        value.find_first_of(L"/:*?") != std::wstring::npos) {
+        return false;
+    }
+    std::size_t offset = prefix_length;
+    while (offset < value.size()) {
+        const std::size_t end = value.find(L'\\', offset);
+        const std::wstring component = value.substr(
+            offset, end == std::wstring::npos ? std::wstring::npos
+                                               : end - offset);
+        if (component.empty() || component == L"." || component == L"..") {
+            return false;
+        }
+        offset = end == std::wstring::npos ? value.size() : end + 1;
+    }
+    return true;
+}
+
 bool ParseRule(const std::uint8_t* bytes, const std::size_t length, Rule& rule) {
     Reader reader(bytes, length);
     std::uint8_t kind = 0;
     std::size_t component_count = 0;
-    if (!reader.ReadU8(kind) || kind > static_cast<std::uint8_t>(RuleKind::kInheritUser) ||
-        !reader.ReadU32(component_count) || component_count < 2) {
+    if (!reader.ReadU8(kind) ||
+        kind > static_cast<std::uint8_t>(RuleKind::kDeviceReadOnly) ||
+        !reader.ReadU32(component_count)) {
+        return false;
+    }
+
+    if (kind == static_cast<std::uint8_t>(RuleKind::kDeviceReadOnly)) {
+        std::uint8_t component_kind = 0;
+        std::wstring device;
+        if (component_count != 1 ||
+            !ReadComponent(reader, component_kind, device) ||
+            component_kind != 3 || !ValidExactDevicePath(device) ||
+            !reader.Finished()) {
+            return false;
+        }
+        rule.root = std::move(device);
+        rule.kind = RuleKind::kDeviceReadOnly;
+        rule.depth = 1;
+        return true;
+    }
+    if (component_count < 2) {
         return false;
     }
 
@@ -357,6 +402,9 @@ Decision ApplyRule(const RuleKind kind, const Access access) noexcept {
             return access == Access::kMetadata ? Decision::kAllow : Decision::kDeny;
         case RuleKind::kInheritUser:
             return Decision::kInheritUser;
+        case RuleKind::kDeviceReadOnly:
+            return access == Access::kWrite ? Decision::kDeny
+                                            : Decision::kAllow;
     }
     return Decision::kDeny;
 }
@@ -440,6 +488,14 @@ PolicyEvaluation FilesystemPolicy::Evaluate(
         evaluation.normalized_path = L"NUL";
         return evaluation;
     }
+    for (const auto& rule : implementation_->rules) {
+        if (rule.kind == RuleKind::kDeviceReadOnly &&
+            EqualIgnoreCase(rule.root, path)) {
+            evaluation.decision = ApplyRule(rule.kind, access);
+            evaluation.normalized_path = rule.root;
+            return evaluation;
+        }
+    }
     if (implementation_->decision_cache.Lookup(path, access, evaluation)) {
         return evaluation;
     }
@@ -452,7 +508,12 @@ PolicyEvaluation FilesystemPolicy::Evaluate(
 
         std::size_t maximum_depth = 0;
         for (const auto& rule : implementation_->rules) {
-            if (!RootContains(rule.root, normalized, rule.case_sensitive)) {
+            const bool matches =
+                rule.kind == RuleKind::kDeviceReadOnly
+                    ? EqualIgnoreCase(rule.root, normalized)
+                    : RootContains(
+                          rule.root, normalized, rule.case_sensitive);
+            if (!matches) {
                 continue;
             }
             if (rule.kind == RuleKind::kDeny) {

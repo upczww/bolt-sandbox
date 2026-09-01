@@ -525,6 +525,7 @@ and reason code—not merely identical serialized bytes.
 | COMPAT-028 | A completed failed transactional command has one approved proposal | Restart plan consumes approval and rejects a second plan for the same one-shot decision |
 | COMPAT-029 | Approved restart has a retained staged/projected transaction | Old transaction is discarded before new target creation; discard failure prevents restart |
 | COMPAT-030 | Approved restart starts with minimally extended policy | New execution/policy generation succeeds from the beginning; no live Job receives widened authority |
+| COMPAT-031 | A standard runtime requires an NT metadata device | Only a manifest-verified, configured exact `device-ro` name opens for read/metadata; writes, descendants, lookalikes, malformed rules, and unknown devices remain denied |
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |
