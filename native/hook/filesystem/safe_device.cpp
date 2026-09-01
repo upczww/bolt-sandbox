@@ -44,6 +44,19 @@ bool IsConsoleDevicePath(const wchar_t* const path) noexcept {
            EqualName(path, -1, L"\\\\.\\CONOUT$");
 }
 
+bool IsNetworkDevicePath(const wchar_t* const path) noexcept {
+    if (path == nullptr || *path == L'\0') {
+        return false;
+    }
+    constexpr wchar_t afd[] = L"\\Device\\Afd";
+    constexpr int afd_length = static_cast<int>(std::size(afd) - 1);
+    if (CompareStringOrdinal(path, afd_length, afd, afd_length, TRUE) !=
+        CSTR_EQUAL) {
+        return false;
+    }
+    return path[afd_length] == L'\0' || path[afd_length] == L'\\';
+}
+
 bool IsNullDeviceHandle(const HANDLE handle) noexcept {
     if (handle == nullptr || handle == INVALID_HANDLE_VALUE ||
         GetFileType(handle) != FILE_TYPE_CHAR) {

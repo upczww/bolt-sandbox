@@ -71,9 +71,23 @@ impl Sandbox {
     /// failures are returned as typed initialization stages; this function
     /// never falls back to an unsandboxed process.
     pub fn start(&self, request: SandboxRequest) -> Result<ExecutionHandle, SandboxError> {
+        let mut request = request;
+        request
+            .policy
+            .filesystem
+            .read_only
+            .extend(default_compatibility_filesystem_paths());
         request.validate()?;
         runtime::start_execution(request, &self.config)
     }
+}
+
+fn default_compatibility_filesystem_paths() -> impl Iterator<Item = PathBuf> {
+    std::env::var_os("SystemRoot")
+        .or_else(|| std::env::var_os("WINDIR"))
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
 }
 
 fn default_sensitive_filesystem_paths() -> Vec<PathBuf> {

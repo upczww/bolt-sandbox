@@ -11,7 +11,7 @@ use std::{
 use bolt_sandbox::{
     ChildProcessPolicy, DEFAULT_STREAM_CAPACITY, ExecutionTerminal, IpCidr, NetworkAllowList,
     NetworkPolicy, PortRange, ProcessExitReason, RecoveryLimits, RecoveryPolicy, Sandbox,
-    SandboxConfig, SandboxEvent, SandboxPolicy, SandboxRequest,
+    SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest,
 };
 
 struct RunArguments {
@@ -56,7 +56,7 @@ fn run(arguments: Vec<OsString>) -> Result<u32, CliError> {
         mandatory_registry_denies: Vec::new(),
         component_manifest_sha256: parsed.component_manifest_sha256,
     })
-    .map_err(|_| CliError::Sandbox)?;
+    .map_err(|error| report_sandbox_error(&error))?;
     let environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
     let mut handle = sandbox
         .start(SandboxRequest {
@@ -67,7 +67,7 @@ fn run(arguments: Vec<OsString>) -> Result<u32, CliError> {
             policy: parsed.policy,
             timeout: parsed.timeout,
         })
-        .map_err(|_| CliError::Sandbox)?;
+        .map_err(|error| report_sandbox_error(&error))?;
     let stdout = handle.take_stdout().map_err(|_| CliError::Stream)?;
     let stderr = handle.take_stderr().map_err(|_| CliError::Stream)?;
     let events = handle.take_events().map_err(|_| CliError::Stream)?;
@@ -263,6 +263,11 @@ fn parse_sha256(encoded: &str) -> Result<[u8; 32], CliError> {
         *output = (high << 4) | low;
     }
     Ok(digest)
+}
+
+fn report_sandbox_error(error: &SandboxError) -> CliError {
+    eprintln!("sandbox-error {error:?}");
+    CliError::Sandbox
 }
 
 const fn hex_value(value: u8) -> Option<u8> {

@@ -1487,6 +1487,9 @@ bool AuthorizeCreateFile(
     const wchar_t* path,
     const ClassifiedAccess& request,
     const DWORD flags_and_attributes) noexcept {
+    if (IsNetworkDevicePath(path)) {
+        return true;
+    }
     const auto* policy = g_policy.get();
     const auto text_evaluation =
         policy == nullptr ? PolicyEvaluation{} : policy->Evaluate(path, request.access);
