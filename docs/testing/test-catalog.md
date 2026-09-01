@@ -514,6 +514,7 @@ and reason code—not merely identical serialized bytes.
 | COMPAT-017 | A failed command has duplicate canonical external read violations | Resolver returns one exact read-only candidate with stable proposal identity and duplicate count |
 | COMPAT-018 | Violations overlap mandatory-sensitive content or request host writes | No ordinary grant is proposed; typed unavailable capabilities identify the boundary |
 | COMPAT-019 | Distinct violation evidence was dropped or is incomplete | Resolver refuses to guess a grant and returns `IncompleteEvidence` |
+| COMPAT-020 | Trusted host requests isolated named-pipe compatibility | Default remains deny; explicit isolated mode rewrites only local Win32 pipe names into an execution-private namespace while remote/arbitrary native namespace access remains denied |
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |

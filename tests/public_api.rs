@@ -11,8 +11,9 @@ use bolt_sandbox::{
     CommandId, DEFAULT_STREAM_CAPACITY, DEFAULT_VIOLATION_AGGREGATE_CAPACITY, EventStream,
     ExecutionAttribution, ExecutionHandle, ExecutionId, ExecutionOptions, ExecutionResult,
     FilesystemOperation, FilesystemPolicy, FilesystemViolation, IpCidr, MAX_TIMEOUT,
-    MAX_VIOLATION_AGGREGATE_CAPACITY, MIN_TIMEOUT, NetworkAllowList, NetworkPolicy, NetworkTarget,
-    NetworkViolation, PolicyGeneration, PortRange, ProcessExit, ProcessExitReason,
+    MAX_VIOLATION_AGGREGATE_CAPACITY, MIN_TIMEOUT, NamedPipePolicy, NetworkAllowList,
+    NetworkPolicy, NetworkTarget, NetworkViolation, PolicyGeneration, PortRange, ProcessExit,
+    ProcessExitReason,
     ProcessOperation, ProcessViolation, PseudoConsoleSize, RecoveryPolicy, RegistryPolicy,
     RequestField, Sandbox, SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy,
     SandboxRequest, TerminalMode, ViolationAggregate, WorkspaceBackend, WorkspaceCapabilities,
@@ -304,6 +305,18 @@ fn policy_types_are_constructible_without_native_dependencies() {
     };
 
     let _: Option<PathBuf> = None;
+}
+
+#[test]
+fn compat_020_isolated_named_pipes_are_explicit_and_default_denied() {
+    let default_policy = SandboxPolicy::default();
+    assert_eq!(default_policy.named_pipes, NamedPipePolicy::Deny);
+
+    let policy = SandboxPolicy {
+        named_pipes: NamedPipePolicy::Isolated,
+        ..SandboxPolicy::default()
+    };
+    assert_eq!(policy.named_pipes, NamedPipePolicy::Isolated);
 }
 
 #[test]
