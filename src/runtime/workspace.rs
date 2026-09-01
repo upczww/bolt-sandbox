@@ -484,6 +484,30 @@ mod tests {
     }
 
     #[test]
+    fn ws_009_snapshot_rejects_hard_link_aliases() {
+        let fixture =
+            std::env::temp_dir().join(format!("bolt-workspace-hardlink-{}", std::process::id()));
+        let source = fixture.join("source");
+        let outside = fixture.join("outside.bin");
+        let _ = fs::remove_dir_all(&fixture);
+        fs::create_dir_all(&source).expect("source must create");
+        fs::write(&outside, b"outside").expect("outside file must seed");
+        fs::hard_link(&outside, source.join("alias.bin")).expect("hard link must create");
+
+        assert!(matches!(
+            WorkspaceSnapshot::capture(
+                &source,
+                WorkspaceLimits {
+                    maximum_items: 8,
+                    maximum_bytes: 1_048_576,
+                },
+            ),
+            Err(WorkspaceError::UnsupportedObject)
+        ));
+        fs::remove_dir_all(fixture).expect("fixture must clean");
+    }
+
+    #[test]
     fn ws_018_snapshot_rejects_external_source_conflicts() {
         let fixture =
             std::env::temp_dir().join(format!("bolt-workspace-conflict-{}", std::process::id()));
