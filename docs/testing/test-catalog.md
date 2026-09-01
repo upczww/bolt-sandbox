@@ -508,6 +508,7 @@ and reason code—not merely identical serialized bytes.
 | COMPAT-011 | One Agent workspace runs shell, PowerShell, Python, Node, Git, Cargo/Rust, and a declared native compiler | All in-workspace file, child-process, cache, build, and executable workflows succeed on the first attempt; external toolchain roots are data-driven and read-only |
 | COMPAT-012 | The Agent workspace path contains spaces and non-ASCII characters | Every supported tool preserves the path and keeps all generated state beneath the workspace |
 | COMPAT-013 | Compatibility Profile declares the users-hive root | Only exact-read-only `HKU` is accepted; recursive or SID-subtree grants fail closed |
+| COMPAT-014 | Agent tool scenarios are loaded from the checked-in matrix | Required tool families are complete; duplicate, malformed, privileged-by-default, absolute-machine-path, and silently skipped required scenarios fail validation |
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |

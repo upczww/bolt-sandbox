@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "requiredFamilies": [
+    "shell", "scripting", "javascript-package", "python-package",
+    "source-control", "rust", "native", "go", "jvm", "dotnet",
+    "build", "test", "search-text", "archive-copy", "network",
+    "database", "browser", "container", "signing"
+  ],
+  "scenarios": [
+    { "id": "cmd", "family": "shell", "requiredOnHost": true, "commands": ["cmd"], "terminal": "pipes" },
+    { "id": "powershell7", "family": "shell", "requiredOnHost": true, "commands": ["pwsh"], "terminal": "pseudo-console" },
+    { "id": "windows-powershell", "family": "shell", "requiredOnHost": true, "commands": ["powershell"], "terminal": "pseudo-console" },
+    { "id": "git-bash", "family": "shell", "requiredOnHost": true, "commands": ["bash"], "candidates": ["{ProgramFiles}\\Git\\bin\\bash.exe"], "terminal": "pipes" },
+    { "id": "git-sh", "family": "shell", "requiredOnHost": true, "commands": ["sh"], "candidates": ["{ProgramFiles}\\Git\\usr\\bin\\sh.exe"], "terminal": "pipes" },
+
+    { "id": "python", "family": "scripting", "requiredOnHost": true, "commands": ["python"], "terminal": "pipes" },
+    { "id": "node", "family": "scripting", "requiredOnHost": true, "commands": ["node"], "terminal": "pipes" },
+    { "id": "ruby", "family": "scripting", "requiredOnHost": false, "commands": ["ruby"], "terminal": "pipes" },
+    { "id": "php", "family": "scripting", "requiredOnHost": false, "commands": ["php"], "terminal": "pipes" },
+    { "id": "perl", "family": "scripting", "requiredOnHost": false, "commands": ["perl"], "terminal": "pipes" },
+    { "id": "deno", "family": "scripting", "requiredOnHost": false, "commands": ["deno"], "terminal": "pipes" },
+    { "id": "bun", "family": "scripting", "requiredOnHost": false, "commands": ["bun"], "terminal": "pipes" },
+
+    { "id": "npm", "family": "javascript-package", "requiredOnHost": true, "commands": ["npm"], "candidates": ["{ProgramFiles}\\nodejs\\npm.cmd"], "terminal": "pipes" },
+    { "id": "npx", "family": "javascript-package", "requiredOnHost": true, "commands": ["npx"], "candidates": ["{ProgramFiles}\\nodejs\\npx.cmd"], "terminal": "pipes" },
+    { "id": "corepack", "family": "javascript-package", "requiredOnHost": true, "commands": ["corepack"], "candidates": ["{ProgramFiles}\\nodejs\\corepack.cmd"], "terminal": "pipes" },
+    { "id": "pnpm", "family": "javascript-package", "requiredOnHost": true, "commands": ["pnpm"], "terminal": "pipes" },
+    { "id": "yarn", "family": "javascript-package", "requiredOnHost": false, "commands": ["yarn"], "terminal": "pipes" },
+
+    { "id": "pip", "family": "python-package", "requiredOnHost": true, "commands": ["python"], "terminal": "pipes" },
+    { "id": "uv", "family": "python-package", "requiredOnHost": false, "commands": ["uv"], "terminal": "pipes" },
+    { "id": "poetry", "family": "python-package", "requiredOnHost": false, "commands": ["poetry"], "terminal": "pipes" },
+
+    { "id": "git", "family": "source-control", "requiredOnHost": true, "commands": ["git"], "terminal": "pipes" },
+    { "id": "gh", "family": "source-control", "requiredOnHost": false, "commands": ["gh"], "terminal": "pipes" },
+
+    { "id": "cargo", "family": "rust", "requiredOnHost": true, "commands": ["cargo"], "terminal": "pipes" },
+    { "id": "rustc", "family": "rust", "requiredOnHost": true, "commands": ["rustc"], "terminal": "pipes" },
+    { "id": "rustfmt", "family": "rust", "requiredOnHost": true, "commands": ["rustfmt"], "terminal": "pipes" },
+    { "id": "clippy", "family": "rust", "requiredOnHost": true, "commands": ["clippy-driver"], "terminal": "pipes" },
+
+    { "id": "gcc", "family": "native", "requiredOnHost": false, "commands": ["gcc"], "terminal": "pipes" },
+    { "id": "clang", "family": "native", "requiredOnHost": false, "commands": ["clang"], "terminal": "pipes" },
+    { "id": "msvc", "family": "native", "requiredOnHost": true, "commands": ["cl"], "terminal": "pipes" },
+
+    { "id": "go", "family": "go", "requiredOnHost": true, "commands": ["go"], "candidates": ["{ProgramFiles}\\Go\\bin\\go.exe"], "terminal": "pipes" },
+    { "id": "java", "family": "jvm", "requiredOnHost": false, "commands": ["java"], "terminal": "pipes" },
+    { "id": "javac", "family": "jvm", "requiredOnHost": false, "commands": ["javac"], "terminal": "pipes" },
+    { "id": "maven", "family": "jvm", "requiredOnHost": false, "commands": ["mvn"], "terminal": "pipes" },
+    { "id": "gradle", "family": "jvm", "requiredOnHost": false, "commands": ["gradle"], "terminal": "pipes" },
+    { "id": "dotnet", "family": "dotnet", "requiredOnHost": false, "commands": ["dotnet"], "terminal": "pipes" },
+
+    { "id": "cmake", "family": "build", "requiredOnHost": true, "commands": ["cmake"], "terminal": "pipes" },
+    { "id": "ninja", "family": "build", "requiredOnHost": true, "commands": ["ninja"], "terminal": "pipes" },
+    { "id": "msbuild", "family": "build", "requiredOnHost": true, "commands": ["msbuild"], "terminal": "pipes" },
+    { "id": "make", "family": "build", "requiredOnHost": false, "commands": ["make"], "terminal": "pipes" },
+
+    { "id": "pytest", "family": "test", "requiredOnHost": false, "commands": ["pytest"], "terminal": "pipes" },
+    { "id": "jest", "family": "test", "requiredOnHost": false, "commands": ["jest"], "terminal": "pipes" },
+    { "id": "playwright", "family": "browser", "requiredOnHost": false, "commands": ["playwright"], "terminal": "pipes" },
+
+    { "id": "rg", "family": "search-text", "requiredOnHost": true, "commands": ["rg"], "terminal": "pipes" },
+    { "id": "sed", "family": "search-text", "requiredOnHost": true, "commands": ["sed"], "candidates": ["{ProgramFiles}\\Git\\usr\\bin\\sed.exe"], "terminal": "pipes" },
+    { "id": "awk", "family": "search-text", "requiredOnHost": true, "commands": ["awk"], "candidates": ["{ProgramFiles}\\Git\\usr\\bin\\awk.exe"], "terminal": "pipes" },
+    { "id": "jq", "family": "search-text", "requiredOnHost": false, "commands": ["jq"], "terminal": "pipes" },
+    { "id": "fd", "family": "search-text", "requiredOnHost": false, "commands": ["fd"], "terminal": "pipes" },
+
+    { "id": "tar", "family": "archive-copy", "requiredOnHost": true, "commands": ["tar"], "terminal": "pipes" },
+    { "id": "robocopy", "family": "archive-copy", "requiredOnHost": true, "commands": ["robocopy"], "terminal": "pipes" },
+    { "id": "7zip", "family": "archive-copy", "requiredOnHost": false, "commands": ["7z"], "terminal": "pipes" },
+
+    { "id": "curl", "family": "network", "requiredOnHost": true, "commands": ["curl"], "terminal": "pipes" },
+    { "id": "wget", "family": "network", "requiredOnHost": false, "commands": ["wget"], "terminal": "pipes" },
+
+    { "id": "sqlite", "family": "database", "requiredOnHost": false, "commands": ["sqlite3"], "terminal": "pipes" },
+    { "id": "psql", "family": "database", "requiredOnHost": false, "commands": ["psql"], "terminal": "pipes" },
+    { "id": "mysql", "family": "database", "requiredOnHost": false, "commands": ["mysql"], "terminal": "pipes" },
+
+    { "id": "docker", "family": "container", "requiredOnHost": false, "commands": ["docker"], "terminal": "pipes", "privileged": true },
+    { "id": "podman", "family": "container", "requiredOnHost": false, "commands": ["podman"], "terminal": "pipes", "privileged": true },
+    { "id": "signtool", "family": "signing", "requiredOnHost": false, "commands": ["signtool"], "terminal": "pipes", "privileged": true }
+  ]
+}
+
