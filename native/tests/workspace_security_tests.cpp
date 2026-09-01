@@ -13,12 +13,22 @@ bool SetDaclProtection(
     const std::filesystem::path& path,
     const bool protected_dacl) noexcept {
     std::wstring mutable_path = path.native();
-    const SECURITY_INFORMATION information =
-        protected_dacl ? PROTECTED_DACL_SECURITY_INFORMATION
-                       : UNPROTECTED_DACL_SECURITY_INFORMATION;
-    return SetNamedSecurityInfoW(
-               mutable_path.data(), SE_FILE_OBJECT, information, nullptr,
-               nullptr, nullptr, nullptr) == ERROR_SUCCESS;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    PACL dacl = nullptr;
+    if (GetNamedSecurityInfoW(
+            mutable_path.data(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, &dacl, nullptr, &descriptor) != ERROR_SUCCESS ||
+        descriptor == nullptr) {
+        return false;
+    }
+    const SECURITY_INFORMATION information = DACL_SECURITY_INFORMATION |
+        (protected_dacl ? PROTECTED_DACL_SECURITY_INFORMATION
+                        : UNPROTECTED_DACL_SECURITY_INFORMATION);
+    const DWORD status = SetNamedSecurityInfoW(
+        mutable_path.data(), SE_FILE_OBJECT, information, nullptr, nullptr,
+        dacl, nullptr);
+    LocalFree(descriptor);
+    return status == ERROR_SUCCESS;
 }
 
 }  // namespace

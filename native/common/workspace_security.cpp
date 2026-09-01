@@ -101,19 +101,63 @@ WorkspaceSecurityStatus ApplyDescriptor(
     if (read != WorkspaceSecurityStatus::kSuccess) {
         return read;
     }
-    SECURITY_INFORMATION information = kAuthorizationInformation;
-    information |= (descriptor.control & SE_DACL_PROTECTED) != 0
-                       ? PROTECTED_DACL_SECURITY_INFORMATION
-                       : UNPROTECTED_DACL_SECURITY_INFORMATION;
-    information |= (descriptor.control & SE_SACL_PROTECTED) != 0
-                       ? PROTECTED_SACL_SECURITY_INFORMATION
-                       : UNPROTECTED_SACL_SECURITY_INFORMATION;
+    SecurityDescriptorView destination_descriptor;
+    const auto destination_read =
+        ReadDescriptor(destination, destination_descriptor);
+    if (destination_read != WorkspaceSecurityStatus::kSuccess) {
+        return destination_read;
+    }
+    const bool owners_match =
+        descriptor.owner == nullptr
+            ? destination_descriptor.owner == nullptr
+            : destination_descriptor.owner != nullptr &&
+                  EqualSid(descriptor.owner, destination_descriptor.owner);
+    const bool groups_match =
+        descriptor.group == nullptr
+            ? destination_descriptor.group == nullptr
+            : destination_descriptor.group != nullptr &&
+                  EqualSid(descriptor.group, destination_descriptor.group);
+    if (!owners_match || !groups_match) {
+        return WorkspaceSecurityStatus::kSecurityApplyFailed;
+    }
+    SECURITY_INFORMATION information = DACL_SECURITY_INFORMATION |
+        ((descriptor.control & SE_DACL_PROTECTED) != 0
+             ? PROTECTED_DACL_SECURITY_INFORMATION
+             : UNPROTECTED_DACL_SECURITY_INFORMATION);
     std::wstring mutable_destination = destination.native();
-    const DWORD status = SetNamedSecurityInfoW(
-        mutable_destination.data(), SE_FILE_OBJECT, information,
-        descriptor.owner, descriptor.group, descriptor.dacl,
-        descriptor.label);
-    return status == ERROR_SUCCESS
+    if (SetNamedSecurityInfoW(
+            mutable_destination.data(), SE_FILE_OBJECT, information, nullptr,
+            nullptr, descriptor.dacl, nullptr) != ERROR_SUCCESS) {
+        return WorkspaceSecurityStatus::kSecurityApplyFailed;
+    }
+    std::wstring source_description;
+    std::wstring destination_description;
+    auto described = DescribeDescriptor(source, source_description);
+    if (described != WorkspaceSecurityStatus::kSuccess) {
+        return described;
+    }
+    described = DescribeDescriptor(destination, destination_description);
+    if (described != WorkspaceSecurityStatus::kSuccess) {
+        return described;
+    }
+    if (source_description == destination_description) {
+        return WorkspaceSecurityStatus::kSuccess;
+    }
+    information = LABEL_SECURITY_INFORMATION |
+        ((descriptor.control & SE_SACL_PROTECTED) != 0
+             ? PROTECTED_SACL_SECURITY_INFORMATION
+             : UNPROTECTED_SACL_SECURITY_INFORMATION);
+    if (SetNamedSecurityInfoW(
+            mutable_destination.data(), SE_FILE_OBJECT, information, nullptr,
+            nullptr, nullptr, descriptor.label) != ERROR_SUCCESS) {
+        return WorkspaceSecurityStatus::kSecurityApplyFailed;
+    }
+    destination_description.clear();
+    described = DescribeDescriptor(destination, destination_description);
+    if (described != WorkspaceSecurityStatus::kSuccess) {
+        return described;
+    }
+    return source_description == destination_description
                ? WorkspaceSecurityStatus::kSuccess
                : WorkspaceSecurityStatus::kSecurityApplyFailed;
 }
