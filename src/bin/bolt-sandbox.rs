@@ -261,4 +261,63 @@ mod tests {
             assert!(parse_run_arguments(arguments).is_err());
         }
     }
+
+    #[test]
+    fn cli_004_parser_builds_typed_policy_without_reimplementing_validation() {
+        let parsed = parse_run_arguments(vec![
+            OsString::from("run"),
+            OsString::from("--component-root"),
+            OsString::from(r"C:\components"),
+            OsString::from("--cwd"),
+            OsString::from(r"C:\work"),
+            OsString::from("--read-write"),
+            OsString::from(r"C:\cache"),
+            OsString::from("--read-only"),
+            OsString::from(r"C:\sdk"),
+            OsString::from("--deny"),
+            OsString::from(r"C:\secret"),
+            OsString::from("--registry-read-only"),
+            OsString::from(r"HKCU\SOFTWARE\Example"),
+            OsString::from("--network"),
+            OsString::from("denied"),
+            OsString::from("--child-processes"),
+            OsString::from("deny"),
+            OsString::from("--recovery-dir"),
+            OsString::from(r"C:\recovery"),
+            OsString::from("--recovery-max-bytes"),
+            OsString::from("4096"),
+            OsString::from("--recovery-max-items"),
+            OsString::from("8"),
+            OsString::from("--"),
+            OsString::from(r"C:\tool.exe"),
+        ])
+        .expect("typed policy arguments must parse");
+
+        assert_eq!(
+            parsed.policy.filesystem.read_write,
+            [PathBuf::from(r"C:\cache")]
+        );
+        assert_eq!(
+            parsed.policy.filesystem.read_only,
+            [PathBuf::from(r"C:\sdk")]
+        );
+        assert_eq!(
+            parsed.policy.filesystem.deny,
+            [PathBuf::from(r"C:\secret")]
+        );
+        assert_eq!(
+            parsed.policy.registry.read_only,
+            [String::from(r"HKCU\SOFTWARE\Example")]
+        );
+        assert_eq!(parsed.policy.network, NetworkPolicy::Denied);
+        assert_eq!(parsed.policy.child_processes, ChildProcessPolicy::Deny);
+        assert_eq!(
+            parsed.policy.recovery,
+            RecoveryPolicy::Enabled(RecoveryLimits {
+                directory: PathBuf::from(r"C:\recovery"),
+                maximum_bytes: 4_096,
+                maximum_items: 8,
+            })
+        );
+    }
 }
