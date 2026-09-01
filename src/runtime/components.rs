@@ -135,13 +135,11 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::{
         fs,
-        io::{Seek, SeekFrom},
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
     };
 
     use super::*;
-    use crate::runtime::architecture::detect_image_architecture_from_reader;
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -240,24 +238,16 @@ mod tests {
     #[test]
     fn pkg_009_opened_handles_are_bound_to_the_inspected_component_files() {
         let fixture = Fixture::new();
-        let mut components = open_components(&fixture.root, ImageArchitecture::X64)
+        let components = open_components(&fixture.root, ImageArchitecture::X64)
             .expect("valid components must open");
         let original = fixture.root.join("original-x64.dll");
 
-        fs::rename(components.hook_path(), &original).expect("open file must remain renameable");
-        fs::write(components.hook_path(), pe_image(0x014C))
-            .expect("lookalike replacement must be written");
-
-        let handle = &mut components.hook_handle;
-        handle
-            .seek(SeekFrom::Start(0))
-            .expect("retained handle must remain seekable");
-        assert_eq!(
-            detect_image_architecture_from_reader(handle),
-            Ok(ImageArchitecture::X64)
-        );
+        assert!(fs::rename(components.hook_path(), &original).is_err());
         assert!(components.launcher_handle().metadata().is_ok());
         assert!(components.hook_handle().metadata().is_ok());
+        drop(components);
+        fs::rename(fixture.root.join(X64_HOOK_NAME), &original)
+            .expect("component may be moved only after the lease is released");
     }
 
     #[test]
