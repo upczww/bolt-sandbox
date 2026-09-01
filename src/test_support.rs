@@ -1,3 +1,69 @@
+use std::collections::BTreeSet;
+
+const MAX_MUTATION_CASES: usize = 4_096;
+
+pub(crate) fn deterministic_mutations(seed: &[u8]) -> Vec<Vec<u8>> {
+    let mut cases = BTreeSet::new();
+    cases.insert(Vec::new());
+
+    for length in representative_offsets(seed.len()) {
+        cases.insert(seed[..length].to_vec());
+    }
+
+    for offset in representative_byte_offsets(seed.len()) {
+        for mask in [0x01, 0x80, 0xff] {
+            let mut mutated = seed.to_vec();
+            mutated[offset] ^= mask;
+            cases.insert(mutated);
+        }
+
+        for replacement in [0x00, 0x7f, 0x80, 0xff] {
+            let mut mutated = seed.to_vec();
+            mutated[offset] = replacement;
+            cases.insert(mutated);
+        }
+    }
+
+    for suffix in [
+        vec![0],
+        vec![0xff],
+        vec![0; 2],
+        vec![0xff; 4],
+        vec![0; 8],
+        vec![0xff; 16],
+    ] {
+        let mut mutated = seed.to_vec();
+        mutated.extend_from_slice(&suffix);
+        cases.insert(mutated);
+    }
+
+    cases.into_iter().take(MAX_MUTATION_CASES).collect()
+}
+
+fn representative_offsets(length: usize) -> Vec<usize> {
+    let mut offsets = BTreeSet::from([0, length]);
+    if length > 0 {
+        offsets.extend([1, length / 2, length.saturating_sub(1)]);
+    }
+    offsets
+        .into_iter()
+        .filter(|offset| *offset <= length)
+        .collect()
+}
+
+fn representative_byte_offsets(length: usize) -> Vec<usize> {
+    if length <= 512 {
+        return (0..length).collect();
+    }
+
+    let mut offsets = BTreeSet::new();
+    for index in 0..256 {
+        offsets.insert(index);
+        offsets.insert(length - 1 - index);
+    }
+    offsets.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::deterministic_mutations;
