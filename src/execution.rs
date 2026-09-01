@@ -83,10 +83,17 @@ impl Sandbox {
 }
 
 fn default_compatibility_filesystem_paths() -> impl Iterator<Item = PathBuf> {
-    std::env::var_os("SystemRoot")
+    let windows = std::env::var_os("SystemRoot")
         .or_else(|| std::env::var_os("WINDIR"))
         .into_iter()
+        .map(PathBuf::from);
+    let node_openssl_config = std::env::var_os("ProgramW6432")
+        .or_else(|| std::env::var_os("ProgramFiles"))
+        .into_iter()
         .map(PathBuf::from)
+        .map(|root| root.join(r"Common Files\SSL\openssl.cnf"));
+    windows
+        .chain(node_openssl_config)
         .filter(|path| path.is_absolute())
 }
 

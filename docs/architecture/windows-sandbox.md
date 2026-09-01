@@ -340,6 +340,13 @@ must not become readable merely because a child path is granted. The runtime may
 permit the minimum path traversal metadata required by Windows while denying
 content enumeration and file reads outside granted roots.
 
+Trusted host compatibility grants include recursive read-only access to the
+Windows installation root and exact read-only access to the conventional Node
+OpenSSL configuration probe at `Program Files\Common Files\SSL\openssl.cnf`.
+The latter may be absent: preserving the operating system's not-found result is
+required because turning that probe into access-denied makes Node fail during
+startup. Explicit and mandatory denies retain precedence over both grants.
+
 Filesystem policy protocol version 1 accepts at most 1,024 request rules in
 each of `read_write`, `read_only`, `deny`, `metadata_read`, and `inherit_user`,
 with at most 2,048 request rules in total. Counts are checked before

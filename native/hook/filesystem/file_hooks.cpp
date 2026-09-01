@@ -1101,7 +1101,21 @@ bool AuthorizeMetadata(const wchar_t* path) noexcept {
     return true;
 }
 
+bool IsTrustedStandardStream(const HANDLE file) noexcept {
+    return g_nt_compare_objects != nullptr &&
+        std::any_of(
+            g_trusted_standard_streams.begin(),
+            g_trusted_standard_streams.end(),
+            [file](const HANDLE trusted) {
+                return trusted != nullptr &&
+                    g_nt_compare_objects(file, trusted) >= 0;
+            });
+}
+
 bool AuthorizeHandleMetadata(const HANDLE file) noexcept {
+    if (IsTrustedStandardStream(file)) {
+        return true;
+    }
     if (g_handle_access_cache.Allows(file, HandleAccess::kMetadata)) {
         return true;
     }
@@ -2644,15 +2658,7 @@ BOOL WINAPI DetouredWriteFile(
         return g_write_file(
             file, buffer, bytes_to_write, bytes_written, overlapped);
     }
-    const bool trusted_stream = g_nt_compare_objects != nullptr &&
-        std::any_of(
-            g_trusted_standard_streams.begin(),
-            g_trusted_standard_streams.end(),
-            [file](const HANDLE trusted) {
-                return trusted != nullptr &&
-                    g_nt_compare_objects(file, trusted) >= 0;
-            });
-    if (!trusted_stream && !AuthorizeHandleIo(
+    if (!IsTrustedStandardStream(file) && !AuthorizeHandleIo(
             file, Access::kWrite, protocol::FilesystemOperation::kWrite)) {
         if (bytes_written != nullptr) {
             *bytes_written = 0;
@@ -2711,15 +2717,7 @@ NTSTATUS NTAPI DetouredNtWriteFile(
             file, event, apc_routine, apc_context, io_status, buffer,
             bytes_to_write, byte_offset, key);
     }
-    const bool trusted_stream = g_nt_compare_objects != nullptr &&
-        std::any_of(
-            g_trusted_standard_streams.begin(),
-            g_trusted_standard_streams.end(),
-            [file](const HANDLE trusted) {
-                return trusted != nullptr &&
-                    g_nt_compare_objects(file, trusted) >= 0;
-            });
-    if (trusted_stream || AuthorizeHandleIo(
+    if (IsTrustedStandardStream(file) || AuthorizeHandleIo(
             file, Access::kWrite, protocol::FilesystemOperation::kWrite)) {
         return g_nt_write_file(
             file, event, apc_routine, apc_context, io_status, buffer,
