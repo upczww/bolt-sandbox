@@ -226,11 +226,12 @@ impl WorkspaceBackend for DirectWorkspaceBackend {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, path::PathBuf};
 
     use super::{
         DirectWorkspaceBackend, WorkspaceBackend, WorkspaceChange, WorkspaceChangeKind,
-        WorkspaceError, WorkspaceKind, WorkspaceLimits, WorkspaceSnapshot,
+        StagedWorkspaceTransaction, WorkspaceError, WorkspaceKind, WorkspaceLimits,
+        WorkspaceSnapshot,
     };
 
     #[test]
@@ -321,6 +322,44 @@ mod tests {
             snapshot.validate_source_unchanged(&fixture),
             Err(WorkspaceError::Conflict)
         );
+        fs::remove_dir_all(fixture).expect("fixture must clean");
+    }
+
+    #[test]
+    fn ws_007_staged_transaction_isolated_query_and_discard() {
+        let fixture = std::env::temp_dir().join(format!(
+            "bolt-workspace-stage-{}",
+            std::process::id()
+        ));
+        let source = fixture.join("source");
+        let staged = fixture.join("staged");
+        let _ = fs::remove_dir_all(&fixture);
+        fs::create_dir_all(source.join("nested")).expect("source must create");
+        fs::write(source.join(r"nested\file.txt"), b"before").expect("seed must write");
+
+        let transaction = StagedWorkspaceTransaction::prepare(
+            &source,
+            &staged,
+            WorkspaceLimits {
+                maximum_items: 16,
+                maximum_bytes: 1_048_576,
+            },
+        )
+        .expect("transaction must prepare");
+        assert_eq!(transaction.execution_root(), staged);
+        fs::write(staged.join(r"nested\file.txt"), b"after").expect("stage must mutate");
+        assert_eq!(fs::read(source.join(r"nested\file.txt")).expect("source"), b"before");
+        assert_eq!(
+            transaction.query_changes().expect("query must succeed"),
+            vec![WorkspaceChange {
+                relative_path: PathBuf::from(r"nested\file.txt"),
+                kind: WorkspaceChangeKind::Modified,
+            }]
+        );
+
+        transaction.discard().expect("discard must succeed");
+        assert!(!staged.exists());
+        assert_eq!(fs::read(source.join(r"nested\file.txt")).expect("source"), b"before");
         fs::remove_dir_all(fixture).expect("fixture must clean");
     }
 }
