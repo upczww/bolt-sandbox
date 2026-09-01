@@ -81,8 +81,9 @@ target\release\bolt-sandbox.exe run `
 Filesystem options are `--read-write`, `--read-only`, `--deny`,
 `--metadata-read`, and `--inherit-user`. Registry equivalents are
 `--registry-no-access`, `--registry-read-only`, `--registry-inherit-user`, and
-`--registry-read-write`. Recovery requires all three of `--recovery-dir`,
-`--recovery-max-bytes`, and `--recovery-max-items`. The CLI inherits the host
+`--registry-read-write`. Recovery requires all four of `--recovery-dir`,
+`--recovery-max-bytes`, `--recovery-max-items`, and
+`--recovery-retention-seconds`. The CLI inherits the host
 environment, while the library strips its configured credential variables
 before launch. Event diagnostics contain fixed categories and process IDs but
 do not print command arguments, environment values, or paths.

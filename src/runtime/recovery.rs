@@ -386,6 +386,7 @@ mod tests {
         assert_eq!(outcome.artifact_id, None);
         assert!(outcome.event.is_none());
         assert!(recovery_files_for_test(&store).is_empty());
+        drop(coordinator);
         fs::remove_dir_all(root).expect("fixture must clean up");
     }
 
@@ -430,10 +431,16 @@ mod tests {
             .path();
         let artifact = fs::read_dir(execution)
             .expect("execution directory must be readable")
-            .next()
-            .expect("artifact directory must exist")
-            .expect("artifact entry must be readable")
-            .path();
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.is_dir()
+                    && path.file_name().is_some_and(|name| {
+                        let name = name.to_string_lossy();
+                        name.starts_with("artifact-") && !name.ends_with(".partial")
+                    })
+            })
+            .expect("artifact directory must exist");
         assert!(artifact.is_dir());
         assert_eq!(
             fs::read(artifact.join("content.bin")).expect("artifact content must be readable"),
@@ -504,17 +511,16 @@ mod tests {
     }
 
     fn recovery_files_for_test(root: &Path) -> Vec<PathBuf> {
+        let mut pending = vec![root.to_path_buf()];
         let mut files = Vec::new();
-        for entry in fs::read_dir(root).expect("store must be readable") {
-            let path = entry.expect("entry must be readable").path();
-            if path.is_dir() {
-                files.extend(
-                    fs::read_dir(path)
-                        .expect("execution store must be readable")
-                        .map(|entry| entry.expect("artifact must be readable").path()),
-                );
-            } else {
-                files.push(path);
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).expect("store must be readable") {
+                let path = entry.expect("entry must be readable").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.file_name().is_some_and(|name| name == "content.bin") {
+                    files.push(path);
+                }
             }
         }
         files

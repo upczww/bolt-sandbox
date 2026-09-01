@@ -399,6 +399,21 @@ reservations use checked additions and commit neither counter when arithmetic or
 either quota check fails. Recovery configuration remains in trusted Rust state
 and is not serialized into the untrusted hook policy payload.
 
+The trusted configuration also requires a nonzero retention duration no longer
+than 365 days. Each execution directory owns an `active.lock` file opened
+without delete sharing for the full execution lifetime and a versioned creation
+timestamp. Cleanup considers only ordinary `bolt-*` directories with valid
+metadata, skips fresh entries, and removes an expired entry only after deleting
+its inactive lock succeeds. Reparse points, malformed metadata, inaccessible
+entries, and active locks are skipped rather than blocking sandbox startup.
+Artifact content and binary path metadata are written under a temporary
+artifact directory and committed together by a same-directory rename; failures
+remove the temporary directory and consume no quota.
+
+Secret-bearing locations remain mandatory denies and are therefore never
+eligible recovery sources unless a future explicitly protected encrypted-store
+mode is added. The initial recovery mode does not claim encrypted secret backup.
+
 Recovery is not a substitute for policy enforcement.
 
 ## 7. Child Processes
