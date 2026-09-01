@@ -12,7 +12,8 @@ $knownNames = @(
     'bolt-sandbox-launcher-x86.exe',
     'bolt-sandbox-x64.dll',
     'bolt-sandbox-x86.dll',
-    'bolt-sandbox-dns-proxy.exe'
+    'bolt-sandbox-dns-proxy.exe',
+    'bolt-sandbox-compatibility.profile'
 )
 $records = @()
 foreach ($name in $knownNames) {

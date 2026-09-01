@@ -37,6 +37,9 @@ foreach ($currentArchitecture in $architectures) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $cmake --build $buildDirectory --config $Configuration
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    Copy-Item -LiteralPath `
+        (Join-Path $repositoryRoot 'config\bolt-sandbox-compatibility.profile') `
+        -Destination (Join-Path $buildDirectory "$Configuration\bolt-sandbox-compatibility.profile")
     & (Join-Path $PSScriptRoot 'write-component-manifest.ps1') `
         -ComponentRoot (Join-Path $buildDirectory $Configuration)
 }

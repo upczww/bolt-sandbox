@@ -21,28 +21,6 @@ const MAX_TOTAL_FILESYSTEM_RULES: usize = 2_048;
 const MAX_FILESYSTEM_PATH_CODE_UNITS: usize = 32_767;
 const MAX_REGISTRY_RULES_PER_CATEGORY: usize = 1_024;
 const MAX_TOTAL_REGISTRY_RULES: usize = 2_048;
-const DEFAULT_REGISTRY_READ_ONLY_COMPATIBILITY_GRANTS: &[&str] = &[
-    r"HKCU\SOFTWARE\Classes",
-    r"HKLM\SOFTWARE\Classes",
-    r"HKLM\SOFTWARE\dotnet\Setup\InstalledVersions",
-    r"HKLM\SYSTEM\CurrentControlSet\Control\Nls",
-    r"HKLM\SOFTWARE\Microsoft\AMSI",
-    r"HKLM\SOFTWARE\Microsoft\Cryptography",
-    r"HKLM\SOFTWARE\Microsoft\SystemCertificates",
-    r"HKCU\SOFTWARE\Microsoft\SystemCertificates",
-    r"HKLM\SOFTWARE\Microsoft\EnterpriseCertificates",
-    r"HKCU\SOFTWARE\Microsoft\EnterpriseCertificates",
-    r"HKLM\SOFTWARE\Policies\Microsoft\SystemCertificates",
-    r"HKCU\SOFTWARE\Policies\Microsoft\SystemCertificates",
-    r"HKLM\SOFTWARE\Policies\Microsoft\PowerShellCore",
-    r"HKCU\SOFTWARE\Policies\Microsoft\PowerShellCore",
-    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell",
-    r"HKCU\SOFTWARE\Policies\Microsoft\Windows\PowerShell",
-    r"HKLM\SOFTWARE\Policies\Microsoft\Windows\Safer",
-    r"HKLM\SYSTEM\CurrentControlSet\Control\Srp",
-    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Server",
-    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Time Zones",
-];
 const DEFAULT_REGISTRY_EXACT_READ_ONLY_COMPATIBILITY_GRANTS: &[&str] = &[
     r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
     r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion",
@@ -127,7 +105,6 @@ const DEFAULT_REGISTRY_COMPATIBILITY_GRANTS: &[&str] = &[
     r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths",
 ];
 const MAX_COMPILED_REGISTRY_RULES: usize = MAX_TOTAL_REGISTRY_RULES
-    + DEFAULT_REGISTRY_READ_ONLY_COMPATIBILITY_GRANTS.len()
     + DEFAULT_REGISTRY_EXACT_READ_ONLY_COMPATIBILITY_GRANTS.len()
     + DEFAULT_REGISTRY_HIDDEN_COMPATIBILITY_KEYS.len()
     + DEFAULT_REGISTRY_COMPATIBILITY_GRANTS.len();
@@ -721,10 +698,6 @@ fn compile_registry_policy(
     compiled.add_rules(&policy.read_only, RegistryRuleKind::ReadOnly)?;
     compiled.add_rules(&policy.no_access, RegistryRuleKind::NoAccess)?;
     compiled.add_rules(mandatory_denies, RegistryRuleKind::NoAccess)?;
-    compiled.add_compatibility_rules(
-        DEFAULT_REGISTRY_READ_ONLY_COMPATIBILITY_GRANTS,
-        RegistryRuleKind::ReadOnly,
-    )?;
     compiled.add_compatibility_rules(
         DEFAULT_REGISTRY_EXACT_READ_ONLY_COMPATIBILITY_GRANTS,
         RegistryRuleKind::ReadOnlyKey,
@@ -2116,10 +2089,7 @@ mod tests {
         let compiled = compile(&policy, Path::new(r"C:\work\project"))
             .expect("equivalent registry aliases must compile");
 
-        assert_eq!(
-            compiled.registry.read_only_rule_count(),
-            DEFAULT_REGISTRY_READ_ONLY_COMPATIBILITY_GRANTS.len() + 1
-        );
+        assert_eq!(compiled.registry.read_only_rule_count(), 1);
         assert_eq!(
             compiled.registry.decide(
                 r"\Registry\Machine\Software\VENDOR\Product",
@@ -2144,10 +2114,7 @@ mod tests {
         let compiled = compile(&policy, Path::new(r"C:\work\project"))
             .expect("equivalent WOW64 registry views must compile");
 
-        assert_eq!(
-            compiled.registry.read_only_rule_count(),
-            DEFAULT_REGISTRY_READ_ONLY_COMPATIBILITY_GRANTS.len() + 1
-        );
+        assert_eq!(compiled.registry.read_only_rule_count(), 1);
         assert_eq!(
             compiled.registry.decide(
                 r"HKLM\Software\Wow6432Node\Vendor\Product",
@@ -2165,45 +2132,6 @@ mod tests {
     }
 
     fn assert_default_registry_metadata_rules(compiled: &CompiledPolicy) {
-        for classes_root in [r"HKCU\SOFTWARE\Classes", r"HKLM\SOFTWARE\Classes"] {
-            assert_eq!(
-                compiled
-                    .registry
-                    .decide(classes_root, RegistryAccess::Read,),
-                RegistryDecision::Allow
-            );
-            assert_eq!(
-                compiled
-                    .registry
-                    .decide(classes_root, RegistryAccess::Write,),
-                RegistryDecision::Deny
-            );
-        }
-        for runtime_metadata_root in [
-            r"HKLM\SOFTWARE\dotnet\Setup\InstalledVersions",
-            r"HKLM\SYSTEM\CurrentControlSet\Control\Nls",
-            r"HKLM\SOFTWARE\Microsoft\AMSI",
-            r"HKLM\SOFTWARE\Policies\Microsoft\PowerShellCore",
-            r"HKCU\SOFTWARE\Policies\Microsoft\PowerShellCore",
-            r"HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell",
-            r"HKCU\SOFTWARE\Policies\Microsoft\Windows\PowerShell",
-            r"HKLM\SOFTWARE\Policies\Microsoft\Windows\Safer",
-            r"HKLM\SYSTEM\CurrentControlSet\Control\Srp",
-            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Server",
-        ] {
-            assert_eq!(
-                compiled
-                    .registry
-                    .decide(runtime_metadata_root, RegistryAccess::Read),
-                RegistryDecision::Allow
-            );
-            assert_eq!(
-                compiled
-                    .registry
-                    .decide(runtime_metadata_root, RegistryAccess::Write),
-                RegistryDecision::Deny
-            );
-        }
         for exact_metadata_key in DEFAULT_REGISTRY_EXACT_READ_ONLY_COMPATIBILITY_GRANTS {
             assert_eq!(
                 compiled
@@ -2256,26 +2184,14 @@ mod tests {
             .expect("default compatibility registry grants must compile");
 
         for &key in DEFAULT_REGISTRY_COMPATIBILITY_GRANTS {
-            let normalized_key = key.to_ascii_uppercase();
-            let read_only_metadata = DEFAULT_REGISTRY_READ_ONLY_COMPATIBILITY_GRANTS
-                .iter()
-                .any(|root| normalized_key.starts_with(&root.to_ascii_uppercase()));
             assert_eq!(
                 compiled.registry.decide(key, RegistryAccess::Read),
-                if read_only_metadata {
-                    RegistryDecision::Allow
-                } else {
-                    RegistryDecision::InheritUser
-                },
+                RegistryDecision::InheritUser,
                 "read: {key}"
             );
             assert_eq!(
                 compiled.registry.decide(key, RegistryAccess::Write),
-                if read_only_metadata {
-                    RegistryDecision::Deny
-                } else {
-                    RegistryDecision::InheritUser
-                },
+                RegistryDecision::InheritUser,
                 "write: {key}"
             );
         }

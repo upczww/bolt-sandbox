@@ -42,6 +42,7 @@ try {
         'bolt-sandbox-x64.dll' = Join-Path $repositoryRoot "target\native\x64\$Configuration\bolt-sandbox-x64.dll"
         'bolt-sandbox-x86.dll' = Join-Path $repositoryRoot "target\native\x86\$Configuration\bolt-sandbox-x86.dll"
         'bolt-sandbox-dns-proxy.exe' = Join-Path $repositoryRoot "target\native\x64\$Configuration\bolt-sandbox-dns-proxy.exe"
+        'bolt-sandbox-compatibility.profile' = Join-Path $repositoryRoot 'config\bolt-sandbox-compatibility.profile'
     }
     foreach ($entry in $sources.GetEnumerator()) {
         if (-not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) {

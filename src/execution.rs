@@ -1,6 +1,6 @@
 use std::{
     ffi::OsString,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::mpsc::{Receiver, Sender},
 };
 
@@ -71,43 +71,9 @@ impl Sandbox {
     /// failures are returned as typed initialization stages; this function
     /// never falls back to an unsandboxed process.
     pub fn start(&self, request: SandboxRequest) -> Result<ExecutionHandle, SandboxError> {
-        let mut request = request;
-        request
-            .policy
-            .filesystem
-            .read_only
-            .extend(default_compatibility_filesystem_paths(
-                &request.program,
-                &request.cwd,
-            ));
         request.validate()?;
         runtime::start_execution(request, &self.config)
     }
-}
-
-fn default_compatibility_filesystem_paths(
-    program: &Path,
-    cwd: &Path,
-) -> impl Iterator<Item = PathBuf> {
-    let windows = std::env::var_os("SystemRoot")
-        .or_else(|| std::env::var_os("WINDIR"))
-        .into_iter()
-        .map(PathBuf::from);
-    let node_openssl_config = std::env::var_os("ProgramW6432")
-        .or_else(|| std::env::var_os("ProgramFiles"))
-        .into_iter()
-        .map(PathBuf::from)
-        .map(|root| root.join(r"Common Files\SSL\openssl.cnf"));
-    let program_directory = program
-        .parent()
-        .filter(|parent| {
-            parent.is_absolute() && parent.parent().is_some() && !parent.starts_with(cwd)
-        })
-        .map(Path::to_path_buf);
-    windows
-        .chain(node_openssl_config)
-        .chain(program_directory)
-        .filter(|path| path.is_absolute())
 }
 
 fn default_sensitive_filesystem_paths() -> Vec<PathBuf> {

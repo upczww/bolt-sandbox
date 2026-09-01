@@ -1,5 +1,5 @@
-pub(crate) mod compiler;
 pub(crate) mod compatibility_profile;
+pub(crate) mod compiler;
 mod filesystem;
 mod network;
 mod registry;
