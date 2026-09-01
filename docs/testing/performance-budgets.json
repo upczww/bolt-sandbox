@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "minimumWarmupSamples": 1,
+  "minimumMeasuredSamples": 7,
+  "maximumWarmStartupMilliseconds": 100,
+  "maximumFilesystemOverheadPercent": 5,
+  "maximumPrivateBytes": 268435456,
+  "maximumPrivateBytesGrowth": 16777216,
+  "maximumHandles": 512,
+  "maximumHandleGrowth": 8,
+  "maximumThreads": 32,
+  "maximumThreadGrowth": 2
+}

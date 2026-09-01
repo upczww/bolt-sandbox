@@ -50,7 +50,10 @@ fn run_gate(root: &Path, budget: &str, evidence: &str) -> Output {
         .args([
             "-NoProfile",
             "-File",
-            concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/verify-performance-evidence.ps1"),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/scripts/verify-performance-evidence.ps1"
+            ),
             "-BudgetPath",
         ])
         .arg(&budget_path)
