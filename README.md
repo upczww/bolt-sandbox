@@ -259,6 +259,16 @@ The provider, projection materializer, and authorization verifier are bounded;
 source and materialization paths travel only in integrity-protected private IPC,
 not command lines or environments.
 
+On an elevated host, enable the component once with
+`Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart`
+and reboot only if Windows requests it. Then verify the real provider and its
+250 ms cold / 100 ms warm budgets with:
+
+```powershell
+pwsh scripts/verify-projected-workspace.ps1 `
+  -ComponentRoot C:\Bolt\sandbox\0.1.0
+```
+
 Interactive tools opt in with
 `TerminalMode::PseudoConsole(PseudoConsoleSize::new(columns, rows).unwrap())`.
 Use `ExecutionHandle::write_input` and `resize_pseudo_console`; input frames and

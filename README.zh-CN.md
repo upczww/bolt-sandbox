@@ -233,6 +233,16 @@ Mandatory Deny 路径与 Staged Root 重叠时也会在复制和启动前 Fail C
 启用 Windows `Client-ProjFS` 可选组件。Provider、投影固化器和授权校验器都有
 配额；源路径与固化路径只在完整性保护的私有 IPC 中传输，不进入命令行或环境。
 
+在管理员 PowerShell 中执行
+`Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart`
+即可启用组件；仅在 Windows 提示时重启。随后用以下命令验证真实 Provider 以及
+250 ms Cold / 100 ms Warm 预算：
+
+```powershell
+pwsh scripts/verify-projected-workspace.ps1 `
+  -ComponentRoot C:\Bolt\sandbox\0.1.0
+```
+
 交互工具需要显式选择
 `TerminalMode::PseudoConsole(PseudoConsoleSize::new(columns, rows).unwrap())`，
 再通过 `ExecutionHandle::write_input` 和 `resize_pseudo_console` 输入及调整窗口。
