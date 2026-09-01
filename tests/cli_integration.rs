@@ -272,6 +272,57 @@ fn net_004_cli_unrestricted_node_http_reaches_local_server() {
     assert!(!stderr.contains("sandbox-event network-violation"));
 }
 
+#[test]
+fn net_005_cli_unrestricted_python_reads_its_runtime_and_reaches_local_server() {
+    let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
+    else {
+        return;
+    };
+    let Some(python) = std::env::var_os("BOLT_TEST_PYTHON").map(PathBuf::from) else {
+        return;
+    };
+    if !python.is_file() {
+        return;
+    }
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("local listener must bind");
+    listener
+        .set_nonblocking(true)
+        .expect("listener must be nonblocking");
+    let port = listener.local_addr().expect("listener has address").port();
+    let server_thread = thread::spawn(move || serve_one_http_request(&listener));
+    let script = "import sys,urllib.request\nurl=sys.argv[1]\nopener=urllib.request.build_opener(urllib.request.ProxyHandler({}))\ntry:\n response=opener.open(url,timeout=5)\n print('python='+str(response.status))\n response.close()\n sys.exit(0 if response.status==200 else 3)\nexcept Exception as error:\n print('python-error='+type(error).__name__+':'+str(error))\n sys.exit(2)";
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-sandbox"))
+        .arg("run")
+        .arg("--component-root")
+        .arg(&component_root)
+        .arg("--cwd")
+        .arg(&component_root)
+        .arg("--manifest-sha256")
+        .arg(component_manifest_digest(&component_root))
+        .arg("--timeout-ms")
+        .arg("10000")
+        .arg("--network")
+        .arg("unrestricted")
+        .arg("--")
+        .arg(python)
+        .args(["-c", script])
+        .arg(format!("http://127.0.0.1:{port}/"))
+        .output()
+        .expect("Python CLI fixture must launch");
+    let request_served = server_thread.join().expect("server thread must join");
+    let stderr = String::from_utf8(output.stderr).expect("CLI diagnostics are UTF-8");
+    let stdout = String::from_utf8(output.stdout).expect("Python fixture output is UTF-8");
+
+    assert!(
+        request_served,
+        "sandboxed Python never reached the local server: exit={:?} stderr={stderr}",
+        output.status.code()
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout.trim(), "python=200");
+    assert!(!stderr.contains("sandbox-event network-violation"));
+}
+
 fn serve_one_http_request(listener: &TcpListener) -> bool {
     let deadline = Instant::now() + Duration::from_secs(7);
     while Instant::now() < deadline {
