@@ -165,4 +165,9 @@ class ProjectedWorkspaceProvider final {
     std::map<std::array<std::uint8_t, 16>, EnumerationSession> enumerations_;
 };
 
+ProjectedWorkspaceStatus MaterializeProjectedWorkspace(
+    const std::filesystem::path& projection_root,
+    const std::filesystem::path& destination_root,
+    ProjectedWorkspaceLimits limits) noexcept;
+
 }  // namespace bolt::common

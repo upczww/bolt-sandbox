@@ -725,4 +725,213 @@ HRESULT ProjectedWorkspaceProvider::QueryFileName(
         source_.Lookup(callback_data.FilePathName, entry));
 }
 
+namespace {
+
+ProjectedWorkspaceStatus ProjectionEntryData(
+    const std::filesystem::path& path,
+    WIN32_FIND_DATAW& output,
+    bool& skip) noexcept {
+    skip = false;
+    const HANDLE find = FindFirstFileW(path.c_str(), &output);
+    if (find == INVALID_HANDLE_VALUE) {
+        return ProjectedWorkspaceStatus::kIo;
+    }
+    FindClose(find);
+    if ((output.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
+        return ProjectedWorkspaceStatus::kSuccess;
+    }
+    if (output.dwReserved0 == IO_REPARSE_TAG_PROJFS_TOMBSTONE) {
+        skip = true;
+        return ProjectedWorkspaceStatus::kSuccess;
+    }
+    return output.dwReserved0 == IO_REPARSE_TAG_PROJFS
+               ? ProjectedWorkspaceStatus::kSuccess
+               : ProjectedWorkspaceStatus::kUnsupportedObject;
+}
+
+bool HasOnlyPrimaryDataStream(const std::filesystem::path& path) noexcept {
+    WIN32_FIND_STREAM_DATA stream{};
+    const HANDLE find = FindFirstStreamW(
+        path.c_str(), FindStreamInfoStandard, &stream, 0);
+    if (find == INVALID_HANDLE_VALUE) {
+        return GetLastError() == ERROR_HANDLE_EOF;
+    }
+    const bool primary = std::wcscmp(stream.cStreamName, L"::$DATA") == 0;
+    const bool has_another = FindNextStreamW(find, &stream) != FALSE;
+    const DWORD final_error = GetLastError();
+    FindClose(find);
+    return primary && !has_another && final_error == ERROR_HANDLE_EOF;
+}
+
+ProjectedWorkspaceStatus CopyMaterializedFile(
+    const std::filesystem::path& projection_root,
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination,
+    const WIN32_FIND_DATAW& find_data,
+    const std::uint64_t maximum_bytes,
+    std::uint64_t& copied_bytes) noexcept {
+    UniqueHandle input{CreateFileW(
+        source.c_str(), GENERIC_READ | FILE_READ_ATTRIBUTES, kShareAll,
+        nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr)};
+    if (!input.valid() || !HasOnlyPrimaryDataStream(source)) {
+        return ProjectedWorkspaceStatus::kUnsupportedObject;
+    }
+    BY_HANDLE_FILE_INFORMATION information{};
+    std::wstring final_path;
+    if (!GetFileInformationByHandle(input.get(), &information) ||
+        information.nNumberOfLinks != 1 ||
+        (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        !FinalPathKey(input.get(), final_path) ||
+        !IsSameOrDescendant(PathKey(projection_root), final_path)) {
+        return ProjectedWorkspaceStatus::kUnsupportedObject;
+    }
+    const std::uint64_t size =
+        (static_cast<std::uint64_t>(information.nFileSizeHigh) << 32) |
+        information.nFileSizeLow;
+    if (size > maximum_bytes - copied_bytes) {
+        return ProjectedWorkspaceStatus::kQuotaExceeded;
+    }
+    UniqueHandle output{CreateFileW(
+        destination.c_str(), GENERIC_WRITE | FILE_WRITE_ATTRIBUTES, 0,
+        nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr)};
+    if (!output.valid()) {
+        return ProjectedWorkspaceStatus::kIo;
+    }
+    std::array<std::uint8_t, 64 * 1'024> buffer{};
+    std::uint64_t total = 0;
+    while (total < size) {
+        const DWORD requested = static_cast<DWORD>((std::min)(
+            static_cast<std::uint64_t>(buffer.size()), size - total));
+        DWORD read = 0;
+        DWORD written = 0;
+        if (!ReadFile(input.get(), buffer.data(), requested, &read, nullptr) ||
+            read == 0 ||
+            !WriteFile(
+                output.get(), buffer.data(), read, &written, nullptr) ||
+            written != read) {
+            return ProjectedWorkspaceStatus::kIo;
+        }
+        total += read;
+    }
+    if (!SetFileTime(
+            output.get(), &find_data.ftCreationTime,
+            &find_data.ftLastAccessTime, &find_data.ftLastWriteTime)) {
+        return ProjectedWorkspaceStatus::kIo;
+    }
+    copied_bytes += size;
+    return ProjectedWorkspaceStatus::kSuccess;
+}
+
+void RemoveMaterialization(const std::filesystem::path& root) noexcept {
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+}  // namespace
+
+ProjectedWorkspaceStatus MaterializeProjectedWorkspace(
+    const std::filesystem::path& projection_root,
+    const std::filesystem::path& destination_root,
+    const ProjectedWorkspaceLimits limits) noexcept {
+    std::error_code destination_error;
+    const bool destination_exists =
+        std::filesystem::exists(destination_root, destination_error);
+    if (!projection_root.is_absolute() || !destination_root.is_absolute() ||
+        limits.maximum_items == 0 || limits.maximum_bytes == 0 ||
+        destination_root.empty() || destination_error || destination_exists) {
+        return ProjectedWorkspaceStatus::kInvalidRoot;
+    }
+    const auto projection_key = PathKey(projection_root);
+    const auto destination_key = PathKey(destination_root);
+    if (IsSameOrDescendant(projection_key, destination_key) ||
+        IsSameOrDescendant(destination_key, projection_key)) {
+        return ProjectedWorkspaceStatus::kInvalidRoot;
+    }
+    try {
+        if (!std::filesystem::is_directory(projection_root) ||
+            !std::filesystem::create_directory(destination_root)) {
+            return ProjectedWorkspaceStatus::kInvalidRoot;
+        }
+        struct PendingDirectory {
+            std::filesystem::path source;
+            std::filesystem::path destination;
+        };
+        std::vector<PendingDirectory> pending{
+            {projection_root, destination_root}};
+        std::vector<std::pair<std::filesystem::path, WIN32_FIND_DATAW>>
+            directory_metadata;
+        std::uint32_t item_count = 0;
+        std::uint64_t copied_bytes = 0;
+        while (!pending.empty()) {
+            const auto current = std::move(pending.back());
+            pending.pop_back();
+            for (const auto& child :
+                 std::filesystem::directory_iterator(current.source)) {
+                if (item_count == limits.maximum_items) {
+                    RemoveMaterialization(destination_root);
+                    return ProjectedWorkspaceStatus::kQuotaExceeded;
+                }
+                ++item_count;
+                WIN32_FIND_DATAW data{};
+                bool skip = false;
+                const auto inspected =
+                    ProjectionEntryData(child.path(), data, skip);
+                if (inspected != ProjectedWorkspaceStatus::kSuccess) {
+                    RemoveMaterialization(destination_root);
+                    return inspected;
+                }
+                if (skip) {
+                    continue;
+                }
+                const auto destination =
+                    current.destination / child.path().filename();
+                if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                    if (!CreateDirectoryW(destination.c_str(), nullptr)) {
+                        RemoveMaterialization(destination_root);
+                        return ProjectedWorkspaceStatus::kIo;
+                    }
+                    pending.push_back({child.path(), destination});
+                    directory_metadata.emplace_back(destination, data);
+                } else {
+                    const auto copied = CopyMaterializedFile(
+                        projection_root, child.path(), destination, data,
+                        limits.maximum_bytes, copied_bytes);
+                    if (copied != ProjectedWorkspaceStatus::kSuccess ||
+                        !SetFileAttributesW(
+                            destination.c_str(),
+                            data.dwFileAttributes &
+                                ~FILE_ATTRIBUTE_REPARSE_POINT)) {
+                        RemoveMaterialization(destination_root);
+                        return copied == ProjectedWorkspaceStatus::kSuccess
+                                   ? ProjectedWorkspaceStatus::kIo
+                                   : copied;
+                    }
+                }
+            }
+        }
+        for (auto current = directory_metadata.rbegin();
+             current != directory_metadata.rend(); ++current) {
+            UniqueHandle directory{CreateFileW(
+                current->first.c_str(), FILE_WRITE_ATTRIBUTES, 0, nullptr,
+                OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr)};
+            if (!directory.valid() ||
+                !SetFileTime(
+                    directory.get(), &current->second.ftCreationTime,
+                    &current->second.ftLastAccessTime,
+                    &current->second.ftLastWriteTime) ||
+                !SetFileAttributesW(
+                    current->first.c_str(),
+                    current->second.dwFileAttributes &
+                        ~FILE_ATTRIBUTE_REPARSE_POINT)) {
+                RemoveMaterialization(destination_root);
+                return ProjectedWorkspaceStatus::kIo;
+            }
+        }
+        return ProjectedWorkspaceStatus::kSuccess;
+    } catch (...) {
+        RemoveMaterialization(destination_root);
+        return ProjectedWorkspaceStatus::kIo;
+    }
+}
+
 }  // namespace bolt::common
