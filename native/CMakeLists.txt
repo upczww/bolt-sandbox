@@ -229,6 +229,7 @@ add_library(bolt-sandbox-filesystem STATIC
     hook/filesystem/final_path_resolver.cpp
     hook/filesystem/file_hooks.cpp
     hook/filesystem/filesystem_policy.cpp
+    hook/filesystem/handle_access_cache.cpp
     hook/filesystem/path_cache.cpp
     hook/filesystem/safe_device.cpp
 )
@@ -297,6 +298,7 @@ add_executable(bolt-sandbox-native-tests
     tests/buildxl_tree_tests.cpp
     tests/detours_tests.cpp
     tests/event_frame_tests.cpp
+    tests/handle_access_cache_tests.cpp
     tests/filesystem_policy_tests.cpp
     tests/filesystem_race_tests.cpp
     tests/job_tests.cpp

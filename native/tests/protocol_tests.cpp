@@ -52,6 +52,7 @@ bool RunPolicyMappingTests();
 bool RunRuntimePayloadTests();
 bool RunBuildXlTreeTests();
 bool RunFilesystemPolicyTests();
+bool RunHandleAccessCacheTests();
 bool RunFilesystemRaceTests();
 bool RunShellFileOperationTests();
 bool RunNetworkPolicyTests();
@@ -672,6 +673,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunFilesystemPolicyTests()) {
         return 13;
+    }
+    if (!RunHandleAccessCacheTests()) {
+        return 50;
     }
     if (!RunShellFileOperationTests()) {
         return 14;
