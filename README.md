@@ -102,6 +102,9 @@ into a unique staging directory, optionally requires valid Authenticode
 signatures, writes the manifest over the final signed bytes, and renames the
 staging directory into place. Release pipelines use `-RequireSigned`; unsigned
 development packages are reported as `NotSigned` and fail that strict mode.
+Before publication, the packager removes inherited ACL entries, rejects
+reparse points, grants mutation rights only to the current packaging identity,
+SYSTEM, and Administrators, and verifies every packaged file and directory.
 
 The runtime is distributed as a component set rather than a single binary:
 

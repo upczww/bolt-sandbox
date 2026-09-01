@@ -49,6 +49,10 @@ try {
         -ComponentRoot $stagingAbsolute -RequireSigned:$RequireSigned
     & (Join-Path $PSScriptRoot 'write-component-manifest.ps1') `
         -ComponentRoot $stagingAbsolute
+    & (Join-Path $PSScriptRoot 'set-package-acl.ps1') `
+        -PackageRoot $stagingAbsolute
+    & (Join-Path $PSScriptRoot 'verify-package-acl.ps1') `
+        -PackageRoot $stagingAbsolute
     Move-Item -LiteralPath $stagingAbsolute -Destination $finalPath
     Write-Output "Windows package created: $finalPath"
 } finally {
