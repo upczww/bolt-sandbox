@@ -20,6 +20,7 @@ struct RunArguments {
     program: PathBuf,
     arguments: Vec<OsString>,
     policy: SandboxPolicy,
+    component_manifest_sha256: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,7 +35,7 @@ fn main() {
         Ok(code) => code,
         Err(CliError::InvalidArguments) => {
             eprintln!(
-                "usage: bolt-sandbox run --component-root PATH --cwd PATH [--timeout-ms N] -- PROGRAM [ARG ...]"
+                "usage: bolt-sandbox run --component-root PATH --cwd PATH [--manifest-sha256 HEX] [--timeout-ms N] -- PROGRAM [ARG ...]"
             );
             2
         }
@@ -51,7 +52,7 @@ fn run(arguments: Vec<OsString>) -> Result<u32, CliError> {
         stream_capacity: DEFAULT_STREAM_CAPACITY,
         mandatory_filesystem_denies: Vec::new(),
         mandatory_registry_denies: Vec::new(),
-        component_manifest_sha256: None,
+        component_manifest_sha256: parsed.component_manifest_sha256,
     })
     .map_err(|_| CliError::Sandbox)?;
     let environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
@@ -97,6 +98,7 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
     let mut component_root = None;
     let mut cwd = None;
     let mut timeout = None;
+    let mut component_manifest_sha256 = None;
     let mut policy = SandboxPolicy::default();
     let mut network_set = false;
     let mut child_processes_set = false;
@@ -123,6 +125,9 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
                     .filter(|value| *value != 0)
                     .ok_or(CliError::InvalidArguments)?;
                 timeout = Some(Duration::from_millis(milliseconds));
+            }
+            Some("--manifest-sha256") if component_manifest_sha256.is_none() => {
+                component_manifest_sha256 = Some(parse_sha256(&next_string(&mut arguments)?)?);
             }
             Some("--read-write") => policy
                 .filesystem
@@ -210,7 +215,30 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
         program,
         arguments: program_and_arguments,
         policy,
+        component_manifest_sha256,
     })
+}
+
+fn parse_sha256(encoded: &str) -> Result<[u8; 32], CliError> {
+    if encoded.len() != 64 || !encoded.is_ascii() {
+        return Err(CliError::InvalidArguments);
+    }
+    let mut digest = [0_u8; 32];
+    for (output, pair) in digest.iter_mut().zip(encoded.as_bytes().chunks_exact(2)) {
+        let high = hex_value(pair[0]).ok_or(CliError::InvalidArguments)?;
+        let low = hex_value(pair[1]).ok_or(CliError::InvalidArguments)?;
+        *output = (high << 4) | low;
+    }
+    Ok(digest)
+}
+
+const fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn next_path(arguments: &mut impl Iterator<Item = OsString>) -> Result<PathBuf, CliError> {

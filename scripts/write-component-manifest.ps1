@@ -58,3 +58,11 @@ $temporary = "$manifest.$PID.tmp"
 [IO.File]::WriteAllBytes($temporary, $output.ToArray())
 Move-Item -LiteralPath $temporary -Destination $manifest -Force
 Write-Output "Component manifest written: $manifest ($($records.Count) records)"
+$manifestHash = [Security.Cryptography.SHA256]::Create()
+try {
+    $manifestDigest = $manifestHash.ComputeHash([IO.File]::ReadAllBytes($manifest))
+} finally {
+    $manifestHash.Dispose()
+}
+$manifestHex = -join ($manifestDigest | ForEach-Object { $_.ToString('x2') })
+Write-Output "Manifest SHA-256: $manifestHex"

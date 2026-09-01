@@ -1,3 +1,5 @@
+use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::{path::PathBuf, process::Command};
 
 #[test]
@@ -6,12 +8,23 @@ fn cli_003_binary_delegates_execution_and_preserves_streams_and_exit_code() {
     else {
         return;
     };
+    let manifest = std::fs::read(component_root.join("bolt-sandbox-components.manifest"))
+        .expect("component manifest must be readable");
+    let digest =
+        Sha256::digest(manifest)
+            .iter()
+            .fold(String::with_capacity(64), |mut output, byte| {
+                write!(output, "{byte:02x}").expect("writing to a string cannot fail");
+                output
+            });
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-sandbox"))
         .arg("run")
         .arg("--component-root")
         .arg(&component_root)
         .arg("--cwd")
         .arg(&component_root)
+        .arg("--manifest-sha256")
+        .arg(digest)
         .arg("--timeout-ms")
         .arg("5000")
         .arg("--")

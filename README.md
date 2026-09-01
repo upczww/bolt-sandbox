@@ -67,6 +67,7 @@ CLI delegates to that same library for standalone testing and non-Rust callers.
 cargo build --release --bin bolt-sandbox
 target\release\bolt-sandbox.exe run `
   --component-root C:\path\to\components `
+  --manifest-sha256 <64-hex-digest-from-build> `
   --cwd C:\repo `
   --timeout-ms 30000 `
   --read-write C:\package-cache `
@@ -85,6 +86,10 @@ Filesystem options are `--read-write`, `--read-only`, `--deny`,
 environment, while the library strips its configured credential variables
 before launch. Event diagnostics contain fixed categories and process IDs but
 do not print command arguments, environment values, or paths.
+`scripts/write-component-manifest.ps1` prints the manifest SHA-256 used by the
+CLI option. A host integrating the library supplies the same digest through
+`SandboxConfig::component_manifest_sha256`; omitting it enables development
+self-consistency checks but does not establish a release trust root.
 
 The runtime is distributed as a component set rather than a single binary:
 
