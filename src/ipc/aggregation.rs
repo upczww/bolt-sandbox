@@ -1,33 +1,27 @@
 use std::num::NonZeroUsize;
 
-use crate::SandboxEvent;
+use crate::{SandboxEvent, ViolationAggregate};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum AggregationDisposition {
+pub(crate) enum AggregationDisposition {
     Added,
     Duplicate { duplicate_count: u64 },
     DroppedDistinct { dropped_count: u64 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum AggregationError {
+pub(crate) enum AggregationError {
     NotViolation,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct AggregatedViolation {
-    pub(super) event: SandboxEvent,
-    pub(super) duplicate_count: u64,
-}
-
-pub(super) struct ViolationAggregator {
+pub(crate) struct ViolationAggregator {
     maximum_entries: NonZeroUsize,
-    entries: Vec<AggregatedViolation>,
+    entries: Vec<ViolationAggregate>,
     dropped_distinct_count: u64,
 }
 
 impl ViolationAggregator {
-    pub(super) const fn new(maximum_entries: NonZeroUsize) -> Self {
+    pub(crate) const fn new(maximum_entries: NonZeroUsize) -> Self {
         Self {
             maximum_entries,
             entries: Vec::new(),
@@ -35,7 +29,7 @@ impl ViolationAggregator {
         }
     }
 
-    pub(super) fn observe(
+    pub(crate) fn observe(
         &mut self,
         event: SandboxEvent,
     ) -> Result<AggregationDisposition, AggregationError> {
@@ -54,18 +48,18 @@ impl ViolationAggregator {
                 dropped_count: self.dropped_distinct_count,
             });
         }
-        self.entries.push(AggregatedViolation {
+        self.entries.push(ViolationAggregate {
             event,
             duplicate_count: 0,
         });
         Ok(AggregationDisposition::Added)
     }
 
-    pub(super) fn entries(&self) -> &[AggregatedViolation] {
+    pub(crate) fn entries(&self) -> &[ViolationAggregate] {
         &self.entries
     }
 
-    pub(super) const fn dropped_distinct_count(&self) -> u64 {
+    pub(crate) const fn dropped_distinct_count(&self) -> u64 {
         self.dropped_distinct_count
     }
 }

@@ -50,6 +50,7 @@ fn run(arguments: Vec<OsString>) -> Result<u32, CliError> {
         component_root: parsed.component_root,
         credential_environment_variables: default_credential_names(),
         stream_capacity: DEFAULT_STREAM_CAPACITY,
+        violation_aggregate_capacity: bolt_sandbox::DEFAULT_VIOLATION_AGGREGATE_CAPACITY,
         mandatory_filesystem_denies: Vec::new(),
         mandatory_registry_denies: Vec::new(),
         component_manifest_sha256: parsed.component_manifest_sha256,

@@ -1,5 +1,6 @@
 use std::{
     io::{Read, Write},
+    num::NonZeroUsize,
     os::windows::ffi::OsStrExt,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::mpsc::{self, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
@@ -7,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::ipc::aggregation::{AggregationDisposition, AggregationError, ViolationAggregator};
 use crate::{
     ExecutionHandle, ExecutionResult, ExecutionTerminal, InitializationStage, ProcessExit,
     ProcessExitReason, ReceiverLoss, SandboxError, SandboxEvent,
@@ -34,6 +36,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 pub(super) fn start(
     prepared: PreparedLaunch,
     stream_capacity: usize,
+    violation_aggregate_capacity: usize,
 ) -> Result<ExecutionHandle, SandboxError> {
     let recovery = RecoveryCoordinator::new(prepared.recovery(), prepared.handshake_nonce())
         .map_err(|_| SandboxError::InitializationFailed {
@@ -49,6 +52,7 @@ pub(super) fn start(
         process_id,
         timeout,
         stream_capacity,
+        violation_aggregate_capacity,
         nonce,
         recovery,
         prepared,
@@ -113,6 +117,7 @@ fn build_execution_handle(
     process_id: u32,
     timeout: Option<Duration>,
     stream_capacity: usize,
+    violation_aggregate_capacity: usize,
     nonce: [u8; 16],
     recovery: Option<RecoveryCoordinator>,
     execution_lease: PreparedLaunch,
@@ -133,6 +138,7 @@ fn build_execution_handle(
             process_id,
             timeout,
             nonce,
+            violation_aggregate_capacity,
             &cancel_receiver,
             &transport_receiver,
             &stdout_sender,
@@ -185,6 +191,7 @@ fn run_execution(
     process_id: u32,
     timeout: Option<Duration>,
     nonce: [u8; 16],
+    violation_aggregate_capacity: usize,
     cancel: &mpsc::Receiver<()>,
     transport: &mpsc::Receiver<Result<Option<TransportFrame>, launcher_transport::TransportError>>,
     stdout: &SyncSender<Vec<u8>>,
@@ -194,7 +201,12 @@ fn run_execution(
 ) -> ExecutionResult {
     let started = Instant::now();
     let deadline = timeout.and_then(|limit| MonotonicDeadline::new(started, limit));
-    let mut state = TransportState::new(nonce, process_id);
+    let mut state = TransportState::new(
+        nonce,
+        process_id,
+        NonZeroUsize::new(violation_aggregate_capacity)
+            .expect("validated aggregate capacity is nonzero"),
+    );
     loop {
         let cancelled = matches!(cancel.try_recv(), Ok(()) | Err(TryRecvError::Disconnected));
         let timed_out = deadline
@@ -287,10 +299,15 @@ struct TransportState {
     infrastructure_reported: bool,
     transport_eof: bool,
     launcher_exited: bool,
+    violation_aggregator: ViolationAggregator,
 }
 
 impl TransportState {
-    fn new(nonce: [u8; 16], expected_process_id: u32) -> Self {
+    fn new(
+        nonce: [u8; 16],
+        expected_process_id: u32,
+        violation_aggregate_capacity: NonZeroUsize,
+    ) -> Self {
         let mut state = Self {
             session: crate::ipc::session::SessionProtocol::new(nonce),
             lifecycle: LifecycleController::new(),
@@ -300,6 +317,7 @@ impl TransportState {
             infrastructure_reported: false,
             transport_eof: false,
             launcher_exited: false,
+            violation_aggregator: ViolationAggregator::new(violation_aggregate_capacity),
         };
         state
             .lifecycle
@@ -380,10 +398,18 @@ impl TransportState {
             }
             TransportKind::Event => {
                 let event = self.session.accept(&frame.payload).map_err(|_| ())?;
-                if send_bounded(events, event) {
-                    self.lifecycle
-                        .mark_receiver_lost(ReceiverKind::Events)
-                        .map_err(|_| ())?;
+                match self.violation_aggregator.observe(event.clone()) {
+                    Ok(AggregationDisposition::Added) | Err(AggregationError::NotViolation) => {
+                        if send_bounded(events, event) {
+                            self.lifecycle
+                                .mark_receiver_lost(ReceiverKind::Events)
+                                .map_err(|_| ())?;
+                        }
+                    }
+                    Ok(
+                        AggregationDisposition::Duplicate { .. }
+                        | AggregationDisposition::DroppedDistinct { .. },
+                    ) => {}
                 }
                 LifecycleAction::None
             }
@@ -506,17 +532,21 @@ impl TransportState {
             reason,
         };
         send_bounded(events, SandboxEvent::ProcessExited(process_exit.clone()));
-        ExecutionResult {
+        self.with_aggregates(ExecutionResult {
             terminal: ExecutionTerminal::Process(process_exit),
             receiver_loss: public_receiver_loss(self.lifecycle.receiver_loss()),
-        }
+            violation_aggregates: Vec::new(),
+            dropped_distinct_violations: 0,
+        })
     }
 
     fn infrastructure_result(&self, failure: crate::InfrastructureFailure) -> ExecutionResult {
-        ExecutionResult {
+        self.with_aggregates(ExecutionResult {
             terminal: ExecutionTerminal::Infrastructure(failure),
             receiver_loss: public_receiver_loss(self.lifecycle.receiver_loss()),
-        }
+            violation_aggregates: Vec::new(),
+            dropped_distinct_violations: 0,
+        })
     }
 
     fn completed_result(
@@ -527,9 +557,16 @@ impl TransportState {
         if expected_process_id != self.expected_process_id {
             return self.infrastructure_result(crate::InfrastructureFailure::ProtocolIntegrity);
         }
-        self.outcome.take().unwrap_or_else(|| {
+        let result = self.outcome.take().unwrap_or_else(|| {
             self.infrastructure_result(crate::InfrastructureFailure::ProtocolIntegrity)
-        })
+        });
+        self.with_aggregates(result)
+    }
+
+    fn with_aggregates(&self, mut result: ExecutionResult) -> ExecutionResult {
+        result.violation_aggregates = self.violation_aggregator.entries().to_vec();
+        result.dropped_distinct_violations = self.violation_aggregator.dropped_distinct_count();
+        result
     }
 }
 
@@ -576,6 +613,8 @@ fn public_outcome(outcome: LifecycleOutcome) -> ExecutionResult {
     ExecutionResult {
         terminal,
         receiver_loss: public_receiver_loss(outcome.receiver_loss),
+        violation_aggregates: Vec::new(),
+        dropped_distinct_violations: 0,
     }
 }
 
@@ -726,11 +765,23 @@ mod tests {
             operation: FilesystemOperation::Write,
             path: std::path::PathBuf::from(r"C:\denied.txt"),
         });
+        let second = SandboxEvent::FilesystemViolation(FilesystemViolation {
+            process_id: 42,
+            operation: FilesystemOperation::Read,
+            path: std::path::PathBuf::from(r"C:\second.txt"),
+        });
+        let dropped = SandboxEvent::FilesystemViolation(FilesystemViolation {
+            process_id: 42,
+            operation: FilesystemOperation::Write,
+            path: std::path::PathBuf::from(r"C:\dropped.txt"),
+        });
 
         for frame in [
             crate::ipc::event_codec::encode_ready(NONCE, 0).expect("ready encodes"),
             crate::ipc::event_codec::encode_event(&first, 1).expect("first encodes"),
             crate::ipc::event_codec::encode_event(&first, 2).expect("duplicate encodes"),
+            crate::ipc::event_codec::encode_event(&second, 3).expect("second encodes"),
+            crate::ipc::event_codec::encode_event(&dropped, 4).expect("dropped encodes"),
         ] {
             state
                 .dispatch(
@@ -747,16 +798,22 @@ mod tests {
 
         assert_eq!(
             event_receiver.try_iter().collect::<Vec<_>>(),
-            vec![SandboxEvent::Ready, first.clone()]
+            vec![SandboxEvent::Ready, first.clone(), second.clone()]
         );
         let result = state.infrastructure_result(crate::InfrastructureFailure::LauncherExited);
         assert_eq!(
             result.violation_aggregates,
-            vec![crate::ViolationAggregate {
-                event: first,
-                duplicate_count: 1,
-            }]
+            vec![
+                crate::ViolationAggregate {
+                    event: first,
+                    duplicate_count: 1,
+                },
+                crate::ViolationAggregate {
+                    event: second,
+                    duplicate_count: 0,
+                },
+            ]
         );
-        assert_eq!(result.dropped_distinct_violations, 0);
+        assert_eq!(result.dropped_distinct_violations, 1);
     }
 }

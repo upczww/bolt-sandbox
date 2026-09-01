@@ -120,6 +120,7 @@ fn benchmark_in_root(options: &Options, executable: &Path, root: &Path) -> Resul
         component_root: options.component_root.clone(),
         credential_environment_variables: Vec::new(),
         stream_capacity: 1_048_576,
+        violation_aggregate_capacity: bolt_sandbox::DEFAULT_VIOLATION_AGGREGATE_CAPACITY,
         mandatory_filesystem_denies: Vec::new(),
         mandatory_registry_denies: Vec::new(),
         component_manifest_sha256: None,

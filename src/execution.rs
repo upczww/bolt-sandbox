@@ -4,16 +4,19 @@ use std::{
     sync::mpsc::{Receiver, Sender},
 };
 
-use crate::{ProcessExit, SandboxError, SandboxEvent, SandboxRequest, runtime};
+use crate::{ProcessExit, SandboxError, SandboxEvent, SandboxRequest, ViolationAggregate, runtime};
 
 pub const DEFAULT_STREAM_CAPACITY: usize = 1_048_576;
 const MAX_STREAM_CAPACITY: usize = 64 * 1_048_576;
+pub const DEFAULT_VIOLATION_AGGREGATE_CAPACITY: usize = 1_024;
+pub const MAX_VIOLATION_AGGREGATE_CAPACITY: usize = 65_536;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxConfig {
     pub component_root: PathBuf,
     pub credential_environment_variables: Vec<OsString>,
     pub stream_capacity: usize,
+    pub violation_aggregate_capacity: usize,
     pub mandatory_filesystem_denies: Vec<PathBuf>,
     pub mandatory_registry_denies: Vec<String>,
     pub component_manifest_sha256: Option<[u8; 32]>,
@@ -45,6 +48,12 @@ impl Sandbox {
                 reason: ConfigurationErrorReason::OutOfRange,
             });
         }
+        if !(1..=MAX_VIOLATION_AGGREGATE_CAPACITY).contains(&config.violation_aggregate_capacity) {
+            return Err(SandboxError::InvalidConfiguration {
+                field: ConfigurationField::ViolationAggregateCapacity,
+                reason: ConfigurationErrorReason::OutOfRange,
+            });
+        }
         config
             .mandatory_filesystem_denies
             .extend(default_sensitive_filesystem_paths());
@@ -63,15 +72,7 @@ impl Sandbox {
     /// never falls back to an unsandboxed process.
     pub fn start(&self, request: SandboxRequest) -> Result<ExecutionHandle, SandboxError> {
         request.validate()?;
-        runtime::start_execution(
-            request,
-            &self.config.credential_environment_variables,
-            &self.config.component_root,
-            self.config.stream_capacity,
-            &self.config.mandatory_filesystem_denies,
-            &self.config.mandatory_registry_denies,
-            self.config.component_manifest_sha256.as_ref(),
-        )
+        runtime::start_execution(request, &self.config)
     }
 }
 
@@ -114,6 +115,7 @@ fn default_sensitive_registry_keys() -> impl Iterator<Item = &'static str> {
 pub enum ConfigurationField {
     ComponentRoot,
     StreamCapacity,
+    ViolationAggregateCapacity,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -156,6 +158,8 @@ pub enum ExecutionTerminal {
 pub struct ExecutionResult {
     pub terminal: ExecutionTerminal,
     pub receiver_loss: ReceiverLoss,
+    pub violation_aggregates: Vec<ViolationAggregate>,
+    pub dropped_distinct_violations: u64,
 }
 
 pub struct ByteStream {

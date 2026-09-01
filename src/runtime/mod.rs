@@ -49,26 +49,19 @@ mod startup;
 )]
 mod streams;
 
-use std::{ffi::OsString, path::Path};
-
-use crate::{ExecutionHandle, InitializationStage, SandboxError, SandboxRequest};
+use crate::{ExecutionHandle, InitializationStage, SandboxConfig, SandboxError, SandboxRequest};
 
 pub(crate) fn start_execution(
     request: SandboxRequest,
-    credential_names: &[OsString],
-    component_root: &Path,
-    stream_capacity: usize,
-    mandatory_filesystem_denies: &[std::path::PathBuf],
-    mandatory_registry_denies: &[String],
-    expected_component_manifest_sha256: Option<&[u8; 32]>,
+    config: &SandboxConfig,
 ) -> Result<ExecutionHandle, SandboxError> {
     let prepared = preparation::prepare_launch_with_security_denies(
         &request,
-        credential_names,
-        component_root,
-        mandatory_filesystem_denies,
-        mandatory_registry_denies,
-        expected_component_manifest_sha256,
+        &config.credential_environment_variables,
+        &config.component_root,
+        &config.mandatory_filesystem_denies,
+        &config.mandatory_registry_denies,
+        config.component_manifest_sha256.as_ref(),
     )
     .map_err(|error| match error {
         preparation::LaunchPreparationError::Request(error) => error,
@@ -92,5 +85,9 @@ pub(crate) fn start_execution(
         }
     })?;
     drop(request);
-    launcher_adapter::start(prepared, stream_capacity)
+    launcher_adapter::start(
+        prepared,
+        config.stream_capacity,
+        config.violation_aggregate_capacity,
+    )
 }

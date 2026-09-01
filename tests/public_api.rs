@@ -125,7 +125,9 @@ fn evt_004_public_violation_aggregate_preserves_first_event_and_count() {
     assert_eq!(aggregate.event, first);
     assert_eq!(aggregate.duplicate_count, 3);
     assert_eq!(DEFAULT_VIOLATION_AGGREGATE_CAPACITY, 1_024);
-    assert!(MAX_VIOLATION_AGGREGATE_CAPACITY >= DEFAULT_VIOLATION_AGGREGATE_CAPACITY);
+    const {
+        assert!(MAX_VIOLATION_AGGREGATE_CAPACITY >= DEFAULT_VIOLATION_AGGREGATE_CAPACITY);
+    }
 }
 
 #[test]

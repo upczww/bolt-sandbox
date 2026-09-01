@@ -16,6 +16,12 @@ pub enum SandboxEvent {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ViolationAggregate {
+    pub event: SandboxEvent,
+    pub duplicate_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FilesystemViolation {
     pub process_id: u32,
     pub operation: FilesystemOperation,

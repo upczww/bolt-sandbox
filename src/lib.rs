@@ -16,12 +16,13 @@ pub use event::{
     ChildInjectionFailure, ChildInjectionFailureReason, EventsDropped, FilesystemOperation,
     FilesystemViolation, NetworkOperation, NetworkTarget, NetworkViolation, ProcessExit,
     ProcessExitReason, ProcessOperation, ProcessViolation, RecoveryArtifact, RecoveryFailure,
-    RecoveryFailureReason, RegistryOperation, RegistryViolation, SandboxEvent,
+    RecoveryFailureReason, RegistryOperation, RegistryViolation, SandboxEvent, ViolationAggregate,
 };
 pub use execution::{
-    ByteStream, ConfigurationErrorReason, ConfigurationField, DEFAULT_STREAM_CAPACITY, EventStream,
-    ExecutionControlError, ExecutionHandle, ExecutionResult, ExecutionTerminal,
-    InfrastructureFailure, InitializationStage, ReceiverLoss, Sandbox, SandboxConfig,
+    ByteStream, ConfigurationErrorReason, ConfigurationField, DEFAULT_STREAM_CAPACITY,
+    DEFAULT_VIOLATION_AGGREGATE_CAPACITY, EventStream, ExecutionControlError, ExecutionHandle,
+    ExecutionResult, ExecutionTerminal, InfrastructureFailure, InitializationStage,
+    MAX_VIOLATION_AGGREGATE_CAPACITY, ReceiverLoss, Sandbox, SandboxConfig,
 };
 pub use policy::{
     ChildProcessPolicy, FilesystemPolicy, IpCidr, NetworkAllowList, NetworkPolicy, PortRange,
