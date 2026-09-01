@@ -262,7 +262,7 @@ and reason code—not merely identical serialized bytes.
 | REG-016 | Win32 registry wrappers perform the same operations | End-to-end decision matches NT Native path |
 | REG-017 | Transactional or remote registry operation is attempted | Initial release denies it with typed `UnsupportedRegistryOperation`; no operation reaches the remote/transactional target |
 | REG-018 | Concurrent key mutation and rename races | Unauthorized side effects never appear; event actor is correct |
-| REG-019 | Ordinary OS ACL, missing key, or sharing error occurs on allowed path | Original error is preserved and no false violation is emitted; mixed-access opens on exact-read-only keys are attenuated to read-only without creating or mutating host state |
+| REG-019 | Ordinary OS ACL, missing key, sharing error, or read-only create-or-open probe occurs on allowed path | Original errors are preserved; exact-read-only mixed-access probes and non-writing recursive-read-only probes open only existing keys with `KEY_READ`, while missing keys and every mutation remain denied |
 | REG-020 | Registry event contains names/data resembling secrets | Event includes only permitted key metadata and passes canary scan |
 
 ## IPC, events, and audit reliability

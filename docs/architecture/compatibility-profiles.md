@@ -88,8 +88,10 @@ absolute target executable, never from the child environment carried in
 - Registry roots remain invalid except `reg-exact-ro|...|HKU`, which authorizes
   only the users-hive root object and never a SID subtree or hive enumeration.
 - An existing exact-read-only registry key may attenuate a create-or-open call
-  to a read-only open. Missing keys preserve not-found, and every subsequent
-  mutation remains denied; no compatibility operation creates host state.
+  to a read-only open. A recursive read-only rule may do the same only when
+  the caller requested no write rights and the same key is denied for writes.
+  Missing keys preserve not-found, and every subsequent mutation remains
+  denied; no compatibility operation creates host state.
 
 Missing leaf files remain valid grants so harmless absent probes preserve the
 operating system's not-found result.

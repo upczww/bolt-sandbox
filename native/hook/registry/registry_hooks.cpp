@@ -717,10 +717,16 @@ NTSTATUS NTAPI DetouredNtCreateKey(
     }
     std::wstring requested;
     RegistryDecision read_decision = RegistryDecision::kDeny;
+    RegistryDecision write_decision = RegistryDecision::kDeny;
     if (ReadObjectAttributesName(selected, requested) &&
         DecideNativeName(
             requested, RegistryAccess::kRead, read_decision) &&
-        read_decision == RegistryDecision::kAllowExactReadOnly) {
+        (read_decision == RegistryDecision::kAllowExactReadOnly ||
+         (read_decision == RegistryDecision::kAllow &&
+          AccessForMask(desired_access) != RegistryAccess::kWrite &&
+          DecideNativeName(
+              requested, RegistryAccess::kWrite, write_decision) &&
+          write_decision == RegistryDecision::kDeny))) {
         const ACCESS_MASK read_access = KEY_READ |
             (desired_access & (KEY_WOW64_32KEY | KEY_WOW64_64KEY));
         const NTSTATUS status = GuardOpen(
