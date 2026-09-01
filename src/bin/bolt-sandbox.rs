@@ -476,6 +476,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cli_008_violation_diagnostics_include_escaped_resource_details() {
+        let event = SandboxEvent::FilesystemViolation(
+            bolt_sandbox::FilesystemViolation {
+                process_id: 41,
+                operation: bolt_sandbox::FilesystemOperation::Read,
+                path: PathBuf::from("C:\\external\\line\nsecret.txt"),
+            },
+        );
+
+        let diagnostic = format_event(&event);
+
+        assert!(diagnostic.contains("filesystem-violation pid=41 operation=Read"));
+        assert!(diagnostic.contains(r#"path="C:\\external\\line\nsecret.txt""#));
+        assert_eq!(diagnostic.lines().count(), 1);
+    }
+
+    #[test]
     fn cli_001_run_parser_preserves_native_program_arguments() {
         let parsed = parse_run_arguments(vec![
             OsString::from("run"),
