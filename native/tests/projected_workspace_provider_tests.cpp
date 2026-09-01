@@ -1,11 +1,98 @@
 #include "common/projected_workspace_provider.h"
 
 #include <filesystem>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+
+namespace {
+
+const PRJ_CALLBACKS* g_callbacks = nullptr;
+void* g_instance_context = nullptr;
+std::vector<std::wstring> g_names;
+std::vector<std::uint8_t> g_data;
+std::uint64_t g_placeholder_size = 0;
+bool g_stopped = false;
+
+HRESULT WINAPI FakeMark(
+    PCWSTR,
+    PCWSTR,
+    const PRJ_PLACEHOLDER_VERSION_INFO*,
+    const GUID*) noexcept {
+    return S_OK;
+}
+
+HRESULT WINAPI FakeStart(
+    PCWSTR,
+    const PRJ_CALLBACKS* callbacks,
+    const void* instance_context,
+    const PRJ_STARTVIRTUALIZING_OPTIONS*,
+    PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT* context) noexcept {
+    g_callbacks = callbacks;
+    g_instance_context = const_cast<void*>(instance_context);
+    *context = reinterpret_cast<PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT>(1);
+    return S_OK;
+}
+
+void WINAPI FakeStop(PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT) noexcept {
+    g_stopped = true;
+}
+
+HRESULT WINAPI FakeWritePlaceholder(
+    PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+    PCWSTR,
+    const PRJ_PLACEHOLDER_INFO* information,
+    UINT32) noexcept {
+    g_placeholder_size = static_cast<std::uint64_t>(
+        information->FileBasicInfo.FileSize);
+    return S_OK;
+}
+
+HRESULT WINAPI FakeWriteData(
+    PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+    const GUID*,
+    void* buffer,
+    UINT64,
+    UINT32 length) noexcept {
+    const auto* bytes = static_cast<const std::uint8_t*>(buffer);
+    g_data.assign(bytes, bytes + length);
+    return S_OK;
+}
+
+HRESULT WINAPI FakeFill(
+    PCWSTR name,
+    PRJ_FILE_BASIC_INFO*,
+    PRJ_DIR_ENTRY_BUFFER_HANDLE) noexcept {
+    g_names.emplace_back(name);
+    return S_OK;
+}
+
+BOOLEAN WINAPI FakeMatch(PCWSTR, PCWSTR pattern) noexcept {
+    return std::wcscmp(pattern, L"*") == 0 ? TRUE : FALSE;
+}
+
+void* WINAPI FakeAllocate(
+    PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+    const size_t size) noexcept {
+    return HeapAlloc(GetProcessHeap(), 0, size);
+}
+
+void WINAPI FakeFree(void* buffer) noexcept {
+    HeapFree(GetProcessHeap(), 0, buffer);
+}
+
+HRESULT WINAPI FakeInstanceInfo(
+    PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+    PRJ_VIRTUALIZATION_INSTANCE_INFO* information) noexcept {
+    *information = PRJ_VIRTUALIZATION_INSTANCE_INFO{};
+    information->WriteAlignment = 1;
+    return S_OK;
+}
+
+}  // namespace
 
 bool RunProjectedWorkspaceProviderTests() {
     wchar_t temporary[MAX_PATH]{};
@@ -54,6 +141,51 @@ bool RunProjectedWorkspaceProviderTests() {
     std::vector<std::uint8_t> range;
     const auto read = projected.Read(L"目录\\数据.txt", 3, 4, range);
 
+    const auto projection = fixture / L"projection";
+    const bool projection_created =
+        std::filesystem::create_directory(projection);
+    bolt::common::ProjectedWorkspaceProvider provider;
+    const bolt::common::ProjfsFunctionTable functions{
+        FakeMark, FakeStart, FakeStop, FakeWritePlaceholder, FakeWriteData,
+        FakeFill, FakeMatch, FakeAllocate, FakeFree, FakeInstanceInfo};
+    const auto provider_started =
+        bolt::common::ProjectedWorkspaceProvider::StartWithFunctions(
+            projected, projection, functions, provider);
+    PRJ_CALLBACK_DATA callback_data{};
+    callback_data.Size = sizeof(callback_data);
+    callback_data.NamespaceVirtualizationContext =
+        reinterpret_cast<PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT>(1);
+    callback_data.InstanceContext = g_instance_context;
+    callback_data.FilePathName = L"目录\\数据.txt";
+    callback_data.DataStreamId.Data1 = 1;
+    const HRESULT placeholder =
+        g_callbacks == nullptr
+            ? E_UNEXPECTED
+            : g_callbacks->GetPlaceholderInfoCallback(&callback_data);
+    const HRESULT file_data =
+        g_callbacks == nullptr
+            ? E_UNEXPECTED
+            : g_callbacks->GetFileDataCallback(&callback_data, 2, 3);
+    GUID enumeration{};
+    callback_data.FilePathName = L"";
+    const HRESULT enumeration_started =
+        g_callbacks == nullptr
+            ? E_UNEXPECTED
+            : g_callbacks->StartDirectoryEnumerationCallback(
+                  &callback_data, &enumeration);
+    const HRESULT enumeration_read =
+        g_callbacks == nullptr
+            ? E_UNEXPECTED
+            : g_callbacks->GetDirectoryEnumerationCallback(
+                  &callback_data, &enumeration, L"*",
+                  reinterpret_cast<PRJ_DIR_ENTRY_BUFFER_HANDLE>(1));
+    const HRESULT enumeration_ended =
+        g_callbacks == nullptr
+            ? E_UNEXPECTED
+            : g_callbacks->EndDirectoryEnumerationCallback(
+                  &callback_data, &enumeration);
+    provider.Stop();
+
     const auto outside = fixture / L"outside.bin";
     {
         HANDLE file = CreateFileW(
@@ -80,6 +212,15 @@ bool RunProjectedWorkspaceProviderTests() {
            !unicode_entry.is_directory && unicode_entry.size == contents.size() &&
            read == bolt::common::ProjectedWorkspaceStatus::kSuccess &&
            range == std::vector<std::uint8_t>({'3', '4', '5', '6'}) &&
+           projection_created &&
+           provider_started ==
+               bolt::common::ProjectedWorkspaceStatus::kSuccess &&
+           placeholder == S_OK && g_placeholder_size == contents.size() &&
+           file_data == S_OK &&
+           g_data == std::vector<std::uint8_t>({'2', '3', '4'}) &&
+           enumeration_started == S_OK && enumeration_read == S_OK &&
+           enumeration_ended == S_OK && g_names.size() == 2 &&
+           g_names[0] == L"alpha" && g_names[1] == L"目录" && g_stopped &&
            linked &&
            hardlink_status ==
                bolt::common::ProjectedWorkspaceStatus::kUnsupportedObject &&
