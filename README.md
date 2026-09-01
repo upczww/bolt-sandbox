@@ -60,8 +60,31 @@ pwsh -NoProfile -File scripts/verify-test-traceability.ps1
 ## Intended Deliverables
 
 Bolt Agent should integrate through the Rust `bolt-sandbox` library when it
-needs typed requests, events, and lifecycle control. A `bolt-sandbox.exe` CLI
-will provide the same behavior for standalone testing and non-Rust callers.
+needs typed requests, events, and lifecycle control. The `bolt-sandbox.exe`
+CLI delegates to that same library for standalone testing and non-Rust callers.
+
+```powershell
+cargo build --release --bin bolt-sandbox
+target\release\bolt-sandbox.exe run `
+  --component-root C:\path\to\components `
+  --cwd C:\repo `
+  --timeout-ms 30000 `
+  --read-write C:\package-cache `
+  --read-only C:\sdk `
+  --deny C:\sensitive `
+  --network denied `
+  --child-processes inherit `
+  -- C:\tools\program.exe argument
+```
+
+Filesystem options are `--read-write`, `--read-only`, `--deny`,
+`--metadata-read`, and `--inherit-user`. Registry equivalents are
+`--registry-no-access`, `--registry-read-only`, `--registry-inherit-user`, and
+`--registry-read-write`. Recovery requires all three of `--recovery-dir`,
+`--recovery-max-bytes`, and `--recovery-max-items`. The CLI inherits the host
+environment, while the library strips its configured credential variables
+before launch. Event diagnostics contain fixed categories and process IDs but
+do not print command arguments, environment values, or paths.
 
 The runtime is distributed as a component set rather than a single binary:
 
