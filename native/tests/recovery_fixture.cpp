@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <cwchar>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -262,4 +263,29 @@ int RunRecoveryNativeDispositionFixture(
                   disposition_class);
     CloseHandle(file);
     return status >= 0 ? 0 : 356;
+}
+
+int RunRecoveryDelayedDeleteFixture(
+    const int argument_count,
+    wchar_t** arguments) noexcept {
+    if (argument_count != 4) {
+        return 357;
+    }
+    const std::filesystem::path signal(arguments[3]);
+    const std::wstring parent = signal.parent_path().wstring();
+    const HANDLE changed = FindFirstChangeNotificationW(
+        parent.c_str(), FALSE, FILE_NOTIFY_CHANGE_FILE_NAME);
+    if (changed == INVALID_HANDLE_VALUE) {
+        return 358;
+    }
+    const DWORD wait =
+        GetFileAttributesW(arguments[3]) != INVALID_FILE_ATTRIBUTES
+            ? WAIT_OBJECT_0
+            : WaitForSingleObject(changed, 5'000);
+    FindCloseChangeNotification(changed);
+    if (wait != WAIT_OBJECT_0 ||
+        GetFileAttributesW(arguments[3]) == INVALID_FILE_ATTRIBUTES) {
+        return 359;
+    }
+    return DeleteFileW(arguments[2]) ? 0 : 360;
 }

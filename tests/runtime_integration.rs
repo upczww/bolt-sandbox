@@ -756,3 +756,69 @@ fn rec_012_native_disposition_delete_preserves_original_content() {
     ));
     fs::remove_dir_all(fixture_root).expect("native fixture must clean up");
 }
+
+#[test]
+fn rec_009_store_failure_is_typed_and_does_not_change_allowed_delete() {
+    let Some((sandbox, component_root)) = configured_sandbox() else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let fixture_root = std::env::temp_dir().join(format!(
+        "bolt-sandbox-recovery-store-failure-{}-{fixture_id}",
+        std::process::id()
+    ));
+    let work = fixture_root.join("work");
+    let recovery = fixture_root.join("recovery");
+    fs::create_dir_all(&work).expect("work directory must be created");
+    fs::create_dir_all(&recovery).expect("recovery directory must be created");
+    let source = work.join("delete-after-store-loss.bin");
+    let signal = work.join("continue.signal");
+    fs::write(&source, b"store-failure-content").expect("source fixture must be written");
+    let policy = SandboxPolicy {
+        recovery: RecoveryPolicy::Enabled(RecoveryLimits {
+            directory: recovery.clone(),
+            maximum_bytes: 1_048_576,
+            maximum_items: 16,
+        }),
+        ..SandboxPolicy::default()
+    };
+    let mut handle = sandbox
+        .start(SandboxRequest {
+            program: component_root.join("bolt-sandbox-native-tests.exe"),
+            arguments: vec![
+                OsString::from("--recovery-delayed-delete-fixture"),
+                source.as_os_str().to_os_string(),
+                signal.as_os_str().to_os_string(),
+            ],
+            cwd: work,
+            environment: BTreeMap::new(),
+            policy,
+            timeout: Some(Duration::from_secs(10)),
+        })
+        .expect("store failure fixture must start");
+    let execution_directory = fs::read_dir(&recovery)
+        .expect("recovery root must be readable")
+        .next()
+        .expect("execution directory must exist")
+        .expect("execution entry must be readable")
+        .path();
+    fs::remove_dir(&execution_directory).expect("empty execution directory must be removable");
+    fs::write(&signal, b"continue").expect("signal must be written");
+    let stdout = handle.take_stdout().expect("stdout is available");
+    let stderr = handle.take_stderr().expect("stderr is available");
+    let events = handle.take_events().expect("events are available");
+    let (_stdout, _stderr, events, result) = collect_execution(handle, stdout, stderr, events);
+
+    assert!(!source.exists());
+    assert!(recovery_files(&recovery).is_empty());
+    assert!(events.iter().any(|event| matches!(
+        event,
+        SandboxEvent::RecoveryFailed(failure)
+            if failure.reason == RecoveryFailureReason::StoreUnavailable
+    )));
+    assert!(matches!(
+        result.terminal,
+        ExecutionTerminal::Process(ref exit) if exit.exit_code == Some(0)
+    ));
+    fs::remove_dir_all(fixture_root).expect("store failure fixture must clean up");
+}
