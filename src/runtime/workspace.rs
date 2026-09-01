@@ -84,6 +84,7 @@ impl CommittedWorkspace {
         &self.changes
     }
 
+    #[cfg(test)]
     pub(crate) fn recovery_root(&self) -> &Path {
         &self.recovery_root
     }

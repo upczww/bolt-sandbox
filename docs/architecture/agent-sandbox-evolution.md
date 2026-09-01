@@ -113,7 +113,7 @@ path before target creation because `Client-ProjFS` is not installed.
 - Do not ship the broker if improvement is less than 10 ms.
 
 Decision: no broker ships by default. Seven final release samples measured
-39.161–42.918 ms warm Direct startup (40.946 ms mean), and no bounded broker
+38.968–42.780 ms warm Direct startup (40.138 ms mean), and no bounded broker
 prototype has demonstrated the required repeatable 10 ms improvement. See
 ADR-0003. The no-evidence case fails the feature gate closed.
 
