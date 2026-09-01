@@ -131,6 +131,9 @@ bool RunFilesystemPolicyTests() {
         bolt::filesystem::ClassifyCreateFileRequest(GENERIC_READ, TRUNCATE_EXISTING);
     const auto maximum_allowed =
         bolt::filesystem::ClassifyCreateFileRequest(MAXIMUM_ALLOWED, OPEN_EXISTING);
+    const auto delete_on_close =
+        bolt::filesystem::ClassifyCreateFileRequestWithFlags(
+            GENERIC_READ, OPEN_EXISTING, FILE_FLAG_DELETE_ON_CLOSE);
     if (metadata.access != Access::kMetadata ||
         metadata.operation != FilesystemOperation::kMetadata ||
         read.access != Access::kRead || read.operation != FilesystemOperation::kRead ||
@@ -140,7 +143,9 @@ bool RunFilesystemPolicyTests() {
         truncate.access != Access::kWrite ||
         truncate.operation != FilesystemOperation::kWrite ||
         maximum_allowed.access != Access::kWrite ||
-        maximum_allowed.operation != FilesystemOperation::kWrite) {
+        maximum_allowed.operation != FilesystemOperation::kWrite ||
+        delete_on_close.access != Access::kWrite ||
+        delete_on_close.operation != FilesystemOperation::kDelete) {
         return false;
     }
     if (bolt::filesystem::RequiresPreOpenFinalResolution(read, 0) ||
