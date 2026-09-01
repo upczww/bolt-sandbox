@@ -139,6 +139,7 @@ add_library(bolt-sandbox-protocol STATIC
     protocol/launcher_startup.cpp
     protocol/launcher_transport.cpp
     protocol/policy_payload.cpp
+    protocol/projected_workspace_protocol.cpp
     protocol/recovery_protocol.cpp
     protocol/runtime_payload.cpp
     protocol/workspace_security_protocol.cpp
