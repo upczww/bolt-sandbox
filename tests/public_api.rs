@@ -15,7 +15,8 @@ use bolt_sandbox::{
     NetworkViolation, PolicyGeneration, PortRange, ProcessExit, ProcessExitReason,
     ProcessOperation, ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField, Sandbox,
     SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest, ViolationAggregate,
-    WorkspaceChange, WorkspaceControlError, WorkspaceMode, WorkspaceTransactionId,
+    WorkspaceChange, WorkspaceControlError, WorkspaceLimits, WorkspaceMode,
+    WorkspaceTransactionId,
 };
 
 fn assert_attributed_stream<T: Iterator<Item = AttributedSandboxEvent>>() {}
@@ -97,6 +98,13 @@ fn ws_014_public_transaction_control_stays_in_trusted_sandbox() {
         Sandbox::discard_workspace;
     let _: fn(&Sandbox, WorkspaceTransactionId) -> Result<(), WorkspaceControlError> =
         Sandbox::revert_workspace;
+}
+
+#[test]
+fn rec_021_workspace_retention_is_explicit_and_bounded() {
+    let limits = WorkspaceLimits::default();
+    assert!(limits.maximum_retained_transactions > 0);
+    assert!(!limits.retention.is_zero());
 }
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {
