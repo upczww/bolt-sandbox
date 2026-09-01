@@ -3,6 +3,7 @@
 #include "hook/filesystem/access_classifier.h"
 #include "hook/filesystem/final_path_resolver.h"
 #include "hook/filesystem/filesystem_policy.h"
+#include "hook/filesystem/handle_access_cache.h"
 #include "hook/filesystem/path_cache.h"
 #include "hook/filesystem/safe_device.h"
 #include "hook/event_sink.h"
@@ -37,6 +38,7 @@ namespace bolt::filesystem {
 namespace {
 
 std::unique_ptr<FilesystemPolicy> g_policy;
+HandleAccessCache g_handle_access_cache;
 constexpr LONG kRequiredFilesystemHookCount = 78;
 volatile LONG g_installed_file_hook_count = 0;
 
@@ -1088,6 +1090,9 @@ bool AuthorizeMetadata(const wchar_t* path) noexcept {
 }
 
 bool AuthorizeHandleMetadata(const HANDLE file) noexcept {
+    if (g_handle_access_cache.Allows(file, HandleAccess::kMetadata)) {
+        return true;
+    }
     std::wstring source_path;
     if (!TryGetHandlePath(file, source_path)) {
         SetLastError(ERROR_ACCESS_DENIED);
@@ -1104,10 +1109,16 @@ bool AuthorizeHandleMetadata(const HANDLE file) noexcept {
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
     }
+    static_cast<void>(
+        g_handle_access_cache.Store(file, HandleAccess::kMetadata));
     return true;
 }
 
 bool AuthorizeHandleEnumeration(const HANDLE directory) noexcept {
+    if (g_handle_access_cache.Allows(
+            directory, HandleAccess::kEnumerate)) {
+        return true;
+    }
     std::wstring source_path;
     if (!TryGetHandlePath(directory, source_path)) {
         SetLastError(ERROR_ACCESS_DENIED);
@@ -1124,6 +1135,8 @@ bool AuthorizeHandleEnumeration(const HANDLE directory) noexcept {
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
     }
+    static_cast<void>(
+        g_handle_access_cache.Store(directory, HandleAccess::kEnumerate));
     return true;
 }
 
@@ -1132,6 +1145,13 @@ bool AuthorizeHandleIo(
     const Access access,
     const protocol::FilesystemOperation operation) noexcept {
     if (hook::IsRuntimeIoHandle(file, access == Access::kWrite)) {
+        return true;
+    }
+    const HandleAccess cached_access =
+        access == Access::kRead ? HandleAccess::kRead
+        : access == Access::kWrite ? HandleAccess::kWrite
+                                   : HandleAccess::kMetadata;
+    if (g_handle_access_cache.Allows(file, cached_access)) {
         return true;
     }
     std::wstring source_path;
@@ -1148,6 +1168,7 @@ bool AuthorizeHandleIo(
         SetLastError(ERROR_ACCESS_DENIED);
         return false;
     }
+    static_cast<void>(g_handle_access_cache.Store(file, cached_access));
     if (access == Access::kWrite) {
         InvalidateResolvedPathForMutation(
             EvaluatedPath(evaluation, source_path.c_str()), false);
@@ -1385,6 +1406,11 @@ bool AuthorizeOpenedFileHandle(
             request.operation, EvaluatedPath(evaluation, final_path.c_str()));
         return false;
     }
+    const HandleAccess cached_access =
+        request.access == Access::kRead ? HandleAccess::kRead
+        : request.access == Access::kWrite ? HandleAccess::kWrite
+                                          : HandleAccess::kMetadata;
+    static_cast<void>(g_handle_access_cache.Store(file, cached_access));
     return true;
 }
 
@@ -3396,6 +3422,7 @@ NTSTATUS NTAPI DetouredNtCreateSection(
 
 NTSTATUS NTAPI DetouredNtClose(const HANDLE handle) noexcept {
     UntrackSectionCapability(handle);
+    g_handle_access_cache.Remove(handle);
     return g_nt_close(handle);
 }
 
