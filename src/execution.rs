@@ -17,6 +17,7 @@ use crate::{
     WorkspaceControlError, WorkspaceTransactionId, runtime,
 };
 
+use crate::runtime::projected_workspace::ProjectedWorkspaceController;
 use crate::runtime::workspace::{
     CommittedWorkspace, StagedWorkspaceTransaction, WorkspaceError,
     WorkspaceLimits as RuntimeWorkspaceLimits,
@@ -29,6 +30,7 @@ enum WorkspaceTransactionRecord {
         transaction: StagedWorkspaceTransaction,
         recovery_root: PathBuf,
         security_client: WorkspaceSecurityClient,
+        projection_controller: Option<Box<ProjectedWorkspaceController>>,
     },
     Committed(CommittedWorkspace),
 }
@@ -171,32 +173,38 @@ impl Sandbox {
     ///
     /// # Errors
     ///
-    /// Projected mode currently returns a typed workspace initialization
-    /// failure; it never falls back to direct execution.
+    /// Projected mode requires the optional Windows `ProjFS` component and never
+    /// falls back to direct execution.
     pub fn start_with_options(
         &self,
         request: SandboxRequest,
         options: ExecutionOptions,
     ) -> Result<ExecutionHandle, SandboxError> {
         request.validate()?;
-        if options.workspace == WorkspaceMode::Projected {
-            return Err(SandboxError::InitializationFailed {
-                stage: InitializationStage::Workspace,
-            });
-        }
         let command_id = options
             .command_id
             .map_or_else(CommandId::generate, Ok)
             .map_err(|()| SandboxError::InitializationFailed {
                 stage: InitializationStage::Identity,
             })?;
-        if options.workspace == WorkspaceMode::Staged {
-            return self.start_staged(
-                request,
-                command_id,
-                options.workspace_limits,
-                options.terminal,
-            );
+        match options.workspace {
+            WorkspaceMode::Staged => {
+                return self.start_staged(
+                    request,
+                    command_id,
+                    options.workspace_limits,
+                    options.terminal,
+                );
+            }
+            WorkspaceMode::Projected => {
+                return self.start_projected(
+                    request,
+                    command_id,
+                    options.workspace_limits,
+                    options.terminal,
+                );
+            }
+            WorkspaceMode::Direct => {}
         }
         self.start_validated(request, command_id, options.terminal)
     }
@@ -286,14 +294,7 @@ impl Sandbox {
             .ok_or(SandboxError::InitializationFailed {
                 stage: InitializationStage::Workspace,
             })?;
-        let suffix =
-            transaction_id
-                .as_bytes()
-                .iter()
-                .fold(String::with_capacity(32), |mut suffix, byte| {
-                    write!(&mut suffix, "{byte:02x}").expect("writing to a String cannot fail");
-                    suffix
-                });
+        let suffix = transaction_suffix(transaction_id);
         let staging_root = parent.join(format!(".bolt-stage-{suffix}"));
         let recovery_root = parent.join(format!(".bolt-recovery-{suffix}"));
         let transaction = StagedWorkspaceTransaction::prepare(
@@ -332,6 +333,100 @@ impl Sandbox {
                 transaction,
                 recovery_root,
                 security_client,
+                projection_controller: None,
+            },
+            Arc::clone(&self.workspace_transactions),
+            limits.maximum_retained_transactions,
+            limits.retention,
+        );
+        Ok(handle)
+    }
+
+    fn start_projected(
+        &self,
+        mut request: SandboxRequest,
+        command_id: CommandId,
+        limits: crate::WorkspaceLimits,
+        terminal: TerminalMode,
+    ) -> Result<ExecutionHandle, SandboxError> {
+        if limits.maximum_items == 0
+            || limits.maximum_bytes == 0
+            || limits.maximum_retained_transactions == 0
+            || limits.retention.is_zero()
+        {
+            return Err(SandboxError::InitializationFailed {
+                stage: InitializationStage::Workspace,
+            });
+        }
+        let transaction_id = WorkspaceTransactionId::generate().map_err(|()| {
+            SandboxError::InitializationFailed {
+                stage: InitializationStage::Identity,
+            }
+        })?;
+        let source_root = request.cwd.clone();
+        if workspace_overlaps_mandatory_deny(&source_root, &self.config.mandatory_filesystem_denies)
+            || staged_policy_exposes_sibling_namespace(&source_root, &request.policy)
+        {
+            return Err(SandboxError::InitializationFailed {
+                stage: InitializationStage::Workspace,
+            });
+        }
+        let parent = source_root
+            .parent()
+            .ok_or(SandboxError::InitializationFailed {
+                stage: InitializationStage::Workspace,
+            })?;
+        let suffix = transaction_suffix(transaction_id);
+        let projection_root = parent.join(format!(".bolt-projection-{suffix}"));
+        let recovery_root = parent.join(format!(".bolt-recovery-{suffix}"));
+        let transaction = StagedWorkspaceTransaction::prepare_projected(
+            &source_root,
+            &projection_root,
+            RuntimeWorkspaceLimits {
+                maximum_items: limits.maximum_items,
+                maximum_bytes: limits.maximum_bytes,
+            },
+        )
+        .map_err(|_| SandboxError::InitializationFailed {
+            stage: InitializationStage::Workspace,
+        })?;
+        let security_client = WorkspaceSecurityClient::new(
+            &self.config.component_root,
+            self.config.component_manifest_sha256,
+        );
+        security_client
+            .copy_root(&source_root, &projection_root)
+            .map_err(|_| SandboxError::InitializationFailed {
+                stage: InitializationStage::Workspace,
+            })?;
+        let projection_controller = ProjectedWorkspaceController::start(
+            &self.config.component_root,
+            self.config.component_manifest_sha256.as_ref(),
+            &source_root,
+            &projection_root,
+            limits.maximum_items,
+            limits.maximum_bytes,
+        )
+        .map_err(|_| SandboxError::InitializationFailed {
+            stage: InitializationStage::Workspace,
+        })?;
+        let materialization_root = projection_controller.materialization_root().to_path_buf();
+        request.cwd = projection_root;
+        let mut config = self.config.clone();
+        config.mandatory_filesystem_denies.push(source_root);
+        config
+            .mandatory_filesystem_denies
+            .push(materialization_root);
+        let policy_generation = self.allocate_policy_generation()?;
+        let mut handle =
+            runtime::start_execution(request, &config, command_id, policy_generation, terminal)?;
+        handle.attach_workspace(
+            transaction_id,
+            WorkspaceTransactionRecord::Pending {
+                transaction,
+                recovery_root,
+                security_client,
+                projection_controller: Some(Box::new(projection_controller)),
             },
             Arc::clone(&self.workspace_transactions),
             limits.maximum_retained_transactions,
@@ -391,6 +486,7 @@ impl Sandbox {
             transaction,
             recovery_root,
             security_client,
+            projection_controller: _,
         } = &mut stored.record
         else {
             return Err(WorkspaceControlError::Conflict);
@@ -512,11 +608,21 @@ fn convert_changes(
         .collect()
 }
 
+fn transaction_suffix(transaction_id: WorkspaceTransactionId) -> String {
+    transaction_id
+        .as_bytes()
+        .iter()
+        .fold(String::with_capacity(32), |mut suffix, byte| {
+            write!(&mut suffix, "{byte:02x}").expect("writing to a String cannot fail");
+            suffix
+        })
+}
+
 const fn map_workspace_error(error: WorkspaceError) -> WorkspaceControlError {
     match error {
-        WorkspaceError::InvalidRoot | WorkspaceError::UnsupportedObject => {
-            WorkspaceControlError::UnsupportedObject
-        }
+        WorkspaceError::InvalidRoot
+        | WorkspaceError::UnsupportedObject
+        | WorkspaceError::Unavailable => WorkspaceControlError::UnsupportedObject,
         WorkspaceError::QuotaExceeded => WorkspaceControlError::QuotaExceeded,
         WorkspaceError::Conflict | WorkspaceError::RollbackFailed => {
             WorkspaceControlError::Conflict
@@ -907,7 +1013,19 @@ impl ExecutionHandle {
             .completion
             .recv()
             .map_err(|_| SandboxError::ControlChannelClosed)??;
-        if let Some(pending) = self.pending_workspace.take() {
+        if let Some(mut pending) = self.pending_workspace.take() {
+            if let WorkspaceTransactionRecord::Pending {
+                projection_controller,
+                ..
+            } = &mut pending.record
+                && let Some(controller) = projection_controller.take()
+            {
+                (*controller)
+                    .materialize()
+                    .map_err(|_| SandboxError::InitializationFailed {
+                        stage: InitializationStage::Workspace,
+                    })?;
+            }
             let mut transactions =
                 pending
                     .transactions

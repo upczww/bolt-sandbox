@@ -52,7 +52,8 @@ std::uint32_t ReadU32(
 
 bool IsKnown(const WorkspaceSecurityOperation operation) noexcept {
     return operation == WorkspaceSecurityOperation::kCopy ||
-           operation == WorkspaceSecurityOperation::kVerify;
+           operation == WorkspaceSecurityOperation::kVerify ||
+           operation == WorkspaceSecurityOperation::kCopyRoot;
 }
 
 bool IsKnown(const WorkspaceSecurityResult result) noexcept {

@@ -23,6 +23,7 @@ pub(crate) enum WorkspaceError {
     Io,
     Conflict,
     RollbackFailed,
+    Unavailable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -143,6 +144,21 @@ impl StagedWorkspaceTransaction {
             snapshot,
             source_root: source_root.to_path_buf(),
             staging_root: staging_root.to_path_buf(),
+        })
+    }
+
+    pub(crate) fn prepare_projected(
+        source_root: &Path,
+        projection_root: &Path,
+        limits: WorkspaceLimits,
+    ) -> Result<Self, WorkspaceError> {
+        validate_staging_root(source_root, projection_root)?;
+        let snapshot = WorkspaceSnapshot::capture(source_root, limits)?;
+        fs::create_dir(projection_root).map_err(map_io)?;
+        Ok(Self {
+            snapshot,
+            source_root: source_root.to_path_buf(),
+            staging_root: projection_root.to_path_buf(),
         })
     }
 

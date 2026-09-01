@@ -20,6 +20,15 @@ WorkspaceSecurityStatus CopyWorkspaceAuthorization(
     const std::filesystem::path& destination_root,
     std::uint32_t maximum_items) noexcept;
 
+WorkspaceSecurityStatus CopyExistingWorkspaceAuthorization(
+    const std::filesystem::path& source_root,
+    const std::filesystem::path& destination_root,
+    std::uint32_t maximum_items) noexcept;
+
+WorkspaceSecurityStatus CopyWorkspaceRootAuthorization(
+    const std::filesystem::path& source_root,
+    const std::filesystem::path& destination_root) noexcept;
+
 WorkspaceSecurityStatus VerifyWorkspaceAuthorization(
     const std::filesystem::path& source_root,
     const std::filesystem::path& destination_root,

@@ -326,6 +326,30 @@ WorkspaceSecurityStatus CopyWorkspaceAuthorization(
         });
 }
 
+WorkspaceSecurityStatus CopyExistingWorkspaceAuthorization(
+    const std::filesystem::path& source_root,
+    const std::filesystem::path& destination_root,
+    const std::uint32_t maximum_items) noexcept {
+    return VisitPairs(
+        source_root, destination_root, maximum_items, true,
+        [](const std::filesystem::path& source,
+           const std::filesystem::path& destination) {
+            return ApplyDescriptor(source, destination);
+        });
+}
+
+WorkspaceSecurityStatus CopyWorkspaceRootAuthorization(
+    const std::filesystem::path& source_root,
+    const std::filesystem::path& destination_root) noexcept {
+    if (!source_root.is_absolute() || !destination_root.is_absolute() ||
+        !std::filesystem::is_directory(source_root) ||
+        !std::filesystem::is_directory(destination_root) ||
+        !IsSupportedPath(source_root) || !IsSupportedPath(destination_root)) {
+        return WorkspaceSecurityStatus::kInvalidRoot;
+    }
+    return ApplyDescriptor(source_root, destination_root);
+}
+
 WorkspaceSecurityStatus VerifyWorkspaceAuthorization(
     const std::filesystem::path& source_root,
     const std::filesystem::path& destination_root,

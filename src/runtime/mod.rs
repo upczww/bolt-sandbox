@@ -26,6 +26,7 @@ mod lifecycle;
 mod preparation;
 #[cfg(test)]
 mod process_observer;
+pub(crate) mod projected_workspace;
 mod projected_workspace_protocol;
 mod recovery;
 mod recovery_protocol;

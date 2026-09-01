@@ -16,6 +16,7 @@ inline constexpr std::size_t kWorkspaceSecurityMaximumRequestLength =
 enum class WorkspaceSecurityOperation : std::uint16_t {
     kCopy = 1,
     kVerify = 2,
+    kCopyRoot = 3,
 };
 
 enum class WorkspaceSecurityResult : std::uint32_t {

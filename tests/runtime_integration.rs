@@ -87,6 +87,79 @@ fn ws_016_staged_execution_requires_explicit_trusted_commit() {
 }
 
 #[test]
+fn ws_005_projected_mode_never_falls_back_when_optional_component_is_unavailable() {
+    let Some((sandbox, _component_root)) = configured_sandbox() else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let fixture = std::env::temp_dir().join(format!(
+        "bolt-sandbox-projected-{}-{fixture_id}",
+        std::process::id()
+    ));
+    let source = fixture.join("source");
+    fs::create_dir_all(&source).expect("source must create");
+    fs::write(source.join("baseline.txt"), b"before").expect("source must seed");
+    let system_root = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"));
+    let command = system_root.join(r"System32\cmd.exe");
+    let component_available = system_root.join(r"System32\ProjectedFSLib.dll").is_file();
+    let started = sandbox.start_with_options(
+        SandboxRequest {
+            program: command,
+            arguments: vec![
+                OsString::from("/d"),
+                OsString::from("/c"),
+                OsString::from("echo projected>created.txt"),
+            ],
+            cwd: source.clone(),
+            environment: BTreeMap::new(),
+            policy: SandboxPolicy::default(),
+            timeout: Some(Duration::from_secs(5)),
+        },
+        ExecutionOptions {
+            workspace: WorkspaceMode::Projected,
+            ..ExecutionOptions::default()
+        },
+    );
+
+    match started {
+        Err(error) => {
+            assert!(
+                !component_available,
+                "available ProjFS must start projection"
+            );
+            assert!(matches!(
+                error,
+                bolt_sandbox::SandboxError::InitializationFailed {
+                    stage: bolt_sandbox::InitializationStage::Workspace
+                }
+            ));
+            assert!(!source.join("created.txt").exists());
+            assert_eq!(
+                fs::read_dir(&fixture).expect("fixture must remain").count(),
+                1,
+                "failed projection must not leave session roots"
+            );
+        }
+        Ok(handle) => {
+            assert!(
+                component_available,
+                "projection cannot bypass missing ProjFS"
+            );
+            let result = handle.wait().expect("projected execution must finish");
+            let transaction = result
+                .workspace_transaction
+                .expect("projected execution must return transaction");
+            assert!(!source.join("created.txt").exists());
+            sandbox
+                .commit_workspace(transaction)
+                .expect("trusted projected commit must succeed");
+            assert!(source.join("created.txt").is_file());
+        }
+    }
+    fs::remove_dir_all(fixture).expect("fixture must clean");
+}
+
+#[test]
 fn ws_021_staged_execution_rejects_sensitive_descendant_before_copy_or_launch() {
     let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
     else {

@@ -3,12 +3,14 @@
 #include "protocol/launcher_transport.h"
 #include "protocol/event_frame.h"
 #include "protocol/policy_payload.h"
+#include "protocol/projected_workspace_protocol.h"
 #include "protocol/recovery_protocol.h"
 #include "protocol/workspace_security_protocol.h"
 
 #include "common/execution_job.h"
 #include "common/immutable_policy_mapping.h"
 #include "common/private_pipe.h"
+#include "common/projected_workspace_provider.h"
 #include "common/pseudo_console.h"
 #include "common/suspended_process.h"
 #include "common/workspace_security.h"
@@ -1137,16 +1139,196 @@ int RunWorkspaceSecuritySession() noexcept {
     const auto source = std::filesystem::path(request.source_root);
     const auto destination =
         std::filesystem::path(request.destination_root);
-    const auto status =
-        request.operation ==
-                bolt::protocol::WorkspaceSecurityOperation::kCopy
-            ? bolt::common::CopyWorkspaceAuthorization(
-                  source, destination, request.maximum_items)
-            : bolt::common::VerifyWorkspaceAuthorization(
-                  source, destination, request.maximum_items);
+    bolt::common::WorkspaceSecurityStatus status{};
+    switch (request.operation) {
+        case bolt::protocol::WorkspaceSecurityOperation::kCopy:
+            status = bolt::common::CopyWorkspaceAuthorization(
+                source, destination, request.maximum_items);
+            break;
+        case bolt::protocol::WorkspaceSecurityOperation::kVerify:
+            status = bolt::common::VerifyWorkspaceAuthorization(
+                source, destination, request.maximum_items);
+            break;
+        case bolt::protocol::WorkspaceSecurityOperation::kCopyRoot:
+            status = bolt::common::CopyWorkspaceRootAuthorization(
+                source, destination);
+            break;
+    }
     const auto response = bolt::protocol::EncodeWorkspaceSecurityResponse(
         MapWorkspaceSecurityStatus(status));
     return WriteExact(output, response.data(), response.size())
+               ? ERROR_SUCCESS
+               : ERROR_BROKEN_PIPE;
+}
+
+bolt::protocol::ProjectedWorkspaceResult MapProjectedWorkspaceStatus(
+    const bolt::common::ProjectedWorkspaceStatus status) noexcept {
+    using Native = bolt::common::ProjectedWorkspaceStatus;
+    using Protocol = bolt::protocol::ProjectedWorkspaceResult;
+    switch (status) {
+        case Native::kSuccess:
+            return Protocol::kSuccess;
+        case Native::kUnavailable:
+            return Protocol::kUnavailable;
+        case Native::kInvalidRoot:
+        case Native::kInvalidPath:
+        case Native::kNotFound:
+            return Protocol::kInvalidRoot;
+        case Native::kUnsupportedObject:
+            return Protocol::kUnsupportedObject;
+        case Native::kQuotaExceeded:
+            return Protocol::kQuotaExceeded;
+        case Native::kInvalidRange:
+        case Native::kIo:
+            return Protocol::kIo;
+    }
+    return Protocol::kProtocolError;
+}
+
+bolt::protocol::ProjectedWorkspaceResult MapWorkspaceSecurityResult(
+    const bolt::common::WorkspaceSecurityStatus status) noexcept {
+    using Native = bolt::common::WorkspaceSecurityStatus;
+    using Protocol = bolt::protocol::ProjectedWorkspaceResult;
+    switch (status) {
+        case Native::kSuccess:
+            return Protocol::kSuccess;
+        case Native::kInvalidRoot:
+            return Protocol::kInvalidRoot;
+        case Native::kUnsupportedObject:
+            return Protocol::kUnsupportedObject;
+        case Native::kQuotaExceeded:
+            return Protocol::kQuotaExceeded;
+        case Native::kMismatch:
+            return Protocol::kConflict;
+        case Native::kSecurityQueryFailed:
+        case Native::kSecurityApplyFailed:
+            return Protocol::kSecurityFailure;
+    }
+    return Protocol::kProtocolError;
+}
+
+void RemoveTree(const std::filesystem::path& root) noexcept {
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+int RunProjectedWorkspaceSession() noexcept {
+    const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    const HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (input == nullptr || input == INVALID_HANDLE_VALUE || output == nullptr ||
+        output == INVALID_HANDLE_VALUE) {
+        return ERROR_INVALID_HANDLE;
+    }
+    std::vector<std::uint8_t> encoded;
+    try {
+        encoded.resize(bolt::protocol::kProjectedWorkspaceHeaderLength);
+    } catch (...) {
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    if (!ReadExact(input, encoded.data(), encoded.size())) {
+        return ERROR_INVALID_DATA;
+    }
+    std::uint32_t total_length = 0;
+    std::memcpy(&total_length, encoded.data() + 8, sizeof(total_length));
+    if (total_length < bolt::protocol::kProjectedWorkspaceHeaderLength ||
+        total_length >
+            bolt::protocol::kProjectedWorkspaceMaximumRequestLength) {
+        return ERROR_INVALID_DATA;
+    }
+    try {
+        encoded.resize(total_length);
+    } catch (...) {
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    if (!ReadExact(
+            input,
+            encoded.data() + bolt::protocol::kProjectedWorkspaceHeaderLength,
+            encoded.size() -
+                bolt::protocol::kProjectedWorkspaceHeaderLength)) {
+        return ERROR_INVALID_DATA;
+    }
+    bolt::protocol::ProjectedWorkspaceRequest request{};
+    if (bolt::protocol::DecodeProjectedWorkspaceRequest(
+            encoded.data(), encoded.size(), request) !=
+        bolt::protocol::ProjectedWorkspaceProtocolStatus::kSuccess) {
+        return ERROR_INVALID_DATA;
+    }
+    const std::filesystem::path source(request.source_root);
+    const std::filesystem::path projection(request.projection_root);
+    const std::filesystem::path materialized(
+        request.projection_root + L".materialized");
+    const bolt::common::ProjectedWorkspaceLimits limits{
+        request.maximum_items, request.maximum_bytes};
+    bolt::common::ProjectedWorkspaceSource projected_source;
+    auto result = MapProjectedWorkspaceStatus(
+        bolt::common::ProjectedWorkspaceSource::Open(
+            source, limits, projected_source));
+    bolt::common::ProjectedWorkspaceProvider provider;
+    if (result == bolt::protocol::ProjectedWorkspaceResult::kSuccess) {
+        result = MapProjectedWorkspaceStatus(
+            bolt::common::ProjectedWorkspaceProvider::Start(
+                projected_source, projection, provider));
+    }
+    const auto ready = bolt::protocol::EncodeProjectedWorkspaceResponse(
+        bolt::protocol::ProjectedWorkspaceResponseKind::kReady, result);
+    if (!WriteExact(output, ready.data(), ready.size())) {
+        return ERROR_BROKEN_PIPE;
+    }
+    if (result != bolt::protocol::ProjectedWorkspaceResult::kSuccess) {
+        return result == bolt::protocol::ProjectedWorkspaceResult::kUnavailable
+                   ? ERROR_NOT_SUPPORTED
+                   : ERROR_INVALID_DATA;
+    }
+    std::array<
+        std::uint8_t, bolt::protocol::kProjectedWorkspaceControlLength>
+        control_bytes{};
+    bolt::protocol::ProjectedWorkspaceControl control{};
+    if (!ReadExact(input, control_bytes.data(), control_bytes.size()) ||
+        bolt::protocol::DecodeProjectedWorkspaceControl(
+            control_bytes.data(), control_bytes.size(), control) !=
+            bolt::protocol::ProjectedWorkspaceProtocolStatus::kSuccess) {
+        provider.Stop();
+        RemoveTree(materialized);
+        RemoveTree(projection);
+        return ERROR_INVALID_DATA;
+    }
+    if (control ==
+        bolt::protocol::ProjectedWorkspaceControl::kMaterialize) {
+        result = MapProjectedWorkspaceStatus(
+            bolt::common::MaterializeProjectedWorkspace(
+                projection, materialized, limits));
+        if (result == bolt::protocol::ProjectedWorkspaceResult::kSuccess) {
+            result = MapWorkspaceSecurityResult(
+                bolt::common::CopyExistingWorkspaceAuthorization(
+                    source, materialized, request.maximum_items));
+        }
+        if (result == bolt::protocol::ProjectedWorkspaceResult::kSuccess) {
+            result = MapWorkspaceSecurityResult(
+                bolt::common::VerifyWorkspaceAuthorization(
+                    source, materialized, request.maximum_items));
+        }
+        provider.Stop();
+        if (result == bolt::protocol::ProjectedWorkspaceResult::kSuccess) {
+            RemoveTree(projection);
+            std::error_code rename_error;
+            std::filesystem::rename(
+                materialized, projection, rename_error);
+            if (rename_error) {
+                result = bolt::protocol::ProjectedWorkspaceResult::kIo;
+            }
+        }
+        if (result != bolt::protocol::ProjectedWorkspaceResult::kSuccess) {
+            RemoveTree(materialized);
+        }
+    } else {
+        provider.Stop();
+        RemoveTree(materialized);
+        RemoveTree(projection);
+        result = bolt::protocol::ProjectedWorkspaceResult::kSuccess;
+    }
+    const auto finished = bolt::protocol::EncodeProjectedWorkspaceResponse(
+        bolt::protocol::ProjectedWorkspaceResponseKind::kFinished, result);
+    return WriteExact(output, finished.data(), finished.size())
                ? ERROR_SUCCESS
                : ERROR_BROKEN_PIPE;
 }
@@ -1161,6 +1343,10 @@ int wmain(const int argument_count, wchar_t** arguments) noexcept {
     if (argument_count == 2 &&
         std::wcscmp(arguments[1], L"--workspace-security") == 0) {
         return RunWorkspaceSecuritySession();
+    }
+    if (argument_count == 2 &&
+        std::wcscmp(arguments[1], L"--projected-workspace") == 0) {
+        return RunProjectedWorkspaceSession();
     }
     if (argument_count != 8 ||
         std::wcscmp(arguments[1], L"--supervise-job") != 0) {

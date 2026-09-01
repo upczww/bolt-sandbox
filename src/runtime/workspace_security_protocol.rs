@@ -15,6 +15,7 @@ const MAXIMUM_PATH_CODE_UNITS: usize = 32_767;
 pub(super) enum WorkspaceSecurityOperation {
     Copy = 1,
     Verify = 2,
+    CopyRoot = 3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

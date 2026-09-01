@@ -96,10 +96,11 @@ ProjectedWorkspaceStatus OpenEntry(
     const std::filesystem::path& path,
     ProjectedWorkspaceEntry& output,
     UniqueHandle& handle) noexcept {
+    try {
     const DWORD attributes = GetFileAttributesW(path.c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES) {
-        return GetLastError() == ERROR_FILE_NOT_FOUND ||
-                       GetLastError() == ERROR_PATH_NOT_FOUND
+        const DWORD error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
                    ? ProjectedWorkspaceStatus::kNotFound
                    : ProjectedWorkspaceStatus::kIo;
     }
@@ -129,6 +130,10 @@ ProjectedWorkspaceStatus OpenEntry(
     output.size =
         (static_cast<std::uint64_t>(information.nFileSizeHigh) << 32) |
         information.nFileSizeLow;
+    if (output.size >
+        static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)())) {
+        return ProjectedWorkspaceStatus::kUnsupportedObject;
+    }
     output.attributes = information.dwFileAttributes;
     const auto ticks = [](const FILETIME value) {
         return static_cast<std::int64_t>(
@@ -140,6 +145,9 @@ ProjectedWorkspaceStatus OpenEntry(
     output.last_write_time = ticks(information.ftLastWriteTime);
     output.change_time = output.last_write_time;
     return ProjectedWorkspaceStatus::kSuccess;
+    } catch (...) {
+        return ProjectedWorkspaceStatus::kIo;
+    }
 }
 
 bool SafeRelativePath(const std::wstring_view relative) noexcept {
@@ -147,15 +155,20 @@ bool SafeRelativePath(const std::wstring_view relative) noexcept {
         relative.find(L'\0') != std::wstring_view::npos) {
         return false;
     }
-    const std::filesystem::path path(relative);
-    if (path.is_absolute() || path.has_root_name() || path.has_root_directory()) {
+    try {
+        const std::filesystem::path path(relative);
+        if (path.is_absolute() || path.has_root_name() ||
+            path.has_root_directory()) {
+            return false;
+        }
+        return std::all_of(
+            path.begin(), path.end(), [](const auto& component) {
+                return component != L"." && component != L".." &&
+                       !component.empty();
+            });
+    } catch (...) {
         return false;
     }
-    return std::all_of(
-        path.begin(), path.end(), [](const auto& component) {
-            return component != L"." && component != L".." &&
-                   !component.empty();
-        });
 }
 
 ProjectedWorkspaceStatus Resolve(
@@ -327,7 +340,9 @@ ProjectedWorkspaceStatus ProjectedWorkspaceSource::Read(
         return opened;
     }
     if (entry.is_directory || offset > entry.size ||
-        length > entry.size - offset) {
+        length > entry.size - offset ||
+        offset > static_cast<std::uint64_t>(
+                     (std::numeric_limits<LONGLONG>::max)())) {
         return ProjectedWorkspaceStatus::kInvalidRange;
     }
     try {
@@ -461,10 +476,14 @@ ProjectedWorkspaceStatus ProjectedWorkspaceProvider::StartWithFunctions(
         (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
         return ProjectedWorkspaceStatus::kUnsupportedObject;
     }
-    const auto source_key = PathKey(source.root());
-    const auto projection_key = PathKey(projection_root);
-    if (IsSameOrDescendant(source_key, projection_key) ||
-        IsSameOrDescendant(projection_key, source_key)) {
+    try {
+        const auto source_key = PathKey(source.root());
+        const auto projection_key = PathKey(projection_root);
+        if (IsSameOrDescendant(source_key, projection_key) ||
+            IsSameOrDescendant(projection_key, source_key)) {
+            return ProjectedWorkspaceStatus::kInvalidRoot;
+        }
+    } catch (...) {
         return ProjectedWorkspaceStatus::kInvalidRoot;
     }
     GUID instance_id{};
@@ -778,9 +797,13 @@ ProjectedWorkspaceStatus CopyMaterializedFile(
     }
     BY_HANDLE_FILE_INFORMATION information{};
     std::wstring final_path;
+    const bool projected_placeholder =
+        (find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 &&
+        find_data.dwReserved0 == IO_REPARSE_TAG_PROJFS;
     if (!GetFileInformationByHandle(input.get(), &information) ||
         information.nNumberOfLinks != 1 ||
-        (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        ((information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 &&
+         !projected_placeholder) ||
         !FinalPathKey(input.get(), final_path) ||
         !IsSameOrDescendant(PathKey(projection_root), final_path)) {
         return ProjectedWorkspaceStatus::kUnsupportedObject;
@@ -827,6 +850,14 @@ void RemoveMaterialization(const std::filesystem::path& root) noexcept {
     std::filesystem::remove_all(root, ignored);
 }
 
+DWORD MaterializedAttributes(const DWORD source) noexcept {
+    const DWORD retained = source &
+        (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN |
+         FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_ARCHIVE |
+         FILE_ATTRIBUTE_NOT_CONTENT_INDEXED);
+    return retained == 0 ? FILE_ATTRIBUTE_NORMAL : retained;
+}
+
 }  // namespace
 
 ProjectedWorkspaceStatus MaterializeProjectedWorkspace(
@@ -841,13 +872,13 @@ ProjectedWorkspaceStatus MaterializeProjectedWorkspace(
         destination_root.empty() || destination_error || destination_exists) {
         return ProjectedWorkspaceStatus::kInvalidRoot;
     }
-    const auto projection_key = PathKey(projection_root);
-    const auto destination_key = PathKey(destination_root);
-    if (IsSameOrDescendant(projection_key, destination_key) ||
-        IsSameOrDescendant(destination_key, projection_key)) {
-        return ProjectedWorkspaceStatus::kInvalidRoot;
-    }
     try {
+        const auto projection_key = PathKey(projection_root);
+        const auto destination_key = PathKey(destination_root);
+        if (IsSameOrDescendant(projection_key, destination_key) ||
+            IsSameOrDescendant(destination_key, projection_key)) {
+            return ProjectedWorkspaceStatus::kInvalidRoot;
+        }
         if (!std::filesystem::is_directory(projection_root) ||
             !std::filesystem::create_directory(destination_root)) {
             return ProjectedWorkspaceStatus::kInvalidRoot;
@@ -899,8 +930,8 @@ ProjectedWorkspaceStatus MaterializeProjectedWorkspace(
                     if (copied != ProjectedWorkspaceStatus::kSuccess ||
                         !SetFileAttributesW(
                             destination.c_str(),
-                            data.dwFileAttributes &
-                                ~FILE_ATTRIBUTE_REPARSE_POINT)) {
+                            MaterializedAttributes(
+                                data.dwFileAttributes))) {
                         RemoveMaterialization(destination_root);
                         return copied == ProjectedWorkspaceStatus::kSuccess
                                    ? ProjectedWorkspaceStatus::kIo
@@ -921,8 +952,8 @@ ProjectedWorkspaceStatus MaterializeProjectedWorkspace(
                     &current->second.ftLastWriteTime) ||
                 !SetFileAttributesW(
                     current->first.c_str(),
-                    current->second.dwFileAttributes &
-                        ~FILE_ATTRIBUTE_REPARSE_POINT)) {
+                    MaterializedAttributes(
+                        current->second.dwFileAttributes))) {
                 RemoveMaterialization(destination_root);
                 return ProjectedWorkspaceStatus::kIo;
             }

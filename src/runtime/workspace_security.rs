@@ -1,4 +1,5 @@
 use std::{
+    fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -66,6 +67,19 @@ impl WorkspaceSecurityClient {
         )
     }
 
+    pub(crate) fn copy_root(
+        &self,
+        source_root: &Path,
+        destination_root: &Path,
+    ) -> Result<(), WorkspaceError> {
+        self.execute(
+            WorkspaceSecurityOperation::CopyRoot,
+            source_root,
+            destination_root,
+            1,
+        )
+    }
+
     fn execute(
         &self,
         operation: WorkspaceSecurityOperation,
@@ -73,24 +87,10 @@ impl WorkspaceSecurityClient {
         destination_root: &Path,
         maximum_items: u32,
     ) -> Result<(), WorkspaceError> {
-        let helper_path = self.component_root.join(WORKSPACE_HELPER_NAME);
-        let manifest = read_manifest(&self.component_root, self.expected_manifest_digest.as_ref())
-            .map_err(|_| WorkspaceError::Io)?;
-        let record = manifest
-            .get(WORKSPACE_HELPER_NAME)
-            .ok_or(WorkspaceError::Io)?;
-        let mut helper_lease = open_read_lease(&helper_path).map_err(|_| WorkspaceError::Io)?;
-        verify_component(&mut helper_lease, record).map_err(|_| WorkspaceError::Io)?;
-        let architecture = detect_image_architecture_from_reader(&mut helper_lease)
-            .map_err(|_| WorkspaceError::Io)?;
-        let expected_architecture = if cfg!(target_pointer_width = "64") {
-            ImageArchitecture::X64
-        } else {
-            ImageArchitecture::X86
-        };
-        if architecture != expected_architecture {
-            return Err(WorkspaceError::Io);
-        }
+        let (helper_path, helper_lease) = verified_workspace_helper(
+            &self.component_root,
+            self.expected_manifest_digest.as_ref(),
+        )?;
         let encoded = workspace_security_protocol::encode_request(
             operation,
             source_root,
@@ -150,6 +150,31 @@ impl WorkspaceSecurityClient {
             | WorkspaceSecurityResult::ProtocolError => Err(WorkspaceError::Io),
         }
     }
+}
+
+pub(crate) fn verified_workspace_helper(
+    component_root: &Path,
+    expected_manifest_digest: Option<&[u8; 32]>,
+) -> Result<(PathBuf, File), WorkspaceError> {
+    let helper_path = component_root.join(WORKSPACE_HELPER_NAME);
+    let manifest =
+        read_manifest(component_root, expected_manifest_digest).map_err(|_| WorkspaceError::Io)?;
+    let record = manifest
+        .get(WORKSPACE_HELPER_NAME)
+        .ok_or(WorkspaceError::Io)?;
+    let mut helper_lease = open_read_lease(&helper_path).map_err(|_| WorkspaceError::Io)?;
+    verify_component(&mut helper_lease, record).map_err(|_| WorkspaceError::Io)?;
+    let architecture =
+        detect_image_architecture_from_reader(&mut helper_lease).map_err(|_| WorkspaceError::Io)?;
+    let expected_architecture = if cfg!(target_pointer_width = "64") {
+        ImageArchitecture::X64
+    } else {
+        ImageArchitecture::X86
+    };
+    if architecture != expected_architecture {
+        return Err(WorkspaceError::Io);
+    }
+    Ok((helper_path, helper_lease))
 }
 
 fn wait_until(child: &mut std::process::Child, deadline: Instant) -> bool {
