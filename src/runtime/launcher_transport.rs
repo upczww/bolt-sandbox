@@ -219,7 +219,7 @@ mod tests {
     fn fuzz_004_launcher_transport_parser_is_total_for_bounded_mutations() {
         let seeds = [encoded(1, b"stdout"), encoded(3, b"event")];
         assert_total_parser("launcher transport", &seeds, |bytes| {
-            read_frame(&mut Cursor::new(bytes))
+            let _ = read_frame(&mut Cursor::new(bytes));
         });
     }
 }

@@ -131,11 +131,17 @@ mod tests {
 
     fn valid_request() -> Vec<u8> {
         let path: Vec<u16> = r"C:\work\delete.bin".encode_utf16().collect();
+        let header_length = u32::try_from(REQUEST_HEADER_LENGTH).expect("header length fits");
+        let path_length = u32::try_from(path.len()).expect("path length fits");
         let mut request = Vec::from(REQUEST_MAGIC);
         request.extend_from_slice(&VERSION.to_le_bytes());
-        request.extend_from_slice(&(REQUEST_HEADER_LENGTH as u16).to_le_bytes());
-        request.extend_from_slice(&(REQUEST_HEADER_LENGTH as u32 + path.len() as u32 * 2).to_le_bytes());
-        request.extend_from_slice(&(path.len() as u32).to_le_bytes());
+        request.extend_from_slice(
+            &u16::try_from(REQUEST_HEADER_LENGTH)
+                .expect("header length fits")
+                .to_le_bytes(),
+        );
+        request.extend_from_slice(&(header_length + path_length * 2).to_le_bytes());
+        request.extend_from_slice(&path_length.to_le_bytes());
         request.extend_from_slice(&7_u64.to_le_bytes());
         request.extend_from_slice(&42_u32.to_le_bytes());
         request.extend_from_slice(&[RecoveryOperation::Delete as u8, 0, 0, 0]);
@@ -187,6 +193,8 @@ mod tests {
 
     #[test]
     fn fuzz_005_recovery_request_parser_is_total_for_bounded_mutations() {
-        assert_total_parser("recovery request", &[valid_request()], decode_request);
+        assert_total_parser("recovery request", &[valid_request()], |bytes| {
+            let _ = decode_request(bytes);
+        });
     }
 }

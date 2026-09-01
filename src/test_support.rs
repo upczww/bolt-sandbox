@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 const MAX_MUTATION_CASES: usize = 4_096;
 
@@ -40,7 +41,25 @@ pub(crate) fn deterministic_mutations(seed: &[u8]) -> Vec<Vec<u8>> {
     cases.into_iter().take(MAX_MUTATION_CASES).collect()
 }
 
+pub(crate) fn assert_total_parser(parser_name: &str, seeds: &[Vec<u8>], parser: impl Fn(&[u8])) {
+    assert!(!seeds.is_empty(), "{parser_name} corpus needs a seed");
+    for (seed_index, seed) in seeds.iter().enumerate() {
+        for (case_index, case) in deterministic_mutations(seed).iter().enumerate() {
+            let outcome = catch_unwind(AssertUnwindSafe(|| parser(case)));
+            assert!(
+                outcome.is_ok(),
+                "{parser_name} panicked for seed {seed_index}, mutation {case_index}, length {}",
+                case.len()
+            );
+        }
+    }
+}
+
 fn representative_offsets(length: usize) -> Vec<usize> {
+    if length <= 512 {
+        return (0..=length).collect();
+    }
+
     let mut offsets = BTreeSet::from([0, length]);
     if length > 0 {
         offsets.extend([1, length / 2, length.saturating_sub(1)]);

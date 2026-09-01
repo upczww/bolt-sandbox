@@ -159,11 +159,19 @@ mod tests {
         let name = b"bolt-sandbox.exe";
         let mut encoded = Vec::from(MAGIC);
         encoded.extend_from_slice(&VERSION.to_le_bytes());
-        encoded.extend_from_slice(&(HEADER_LENGTH as u16).to_le_bytes());
+        encoded.extend_from_slice(
+            &u16::try_from(HEADER_LENGTH)
+                .expect("header length fits")
+                .to_le_bytes(),
+        );
         encoded.extend_from_slice(&1_u16.to_le_bytes());
         encoded.extend_from_slice(&crate::ipc::framing::PROTOCOL_VERSION.to_le_bytes());
         encoded.extend_from_slice(&[0; 4]);
-        encoded.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        encoded.extend_from_slice(
+            &u16::try_from(name.len())
+                .expect("component name length fits")
+                .to_le_bytes(),
+        );
         encoded.extend_from_slice(&0_u16.to_le_bytes());
         encoded.extend_from_slice(&42_u64.to_le_bytes());
         encoded.extend_from_slice(&[0x5a; 32]);
@@ -173,6 +181,8 @@ mod tests {
 
     #[test]
     fn fuzz_002_component_manifest_parser_is_total_for_bounded_mutations() {
-        assert_total_parser("component manifest", &[valid_manifest()], parse_manifest);
+        assert_total_parser("component manifest", &[valid_manifest()], |bytes| {
+            let _ = parse_manifest(bytes);
+        });
     }
 }

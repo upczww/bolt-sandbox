@@ -598,7 +598,9 @@ mod tests {
             encode_event(&SandboxEvent::Ready, 1).expect("ready event must encode"),
             encode_event(&exited_event(), 2).expect("exit event must encode"),
         ];
-        assert_total_parser("event frame", &seeds, decode_event);
+        assert_total_parser("event frame", &seeds, |bytes| {
+            let _ = decode_event(bytes);
+        });
     }
 
     #[test]

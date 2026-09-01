@@ -448,6 +448,8 @@ mod tests {
         ))
         .expect("valid launcher request must encode");
 
-        assert_total_parser("launcher request", &[encoded], decode_start_request);
+        assert_total_parser("launcher request", &[encoded], |bytes| {
+            let _ = decode_start_request(bytes);
+        });
     }
 }
