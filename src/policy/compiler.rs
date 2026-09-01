@@ -657,6 +657,7 @@ fn compile_registry_policy(
     let mut compiled = RegistryPolicyBuilder::default();
     compiled.add_rules(&policy.read_write, RegistryRuleKind::ReadWrite)?;
     compiled.add_rules(&policy.read_only, RegistryRuleKind::ReadOnly)?;
+    compiled.add_rules(&policy.exact_read_only, RegistryRuleKind::ReadOnlyKey)?;
     compiled.add_rules(&policy.no_access, RegistryRuleKind::NoAccess)?;
     compiled.add_rules(mandatory_denies, RegistryRuleKind::NoAccess)?;
     compiled.add_rules(&policy.inherit_user, RegistryRuleKind::InheritUser)?;
@@ -691,6 +692,7 @@ fn validate_registry_rule_counts(
         .ok_or_else(|| invalid_registry_policy(InvalidRequestReason::TooManyItems))?;
     if no_access_count > MAX_REGISTRY_RULES_PER_CATEGORY
         || policy.read_only.len() > MAX_REGISTRY_RULES_PER_CATEGORY
+        || policy.exact_read_only.len() > MAX_REGISTRY_RULES_PER_CATEGORY
         || policy.inherit_user.len() > MAX_REGISTRY_RULES_PER_CATEGORY
         || policy.read_write.len() > MAX_REGISTRY_RULES_PER_CATEGORY
     {
@@ -699,6 +701,7 @@ fn validate_registry_rule_counts(
 
     let total = no_access_count
         .checked_add(policy.read_only.len())
+        .and_then(|count| count.checked_add(policy.exact_read_only.len()))
         .and_then(|count| count.checked_add(policy.inherit_user.len()))
         .and_then(|count| count.checked_add(policy.read_write.len()))
         .ok_or_else(|| invalid_registry_policy(InvalidRequestReason::TooManyItems))?;

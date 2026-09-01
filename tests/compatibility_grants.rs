@@ -2,10 +2,11 @@ use std::path::PathBuf;
 
 use bolt_sandbox::{
     CompatibilityApplyError, CompatibilityApprovalScope, CompatibilityCapability,
-    CompatibilityCommandOutcome, CompatibilityDecision, CompatibilityDecisionCache, CompatibilityGrant,
-    CompatibilityGrantContext, CompatibilityGrantResolver, CompatibilityNoPromptReason,
-    CompatibilityPromptAction, CompatibilityResolution, FilesystemOperation, FilesystemViolation,
-    RegistryOperation, RegistryViolation, SandboxEvent, SandboxPolicy, ViolationAggregate,
+    CompatibilityCommandOutcome, CompatibilityDecision, CompatibilityDecisionCache,
+    CompatibilityGrant, CompatibilityGrantContext, CompatibilityGrantResolver,
+    CompatibilityNoPromptReason, CompatibilityPromptAction, CompatibilityResolution,
+    FilesystemOperation, FilesystemViolation, RegistryOperation, RegistryViolation, SandboxEvent,
+    SandboxPolicy, ViolationAggregate,
 };
 
 fn context() -> CompatibilityGrantContext {

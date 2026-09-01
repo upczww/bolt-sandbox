@@ -18,11 +18,12 @@ pub use attribution::{
     AttributedSandboxEvent, CommandId, ExecutionAttribution, ExecutionId, PolicyGeneration,
 };
 pub use compatibility::{
-    CompatibilityApprovalScope, CompatibilityCapability, CompatibilityCommandOutcome,
-    CompatibilityContextError, CompatibilityDecision, CompatibilityDecisionCache,
-    CompatibilityDecisionCacheError, CompatibilityGrant, CompatibilityGrantContext,
-    CompatibilityGrantProposal, CompatibilityGrantResolver, CompatibilityNoPromptReason,
-    CompatibilityPromptAction, CompatibilityResolution, CompatibilityUnavailable,
+    CompatibilityApplyError, CompatibilityApprovalScope, CompatibilityCapability,
+    CompatibilityCommandOutcome, CompatibilityContextError, CompatibilityDecision,
+    CompatibilityDecisionCache, CompatibilityDecisionCacheError, CompatibilityGrant,
+    CompatibilityGrantContext, CompatibilityGrantProposal, CompatibilityGrantResolver,
+    CompatibilityNoPromptReason, CompatibilityPromptAction, CompatibilityResolution,
+    CompatibilityUnavailable,
 };
 pub use error::{InvalidRequestReason, RequestField, SandboxError};
 pub use event::{

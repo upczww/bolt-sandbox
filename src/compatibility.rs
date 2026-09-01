@@ -238,6 +238,13 @@ pub enum CompatibilityContextError {
     InvalidMaximumGrants,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompatibilityApplyError {
+    InvalidProposal,
+    UnsupportedGrant,
+    PolicyRejected,
+}
+
 #[derive(Clone, Debug)]
 pub struct CompatibilityGrantResolver {
     context: CompatibilityGrantContext,
@@ -334,6 +341,87 @@ impl CompatibilityGrantResolver {
             grants,
             duplicate_violations,
         })
+    }
+
+    /// Applies one already-approved proposal to a cloned policy after
+    /// revalidating every binding and authority boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects forged/stale proposals, unsupported grant kinds, mandatory
+    /// sensitive overlap, and policies that exceed normal compiler bounds.
+    pub fn apply_approved(
+        &self,
+        proposal: &CompatibilityGrantProposal,
+        policy: &crate::SandboxPolicy,
+    ) -> Result<crate::SandboxPolicy, CompatibilityApplyError> {
+        if !valid_proposal_binding(proposal)
+            || filesystem_key(&proposal.executable_path)
+                != filesystem_key(&self.context.executable_path)
+            || proposal.executable_sha256 != self.context.executable_sha256
+            || filesystem_key(&proposal.workspace) != filesystem_key(&self.context.workspace)
+            || proposal.grants.len() > self.context.maximum_grants
+            || proposal_id(&self.context, &proposal.grants) != proposal.proposal_id
+        {
+            return Err(CompatibilityApplyError::InvalidProposal);
+        }
+
+        let mut applied = policy.clone();
+        for grant in &proposal.grants {
+            match grant {
+                CompatibilityGrant::FilesystemMetadata(path) => {
+                    self.validate_filesystem_grant(path)?;
+                    push_unique_path(&mut applied.filesystem.metadata_read, path);
+                }
+                CompatibilityGrant::FilesystemReadOnly(path) => {
+                    self.validate_filesystem_grant(path)?;
+                    push_unique_path(&mut applied.filesystem.read_only, path);
+                }
+                CompatibilityGrant::RegistryExactReadOnly(key) => {
+                    self.validate_registry_grant(key)?;
+                    push_unique_registry(&mut applied.registry.exact_read_only, key);
+                }
+                CompatibilityGrant::NetworkEndpoint(_) => {
+                    return Err(CompatibilityApplyError::UnsupportedGrant);
+                }
+            }
+        }
+        crate::policy::compiler::compile(&applied, &self.context.workspace)
+            .map_err(|_| CompatibilityApplyError::PolicyRejected)?;
+        Ok(applied)
+    }
+
+    fn validate_filesystem_grant(&self, path: &Path) -> Result<(), CompatibilityApplyError> {
+        let Some(key) = filesystem_key(path) else {
+            return Err(CompatibilityApplyError::InvalidProposal);
+        };
+        if is_filesystem_root(path)
+            || self
+                .context
+                .mandatory_filesystem_denies
+                .iter()
+                .filter_map(|deny| filesystem_key(deny))
+                .any(|deny| same_or_ancestor(&deny, &key))
+        {
+            return Err(CompatibilityApplyError::InvalidProposal);
+        }
+        Ok(())
+    }
+
+    fn validate_registry_grant(&self, key: &str) -> Result<(), CompatibilityApplyError> {
+        let Some(normalized) = registry_key(key) else {
+            return Err(CompatibilityApplyError::InvalidProposal);
+        };
+        if self
+            .context
+            .mandatory_registry_denies
+            .iter()
+            .filter_map(|deny| registry_key(deny))
+            .any(|deny| same_or_ancestor(&deny, &normalized))
+        {
+            return Err(CompatibilityApplyError::InvalidProposal);
+        }
+        Ok(())
     }
 
     fn classify(
@@ -472,6 +560,28 @@ impl CompatibilityGrantResolver {
                 capabilities.push(CompatibilityCapability::RegistryWrite);
             }
         }
+    }
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: &Path) {
+    let key = filesystem_key(path).expect("validated compatibility path");
+    if !paths
+        .iter()
+        .filter_map(|existing| filesystem_key(existing))
+        .any(|existing| existing == key)
+    {
+        paths.push(path.to_path_buf());
+    }
+}
+
+fn push_unique_registry(keys: &mut Vec<String>, key: &str) {
+    let normalized = registry_key(key).expect("validated compatibility registry key");
+    if !keys
+        .iter()
+        .filter_map(|existing| registry_key(existing))
+        .any(|existing| existing == normalized)
+    {
+        keys.push(key.to_owned());
     }
 }
 

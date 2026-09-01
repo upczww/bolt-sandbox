@@ -166,6 +166,10 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
             Some("--registry-read-only") => {
                 policy.registry.read_only.push(next_string(&mut arguments)?);
             }
+            Some("--registry-exact-read-only") => policy
+                .registry
+                .exact_read_only
+                .push(next_string(&mut arguments)?),
             Some("--registry-inherit-user") => policy
                 .registry
                 .inherit_user
