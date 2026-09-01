@@ -179,8 +179,17 @@ $env:BOLT_TEST_NATIVE_COMPILER = $nativeCompiler
 $env:BOLT_TEST_NATIVE_COMPILER_KIND = $NativeCompilerKind
 $env:BOLT_TEST_NATIVE_COMPILER_READ_ROOTS = $nativeCompilerReadRoots -join ';'
 $env:BOLT_TEST_SYSTEM_LANGUAGE_ROOTS = $systemLanguageResourceRoots -join ';'
+$env:BOLT_TOOL_NODE = $node
+$env:BOLT_TOOL_PYTHON = $python
+$env:BOLT_TOOL_GIT = $git
+$env:BOLT_TOOL_CARGO = $cargo
+$env:BOLT_TOOL_RUSTC = Join-Path (Split-Path -Parent $cargo) 'rustc.exe'
+$env:BOLT_TOOL_RUSTFMT = Join-Path (Split-Path -Parent $cargo) 'rustfmt.exe'
+$env:BOLT_TOOL_CLIPPY_DRIVER = Join-Path (Split-Path -Parent $cargo) 'clippy-driver.exe'
+if ($NativeCompilerKind -eq 'msvc') { $env:BOLT_TOOL_CL = $nativeCompiler }
+$env:BOLT_SYSTEM_LANGUAGE_ROOTS = $systemLanguageResourceRoots -join ';'
 
-& cargo test --test cli_integration -- --nocapture --test-threads=1
+& cargo test --test cli_integration --test tool_matrix_contract -- --nocapture --test-threads=1
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Output 'Agent scenario suite passed.'

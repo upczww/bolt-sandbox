@@ -408,6 +408,15 @@ is passed as host data and external roots receive read-only or metadata-only
 authority. Use `-NativeCompilerPath`, `-NativeCompilerKind`, and repeatable
 `-NativeCompilerReadRoot` when automatic discovery is unavailable. GCC is used
 when installed; otherwise the harness exercises MSVC compile, link, and run.
+The larger inventory is data-driven by
+`config/agent-tool-scenarios.json`. Missing tools and unavailable typed
+capabilities are reported as `UNVERIFIED`, never as passes. Release validation
+uses `scripts/test-agent-tool-matrix.ps1 -RequireAllCapabilities`.
+
+When an unknown safe resource blocks a tool, integrations may use the
+[dynamic compatibility grant proposal design](docs/architecture/dynamic-compatibility-grants.md)
+to ask once for a minimal grant. Approval always restarts under a new immutable
+policy; targets cannot hot-add or persist their own whitelist entries.
 
 Optional Rust coverage requires `cargo-llvm-cov 0.9.0`, a nightly toolchain,
 and matching LLVM tools:

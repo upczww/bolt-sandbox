@@ -369,6 +369,13 @@ pwsh scripts/test-agent-scenarios.ps1 `
 资源包；所有具体路径都由宿主以数据传入，外部根只获得只读或元数据只读权限。
 自动发现不可用时可传入 `-NativeCompilerPath`、`-NativeCompilerKind` 以及可重复的
 `-NativeCompilerReadRoot`。安装 GCC 时优先测试 GCC，否则测试 MSVC 编译、链接与运行。
+更大的工具清单由 `config/agent-tool-scenarios.json` 数据驱动。缺失工具与尚未实现的
+类型化能力会显示为 `UNVERIFIED`，绝不会伪装成通过；发布验证使用
+`scripts/test-agent-tool-matrix.ps1 -RequireAllCapabilities`。
+
+未知但安全的资源阻止工具运行时，集成层可以按照
+[动态兼容授权建议设计](docs/architecture/dynamic-compatibility-grants.md)只询问一次最小
+授权。批准后必须用新的不可变策略重新启动；目标进程不能热添加或持久化自己的白名单。
 
 可选 Rust 覆盖率需要 `cargo-llvm-cov 0.9.0`、Nightly Toolchain 和匹配的
 LLVM Tools：

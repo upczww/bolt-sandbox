@@ -10,6 +10,26 @@ fs-ro|optional|user-profile|.rustup\toolchains
 reg-ro|required|registry|HKCU\SOFTWARE\Classes
 reg-ro|required|registry|HKLM\SOFTWARE\Classes
 reg-ro|required|registry|HKLM\SOFTWARE\dotnet\Setup\InstalledVersions
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\.NETFramework
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\.NETFramework
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Fusion
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Fusion
+reg-exact-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\StrongName
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\FileSystem
+reg-ro|required|registry|HKCU\Control Panel\International\User Profile
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\Managed
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Installer\Assemblies
+reg-ro|required|registry|HKLM\SOFTWARE\Classes\Installer\Assemblies
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\Lsa
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\MSBuild
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\NET Framework Setup\NDP
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Microsoft SDKs\NETFXSDK
+reg-exact-ro|required|registry|HKLM\SOFTWARE\Microsoft\Microsoft SDKs\NETFXSDK\4.8
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Microsoft SDKs\Windows
+reg-exact-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\powershell.exe
+reg-exact-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\MSBuild.exe
+reg-exact-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\MiniNT
 reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\Nls
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\AMSI
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Cryptography

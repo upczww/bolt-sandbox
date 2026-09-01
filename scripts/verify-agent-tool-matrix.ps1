@@ -42,11 +42,11 @@ if ($requiredFamilies.Count -eq 0) { throw 'At least one required tool family is
 $allowedScenarioProperties = @(
     'id', 'family', 'requiredOnHost', 'commands', 'candidates', 'terminal', 'privileged',
     'arguments', 'environment', 'readOnly', 'metadataRead', 'files', 'expectedFiles',
-    'stdoutContains', 'acceptedExitCodes', 'timeoutMilliseconds', 'network'
+    'stdoutContains', 'acceptedExitCodes', 'timeoutMilliseconds', 'network', 'requiredCapabilities'
 )
 $allowedTokens = @(
     'ProgramFiles', 'ProgramFilesX86', 'ProgramData', 'SystemRoot', 'UserProfile',
-    'LocalAppData', 'AppData', 'Workspace', 'Tool', 'ToolDirectory', 'ToolRoot',
+    'LocalAppData', 'AppData', 'Workspace', 'Tool', 'ToolDirectory', 'ToolRoot', 'ToolParentRoot',
     'VisualStudio', 'RustToolchain', 'PythonRoot', 'ComponentRoot'
 )
 $ids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
@@ -105,6 +105,13 @@ foreach ($scenario in $matrix.scenarios) {
     foreach ($candidate in $candidateValues) {
         if ($candidate -isnot [string]) { throw "Invalid path candidate for $($scenario.id)." }
         Assert-TokenizedValue $candidate "candidate for $($scenario.id)"
+    }
+    foreach ($capability in @($scenario.requiredCapabilities | Where-Object { $null -ne $_ })) {
+        if ($capability -notin @(
+            'private-named-pipes', 'workspace-volume-metadata', 'dynamic-host-grants'
+        )) {
+            throw "Unknown required capability for $($scenario.id): $capability"
+        }
     }
 }
 

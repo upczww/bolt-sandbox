@@ -93,6 +93,13 @@ deadline, and never retries outside the sandbox. Optional runtimes use explicit
 host-provided executable paths; a runtime declared required but unavailable is
 a failure, not a silent skip.
 
+`config/agent-tool-scenarios.json` is the declarative cross-tool inventory.
+`scripts/verify-agent-tool-matrix.ps1` rejects malformed, incomplete, unsafe,
+or privileged-by-default entries. `scripts/test-agent-tool-matrix.ps1` executes
+available scenarios once and reports `PASS`, `FAIL`, or `UNVERIFIED`; strict
+release runs add `-RequireAllCapabilities`. Capability-unavailable scenarios do
+not become path grants automatically.
+
 Run the executable suite with:
 
 ```powershell
