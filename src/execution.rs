@@ -207,6 +207,12 @@ impl Sandbox {
             }
         })?;
         let source_root = request.cwd.clone();
+        if workspace_overlaps_mandatory_deny(&source_root, &self.config.mandatory_filesystem_denies)
+        {
+            return Err(SandboxError::InitializationFailed {
+                stage: InitializationStage::Workspace,
+            });
+        }
         let parent = source_root
             .parent()
             .ok_or(SandboxError::InitializationFailed {
@@ -398,6 +404,48 @@ fn default_sensitive_filesystem_paths() -> Vec<PathBuf> {
     }
     paths.retain(|path| path.is_absolute());
     paths
+}
+
+fn workspace_overlaps_mandatory_deny(source: &std::path::Path, denies: &[PathBuf]) -> bool {
+    let Some(source) = safe_windows_path_key(source) else {
+        return true;
+    };
+    denies.iter().any(|deny| {
+        let Some(deny) = safe_windows_path_key(deny) else {
+            return true;
+        };
+        is_same_or_ancestor_key(&source, &deny) || is_same_or_ancestor_key(&deny, &source)
+    })
+}
+
+fn safe_windows_path_key(path: &std::path::Path) -> Option<String> {
+    let encoded = path.to_string_lossy();
+    if !path.is_absolute()
+        || encoded.starts_with(r"\\?\")
+        || encoded.starts_with(r"\\.\")
+        || encoded.starts_with(r"\Device\")
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return None;
+    }
+    Some(
+        encoded
+            .replace('/', r"\")
+            .trim_end_matches('\\')
+            .to_lowercase(),
+    )
+}
+
+fn is_same_or_ancestor_key(ancestor: &str, path: &str) -> bool {
+    path == ancestor
+        || path
+            .strip_prefix(ancestor)
+            .is_some_and(|suffix| suffix.starts_with('\\'))
 }
 
 fn default_sensitive_registry_keys() -> impl Iterator<Item = &'static str> {

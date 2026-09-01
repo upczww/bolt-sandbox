@@ -80,6 +80,70 @@ fn ws_016_staged_execution_requires_explicit_trusted_commit() {
 }
 
 #[test]
+fn ws_021_staged_execution_rejects_sensitive_descendant_before_copy_or_launch() {
+    let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
+    else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let fixture = std::env::temp_dir().join(format!(
+        "bolt-sandbox-staged-sensitive-{}-{fixture_id}",
+        std::process::id()
+    ));
+    let source = fixture.join("source");
+    let protected = source.join("protected");
+    fs::create_dir_all(&protected).expect("protected source must create");
+    fs::write(protected.join("credential.bin"), b"must-not-copy")
+        .expect("protected source must seed");
+    let sandbox = Sandbox::new(SandboxConfig {
+        component_root,
+        credential_environment_variables: Vec::new(),
+        stream_capacity: 512 * 1_024,
+        violation_aggregate_capacity: bolt_sandbox::DEFAULT_VIOLATION_AGGREGATE_CAPACITY,
+        mandatory_filesystem_denies: vec![protected],
+        mandatory_registry_denies: Vec::new(),
+        component_manifest_sha256: None,
+    })
+    .expect("sandbox configuration must be valid");
+    let command = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+        .join(r"System32\cmd.exe");
+
+    let Err(error) = sandbox.start_with_options(
+        SandboxRequest {
+            program: command,
+            arguments: vec![
+                OsString::from("/d"),
+                OsString::from("/c"),
+                OsString::from("exit 0"),
+            ],
+            cwd: source.clone(),
+            environment: BTreeMap::new(),
+            policy: SandboxPolicy::default(),
+            timeout: Some(Duration::from_secs(5)),
+        },
+        ExecutionOptions {
+            workspace: WorkspaceMode::Staged,
+            ..ExecutionOptions::default()
+        },
+    ) else {
+        panic!("sensitive descendant must reject staged execution");
+    };
+
+    assert!(matches!(
+        error,
+        bolt_sandbox::SandboxError::InitializationFailed {
+            stage: bolt_sandbox::InitializationStage::Workspace
+        }
+    ));
+    assert_eq!(
+        fs::read_dir(&fixture).expect("fixture must remain").count(),
+        1,
+        "no staging or recovery directory may be created"
+    );
+    fs::remove_dir_all(fixture).expect("fixture must clean");
+}
+
+#[test]
 fn life_012_public_runtime_transports_arbitrary_binary_stdout_and_stderr() {
     assert_dual_stream_execution("--dual-stream-writer");
 }
