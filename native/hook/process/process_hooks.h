@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -23,6 +24,12 @@ bool ConfigureProcessRuntime(
     const char* hook_dll_path) noexcept;
 
 bool AllowsIsolatedConsole() noexcept;
+
+bool AllowsIsolatedNamedPipes() noexcept;
+
+bool RewriteIsolatedNamedPipePath(
+    const wchar_t* path,
+    std::wstring& rewritten) noexcept;
 
 ProcessHookPrepareStatus PrepareProcessHooks(
     const std::uint8_t* policy_payload,

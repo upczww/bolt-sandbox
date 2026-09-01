@@ -266,7 +266,7 @@ bool ValidateRegistry(Reader& reader) noexcept {
 bool ValidateBody(const std::uint8_t* body, const std::size_t length) noexcept {
     Reader reader(body, length);
     std::uint8_t child_policy = 0;
-    return reader.ReadU8(child_policy) && child_policy <= 1 && ValidateFilesystem(reader) &&
+    return reader.ReadU8(child_policy) && child_policy <= 3 && ValidateFilesystem(reader) &&
            ValidateNetwork(reader) && ValidateRegistry(reader) && reader.Finished();
 }
 

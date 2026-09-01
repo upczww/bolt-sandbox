@@ -282,6 +282,10 @@ bolt-sandbox.exe run `
 `--recovery-dir`、`--recovery-max-bytes`、`--recovery-max-items` 和
 `--recovery-retention-seconds`。
 
+命名管道默认拒绝。可信宿主可以为确实需要本地 Win32 管道的常规构建工具选择
+`--named-pipes isolated`。Bolt 会使用本次执行 nonce 改写本地名称并跟踪句柄；
+远程管道、Mailslot、直接 Native 命名管道创建和原始宿主名称仍不可用。
+
 终端模式包括默认的 `pipes` 和 `pseudo-console`。对于需要 Windows 控制台语义的
 工具（包括 PowerShell ConsoleHost），应使用 `--terminal pseudo-console`；
 ConPTY 与宿主控制台隔离，其能力会安全传递给后代进程，不会开放宿主控制台。
@@ -325,8 +329,10 @@ CLI 会继承宿主环境，并用内置凭据名列表剥离已知 Broker/模�
   `AllowList` 执行限制性网络拦截。
 - `ChildProcessPolicy::Inherit` 只在子进程安装匹配 Hook 与策略后允许执行；
   `Deny` 禁止创建子进程。
-- Agent Runtime 可以使用自己创建的无名标准输入输出管道。该能力按句柄授权，
-  不是路径授权；命名管道、Mailslot、跨进程复制和任意管道命名空间访问仍被拒绝。
+- Agent Runtime 可以使用自己创建的无名标准输入输出管道。显式
+  `NamedPipePolicy::Isolated` 还支持为兼容工具改写了 nonce 的本地 Win32 管道。
+  这些都是句柄/类型化能力而非路径授权；Mailslot、跨进程复制、远程管道和宿主
+  原始管道名称仍被拒绝。
 - 恢复失败不改变原始 Allow/Deny 决策；允许的破坏性操作继续执行并产生类型化
   Recovery Failure。
 

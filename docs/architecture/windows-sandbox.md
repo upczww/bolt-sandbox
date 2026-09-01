@@ -533,6 +533,19 @@ into another process remain denied. Descendants trust only their actual pipe
 standard handles by object identity, so compiler output works without any
 filesystem path grant or ambient named-pipe namespace access.
 
+Named pipes remain a separate explicit policy capability. In `Deny` mode,
+Win32 and native named-pipe creation/connection keep the behavior above. In
+`Isolated` mode, only local `CreateNamedPipeW/A` and `CreateFileW/A` pipe paths
+are accepted; the hook deterministically rewrites the caller-visible suffix
+under an execution-nonce prefix before Windows sees it. Descendants inherit the
+same immutable policy and nonce, so conventional build tools can connect while
+the original ambient name never exists. `CreatePipe` is intercepted separately
+and its OS-generated read/write handles are capability-cached. Remote pipe
+paths, mailslots, direct named `NtCreateNamedPipeFile`, overlong names, and all
+default-mode named pipes remain denied. This compatibility capability follows
+the documented conventional-application threat model and is not presented as
+an AppContainer-grade defense against deliberate same-user collusion.
+
 Launcher selection parses the target file identity's PE headers rather than
 assuming the host architecture or trusting its filename. The parser requires a
 complete 64-byte DOS header, `MZ` and `PE\0\0` signatures, a checked in-range

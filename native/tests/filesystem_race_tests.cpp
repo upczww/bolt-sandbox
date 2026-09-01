@@ -1649,7 +1649,8 @@ int RunFilesystemRaceChild(
         const auto allowed = root / L"path-forms-allowed";
         const auto denied = root / L"path-forms-denied";
         if (!SetCurrentDirectoryW(allowed.c_str()) ||
-            !CreateDirectoryW(L"nested", nullptr)) {
+            !CreateDirectoryW(L"nested", nullptr) ||
+            !CreateDirectoryW(L"nested-trailing\\", nullptr)) {
             return 314;
         }
         const auto write_text = [](const wchar_t* path, const char* text) {
@@ -2119,6 +2120,39 @@ int RunFilesystemRaceChild(
             return 336;
         }
     } else if (mode == L"private-anonymous-pipe") {
+        SECURITY_ATTRIBUTES pipe_security{};
+        pipe_security.nLength = sizeof(pipe_security);
+        pipe_security.bInheritHandle = TRUE;
+        HANDLE win32_read = nullptr;
+        HANDLE win32_write = nullptr;
+        const char win32_payload[] = "win32-private-pipe";
+        char win32_result[sizeof(win32_payload)]{};
+        DWORD win32_written = 0;
+        DWORD win32_read_count = 0;
+        const bool win32_pipe_allowed =
+            CreatePipe(
+                &win32_read, &win32_write, &pipe_security, 0) != FALSE &&
+            WriteFile(
+                win32_write, win32_payload,
+                static_cast<DWORD>(sizeof(win32_payload)), &win32_written,
+                nullptr) != FALSE &&
+            ReadFile(
+                win32_read, win32_result,
+                static_cast<DWORD>(sizeof(win32_result)), &win32_read_count,
+                nullptr) != FALSE &&
+            win32_written == sizeof(win32_payload) &&
+            win32_read_count == sizeof(win32_payload) &&
+            std::memcmp(
+                win32_result, win32_payload, sizeof(win32_payload)) == 0;
+        if (win32_read != nullptr) {
+            CloseHandle(win32_read);
+        }
+        if (win32_write != nullptr) {
+            CloseHandle(win32_write);
+        }
+        if (!win32_pipe_allowed) {
+            return 353;
+        }
         using NtCreateNamedPipeFileFunction = NTSTATUS(NTAPI*)(
             PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, ULONG,
             ULONG, ULONG, ULONG, ULONG, ULONG, ULONG, ULONG, ULONG,

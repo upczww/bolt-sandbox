@@ -42,7 +42,8 @@ if ($requiredFamilies.Count -eq 0) { throw 'At least one required tool family is
 $allowedScenarioProperties = @(
     'id', 'family', 'requiredOnHost', 'commands', 'candidates', 'terminal', 'privileged',
     'arguments', 'environment', 'readOnly', 'metadataRead', 'files', 'expectedFiles',
-    'stdoutContains', 'acceptedExitCodes', 'timeoutMilliseconds', 'network', 'requiredCapabilities'
+    'stdoutContains', 'acceptedExitCodes', 'timeoutMilliseconds', 'network', 'requiredCapabilities',
+    'namedPipes'
 )
 $allowedTokens = @(
     'ProgramFiles', 'ProgramFilesX86', 'ProgramData', 'SystemRoot', 'UserProfile',
@@ -90,6 +91,10 @@ foreach ($scenario in $matrix.scenarios) {
     if ($scenario.terminal -notin @('pipes', 'pseudo-console')) {
         throw "Invalid terminal mode for $($scenario.id)."
     }
+    if ($null -ne $scenario.namedPipes -and
+        $scenario.namedPipes -notin @('denied', 'isolated')) {
+        throw "Invalid named-pipe mode for $($scenario.id)."
+    }
     if ($scenario.privileged -eq $true -and $scenario.requiredOnHost) {
         throw "Privileged scenario cannot be required by default: $($scenario.id)."
     }
@@ -108,7 +113,8 @@ foreach ($scenario in $matrix.scenarios) {
     }
     foreach ($capability in @($scenario.requiredCapabilities | Where-Object { $null -ne $_ })) {
         if ($capability -notin @(
-            'private-named-pipes', 'workspace-volume-metadata', 'dynamic-host-grants'
+            'private-named-pipes', 'workspace-volume-metadata', 'dynamic-host-grants',
+            'msys-runtime-injection'
         )) {
             throw "Unknown required capability for $($scenario.id): $capability"
         }

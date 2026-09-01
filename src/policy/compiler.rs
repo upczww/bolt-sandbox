@@ -114,6 +114,7 @@ fn compile_internal(
         network,
         registry,
         child_processes: policy.child_processes,
+        named_pipes: policy.named_pipes,
         recovery,
     };
     debug_assert!(compiled.filesystem.allows_read_write(cwd));
@@ -164,6 +165,7 @@ pub(crate) struct CompiledPolicy {
     )]
     pub(crate) registry: CompiledRegistryPolicy,
     pub(crate) child_processes: ChildProcessPolicy,
+    pub(crate) named_pipes: crate::NamedPipePolicy,
     #[allow(
         dead_code,
         reason = "compiled recovery policy is consumed by the trusted Rust recovery coordinator"

@@ -39,13 +39,14 @@ namespace {
 
 std::unique_ptr<FilesystemPolicy> g_policy;
 HandleAccessCache g_handle_access_cache;
-constexpr LONG kRequiredFilesystemHookCount = 81;
+constexpr LONG kRequiredFilesystemHookCount = 82;
 volatile LONG g_installed_file_hook_count = 0;
 
 CreateFileW_t g_create_file_w = CreateFileW;
 CreateFileA_t g_create_file_a = CreateFileA;
 decltype(&CreateNamedPipeW) g_create_named_pipe_w = CreateNamedPipeW;
 decltype(&CreateNamedPipeA) g_create_named_pipe_a = CreateNamedPipeA;
+decltype(&CreatePipe) g_create_pipe = CreatePipe;
 decltype(&CreateMailslotW) g_create_mailslot_w = CreateMailslotW;
 decltype(&CreateMailslotA) g_create_mailslot_a = CreateMailslotA;
 DeleteFileW_t g_delete_file_w = DeleteFileW;
@@ -3108,6 +3109,36 @@ NTSTATUS NTAPI DetouredNtWriteFile(
     return status_access_denied;
 }
 
+BOOL WINAPI DetouredCreatePipe(
+    const PHANDLE read_pipe,
+    const PHANDLE write_pipe,
+    const LPSECURITY_ATTRIBUTES pipe_attributes,
+    const DWORD size) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_create_pipe(read_pipe, write_pipe, pipe_attributes, size);
+    }
+    if (read_pipe == nullptr || write_pipe == nullptr) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    *read_pipe = nullptr;
+    *write_pipe = nullptr;
+    if (!g_create_pipe(read_pipe, write_pipe, pipe_attributes, size)) {
+        return FALSE;
+    }
+    if (!CachePrivatePipeAccess(*read_pipe, GENERIC_READ) ||
+        !CachePrivatePipeAccess(*write_pipe, GENERIC_WRITE)) {
+        CloseHandle(*read_pipe);
+        CloseHandle(*write_pipe);
+        *read_pipe = nullptr;
+        *write_pipe = nullptr;
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return FALSE;
+    }
+    return TRUE;
+}
+
 HANDLE WINAPI DetouredCreateNamedPipeW(
     const LPCWSTR name,
     const DWORD open_mode,
@@ -3123,9 +3154,37 @@ HANDLE WINAPI DetouredCreateNamedPipeW(
             name, open_mode, pipe_mode, maximum_instances, output_buffer_size,
             input_buffer_size, default_timeout, security_attributes);
     }
-    ReportDenied(protocol::FilesystemOperation::kCreate, name);
-    SetLastError(ERROR_ACCESS_DENIED);
-    return INVALID_HANDLE_VALUE;
+    std::wstring isolated_pipe;
+    if (!process::RewriteIsolatedNamedPipePath(name, isolated_pipe)) {
+        ReportDenied(protocol::FilesystemOperation::kCreate, name);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return INVALID_HANDLE_VALUE;
+    }
+    const HANDLE opened = g_create_named_pipe_w(
+        isolated_pipe.c_str(), open_mode, pipe_mode, maximum_instances,
+        output_buffer_size, input_buffer_size, default_timeout,
+        security_attributes);
+    ACCESS_MASK access = 0;
+    switch (open_mode & 0x3U) {
+        case PIPE_ACCESS_INBOUND:
+            access = GENERIC_READ;
+            break;
+        case PIPE_ACCESS_OUTBOUND:
+            access = GENERIC_WRITE;
+            break;
+        case PIPE_ACCESS_DUPLEX:
+            access = GENERIC_READ | GENERIC_WRITE;
+            break;
+        default:
+            break;
+    }
+    if (opened != INVALID_HANDLE_VALUE &&
+        (access == 0 || !CachePrivatePipeAccess(opened, access))) {
+        CloseHandle(opened);
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return INVALID_HANDLE_VALUE;
+    }
+    return opened;
 }
 
 HANDLE WINAPI DetouredCreateNamedPipeA(
@@ -3144,12 +3203,41 @@ HANDLE WINAPI DetouredCreateNamedPipeA(
             input_buffer_size, default_timeout, security_attributes);
     }
     std::wstring wide_name;
-    if (!ConvertAnsiPath(name, wide_name)) {
-        wide_name = L"<invalid-named-pipe>";
+    std::wstring isolated_pipe;
+    if (!ConvertAnsiPath(name, wide_name) ||
+        !process::RewriteIsolatedNamedPipePath(
+            wide_name.c_str(), isolated_pipe)) {
+        ReportDenied(
+            protocol::FilesystemOperation::kCreate,
+            wide_name.empty() ? L"<invalid-named-pipe>" : wide_name.c_str());
+        SetLastError(ERROR_ACCESS_DENIED);
+        return INVALID_HANDLE_VALUE;
     }
-    ReportDenied(protocol::FilesystemOperation::kCreate, wide_name.c_str());
-    SetLastError(ERROR_ACCESS_DENIED);
-    return INVALID_HANDLE_VALUE;
+    const HANDLE opened = g_create_named_pipe_w(
+        isolated_pipe.c_str(), open_mode, pipe_mode, maximum_instances,
+        output_buffer_size, input_buffer_size, default_timeout,
+        security_attributes);
+    ACCESS_MASK access = 0;
+    switch (open_mode & 0x3U) {
+        case PIPE_ACCESS_INBOUND:
+            access = GENERIC_READ;
+            break;
+        case PIPE_ACCESS_OUTBOUND:
+            access = GENERIC_WRITE;
+            break;
+        case PIPE_ACCESS_DUPLEX:
+            access = GENERIC_READ | GENERIC_WRITE;
+            break;
+        default:
+            break;
+    }
+    if (opened != INVALID_HANDLE_VALUE &&
+        (access == 0 || !CachePrivatePipeAccess(opened, access))) {
+        CloseHandle(opened);
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return INVALID_HANDLE_VALUE;
+    }
+    return opened;
 }
 
 HANDLE WINAPI DetouredCreateMailslotW(
@@ -3199,6 +3287,20 @@ HANDLE WINAPI DetouredCreateFileW(
         return g_create_file_w(
             filename, desired_access, share_mode, security_attributes, creation_disposition,
             flags_and_attributes, template_file);
+    }
+    std::wstring isolated_pipe;
+    if (process::RewriteIsolatedNamedPipePath(filename, isolated_pipe)) {
+        const HANDLE opened = g_create_file_w(
+            isolated_pipe.c_str(), desired_access, share_mode,
+            security_attributes, creation_disposition, flags_and_attributes,
+            template_file);
+        if (opened != INVALID_HANDLE_VALUE &&
+            !CachePrivatePipeAccess(opened, desired_access)) {
+            CloseHandle(opened);
+            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+            return INVALID_HANDLE_VALUE;
+        }
+        return opened;
     }
     if (IsConsoleDevicePath(filename)) {
         if (process::AllowsIsolatedConsole()) {
@@ -3254,6 +3356,21 @@ HANDLE WINAPI DetouredCreateFileA(
         desired_access, creation_disposition, flags_and_attributes);
     if (!ConvertAnsiPath(filename, filename_wide)) {
         return INVALID_HANDLE_VALUE;
+    }
+    std::wstring isolated_pipe;
+    if (process::RewriteIsolatedNamedPipePath(
+            filename_wide.c_str(), isolated_pipe)) {
+        const HANDLE opened = g_create_file_w(
+            isolated_pipe.c_str(), desired_access, share_mode,
+            security_attributes, creation_disposition, flags_and_attributes,
+            template_file);
+        if (opened != INVALID_HANDLE_VALUE &&
+            !CachePrivatePipeAccess(opened, desired_access)) {
+            CloseHandle(opened);
+            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+            return INVALID_HANDLE_VALUE;
+        }
+        return opened;
     }
     if (IsConsoleDevicePath(filename_wide.c_str())) {
         if (process::AllowsIsolatedConsole()) {
@@ -4628,6 +4745,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_named_pipe_a),
             reinterpret_cast<PVOID>(DetouredCreateNamedPipeA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_create_pipe),
+            reinterpret_cast<PVOID>(DetouredCreatePipe)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_mailslot_w),
             reinterpret_cast<PVOID>(DetouredCreateMailslotW)) != NO_ERROR ||

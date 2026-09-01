@@ -16,6 +16,7 @@ pub struct SandboxPolicy {
     pub registry: RegistryPolicy,
     pub network: NetworkPolicy,
     pub child_processes: ChildProcessPolicy,
+    pub named_pipes: NamedPipePolicy,
     pub recovery: RecoveryPolicy,
 }
 
@@ -24,6 +25,13 @@ pub enum ChildProcessPolicy {
     #[default]
     Inherit,
     Deny,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NamedPipePolicy {
+    #[default]
+    Deny,
+    Isolated,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

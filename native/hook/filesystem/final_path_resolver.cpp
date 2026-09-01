@@ -27,6 +27,12 @@ bool ResolveFinalPathForPolicy(
     try {
         std::filesystem::path candidate{path};
         std::vector<std::filesystem::path> suffix;
+        if (candidate.filename().empty()) {
+            const auto parent = candidate.parent_path();
+            if (!parent.empty() && parent != candidate) {
+                candidate = parent;
+            }
+        }
         constexpr std::size_t maximum_ancestors = 256;
         for (std::size_t depth = 0; depth < maximum_ancestors; ++depth) {
             const HANDLE handle = open_path(
@@ -58,14 +64,6 @@ bool ResolveFinalPathForPolicy(
                 return true;
             }
             const DWORD error = GetLastError();
-            if ((error == ERROR_DIRECTORY || error == ERROR_INVALID_NAME) &&
-                candidate.filename().empty()) {
-                const auto parent = candidate.parent_path();
-                if (!parent.empty() && parent != candidate) {
-                    candidate = parent;
-                    continue;
-                }
-            }
             if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
                 return false;
             }

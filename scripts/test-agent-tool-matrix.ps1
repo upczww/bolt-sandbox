@@ -249,6 +249,7 @@ try {
         }
         $cliArguments += @(
             '--terminal', [string]$scenario.terminal,
+            '--named-pipes', [string]($scenario.namedPipes ?? 'denied'),
             '--network', [string]($scenario.network ?? 'denied'),
             '--', $targetProgram
         )

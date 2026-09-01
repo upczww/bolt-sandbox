@@ -43,6 +43,7 @@
     {"target":"g_nt_duplicate_object","detour":"DetouredNtDuplicateObject","symbol":"NtDuplicateObject","module":"ntdll.dll","availability":"required","operations":["read","write","metadata"],"cases":["FS-046","FS-053","FS-063"]},
     {"target":"g_create_named_pipe_w","detour":"DetouredCreateNamedPipeW","symbol":"CreateNamedPipeW","module":"kernel32.dll","availability":"required","operations":["create"],"cases":["FS-053"]},
     {"target":"g_create_named_pipe_a","detour":"DetouredCreateNamedPipeA","symbol":"CreateNamedPipeA","module":"kernel32.dll","availability":"required","operations":["create"],"cases":["FS-053"]},
+    {"target":"g_create_pipe","detour":"DetouredCreatePipe","symbol":"CreatePipe","module":"kernel32.dll","availability":"required","operations":["create","read","write"],"cases":["FS-053"]},
     {"target":"g_create_mailslot_w","detour":"DetouredCreateMailslotW","symbol":"CreateMailslotW","module":"kernel32.dll","availability":"required","operations":["create"],"cases":["FS-019","FS-053"]},
     {"target":"g_create_mailslot_a","detour":"DetouredCreateMailslotA","symbol":"CreateMailslotA","module":"kernel32.dll","availability":"required","operations":["create"],"cases":["FS-019","FS-053"]},
     {"target":"g_create_file_w","detour":"DetouredCreateFileW","symbol":"CreateFileW","module":"kernel32.dll","availability":"required","operations":["read","metadata","create","write","delete"],"cases":["FS-001","FS-004","FS-019","FS-053","SEM-004"]},

@@ -13,11 +13,11 @@ use bolt_sandbox::{
     FilesystemOperation, FilesystemPolicy, FilesystemViolation, IpCidr, MAX_TIMEOUT,
     MAX_VIOLATION_AGGREGATE_CAPACITY, MIN_TIMEOUT, NamedPipePolicy, NetworkAllowList,
     NetworkPolicy, NetworkTarget, NetworkViolation, PolicyGeneration, PortRange, ProcessExit,
-    ProcessExitReason,
-    ProcessOperation, ProcessViolation, PseudoConsoleSize, RecoveryPolicy, RegistryPolicy,
-    RequestField, Sandbox, SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy,
-    SandboxRequest, TerminalMode, ViolationAggregate, WorkspaceBackend, WorkspaceCapabilities,
-    WorkspaceChange, WorkspaceControlError, WorkspaceLimits, WorkspaceMode, WorkspaceTransactionId,
+    ProcessExitReason, ProcessOperation, ProcessViolation, PseudoConsoleSize, RecoveryPolicy,
+    RegistryPolicy, RequestField, Sandbox, SandboxConfig, SandboxError, SandboxEvent,
+    SandboxPolicy, SandboxRequest, TerminalMode, ViolationAggregate, WorkspaceBackend,
+    WorkspaceCapabilities, WorkspaceChange, WorkspaceControlError, WorkspaceLimits, WorkspaceMode,
+    WorkspaceTransactionId,
 };
 
 fn assert_attributed_stream<T: Iterator<Item = AttributedSandboxEvent>>() {}
@@ -301,6 +301,7 @@ fn policy_types_are_constructible_without_native_dependencies() {
         registry: RegistryPolicy::default(),
         network: NetworkPolicy::Denied,
         child_processes: ChildProcessPolicy::Deny,
+        named_pipes: NamedPipePolicy::Deny,
         recovery: RecoveryPolicy::Disabled,
     };
 

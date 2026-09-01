@@ -135,7 +135,7 @@ and reason code—not merely identical serialized bytes.
 | FS-050 | Host adds stricter deny below cwd | Stricter deny takes effect recursively without weakening sibling cwd access |
 | FS-051 | File/directory create uses Win32 APIs and corresponding NT Native APIs | Both API families produce equivalent decisions and events |
 | FS-052 | Open uses relative object-manager path/root-directory handle | Final object is normalized and checked; no root-handle escape |
-| FS-053 | Named pipe, mailslot, and console pseudo-file access | Only private IPC and explicitly supported runtime handles are allowed; arbitrary objects are not mistaken for disk paths |
+| FS-053 | Named pipe, mailslot, `CreatePipe`, and console pseudo-file access | Default allows only private IPC/runtime handles; explicit isolated mode rewrites local Win32 pipe names while remote/native ambient objects remain denied |
 | FS-054 | Volume is case-sensitive or remote semantics differ | Test records capability and enforces identity-based policy without assuming NTFS casing |
 | FS-055 | Allowed operation fails for an ordinary OS reason such as sharing violation | Original OS error is preserved and is not mislabeled as a policy violation |
 | FS-056 | Violation is repeated through aliases | First event is preserved and duplicates aggregate under the canonical resource identity |

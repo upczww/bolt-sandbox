@@ -6,7 +6,7 @@ use super::{
     CompiledNetworkPolicy, CompiledPolicy, FilesystemRuleKind, NormalizedComponent, RegistryHive,
     RegistryRuleKind,
 };
-use crate::policy::ChildProcessPolicy;
+use crate::policy::{ChildProcessPolicy, NamedPipePolicy};
 
 const MAGIC: [u8; 4] = *b"BLP1";
 pub(super) const POLICY_PAYLOAD_VERSION: u16 = 1;
@@ -139,7 +139,7 @@ pub(crate) fn verify(encoded: &[u8]) -> Result<VerifiedPolicy<'_>, PolicyPayload
 fn validate_body(body: &[u8]) -> Result<(), PolicyPayloadError> {
     let mut reader = BodyReader::new(body);
     match reader.read_u8()? {
-        0 | 1 => {}
+        0..=3 => {}
         _ => return Err(PolicyPayloadError::InvalidBody),
     }
     validate_filesystem_body(&mut reader)?;
@@ -322,10 +322,15 @@ fn policy_digest(header_prefix: &[u8], body: &[u8]) -> [u8; DIGEST_LENGTH] {
 
 fn encode_body(policy: &CompiledPolicy) -> Result<Vec<u8>, PolicyPayloadError> {
     let mut writer = BoundedWriter::default();
-    writer.write_u8(match policy.child_processes {
+    let child_policy = match policy.child_processes {
         ChildProcessPolicy::Inherit => 0,
         ChildProcessPolicy::Deny => 1,
-    })?;
+    };
+    let named_pipe_policy = match policy.named_pipes {
+        NamedPipePolicy::Deny => 0,
+        NamedPipePolicy::Isolated => 2,
+    };
+    writer.write_u8(child_policy | named_pipe_policy)?;
     encode_filesystem(policy, &mut writer)?;
     encode_network(policy, &mut writer)?;
     encode_registry(policy, &mut writer)?;
@@ -675,6 +680,30 @@ mod tests {
 
         assert_eq!(first.as_bytes(), second.as_bytes());
         assert_eq!(first.digest(), second.digest());
+    }
+
+    #[test]
+    fn compat_020_named_pipe_capability_is_an_immutable_policy_bit() {
+        let isolated = SandboxPolicy {
+            named_pipes: NamedPipePolicy::Isolated,
+            ..SandboxPolicy::default()
+        };
+        let isolated = seal(&compile_policy(&isolated))
+            .expect("isolated policy must serialize")
+            .into_bytes();
+        assert_eq!(isolated[HEADER_LENGTH], 2);
+        assert!(verify(&isolated).is_ok());
+
+        let isolated_with_denied_children = SandboxPolicy {
+            child_processes: ChildProcessPolicy::Deny,
+            named_pipes: NamedPipePolicy::Isolated,
+            ..SandboxPolicy::default()
+        };
+        let combined = seal(&compile_policy(&isolated_with_denied_children))
+            .expect("combined policy must serialize")
+            .into_bytes();
+        assert_eq!(combined[HEADER_LENGTH], 3);
+        assert!(verify(&combined).is_ok());
     }
 
     #[test]

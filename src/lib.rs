@@ -38,8 +38,8 @@ pub use execution::{
     Sandbox, SandboxConfig, TerminalMode, WorkspaceBackend, WorkspaceCapabilities, WorkspaceMode,
 };
 pub use policy::{
-    ChildProcessPolicy, FilesystemPolicy, IpCidr, NetworkAllowList, NetworkPolicy, PortRange,
-    RecoveryLimits, RecoveryPolicy, RegistryPolicy, SandboxPolicy,
+    ChildProcessPolicy, FilesystemPolicy, IpCidr, NamedPipePolicy, NetworkAllowList, NetworkPolicy,
+    PortRange, RecoveryLimits, RecoveryPolicy, RegistryPolicy, SandboxPolicy,
 };
 pub use request::{MAX_TIMEOUT, MIN_TIMEOUT, SandboxRequest};
 pub use workspace::{

@@ -311,6 +311,12 @@ Filesystem options are `--read-write`, `--read-only`, `--deny`,
 `--recovery-dir`, `--recovery-max-bytes`, `--recovery-max-items`, and
 `--recovery-retention-seconds`.
 
+Named pipes remain denied by default. A trusted host may select
+`--named-pipes isolated` for conventional build tools that require local
+Win32 pipes. Bolt rewrites those local names with the execution nonce and
+tracks the resulting handles; remote pipes, mailslots, direct native named
+pipe creation, and the original ambient names remain unavailable.
+
 Terminal modes are `pipes` (the default) and `pseudo-console`. Select
 `--terminal pseudo-console` for tools that require Windows console semantics,
 including PowerShell's ConsoleHost; the ConPTY is isolated and its capability
@@ -361,9 +367,11 @@ custom credential names, cancellation, or aggregate results.
   `Denied` and `AllowList` enforce restrictive network interception.
 - `ChildProcessPolicy::Inherit` permits supported descendants only after the
   matching hook and policy are installed. `Deny` blocks child creation.
-- Agent runtimes may use self-created unnamed standard-I/O pipes. These are
-  handle capabilities, not path grants: named pipes, mailslots, remote
-  duplication, and arbitrary pipe-namespace access remain denied.
+- Agent runtimes may use self-created unnamed standard-I/O pipes. Explicit
+  `NamedPipePolicy::Isolated` additionally supports nonce-rewritten local Win32
+  pipes for compatible tools. These are handle/capability decisions, not path
+  grants: mailslots, remote duplication, remote pipes, and ambient pipe names
+  remain denied.
 - Recovery failure never changes the original allow/deny decision. It emits a
   typed failure while an otherwise allowed destructive operation proceeds.
 

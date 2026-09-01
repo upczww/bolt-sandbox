@@ -59,6 +59,7 @@ native::RtlCreateUserProcessFunction g_rtl_create_user_process = nullptr;
 native::NtCreateUserProcessFunction g_nt_create_user_process = nullptr;
 ChildProcessPolicy g_child_process_policy = ChildProcessPolicy::kDeny;
 bool g_prepared = false;
+bool g_isolated_named_pipes = false;
 bool g_runtime_configured = false;
 protocol::RuntimePayload g_runtime_payload{};
 std::string g_hook_dll_path;
@@ -1426,6 +1427,53 @@ bool AllowsIsolatedConsole() noexcept {
     return g_runtime_configured && g_runtime_payload.isolated_console;
 }
 
+bool AllowsIsolatedNamedPipes() noexcept {
+    return g_prepared && g_isolated_named_pipes;
+}
+
+bool RewriteIsolatedNamedPipePath(
+    const wchar_t* const path,
+    std::wstring& rewritten) noexcept {
+    rewritten.clear();
+    if (!AllowsIsolatedNamedPipes() || !g_runtime_configured || path == nullptr) {
+        return false;
+    }
+    constexpr wchar_t local_prefix[] = L"\\\\.\\pipe\\";
+    constexpr wchar_t extended_prefix[] = L"\\\\?\\pipe\\";
+    const wchar_t* relative = nullptr;
+    if (_wcsnicmp(path, local_prefix, std::size(local_prefix) - 1) == 0) {
+        relative = path + std::size(local_prefix) - 1;
+    } else if (_wcsnicmp(
+                   path, extended_prefix,
+                   std::size(extended_prefix) - 1) == 0) {
+        relative = path + std::size(extended_prefix) - 1;
+    } else {
+        return false;
+    }
+    const std::size_t relative_length = std::wcslen(relative);
+    if (relative_length == 0 || relative_length > 160) {
+        return false;
+    }
+    try {
+        rewritten.assign(local_prefix);
+        rewritten.append(L"bolt-isolated-");
+        constexpr wchar_t hex[] = L"0123456789abcdef";
+        for (const std::uint8_t byte : g_runtime_payload.handshake_nonce) {
+            rewritten.push_back(hex[byte >> 4U]);
+            rewritten.push_back(hex[byte & 0x0fU]);
+        }
+        rewritten.push_back(L'-');
+        for (std::size_t index = 0; index < relative_length; ++index) {
+            const wchar_t value = relative[index];
+            rewritten.push_back(value == L'\\' || value == L'/' ? L'-' : value);
+        }
+        return true;
+    } catch (...) {
+        rewritten.clear();
+        return false;
+    }
+}
+
 ProcessHookPrepareStatus PrepareProcessHooks(
     const std::uint8_t* policy_payload,
     const std::size_t policy_length) noexcept {
@@ -1439,11 +1487,12 @@ ProcessHookPrepareStatus PrepareProcessHooks(
     }
     const std::uint8_t encoded_policy =
         policy_payload[protocol::kPolicyEnvelopeLength];
-    if (encoded_policy > static_cast<std::uint8_t>(ChildProcessPolicy::kDeny)) {
+    if (encoded_policy > 3) {
         return ProcessHookPrepareStatus::kInvalidPolicy;
     }
+    g_isolated_named_pipes = (encoded_policy & 2U) != 0;
     g_child_process_policy =
-        static_cast<ChildProcessPolicy>(encoded_policy);
+        static_cast<ChildProcessPolicy>(encoded_policy & 1U);
     try {
         g_policy_payload.assign(policy_payload, policy_payload + policy_length);
     } catch (...) {

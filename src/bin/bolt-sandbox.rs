@@ -10,9 +10,9 @@ use std::{
 
 use bolt_sandbox::{
     ChildProcessPolicy, DEFAULT_STREAM_CAPACITY, ExecutionOptions, ExecutionTerminal, IpCidr,
-    NetworkAllowList, NetworkPolicy, PortRange, ProcessExitReason, PseudoConsoleSize,
-    RecoveryLimits, RecoveryPolicy, Sandbox, SandboxConfig, SandboxError, SandboxEvent,
-    SandboxPolicy, SandboxRequest, TerminalMode,
+    NamedPipePolicy, NetworkAllowList, NetworkPolicy, PortRange, ProcessExitReason,
+    PseudoConsoleSize, RecoveryLimits, RecoveryPolicy, Sandbox, SandboxConfig, SandboxError,
+    SandboxEvent, SandboxPolicy, SandboxRequest, TerminalMode,
 };
 
 struct RunArguments {
@@ -38,7 +38,7 @@ fn main() {
         Ok(code) => code,
         Err(CliError::InvalidArguments) => {
             eprintln!(
-                "usage: bolt-sandbox run --component-root PATH --cwd PATH [--manifest-sha256 HEX] [--timeout-ms N] [--terminal pipes|pseudo-console] [--network unrestricted|denied|allow-list] [--allow-domain DOMAIN] [--allow-cidr CIDR] [--allow-port PORT[-PORT]] -- PROGRAM [ARG ...]"
+                "usage: bolt-sandbox run --component-root PATH --cwd PATH [--manifest-sha256 HEX] [--timeout-ms N] [--terminal pipes|pseudo-console] [--named-pipes denied|isolated] [--network unrestricted|denied|allow-list] [--allow-domain DOMAIN] [--allow-cidr CIDR] [--allow-port PORT[-PORT]] -- PROGRAM [ARG ...]"
             );
             2
         }
@@ -117,6 +117,7 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
     let mut child_processes_set = false;
     let mut terminal = TerminalMode::Pipes;
     let mut terminal_set = false;
+    let mut named_pipes_set = false;
     let mut recovery_directory = None;
     let mut recovery_maximum_bytes = None;
     let mut recovery_maximum_items = None;
@@ -206,6 +207,14 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
                     _ => return Err(CliError::InvalidArguments),
                 };
                 terminal_set = true;
+            }
+            Some("--named-pipes") if !named_pipes_set => {
+                policy.named_pipes = match next_string(&mut arguments)?.as_str() {
+                    "denied" => NamedPipePolicy::Deny,
+                    "isolated" => NamedPipePolicy::Isolated,
+                    _ => return Err(CliError::InvalidArguments),
+                };
+                named_pipes_set = true;
             }
             Some("--recovery-dir") if recovery_directory.is_none() => {
                 recovery_directory = Some(next_path(&mut arguments)?);
@@ -410,8 +419,8 @@ fn write_event(event: &SandboxEvent) {
         }
         SandboxEvent::ChildInjectionFailed(failure) => {
             eprintln!(
-                "sandbox-event child-injection-failed pid={}",
-                failure.child_process_id
+                "sandbox-event child-injection-failed pid={} reason={:?}",
+                failure.child_process_id, failure.reason
             );
         }
         SandboxEvent::ProcessViolation(violation) => {
@@ -548,6 +557,24 @@ mod tests {
                 "terminal selection must be capability-based, not tool-specific"
             );
         }
+    }
+
+    #[test]
+    fn cli_007_parser_selects_isolated_named_pipe_capability_explicitly() {
+        let parsed = parse_run_arguments(vec![
+            OsString::from("run"),
+            OsString::from("--component-root"),
+            OsString::from(r"C:\components"),
+            OsString::from("--cwd"),
+            OsString::from(r"C:\work"),
+            OsString::from("--named-pipes"),
+            OsString::from("isolated"),
+            OsString::from("--"),
+            OsString::from(r"C:\tool.exe"),
+        ])
+        .expect("isolated named-pipe capability must parse");
+
+        assert_eq!(parsed.policy.named_pipes, NamedPipePolicy::Isolated);
     }
 
     #[test]
