@@ -389,54 +389,53 @@ fn copy_stream(stream: bolt_sandbox::ByteStream, mut output: impl Write) -> io::
 }
 
 fn write_event(event: &SandboxEvent) {
+    eprintln!("{}", format_event(event));
+}
+
+#[allow(
+    clippy::unnecessary_debug_formatting,
+    reason = "Debug path formatting escapes control characters in line-oriented diagnostics"
+)]
+fn format_event(event: &SandboxEvent) -> String {
     match event {
-        SandboxEvent::Ready => eprintln!("sandbox-event ready"),
-        SandboxEvent::FilesystemViolation(violation) => {
-            eprintln!(
-                "sandbox-event filesystem-violation pid={}",
-                violation.process_id
-            );
-        }
-        SandboxEvent::RegistryViolation(violation) => {
-            eprintln!(
-                "sandbox-event registry-violation pid={}",
-                violation.process_id
-            );
-        }
-        SandboxEvent::NetworkViolation(violation) => {
-            eprintln!(
-                "sandbox-event network-violation pid={}",
-                violation.process_id
-            );
-        }
-        SandboxEvent::EventsDropped(events) => {
-            eprintln!(
-                "sandbox-event dropped pid={} count={}",
-                events.process_id, events.count
-            );
-        }
-        SandboxEvent::RecoveryArtifactCreated(artifact) => {
-            eprintln!("sandbox-event recovery-created pid={}", artifact.process_id);
-        }
-        SandboxEvent::RecoveryFailed(failure) => {
-            eprintln!("sandbox-event recovery-failed pid={}", failure.process_id);
-        }
-        SandboxEvent::ChildInjectionFailed(failure) => {
-            eprintln!(
-                "sandbox-event child-injection-failed pid={} reason={:?}",
-                failure.child_process_id, failure.reason
-            );
-        }
-        SandboxEvent::ProcessViolation(violation) => {
-            eprintln!(
-                "sandbox-event process-violation pid={}",
-                violation.process_id
-            );
-        }
-        SandboxEvent::ProcessExited(exit) => {
-            eprintln!("sandbox-event process-exited pid={}", exit.process_id);
-        }
-        _ => eprintln!("sandbox-event unknown"),
+        SandboxEvent::Ready => "sandbox-event ready".to_owned(),
+        SandboxEvent::FilesystemViolation(violation) => format!(
+            "sandbox-event filesystem-violation pid={} operation={:?} path={:?}",
+            violation.process_id, violation.operation, violation.path
+        ),
+        SandboxEvent::RegistryViolation(violation) => format!(
+            "sandbox-event registry-violation pid={} operation={:?} key={:?}",
+            violation.process_id, violation.operation, violation.key
+        ),
+        SandboxEvent::NetworkViolation(violation) => format!(
+            "sandbox-event network-violation pid={} operation={:?} target={:?}",
+            violation.process_id, violation.operation, violation.target
+        ),
+        SandboxEvent::EventsDropped(events) => format!(
+            "sandbox-event dropped pid={} count={}",
+            events.process_id, events.count
+        ),
+        SandboxEvent::RecoveryArtifactCreated(artifact) => format!(
+            "sandbox-event recovery-created pid={} artifact={} path={:?} bytes={}",
+            artifact.process_id, artifact.artifact_id, artifact.original_path, artifact.byte_count
+        ),
+        SandboxEvent::RecoveryFailed(failure) => format!(
+            "sandbox-event recovery-failed pid={} reason={:?}",
+            failure.process_id, failure.reason
+        ),
+        SandboxEvent::ChildInjectionFailed(failure) => format!(
+            "sandbox-event child-injection-failed pid={} reason={:?}",
+            failure.child_process_id, failure.reason
+        ),
+        SandboxEvent::ProcessViolation(violation) => format!(
+            "sandbox-event process-violation pid={} operation={:?}",
+            violation.process_id, violation.operation
+        ),
+        SandboxEvent::ProcessExited(exit) => format!(
+            "sandbox-event process-exited pid={} code={:?} reason={:?}",
+            exit.process_id, exit.exit_code, exit.reason
+        ),
+        _ => "sandbox-event unknown".to_owned(),
     }
 }
 
@@ -477,13 +476,11 @@ mod tests {
 
     #[test]
     fn cli_008_violation_diagnostics_include_escaped_resource_details() {
-        let event = SandboxEvent::FilesystemViolation(
-            bolt_sandbox::FilesystemViolation {
-                process_id: 41,
-                operation: bolt_sandbox::FilesystemOperation::Read,
-                path: PathBuf::from("C:\\external\\line\nsecret.txt"),
-            },
-        );
+        let event = SandboxEvent::FilesystemViolation(bolt_sandbox::FilesystemViolation {
+            process_id: 41,
+            operation: bolt_sandbox::FilesystemOperation::Read,
+            path: PathBuf::from("C:\\external\\line\nsecret.txt"),
+        });
 
         let diagnostic = format_event(&event);
 
