@@ -10,7 +10,8 @@ use std::{
 
 use crate::{
     AttributedSandboxEvent, CommandId, ExecutionAttribution, PolicyGeneration, ProcessExit,
-    SandboxError, SandboxEvent, SandboxRequest, ViolationAggregate, runtime,
+    SandboxError, SandboxEvent, SandboxRequest, ViolationAggregate, WorkspaceChange,
+    WorkspaceControlError, WorkspaceTransactionId, runtime,
 };
 
 pub const DEFAULT_STREAM_CAPACITY: usize = 1_048_576;
@@ -22,6 +23,7 @@ pub const MAX_VIOLATION_AGGREGATE_CAPACITY: usize = 65_536;
 pub enum WorkspaceMode {
     #[default]
     Direct,
+    Staged,
     Projected,
 }
 
@@ -110,7 +112,7 @@ impl Sandbox {
         options: ExecutionOptions,
     ) -> Result<ExecutionHandle, SandboxError> {
         request.validate()?;
-        if options.workspace == WorkspaceMode::Projected {
+        if options.workspace != WorkspaceMode::Direct {
             return Err(SandboxError::InitializationFailed {
                 stage: InitializationStage::Workspace,
             });
@@ -165,6 +167,45 @@ impl Sandbox {
         PolicyGeneration::new(generation).ok_or(SandboxError::InitializationFailed {
             stage: InitializationStage::Identity,
         })
+    }
+
+    /// Returns the canonical changes for a completed staged transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceControlError::NotFound`] until a matching completed
+    /// transaction is owned by this sandbox coordinator.
+    pub fn query_workspace_changes(
+        &self,
+        _transaction_id: WorkspaceTransactionId,
+    ) -> Result<Vec<WorkspaceChange>, WorkspaceControlError> {
+        Err(WorkspaceControlError::NotFound)
+    }
+
+    /// Commits a completed staged transaction through trusted Rust.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed workspace error when the transaction is missing,
+    /// conflicted, unsupported, or cannot be committed atomically.
+    pub fn commit_workspace(
+        &self,
+        _transaction_id: WorkspaceTransactionId,
+    ) -> Result<Vec<WorkspaceChange>, WorkspaceControlError> {
+        Err(WorkspaceControlError::NotFound)
+    }
+
+    /// Discards a completed staged transaction without mutating its source.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed workspace error when the transaction is missing or its
+    /// staging root cannot be removed safely.
+    pub fn discard_workspace(
+        &self,
+        _transaction_id: WorkspaceTransactionId,
+    ) -> Result<(), WorkspaceControlError> {
+        Err(WorkspaceControlError::NotFound)
     }
 }
 

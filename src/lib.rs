@@ -8,6 +8,7 @@ mod ipc;
 mod policy;
 mod request;
 mod runtime;
+mod workspace;
 
 #[cfg(test)]
 mod test_support;
@@ -34,3 +35,6 @@ pub use policy::{
     RecoveryLimits, RecoveryPolicy, RegistryPolicy, SandboxPolicy,
 };
 pub use request::{MAX_TIMEOUT, MIN_TIMEOUT, SandboxRequest};
+pub use workspace::{
+    WorkspaceChange, WorkspaceChangeKind, WorkspaceControlError, WorkspaceTransactionId,
+};
