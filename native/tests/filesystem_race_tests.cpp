@@ -1418,6 +1418,43 @@ bool RunAsyncIoAndMappingTest(
     return passed;
 }
 
+bool RunPrivateAnonymousPipeTest(
+    const std::wstring& executable,
+    const std::filesystem::path& hook_path,
+    std::uint64_t& ordinal) {
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    const HANDLE start = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+    const std::vector<bolt::tests::FilesystemRule> rules = {
+        {bolt::tests::FilesystemRuleKind::kReadOnly, executable},
+        {bolt::tests::FilesystemRuleKind::kDeny, L"C:\\Device"},
+    };
+    RaceProcess process;
+    const bool started =
+        start != nullptr &&
+        process.Start(
+            executable, hook_path, rules, L"private-anonymous-pipe", {}, {},
+            start, ordinal++);
+    const bool released =
+        started && process.WaitAtBarrier() && SetEvent(start) != FALSE;
+    const bool exited = released && process.WaitForExit();
+    const bool denied_named_pipe_reported =
+        exited && PipeContainsViolationForPath(
+                      process.event_pipe(),
+                      bolt::protocol::FilesystemOperation::kCreate,
+                      L"<private-anonymous-pipe>");
+    if (start != nullptr) {
+        CloseHandle(start);
+    }
+    if (!denied_named_pipe_reported) {
+        std::fprintf(
+            stderr, "private anonymous pipe failed: exit=%lu\n",
+            static_cast<unsigned long>(process.exit_code()));
+    }
+    return denied_named_pipe_reported;
+}
+
 }  // namespace
 
 int RunFilesystemRaceChild(
@@ -2081,6 +2118,168 @@ int RunFilesystemRaceChild(
             malformed_result || malformed_error != ERROR_ACCESS_DENIED) {
             return 336;
         }
+    } else if (mode == L"private-anonymous-pipe") {
+        using NtCreateNamedPipeFileFunction = NTSTATUS(NTAPI*)(
+            PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, ULONG,
+            ULONG, ULONG, ULONG, ULONG, ULONG, ULONG, ULONG, ULONG,
+            PLARGE_INTEGER);
+        using NtOpenFileFunction = NTSTATUS(NTAPI*)(
+            PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, ULONG,
+            ULONG);
+        using NtCreateMailslotFileFunction = NTSTATUS(NTAPI*)(
+            PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, ULONG,
+            ULONG, ULONG, PLARGE_INTEGER);
+        const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        const auto nt_create_named_pipe_file =
+            ntdll == nullptr
+                ? nullptr
+                : reinterpret_cast<NtCreateNamedPipeFileFunction>(
+                      GetProcAddress(ntdll, "NtCreateNamedPipeFile"));
+        const auto nt_open_file =
+            ntdll == nullptr
+                ? nullptr
+                : reinterpret_cast<NtOpenFileFunction>(
+                      GetProcAddress(ntdll, "NtOpenFile"));
+        const auto nt_create_mailslot_file =
+            ntdll == nullptr
+                ? nullptr
+                : reinterpret_cast<NtCreateMailslotFileFunction>(
+                      GetProcAddress(ntdll, "NtCreateMailslotFile"));
+        if (nt_create_named_pipe_file == nullptr || nt_open_file == nullptr ||
+            nt_create_mailslot_file == nullptr) {
+            return 347;
+        }
+
+        const std::wstring pipe_filesystem = L"\\Device\\NamedPipe\\";
+        UNICODE_STRING pipe_filesystem_name{};
+        pipe_filesystem_name.Length = static_cast<USHORT>(
+            pipe_filesystem.size() * sizeof(wchar_t));
+        pipe_filesystem_name.MaximumLength = pipe_filesystem_name.Length;
+        pipe_filesystem_name.Buffer =
+            const_cast<PWSTR>(pipe_filesystem.data());
+        OBJECT_ATTRIBUTES attributes{};
+        attributes.Length = sizeof(attributes);
+        attributes.ObjectName = &pipe_filesystem_name;
+        IO_STATUS_BLOCK io_status{};
+        HANDLE pipe_root = nullptr;
+        const NTSTATUS root_status = nt_open_file(
+            &pipe_root, SYNCHRONIZE | GENERIC_READ, &attributes, &io_status,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_SYNCHRONOUS_IO_NONALERT);
+        if (root_status < 0 || pipe_root == nullptr) {
+            return 348;
+        }
+
+        UNICODE_STRING empty_name{};
+        attributes.RootDirectory = pipe_root;
+        attributes.ObjectName = &empty_name;
+        LARGE_INTEGER timeout{};
+        timeout.QuadPart = -500'000;
+        HANDLE server = nullptr;
+        const NTSTATUS server_status = nt_create_named_pipe_file(
+            &server, SYNCHRONIZE | GENERIC_READ, &attributes, &io_status,
+            FILE_SHARE_WRITE, FILE_CREATE, 0, 0, 0, 0, 1, 64 * 1024,
+            64 * 1024, &timeout);
+        if (server_status < 0 || server == nullptr) {
+            CloseHandle(pipe_root);
+            return 349;
+        }
+
+        const std::wstring forbidden_name = L"bolt-forbidden";
+        UNICODE_STRING named_pipe{};
+        named_pipe.Length = static_cast<USHORT>(
+            forbidden_name.size() * sizeof(wchar_t));
+        named_pipe.MaximumLength = named_pipe.Length;
+        named_pipe.Buffer = const_cast<PWSTR>(forbidden_name.data());
+        attributes.RootDirectory = pipe_root;
+        attributes.ObjectName = &named_pipe;
+        HANDLE forbidden = nullptr;
+        constexpr NTSTATUS status_access_denied =
+            static_cast<NTSTATUS>(0xC0000022UL);
+        const NTSTATUS forbidden_status = nt_create_named_pipe_file(
+            &forbidden, SYNCHRONIZE | GENERIC_READ, &attributes, &io_status,
+            FILE_SHARE_WRITE, FILE_CREATE, 0, 0, 0, 0, 1, 4'096, 4'096,
+            &timeout);
+        if (forbidden_status != status_access_denied || forbidden != nullptr) {
+            if (forbidden != nullptr) {
+                CloseHandle(forbidden);
+            }
+            CloseHandle(server);
+            CloseHandle(pipe_root);
+            return 350;
+        }
+        HANDLE forbidden_mailslot = nullptr;
+        const NTSTATUS forbidden_mailslot_status = nt_create_mailslot_file(
+            &forbidden_mailslot, SYNCHRONIZE | GENERIC_READ, &attributes,
+            &io_status, 0, 4'096, 4'096, &timeout);
+        if (forbidden_mailslot_status != status_access_denied ||
+            forbidden_mailslot != nullptr) {
+            if (forbidden_mailslot != nullptr) {
+                CloseHandle(forbidden_mailslot);
+            }
+            CloseHandle(server);
+            CloseHandle(pipe_root);
+            return 352;
+        }
+
+        attributes.RootDirectory = server;
+        attributes.ObjectName = &empty_name;
+        attributes.Attributes = OBJ_INHERIT;
+        HANDLE client = nullptr;
+        const NTSTATUS client_status = nt_open_file(
+            &client,
+            SYNCHRONIZE | GENERIC_WRITE | FILE_READ_ATTRIBUTES, &attributes,
+            &io_status, 0,
+            FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT);
+        HANDLE server_copy = nullptr;
+        const bool server_duplicated =
+            client_status >= 0 && client != nullptr &&
+            DuplicateHandle(
+                GetCurrentProcess(), server, GetCurrentProcess(),
+                &server_copy, 0, FALSE, DUPLICATE_SAME_ACCESS) != FALSE;
+        if (server_duplicated) {
+            CloseHandle(server);
+            server = server_copy;
+        }
+        const char payload[] = "private-pipe";
+        DWORD written = 0;
+        const HANDLE completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        OVERLAPPED overlapped{};
+        overlapped.hEvent = completed;
+        std::array<char, sizeof(payload)> received{};
+        DWORD immediate_read = 0;
+        const bool wrote = server_duplicated &&
+            WriteFile(
+                client, payload, static_cast<DWORD>(sizeof(payload)),
+                &written, nullptr) != FALSE &&
+            written == sizeof(payload);
+        const BOOL read_started =
+            wrote && completed != nullptr
+                ? ReadFile(
+                      server, received.data(),
+                      static_cast<DWORD>(received.size()), &immediate_read,
+                      &overlapped)
+                : FALSE;
+        const DWORD read_error = GetLastError();
+        DWORD completed_read = immediate_read;
+        const bool read =
+            read_started != FALSE ||
+            (read_error == ERROR_IO_PENDING &&
+             WaitForSingleObject(completed, 5'000) == WAIT_OBJECT_0 &&
+             GetOverlappedResult(
+                 server, &overlapped, &completed_read, FALSE) != FALSE);
+        if (completed != nullptr) {
+            CloseHandle(completed);
+        }
+        if (client != nullptr) {
+            CloseHandle(client);
+        }
+        CloseHandle(server);
+        CloseHandle(pipe_root);
+        if (!read || completed_read != sizeof(payload) ||
+            std::memcmp(received.data(), payload, sizeof(payload)) != 0) {
+            return 351;
+        }
     } else if (mode == L"async-io-mapping") {
         const std::filesystem::path root(arguments[3]);
         const auto allowed = root / L"async-allowed";
@@ -2308,6 +2507,7 @@ bool RunFilesystemRaceTests() {
         RunExistingSymlinkTest(executable, hook_path, ordinal) &&
         RunJunctionSwapTest(executable, hook_path, test_root, ordinal) &&
         RunReparseFailureTest(executable, hook_path, test_root, ordinal) &&
+        RunPrivateAnonymousPipeTest(executable, hook_path, ordinal) &&
         RunAsyncIoAndMappingTest(executable, hook_path, test_root, ordinal);
     std::filesystem::remove_all(test_root, error);
     if (!passed) {

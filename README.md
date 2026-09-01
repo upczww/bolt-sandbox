@@ -311,6 +311,9 @@ custom credential names, cancellation, or aggregate results.
   `Denied` and `AllowList` enforce restrictive network interception.
 - `ChildProcessPolicy::Inherit` permits supported descendants only after the
   matching hook and policy are installed. `Deny` blocks child creation.
+- Agent runtimes may use self-created unnamed standard-I/O pipes. These are
+  handle capabilities, not path grants: named pipes, mailslots, remote
+  duplication, and arbitrary pipe-namespace access remain denied.
 - Recovery failure never changes the original allow/deny decision. It emits a
   typed failure while an otherwise allowed destructive operation proceeds.
 

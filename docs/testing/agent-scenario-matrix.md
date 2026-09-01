@@ -96,8 +96,10 @@ The harness discovers Node, Git, and Cargo when possible, resolves Git for
 Windows and rustup shims to their real runtime executables, validates every
 declared path, and enables all runtime-gated CLI integration cases.
 
-Current executable coverage includes Cargo offline metadata with a task-private
-home. Full `cargo check`/`cargo test` remains a release-matrix item: modern Cargo
-uses a Windows Job-list/breakaway combination for rustc children, and support
-must preserve outer-Job cancellation rather than permit escape. It is not
-treated as passing until that ownership relationship is verified and tested.
+Current executable coverage includes Cargo offline metadata and `cargo check
+--offline` with a task-private home and target directory. Modern Rust's private
+anonymous stdout/stderr pipes are exercised without granting access to named
+pipe or mailslot namespaces, and every `rustc` descendant remains in the outer
+execution Job with the inherited sandbox runtime. `cargo test` remains a
+release-matrix expansion because it adds execution of the compiled fixture, not
+because compiler startup requires a broader host grant.

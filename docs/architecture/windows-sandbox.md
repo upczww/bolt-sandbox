@@ -522,6 +522,17 @@ target handle list. A write-only client endpoint cannot be upgraded to read,
 used with `ImpersonateNamedPipeClient`, or used to create a second server/client
 session; duplicate Ready frames are rejected by the session state machine.
 
+Agent runtimes may create process-local anonymous standard-I/O pipes through a
+separate capability path. The hook permits only the exact pipe-filesystem root
+open followed by an unnamed, byte-stream, single-client `NtCreateNamedPipeFile`
+request with bounded quotas, then an unnamed client open rooted at that server
+handle. It tracks the resulting handles and same-process duplicates until close
+and authorizes I/O by handle capability. Named pipe creation or connection,
+native/Win32 mailslot creation, and duplication of these private capabilities
+into another process remain denied. Descendants trust only their actual pipe
+standard handles by object identity, so compiler output works without any
+filesystem path grant or ambient named-pipe namespace access.
+
 Launcher selection parses the target file identity's PE headers rather than
 assuming the host architecture or trusting its filename. The parser requires a
 complete 64-byte DOS header, `MZ` and `PE\0\0` signatures, a checked in-range

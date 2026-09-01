@@ -61,7 +61,7 @@ $env:BOLT_TEST_PYTHON = $python
 $env:BOLT_TEST_GIT = $git
 $env:BOLT_TEST_CARGO = $cargo
 
-& cargo test --test cli_integration -- --nocapture
+& cargo test --test cli_integration -- --nocapture --test-threads=1
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Output 'Agent scenario suite passed.'

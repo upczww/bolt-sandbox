@@ -20,7 +20,7 @@ static SCENARIO_LOCK: Mutex<()> = Mutex::new(());
 fn scenario_guard() -> MutexGuard<'static, ()> {
     SCENARIO_LOCK
         .lock()
-        .expect("scenario lock must not be poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn component_manifest_digest(component_root: &Path) -> String {
@@ -565,7 +565,7 @@ fn agent_cargo_metadata_runs_offline_with_private_home() {
     command
         .env("CARGO_HOME", &cargo_home)
         .env("HOME", &workspace)
-        .env("PATH", minimal_path);
+        .env("PATH", &minimal_path);
     let output = command
         .arg("--network")
         .arg("denied")
@@ -588,6 +588,40 @@ fn agent_cargo_metadata_runs_offline_with_private_home() {
     assert_eq!(output.status.code(), Some(0), "stderr={stderr}");
     assert!(stdout.contains("agent-fixture"), "stdout={stdout}");
     assert!(!stderr.contains("sandbox-event network-violation"));
+
+    let rustc = toolchain_bin.join("rustc.exe");
+    assert!(
+        rustc.is_file(),
+        "declared Cargo toolchain must contain rustc"
+    );
+    let mut check = sandbox_command(&component_root, &workspace);
+    for name in std::env::vars_os().map(|(name, _)| name) {
+        if name
+            .to_str()
+            .is_some_and(|name| name.starts_with("CARGO_") || name.starts_with("RUST_"))
+        {
+            check.env_remove(name);
+        }
+    }
+    check
+        .env("CARGO_HOME", &cargo_home)
+        .env("HOME", &workspace)
+        .env("PATH", &minimal_path)
+        .env("RUSTC", rustc);
+    let checked = check
+        .args(["--network", "denied", "--"])
+        .arg(&cargo)
+        .args(["check", "--offline", "--manifest-path"])
+        .arg(workspace.join("Cargo.toml"))
+        .output()
+        .expect("sandboxed Cargo check must launch");
+    let check_stderr = String::from_utf8_lossy(&checked.stderr);
+    assert_eq!(checked.status.code(), Some(0), "stderr={check_stderr}");
+    assert!(
+        workspace.join(r"target\debug\.fingerprint").is_dir(),
+        "Cargo check did not write task-private output"
+    );
+    assert!(!check_stderr.contains("sandbox-event network-violation"));
     let _ = fs::remove_dir_all(&workspace);
 }
 

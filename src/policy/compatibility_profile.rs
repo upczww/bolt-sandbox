@@ -228,12 +228,19 @@ pub(crate) fn resolve_profile(
                 let Some(path) = resolve_filesystem_rule(rule, context)? else {
                     continue;
                 };
-                if is_root(&path)
-                    || context
-                        .mandatory_filesystem_denies
-                        .iter()
-                        .any(|deny| is_same_or_ancestor(&path, deny))
-                {
+                if is_root(&path) {
+                    return Err(ProfileError::UnsafePath);
+                }
+                let contains_mandatory_deny = context
+                    .mandatory_filesystem_denies
+                    .iter()
+                    .any(|deny| is_same_or_ancestor(&path, deny));
+                if contains_mandatory_deny {
+                    if rule.base == Base::CurrentDirectoryAnchor
+                        && rule.kind == RuleKind::FilesystemMetadataRead
+                    {
+                        continue;
+                    }
                     return Err(ProfileError::UnsafePath);
                 }
                 let key = windows_path_key(&path);
@@ -572,6 +579,23 @@ mod tests {
         assert_eq!(
             resolve_profile(&profile, &roots),
             Err(ProfileError::UnsafePath)
+        );
+    }
+
+    #[test]
+    fn compat_017_cwd_anchor_is_skipped_when_it_contains_a_mandatory_deny() {
+        let profile =
+            parse_profile(b"BSC1\nfs-meta|required|cwd-anchor|.\n").expect("profile must parse");
+        let mut roots = context();
+        roots.cwd = PathBuf::from(r"C:\Users\agent\work\task");
+
+        let resolved = resolve_profile(&profile, &roots)
+            .expect("unsafe broad metadata compatibility must be omitted");
+
+        assert!(resolved.filesystem_metadata_read.is_empty());
+        assert_eq!(
+            roots.mandatory_filesystem_denies,
+            vec![PathBuf::from(r"C:\Users\agent\.ssh")]
         );
     }
 

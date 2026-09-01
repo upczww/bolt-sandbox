@@ -319,33 +319,17 @@ fn run_sandbox(
     cwd: &Path,
     arguments: &[OsString],
 ) -> Result<Vec<u8>, ()> {
-    let mut policy = SandboxPolicy::default();
-    for name in ["SystemRoot", "WINDIR"] {
-        if let Some(path) = std::env::var_os(name).map(PathBuf::from)
-            && path.is_absolute()
-            && !policy.filesystem.metadata_read.contains(&path)
-        {
-            for relative in [
-                r"System32\kernel.appcore.dll",
-                r"SysWOW64\kernel.appcore.dll",
-            ] {
-                let library = path.join(relative);
-                if !policy.filesystem.read_only.contains(&library) {
-                    policy.filesystem.read_only.push(library);
-                }
-            }
-            policy.filesystem.metadata_read.push(path);
-        }
-    }
     let request = SandboxRequest {
         program: executable.to_path_buf(),
         arguments: arguments.to_vec(),
         cwd: cwd.to_path_buf(),
         environment: BTreeMap::new(),
-        policy,
+        policy: SandboxPolicy::default(),
         timeout: Some(Duration::from_secs(30)),
     };
-    let mut handle = sandbox.start(request).map_err(|_| ())?;
+    let mut handle = sandbox.start(request).map_err(|error| {
+        eprintln!("benchmark-sandbox-error stage=start error={error}");
+    })?;
     let stdout = handle.take_stdout().map_err(|_| ())?;
     let stderr = handle.take_stderr().map_err(|_| ())?;
     let events = handle.take_events().map_err(|_| ())?;

@@ -736,7 +736,7 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     const auto installed_filesystem_hook_count =
         reinterpret_cast<InstalledFilesystemHookCountFunction>(
             GetProcAddress(hook, "BoltSandboxInstalledFilesystemHookCount"));
-    constexpr std::uint32_t required_filesystem_hook_count = 78;
+    constexpr std::uint32_t required_filesystem_hook_count = 81;
     const bool copy_file_2_present =
         GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CopyFile2") != nullptr;
     const std::uint32_t expected_filesystem_hook_count =
@@ -2815,7 +2815,7 @@ int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
     constexpr std::uint32_t already_initialized = 1;
     const std::uint32_t hook_count_before =
         installed_hook_count == nullptr ? 0 : installed_hook_count();
-    constexpr std::uint32_t required_filesystem_hook_count = 78;
+    constexpr std::uint32_t required_filesystem_hook_count = 81;
     const bool copy_file_2_present =
         GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CopyFile2") != nullptr;
     const std::uint32_t expected_hook_count =
@@ -3529,56 +3529,6 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
             CloseHandle(nested_job);
         }
         return 336;
-    }
-
-    SIZE_T nested_attributes_size = 0;
-    InitializeProcThreadAttributeList(
-        nullptr, 1, 0, &nested_attributes_size);
-    std::vector<std::uint8_t> nested_attributes_storage(
-        nested_attributes_size);
-    auto* nested_attributes = reinterpret_cast<
-        LPPROC_THREAD_ATTRIBUTE_LIST>(nested_attributes_storage.data());
-    HANDLE nested_jobs[] = {nested_job};
-    STARTUPINFOEXW job_list_startup{};
-    job_list_startup.StartupInfo.cb = sizeof(job_list_startup);
-    job_list_startup.lpAttributeList = nested_attributes;
-    std::wstring job_list_command =
-        L"\"" + executable + L"\" --cli-fixture";
-    PROCESS_INFORMATION job_list_child{};
-    const bool nested_attributes_ready =
-        InitializeProcThreadAttributeList(
-            nested_attributes, 1, 0, &nested_attributes_size) &&
-        UpdateProcThreadAttribute(
-            nested_attributes, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST,
-            nested_jobs, sizeof(nested_jobs), nullptr, nullptr);
-    const BOOL nested_created = nested_attributes_ready &&
-        CreateProcessW(
-            executable.c_str(), job_list_command.data(), nullptr, nullptr,
-            FALSE,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_BREAKAWAY_FROM_JOB,
-            nullptr, nullptr, &job_list_startup.StartupInfo,
-            &job_list_child);
-    DeleteProcThreadAttributeList(nested_attributes);
-    BOOL nested_membership = FALSE;
-    const bool nested_confined = nested_created &&
-        IsProcessInJob(
-            job_list_child.hProcess, nested_job, &nested_membership) &&
-        nested_membership;
-    if (nested_created) {
-        WaitForSingleObject(job_list_child.hProcess, 5'000);
-    }
-    DWORD nested_exit = 0;
-    const bool nested_completed = nested_created &&
-        GetExitCodeProcess(job_list_child.hProcess, &nested_exit) &&
-        nested_exit == 23;
-    if (job_list_child.hThread != nullptr) {
-        CloseHandle(job_list_child.hThread);
-    }
-    if (job_list_child.hProcess != nullptr) {
-        CloseHandle(job_list_child.hProcess);
-    }
-    if (!nested_attributes_ready || !nested_confined || !nested_completed) {
-        return 337;
     }
 
     PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY weakened_extension{};

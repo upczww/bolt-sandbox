@@ -39,7 +39,7 @@ namespace {
 
 std::unique_ptr<FilesystemPolicy> g_policy;
 HandleAccessCache g_handle_access_cache;
-constexpr LONG kRequiredFilesystemHookCount = 78;
+constexpr LONG kRequiredFilesystemHookCount = 81;
 volatile LONG g_installed_file_hook_count = 0;
 
 CreateFileW_t g_create_file_w = CreateFileW;
@@ -86,9 +86,12 @@ using NtQuerySectionFunction = NTSTATUS(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PUL
 NtQuerySectionFunction g_nt_query_section = nullptr;
 using NtCloseFunction = NTSTATUS(NTAPI*)(HANDLE);
 NtCloseFunction g_nt_close = nullptr;
+using NtDuplicateObjectFunction = NTSTATUS(NTAPI*)(
+    HANDLE, HANDLE, HANDLE, PHANDLE, ACCESS_MASK, ULONG, ULONG);
+NtDuplicateObjectFunction g_nt_duplicate_object = nullptr;
 using NtCompareObjectsFunction = NTSTATUS(NTAPI*)(HANDLE, HANDLE);
 NtCompareObjectsFunction g_nt_compare_objects = nullptr;
-std::array<HANDLE, 2> g_trusted_standard_streams{};
+std::array<HANDLE, 5> g_trusted_standard_streams{};
 using GetMappedFileNameWFunction = DWORD(WINAPI*)(HANDLE, LPVOID, LPWSTR, DWORD);
 GetMappedFileNameWFunction g_get_mapped_file_name_w = nullptr;
 
@@ -241,6 +244,116 @@ NtReadWriteFileFunction g_nt_read_file = nullptr;
 NtReadWriteFileFunction g_nt_write_file = nullptr;
 NtCreateFile_t g_nt_create_file = nullptr;
 NtOpenFile_t g_nt_open_file = nullptr;
+using NtCreateNamedPipeFileFunction = NTSTATUS(NTAPI*)(
+    PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, ULONG, ULONG,
+    ULONG, ULONG, ULONG, ULONG, ULONG, ULONG, ULONG, PLARGE_INTEGER);
+NtCreateNamedPipeFileFunction g_nt_create_named_pipe_file = nullptr;
+using NtCreateMailslotFileFunction = NTSTATUS(NTAPI*)(
+    PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, ULONG, ULONG,
+    ULONG, PLARGE_INTEGER);
+NtCreateMailslotFileFunction g_nt_create_mailslot_file = nullptr;
+
+enum class PrivatePipeCapability : std::uint8_t {
+    kNone,
+    kFilesystemRoot,
+    kServer,
+    kClient,
+};
+
+struct PrivatePipeCapabilityEntry {
+    HANDLE handle = nullptr;
+    PrivatePipeCapability capability = PrivatePipeCapability::kNone;
+    ACCESS_MASK access = 0;
+};
+
+constexpr std::size_t kPrivatePipeCapabilityCapacity = 512;
+SRWLOCK g_private_pipe_capability_lock = SRWLOCK_INIT;
+std::array<PrivatePipeCapabilityEntry, kPrivatePipeCapabilityCapacity>
+    g_private_pipe_capabilities{};
+std::size_t g_private_pipe_capability_count = 0;
+
+bool TrackPrivatePipeCapability(
+    const HANDLE handle,
+    const PrivatePipeCapability capability,
+    const ACCESS_MASK access = 0) noexcept {
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE ||
+        capability == PrivatePipeCapability::kNone) {
+        return false;
+    }
+    AcquireSRWLockExclusive(&g_private_pipe_capability_lock);
+    for (std::size_t index = 0;
+         index < g_private_pipe_capability_count; ++index) {
+        auto& entry = g_private_pipe_capabilities[index];
+        if (entry.handle == handle) {
+            entry.capability = capability;
+            entry.access = access;
+            ReleaseSRWLockExclusive(&g_private_pipe_capability_lock);
+            return true;
+        }
+    }
+    if (g_private_pipe_capability_count ==
+        g_private_pipe_capabilities.size()) {
+        ReleaseSRWLockExclusive(&g_private_pipe_capability_lock);
+        return false;
+    }
+    g_private_pipe_capabilities[g_private_pipe_capability_count++] = {
+        handle, capability, access};
+    ReleaseSRWLockExclusive(&g_private_pipe_capability_lock);
+    return true;
+}
+
+bool HasPrivatePipeCapability(
+    const HANDLE handle,
+    const PrivatePipeCapability capability) noexcept {
+    AcquireSRWLockShared(&g_private_pipe_capability_lock);
+    bool found = false;
+    for (std::size_t index = 0;
+         index < g_private_pipe_capability_count; ++index) {
+        const auto& entry = g_private_pipe_capabilities[index];
+        if (entry.handle == handle && entry.capability == capability) {
+            found = true;
+            break;
+        }
+    }
+    ReleaseSRWLockShared(&g_private_pipe_capability_lock);
+    return found;
+}
+
+bool ReadPrivatePipeCapability(
+    const HANDLE handle,
+    PrivatePipeCapability& capability,
+    ACCESS_MASK& access) noexcept {
+    capability = PrivatePipeCapability::kNone;
+    access = 0;
+    AcquireSRWLockShared(&g_private_pipe_capability_lock);
+    for (std::size_t index = 0;
+         index < g_private_pipe_capability_count; ++index) {
+        const auto& entry = g_private_pipe_capabilities[index];
+        if (entry.handle == handle) {
+            capability = entry.capability;
+            access = entry.access;
+            break;
+        }
+    }
+    ReleaseSRWLockShared(&g_private_pipe_capability_lock);
+    return capability != PrivatePipeCapability::kNone;
+}
+
+void UntrackPrivatePipeCapability(const HANDLE handle) noexcept {
+    AcquireSRWLockExclusive(&g_private_pipe_capability_lock);
+    for (std::size_t index = 0;
+         index < g_private_pipe_capability_count; ++index) {
+        if (g_private_pipe_capabilities[index].handle == handle) {
+            --g_private_pipe_capability_count;
+            g_private_pipe_capabilities[index] =
+                g_private_pipe_capabilities[g_private_pipe_capability_count];
+            g_private_pipe_capabilities[g_private_pipe_capability_count] = {};
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_private_pipe_capability_lock);
+}
+
 using ReadDirectoryChangesWFunction = BOOL(WINAPI*)(
     HANDLE, LPVOID, DWORD, BOOL, DWORD, LPDWORD, LPOVERLAPPED,
     LPOVERLAPPED_COMPLETION_ROUTINE);
@@ -1113,11 +1226,12 @@ bool IsTrustedStandardStream(const HANDLE file) noexcept {
 }
 
 bool AuthorizeHandleMetadata(const HANDLE file) noexcept {
-    if (IsTrustedStandardStream(file)) {
-        return true;
-    }
     if (g_handle_access_cache.Allows(file, HandleAccess::kMetadata)) {
         return true;
+    }
+    if (IsTrustedStandardStream(file)) {
+        return g_handle_access_cache.Store(
+            file, HandleAccess::kMetadata);
     }
     std::wstring source_path;
     if (!TryGetHandlePath(file, source_path)) {
@@ -1179,6 +1293,16 @@ bool AuthorizeHandleIo(
                                    : HandleAccess::kMetadata;
     if (g_handle_access_cache.Allows(file, cached_access)) {
         return true;
+    }
+    if (IsTrustedStandardStream(file)) {
+        const bool cached =
+            g_handle_access_cache.Store(file, cached_access);
+        if (cached_access != HandleAccess::kMetadata) {
+            return g_handle_access_cache.Store(
+                       file, HandleAccess::kMetadata) &&
+                cached;
+        }
+        return cached;
     }
     std::wstring source_path;
     if (!TryGetHandlePath(file, source_path)) {
@@ -1376,6 +1500,136 @@ NTSTATUS DenyNativeFileOpen(
         io_status->Information = 0;
     }
     return status_access_denied;
+}
+
+bool HasEmptyObjectName(
+    const POBJECT_ATTRIBUTES object_attributes) noexcept {
+    if (object_attributes == nullptr) {
+        return false;
+    }
+    __try {
+        return object_attributes->ObjectName != nullptr &&
+            object_attributes->ObjectName->Length == 0 &&
+            object_attributes->ObjectName->MaximumLength == 0 &&
+            object_attributes->ObjectName->Buffer == nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool ReadObjectRootDirectory(
+    const POBJECT_ATTRIBUTES object_attributes,
+    HANDLE& root_directory) noexcept {
+    root_directory = nullptr;
+    if (object_attributes == nullptr) {
+        return false;
+    }
+    __try {
+        if (object_attributes->Length < sizeof(OBJECT_ATTRIBUTES)) {
+            return false;
+        }
+        root_directory = object_attributes->RootDirectory;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        root_directory = nullptr;
+        return false;
+    }
+}
+
+bool IsPrivatePipeFilesystemRootOpen(
+    const ACCESS_MASK desired_access,
+    const POBJECT_ATTRIBUTES object_attributes,
+    const ULONG share_access,
+    const ULONG open_options) noexcept {
+    if (desired_access != (SYNCHRONIZE | GENERIC_READ) ||
+        share_access != (FILE_SHARE_READ | FILE_SHARE_WRITE) ||
+        open_options != FILE_SYNCHRONOUS_IO_NONALERT) {
+        return false;
+    }
+    std::wstring path;
+    return TryGetObjectAttributesPath(object_attributes, path) &&
+        CompareStringOrdinal(
+            path.c_str(), -1, L"\\Device\\NamedPipe\\", -1, TRUE) ==
+        CSTR_EQUAL;
+}
+
+bool IsPrivatePipeClientOpen(
+    const ACCESS_MASK desired_access,
+    const POBJECT_ATTRIBUTES object_attributes,
+    const ULONG share_access,
+    const ULONG open_options) noexcept {
+    if (!HasEmptyObjectName(object_attributes) || share_access != 0 ||
+        open_options !=
+            (FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT)) {
+        return false;
+    }
+    const ACCESS_MASK write_access =
+        SYNCHRONIZE | GENERIC_WRITE | FILE_READ_ATTRIBUTES;
+    const ACCESS_MASK read_access = SYNCHRONIZE | GENERIC_READ;
+    HANDLE root_directory = nullptr;
+    return (desired_access == write_access || desired_access == read_access) &&
+        ReadObjectRootDirectory(object_attributes, root_directory) &&
+        HasPrivatePipeCapability(
+            root_directory, PrivatePipeCapability::kServer);
+}
+
+bool IsPrivateAnonymousPipeCreation(
+    const ACCESS_MASK desired_access,
+    const POBJECT_ATTRIBUTES object_attributes,
+    const ULONG share_access,
+    const ULONG create_disposition,
+    const ULONG create_options,
+    const ULONG pipe_type,
+    const ULONG read_mode,
+    const ULONG completion_mode,
+    const ULONG maximum_instances,
+    const ULONG inbound_quota,
+    const ULONG outbound_quota) noexcept {
+    constexpr ULONG maximum_pipe_quota = 1U << 20U;
+    const ACCESS_MASK read_access = SYNCHRONIZE | GENERIC_READ;
+    const ACCESS_MASK write_access = SYNCHRONIZE | GENERIC_WRITE;
+    const bool access_valid =
+        (desired_access == read_access && share_access == FILE_SHARE_WRITE) ||
+        (desired_access == write_access && share_access == FILE_SHARE_READ);
+    HANDLE root_directory = nullptr;
+    return access_valid && HasEmptyObjectName(object_attributes) &&
+        ReadObjectRootDirectory(object_attributes, root_directory) &&
+        HasPrivatePipeCapability(
+            root_directory,
+            PrivatePipeCapability::kFilesystemRoot) &&
+        create_disposition == FILE_CREATE && create_options == 0 &&
+        pipe_type == 0 && read_mode == 0 && completion_mode == 0 &&
+        maximum_instances == 1 && inbound_quota != 0 && outbound_quota != 0 &&
+        inbound_quota <= maximum_pipe_quota &&
+        outbound_quota <= maximum_pipe_quota;
+}
+
+bool CachePrivatePipeAccess(
+    const HANDLE handle,
+    const ACCESS_MASK desired_access) noexcept {
+    bool cached = g_handle_access_cache.Store(
+        handle, HandleAccess::kMetadata);
+    if ((desired_access & (GENERIC_READ | FILE_READ_DATA)) != 0) {
+        cached = g_handle_access_cache.Store(
+                     handle, HandleAccess::kRead) &&
+            cached;
+    }
+    if ((desired_access & (GENERIC_WRITE | FILE_WRITE_DATA)) != 0) {
+        cached = g_handle_access_cache.Store(
+                     handle, HandleAccess::kWrite) &&
+            cached;
+    }
+    return cached;
+}
+
+NTSTATUS FailPrivatePipeCapability(
+    const HANDLE handle,
+    const PHANDLE output,
+    const PIO_STATUS_BLOCK io_status) noexcept {
+    if (handle != nullptr && handle != INVALID_HANDLE_VALUE) {
+        g_nt_close(handle);
+    }
+    return DenyNativeFileOpen(output, io_status);
 }
 
 bool AuthorizeAttributeMutation(const wchar_t* path) noexcept {
@@ -1595,6 +1849,52 @@ NTSTATUS NTAPI DetouredNtOpenFile(
             file, desired_access, object_attributes, io_status, share_access,
             open_options);
     }
+    const bool pipe_filesystem_root = IsPrivatePipeFilesystemRootOpen(
+        desired_access, object_attributes, share_access, open_options);
+    const bool private_pipe_client = IsPrivatePipeClientOpen(
+        desired_access, object_attributes, share_access, open_options);
+    if (pipe_filesystem_root || private_pipe_client) {
+        const NTSTATUS result = g_nt_open_file(
+            file, desired_access, object_attributes, io_status, share_access,
+            open_options);
+        if (result < 0) {
+            return result;
+        }
+        HANDLE opened = nullptr;
+        if (!ReadCreatedHandle(file, opened)) {
+            return FailPrivatePipeCapability(
+                nullptr, file, io_status);
+        }
+        const auto capability =
+            pipe_filesystem_root
+                ? PrivatePipeCapability::kFilesystemRoot
+                : PrivatePipeCapability::kClient;
+        if (!TrackPrivatePipeCapability(
+                opened, capability,
+                pipe_filesystem_root ? 0 : desired_access) ||
+            (!pipe_filesystem_root &&
+             !CachePrivatePipeAccess(opened, desired_access))) {
+            UntrackPrivatePipeCapability(opened);
+            return FailPrivatePipeCapability(
+                opened, file, io_status);
+        }
+        return result;
+    }
+    HANDLE pipe_root_directory = nullptr;
+    if (ReadObjectRootDirectory(
+            object_attributes, pipe_root_directory) &&
+        pipe_root_directory != nullptr &&
+        (HasPrivatePipeCapability(
+             pipe_root_directory,
+             PrivatePipeCapability::kFilesystemRoot) ||
+         HasPrivatePipeCapability(
+             pipe_root_directory,
+             PrivatePipeCapability::kServer))) {
+        ReportDenied(
+            protocol::FilesystemOperation::kRead,
+            L"<private-anonymous-pipe>");
+        return DenyNativeFileOpen(file, io_status);
+    }
     if (!AuthorizeNativeFileOpen(
             desired_access, object_attributes, FILE_OPEN, open_options)) {
         return DenyNativeFileOpen(file, io_status);
@@ -1613,6 +1913,83 @@ NTSTATUS NTAPI DetouredNtOpenFile(
         }
     }
     return result;
+}
+
+NTSTATUS NTAPI DetouredNtCreateNamedPipeFile(
+    const PHANDLE file,
+    const ACCESS_MASK desired_access,
+    const POBJECT_ATTRIBUTES object_attributes,
+    const PIO_STATUS_BLOCK io_status,
+    const ULONG share_access,
+    const ULONG create_disposition,
+    const ULONG create_options,
+    const ULONG pipe_type,
+    const ULONG read_mode,
+    const ULONG completion_mode,
+    const ULONG maximum_instances,
+    const ULONG inbound_quota,
+    const ULONG outbound_quota,
+    const PLARGE_INTEGER default_timeout) noexcept {
+    const Win32LastErrorGuard last_error_guard;
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_nt_create_named_pipe_file(
+            file, desired_access, object_attributes, io_status, share_access,
+            create_disposition, create_options, pipe_type, read_mode,
+            completion_mode, maximum_instances, inbound_quota, outbound_quota,
+            default_timeout);
+    }
+    if (!IsPrivateAnonymousPipeCreation(
+            desired_access, object_attributes, share_access,
+            create_disposition, create_options, pipe_type, read_mode,
+            completion_mode, maximum_instances, inbound_quota,
+            outbound_quota)) {
+        ReportDenied(
+            protocol::FilesystemOperation::kCreate,
+            L"<private-anonymous-pipe>");
+        return DenyNativeFileOpen(file, io_status);
+    }
+    const NTSTATUS result = g_nt_create_named_pipe_file(
+        file, desired_access, object_attributes, io_status, share_access,
+        create_disposition, create_options, pipe_type, read_mode,
+        completion_mode, maximum_instances, inbound_quota, outbound_quota,
+        default_timeout);
+    if (result < 0) {
+        return result;
+    }
+    HANDLE opened = nullptr;
+    if (!ReadCreatedHandle(file, opened)) {
+        return FailPrivatePipeCapability(nullptr, file, io_status);
+    }
+    if (!TrackPrivatePipeCapability(
+            opened, PrivatePipeCapability::kServer, desired_access) ||
+        !CachePrivatePipeAccess(opened, desired_access)) {
+        UntrackPrivatePipeCapability(opened);
+        return FailPrivatePipeCapability(opened, file, io_status);
+    }
+    return result;
+}
+
+NTSTATUS NTAPI DetouredNtCreateMailslotFile(
+    const PHANDLE file,
+    const ACCESS_MASK desired_access,
+    const POBJECT_ATTRIBUTES object_attributes,
+    const PIO_STATUS_BLOCK io_status,
+    const ULONG create_options,
+    const ULONG mailslot_quota,
+    const ULONG maximum_message_size,
+    const PLARGE_INTEGER read_timeout) noexcept {
+    const Win32LastErrorGuard last_error_guard;
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_nt_create_mailslot_file(
+            file, desired_access, object_attributes, io_status,
+            create_options, mailslot_quota, maximum_message_size,
+            read_timeout);
+    }
+    ReportDenied(
+        protocol::FilesystemOperation::kCreate, L"<mailslot>");
+    return DenyNativeFileOpen(file, io_status);
 }
 
 bool AuthorizeShellDelete(const wchar_t* paths) noexcept {
@@ -2658,7 +3035,7 @@ BOOL WINAPI DetouredWriteFile(
         return g_write_file(
             file, buffer, bytes_to_write, bytes_written, overlapped);
     }
-    if (!IsTrustedStandardStream(file) && !AuthorizeHandleIo(
+    if (!AuthorizeHandleIo(
             file, Access::kWrite, protocol::FilesystemOperation::kWrite)) {
         if (bytes_written != nullptr) {
             *bytes_written = 0;
@@ -2717,7 +3094,7 @@ NTSTATUS NTAPI DetouredNtWriteFile(
             file, event, apc_routine, apc_context, io_status, buffer,
             bytes_to_write, byte_offset, key);
     }
-    if (IsTrustedStandardStream(file) || AuthorizeHandleIo(
+    if (AuthorizeHandleIo(
             file, Access::kWrite, protocol::FilesystemOperation::kWrite)) {
         return g_nt_write_file(
             file, event, apc_routine, apc_context, io_status, buffer,
@@ -3448,8 +3825,71 @@ NTSTATUS NTAPI DetouredNtCreateSection(
 
 NTSTATUS NTAPI DetouredNtClose(const HANDLE handle) noexcept {
     UntrackSectionCapability(handle);
+    UntrackPrivatePipeCapability(handle);
     g_handle_access_cache.Remove(handle);
     return g_nt_close(handle);
+}
+
+bool IsCurrentProcessHandle(const HANDLE process) noexcept {
+    return process == GetCurrentProcess() ||
+        (process != nullptr && process != INVALID_HANDLE_VALUE &&
+         GetProcessId(process) == GetCurrentProcessId());
+}
+
+NTSTATUS NTAPI DetouredNtDuplicateObject(
+    const HANDLE source_process,
+    const HANDLE source_handle,
+    const HANDLE target_process,
+    const PHANDLE target_handle,
+    const ACCESS_MASK desired_access,
+    const ULONG handle_attributes,
+    const ULONG options) noexcept {
+    const Win32LastErrorGuard last_error_guard;
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_nt_duplicate_object(
+            source_process, source_handle, target_process, target_handle,
+            desired_access, handle_attributes, options);
+    }
+    PrivatePipeCapability capability = PrivatePipeCapability::kNone;
+    ACCESS_MASK pipe_access = 0;
+    const bool private_pipe_source =
+        ReadPrivatePipeCapability(
+            source_handle, capability, pipe_access) &&
+        IsCurrentProcessHandle(source_process);
+    if (private_pipe_source && !IsCurrentProcessHandle(target_process)) {
+        ClearCreatedHandle(target_handle);
+        constexpr NTSTATUS status_access_denied =
+            static_cast<NTSTATUS>(0xC0000022UL);
+        return status_access_denied;
+    }
+    const NTSTATUS status = g_nt_duplicate_object(
+        source_process, source_handle, target_process, target_handle,
+        desired_access, handle_attributes, options);
+    if (status < 0 || !private_pipe_source) {
+        return status;
+    }
+    if ((options & DUPLICATE_CLOSE_SOURCE) != 0) {
+        UntrackPrivatePipeCapability(source_handle);
+        g_handle_access_cache.Remove(source_handle);
+    }
+    HANDLE duplicated = nullptr;
+    if (!ReadCreatedHandle(target_handle, duplicated)) {
+        return status;
+    }
+    if (!TrackPrivatePipeCapability(
+            duplicated, capability, pipe_access) ||
+        (capability != PrivatePipeCapability::kFilesystemRoot &&
+         !CachePrivatePipeAccess(duplicated, pipe_access))) {
+        UntrackPrivatePipeCapability(duplicated);
+        g_handle_access_cache.Remove(duplicated);
+        g_nt_close(duplicated);
+        ClearCreatedHandle(target_handle);
+        constexpr NTSTATUS status_insufficient_resources =
+            static_cast<NTSTATUS>(0xC000009AUL);
+        return status_insufficient_resources;
+    }
+    return status;
 }
 
 NTSTATUS NTAPI DetouredNtMapViewOfSection(
@@ -3999,6 +4439,8 @@ HookInstallStatus InstallFileHooks(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySection"));
     g_nt_close = reinterpret_cast<NtCloseFunction>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtClose"));
+    g_nt_duplicate_object = reinterpret_cast<NtDuplicateObjectFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtDuplicateObject"));
     g_nt_compare_objects = reinterpret_cast<NtCompareObjectsFunction>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCompareObjects"));
     g_get_mapped_file_name_w = reinterpret_cast<GetMappedFileNameWFunction>(
@@ -4021,6 +4463,12 @@ HookInstallStatus InstallFileHooks(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
     g_nt_open_file = reinterpret_cast<NtOpenFile_t>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtOpenFile"));
+    g_nt_create_named_pipe_file =
+        reinterpret_cast<NtCreateNamedPipeFileFunction>(GetProcAddress(
+            GetModuleHandleW(L"ntdll.dll"), "NtCreateNamedPipeFile"));
+    g_nt_create_mailslot_file =
+        reinterpret_cast<NtCreateMailslotFileFunction>(GetProcAddress(
+            GetModuleHandleW(L"ntdll.dll"), "NtCreateMailslotFile"));
     g_nt_notify_change_directory_file =
         reinterpret_cast<NtNotifyChangeDirectoryFileFunction>(GetProcAddress(
             GetModuleHandleW(L"ntdll.dll"), "NtNotifyChangeDirectoryFile"));
@@ -4030,32 +4478,33 @@ HookInstallStatus InstallFileHooks(
     if (g_zw_set_information_file == nullptr || g_nt_create_section == nullptr ||
         g_nt_map_view_of_section == nullptr || g_nt_unmap_view_of_section == nullptr ||
         g_nt_query_section == nullptr || g_nt_close == nullptr ||
+        g_nt_duplicate_object == nullptr ||
         g_nt_compare_objects == nullptr ||
         g_get_mapped_file_name_w == nullptr ||
         g_nt_query_information_file == nullptr || g_nt_query_attributes_file == nullptr ||
         g_nt_query_full_attributes_file == nullptr || g_nt_query_directory_file == nullptr ||
         g_nt_query_directory_file_ex == nullptr || g_nt_read_file == nullptr ||
         g_nt_write_file == nullptr || g_nt_create_file == nullptr ||
-        g_nt_open_file == nullptr || g_nt_notify_change_directory_file == nullptr ||
+        g_nt_open_file == nullptr || g_nt_create_named_pipe_file == nullptr ||
+        g_nt_create_mailslot_file == nullptr ||
+        g_nt_notify_change_directory_file == nullptr ||
         g_nt_notify_change_directory_file_ex == nullptr) {
         return HookInstallStatus::kTransactionFailed;
     }
-    const std::array<HANDLE, 2> standard_streams = {
-        trusted_stdout, trusted_stderr};
-    const bool redirected_streams = std::all_of(
-        standard_streams.begin(), standard_streams.end(),
-        [](const HANDLE stream) {
-            return stream != nullptr && stream != INVALID_HANDLE_VALUE &&
-                   GetFileType(stream) == FILE_TYPE_PIPE;
-        });
-    if (redirected_streams) {
-        for (std::size_t index = 0; index < standard_streams.size(); ++index) {
-            if (!DuplicateHandle(
-                    GetCurrentProcess(), standard_streams[index],
-                    GetCurrentProcess(), &g_trusted_standard_streams[index],
-                    0, FALSE, DUPLICATE_SAME_ACCESS)) {
-                return HookInstallStatus::kTransactionFailed;
-            }
+    const std::array<HANDLE, 5> standard_streams = {
+        GetStdHandle(STD_INPUT_HANDLE), GetStdHandle(STD_OUTPUT_HANDLE),
+        GetStdHandle(STD_ERROR_HANDLE), trusted_stdout, trusted_stderr};
+    for (std::size_t index = 0; index < standard_streams.size(); ++index) {
+        const HANDLE stream = standard_streams[index];
+        if (stream == nullptr || stream == INVALID_HANDLE_VALUE ||
+            GetFileType(stream) != FILE_TYPE_PIPE) {
+            continue;
+        }
+        if (!DuplicateHandle(
+                GetCurrentProcess(), stream, GetCurrentProcess(),
+                &g_trusted_standard_streams[index], 0, FALSE,
+                DUPLICATE_SAME_ACCESS)) {
+            return HookInstallStatus::kTransactionFailed;
         }
     }
     if (DetourTransactionBegin() != NO_ERROR) {
@@ -4166,6 +4615,14 @@ HookInstallStatus InstallFileHooks(
             reinterpret_cast<PVOID*>(&g_nt_open_file),
             reinterpret_cast<PVOID>(DetouredNtOpenFile)) != NO_ERROR ||
         DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_create_named_pipe_file),
+            reinterpret_cast<PVOID>(DetouredNtCreateNamedPipeFile)) !=
+            NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_create_mailslot_file),
+            reinterpret_cast<PVOID>(DetouredNtCreateMailslotFile)) !=
+            NO_ERROR ||
+        DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_named_pipe_w),
             reinterpret_cast<PVOID>(DetouredCreateNamedPipeW)) != NO_ERROR ||
         DetourAttach(
@@ -4246,6 +4703,9 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_nt_close),
             reinterpret_cast<PVOID>(DetouredNtClose)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_nt_duplicate_object),
+            reinterpret_cast<PVOID>(DetouredNtDuplicateObject)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_device_io_control),
             reinterpret_cast<PVOID>(DetouredDeviceIoControl)) != NO_ERROR ||

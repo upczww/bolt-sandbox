@@ -28,7 +28,8 @@ produce a recorded `not_present` capability result, not a skipped test.
 | Mapping/section | `CreateFileMappingW/A`, `NtCreateSection`, `MapViewOfFile*`, `NtMapViewOfSection`, flush/unmap | FS-037..038, FS-062 |
 | Directory notification | `ReadDirectoryChangesW`, `NtNotifyChangeDirectoryFile`, `NtNotifyChangeDirectoryFileEx` | FS-061 |
 | Shell operations | `SHFileOperationW/A`, `IFileOperation` copy/move/delete/rename | FS-041 |
-| Handle capability | inherited handles, `DuplicateHandle`, delete/rename/truncate by handle | FS-030, FS-034..036, FS-045..046, BYP-007..008 |
+| Handle capability | inherited handles, `DuplicateHandle`, `NtDuplicateObject`, delete/rename/truncate by handle | FS-030, FS-034..036, FS-045..046, BYP-007..008 |
+| Private anonymous IPC | exact pipe-filesystem root, unnamed `NtCreateNamedPipeFile`, single inherited client, arbitrary named-pipe and `NtCreateMailslotFile` denial | FS-019, FS-053 |
 
 Each family must include allowed, read-only/denied, ordinary OS failure,
 alias/final-target, event, and side-effect assertions where the operation

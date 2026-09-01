@@ -284,6 +284,8 @@ CLI 会继承宿主环境，并用内置凭据名列表剥离已知 Broker/模�
   `AllowList` 执行限制性网络拦截。
 - `ChildProcessPolicy::Inherit` 只在子进程安装匹配 Hook 与策略后允许执行；
   `Deny` 禁止创建子进程。
+- Agent Runtime 可以使用自己创建的无名标准输入输出管道。该能力按句柄授权，
+  不是路径授权；命名管道、Mailslot、跨进程复制和任意管道命名空间访问仍被拒绝。
 - 恢复失败不改变原始 Allow/Deny 决策；允许的破坏性操作继续执行并产生类型化
   Recovery Failure。
 
