@@ -455,4 +455,45 @@ mod tests {
         );
         fs::remove_dir_all(fixture).expect("fixture must clean");
     }
+
+    #[test]
+    fn ws_016_commit_swaps_complete_workspace_and_retains_recovery_root() {
+        let fixture = std::env::temp_dir().join(format!(
+            "bolt-workspace-commit-{}",
+            std::process::id()
+        ));
+        let source = fixture.join("source");
+        let staged = fixture.join("staged");
+        let recovery = fixture.join("recovery");
+        let _ = fs::remove_dir_all(&fixture);
+        fs::create_dir_all(&source).expect("source must create");
+        fs::write(source.join("file.txt"), b"before").expect("seed must write");
+        let transaction = StagedWorkspaceTransaction::prepare(
+            &source,
+            &staged,
+            WorkspaceLimits {
+                maximum_items: 16,
+                maximum_bytes: 1_048_576,
+            },
+        )
+        .expect("transaction must prepare");
+        fs::write(staged.join("file.txt"), b"after").expect("stage must mutate");
+
+        let committed = transaction.commit(&recovery).expect("commit must succeed");
+
+        assert_eq!(fs::read(source.join("file.txt")).expect("source"), b"after");
+        assert_eq!(
+            fs::read(recovery.join("file.txt")).expect("recovery"),
+            b"before"
+        );
+        assert_eq!(committed.recovery_root(), recovery);
+        assert_eq!(
+            committed.changes(),
+            &[WorkspaceChange {
+                relative_path: PathBuf::from("file.txt"),
+                kind: WorkspaceChangeKind::Modified,
+            }]
+        );
+        fs::remove_dir_all(fixture).expect("fixture must clean");
+    }
 }
