@@ -4,6 +4,7 @@ use std::{
 };
 
 use super::architecture::{ImageArchitecture, detect_image_architecture_from_reader};
+use super::component_manifest::{ManifestError, read_manifest, verify_component};
 
 const LAUNCHER_NAME: &str = "bolt-sandbox-launcher.exe";
 const X86_LAUNCHER_NAME: &str = "bolt-sandbox-launcher-x86.exe";
@@ -44,6 +45,10 @@ pub(super) enum ComponentOpenError {
     InvalidHookImage,
     LauncherArchitectureMismatch,
     HookArchitectureMismatch,
+    ManifestOpen,
+    InvalidManifest,
+    LauncherHashMismatch,
+    HookHashMismatch,
 }
 
 pub(super) fn open_components(
@@ -65,6 +70,25 @@ pub(super) fn open_components(
     let mut launcher_handle =
         File::open(&launcher_path).map_err(|_| ComponentOpenError::LauncherOpen)?;
     let mut hook_handle = File::open(&hook_path).map_err(|_| ComponentOpenError::HookOpen)?;
+    let manifest = read_manifest(root).map_err(map_manifest_open_error)?;
+    let launcher_name = launcher_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(ComponentOpenError::InvalidManifest)?;
+    let hook_name = hook_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(ComponentOpenError::InvalidManifest)?;
+    let launcher_record = manifest
+        .get(launcher_name)
+        .ok_or(ComponentOpenError::InvalidManifest)?;
+    let hook_record = manifest
+        .get(hook_name)
+        .ok_or(ComponentOpenError::InvalidManifest)?;
+    verify_component(&mut launcher_handle, launcher_record)
+        .map_err(|_| ComponentOpenError::LauncherHashMismatch)?;
+    verify_component(&mut hook_handle, hook_record)
+        .map_err(|_| ComponentOpenError::HookHashMismatch)?;
 
     let launcher_architecture = detect_image_architecture_from_reader(&mut launcher_handle)
         .map_err(|_| ComponentOpenError::InvalidLauncherImage)?;
@@ -85,15 +109,25 @@ pub(super) fn open_components(
     })
 }
 
+const fn map_manifest_open_error(error: ManifestError) -> ComponentOpenError {
+    match error {
+        ManifestError::Open => ComponentOpenError::ManifestOpen,
+        ManifestError::Read
+        | ManifestError::Invalid
+        | ManifestError::LengthMismatch
+        | ManifestError::HashMismatch => ComponentOpenError::InvalidManifest,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use sha2::{Digest, Sha256};
     use std::{
         fs,
         io::{Seek, SeekFrom},
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
     };
-    use sha2::{Digest, Sha256};
 
     use super::*;
     use crate::runtime::architecture::detect_image_architecture_from_reader;
@@ -155,11 +189,20 @@ mod tests {
         let mut manifest = Vec::from(*b"BCM1");
         manifest.extend_from_slice(&1_u16.to_le_bytes());
         manifest.extend_from_slice(&16_u16.to_le_bytes());
-        manifest.extend_from_slice(&(names.len() as u16).to_le_bytes());
-        manifest.extend_from_slice(&[0; 6]);
+        manifest.extend_from_slice(
+            &u16::try_from(names.len())
+                .expect("record count fits")
+                .to_le_bytes(),
+        );
+        manifest.extend_from_slice(&crate::ipc::framing::PROTOCOL_VERSION.to_le_bytes());
+        manifest.extend_from_slice(&[0; 4]);
         for name in names {
             let bytes = fs::read(root.join(name)).expect("component must be readable");
-            manifest.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            manifest.extend_from_slice(
+                &u16::try_from(name.len())
+                    .expect("name length fits")
+                    .to_le_bytes(),
+            );
             manifest.extend_from_slice(&0_u16.to_le_bytes());
             manifest.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
             manifest.extend_from_slice(&Sha256::digest(&bytes));
@@ -226,6 +269,7 @@ mod tests {
 
         fs::write(fixture.root.join(X86_HOOK_NAME), pe_image(0x8664))
             .expect("wrong architecture hook must be written");
+        write_manifest(&fixture.root);
         assert!(matches!(
             open_components(&fixture.root, ImageArchitecture::X86),
             Err(ComponentOpenError::HookArchitectureMismatch)
@@ -233,6 +277,7 @@ mod tests {
 
         fs::write(fixture.root.join(LAUNCHER_NAME), pe_image(0x014C))
             .expect("wrong architecture launcher must be written");
+        write_manifest(&fixture.root);
         assert!(matches!(
             open_components(&fixture.root, ImageArchitecture::X64),
             Err(ComponentOpenError::LauncherArchitectureMismatch)
@@ -250,6 +295,33 @@ mod tests {
         assert_eq!(
             open_components(&fixture.root, ImageArchitecture::X64).err(),
             Some(ComponentOpenError::HookHashMismatch)
+        );
+    }
+
+    #[test]
+    fn sec_001_host_manifest_digest_rejects_self_consistent_replacement() {
+        let fixture = Fixture::new();
+        let manifest_path = fixture
+            .root
+            .join(crate::runtime::component_manifest::MANIFEST_NAME);
+        let expected: [u8; 32] = Sha256::digest(
+            fs::read(&manifest_path).expect("manifest must be readable"),
+        )
+        .into();
+        let hook = fixture.root.join(X64_HOOK_NAME);
+        let mut tampered = fs::read(&hook).expect("hook must be readable");
+        tampered.push(0x5A);
+        fs::write(&hook, tampered).expect("tampered hook must be written");
+        write_manifest(&fixture.root);
+
+        assert_eq!(
+            open_components_with_manifest_digest(
+                &fixture.root,
+                ImageArchitecture::X64,
+                Some(&expected),
+            )
+            .err(),
+            Some(ComponentOpenError::ManifestHashMismatch)
         );
     }
 
