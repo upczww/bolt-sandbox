@@ -9,12 +9,13 @@ use std::{
 use bolt_sandbox::{
     AttributedSandboxEvent, ChildInjectionFailure, ChildInjectionFailureReason, ChildProcessPolicy,
     CommandId, DEFAULT_STREAM_CAPACITY, DEFAULT_VIOLATION_AGGREGATE_CAPACITY, EventStream,
-    ExecutionAttribution, ExecutionHandle, ExecutionId, ExecutionResult, FilesystemOperation,
-    FilesystemPolicy, FilesystemViolation, IpCidr, MAX_TIMEOUT, MAX_VIOLATION_AGGREGATE_CAPACITY,
-    MIN_TIMEOUT, NetworkAllowList, NetworkPolicy, NetworkTarget, NetworkViolation,
-    PolicyGeneration, PortRange, ProcessExit, ProcessExitReason, ProcessOperation,
-    ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField, Sandbox, SandboxConfig,
-    SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest, ViolationAggregate,
+    ExecutionAttribution, ExecutionHandle, ExecutionId, ExecutionOptions, ExecutionResult,
+    FilesystemOperation, FilesystemPolicy, FilesystemViolation, IpCidr, MAX_TIMEOUT,
+    MAX_VIOLATION_AGGREGATE_CAPACITY, MIN_TIMEOUT, NetworkAllowList, NetworkPolicy, NetworkTarget,
+    NetworkViolation, PolicyGeneration, PortRange, ProcessExit, ProcessExitReason,
+    ProcessOperation, ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField, Sandbox,
+    SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest, ViolationAggregate,
+    WorkspaceMode,
 };
 
 fn assert_attributed_stream<T: Iterator<Item = AttributedSandboxEvent>>() {}
@@ -47,6 +48,37 @@ fn attr_003_public_events_carry_execution_command_and_policy_generation() {
     assert_eq!(event.event, SandboxEvent::Ready);
 
     assert_attributed_stream::<EventStream>();
+}
+
+#[test]
+fn ws_002_projected_mode_is_explicit_and_fails_before_component_fallback() {
+    assert_eq!(ExecutionOptions::default().workspace, WorkspaceMode::Direct);
+
+    let cwd = std::env::current_dir().expect("test cwd must exist");
+    let program = std::env::current_exe().expect("test executable must exist");
+    let sandbox = Sandbox::new(SandboxConfig {
+        component_root: cwd.clone(),
+        credential_environment_variables: Vec::new(),
+        stream_capacity: DEFAULT_STREAM_CAPACITY,
+        violation_aggregate_capacity: DEFAULT_VIOLATION_AGGREGATE_CAPACITY,
+        mandatory_filesystem_denies: Vec::new(),
+        mandatory_registry_denies: Vec::new(),
+        component_manifest_sha256: None,
+    })
+    .expect("configuration root must be valid");
+
+    assert!(matches!(
+        sandbox.start_with_options(
+            minimal_request(&program, &cwd),
+            ExecutionOptions {
+                workspace: WorkspaceMode::Projected,
+                ..ExecutionOptions::default()
+            }
+        ),
+        Err(SandboxError::InitializationFailed {
+            stage: bolt_sandbox::InitializationStage::Workspace
+        })
+    ));
 }
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {
