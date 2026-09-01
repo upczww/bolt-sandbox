@@ -353,6 +353,16 @@ fn compat_034_violation_aggregates_expose_one_uniform_denial_shape() {
 }
 
 #[test]
+fn compat_034_execution_result_and_resolver_expose_denial_report_helpers() {
+    let _: fn(&ExecutionResult) -> Vec<AccessDenial> = ExecutionResult::access_denials;
+    let _: fn(
+        &bolt_sandbox::CompatibilityGrantResolver,
+        &ExecutionResult,
+    ) -> bolt_sandbox::AccessDenialReport =
+        bolt_sandbox::CompatibilityGrantResolver::resolve_result;
+}
+
+#[test]
 fn evt_001_public_process_exit_is_typed_without_native_status_types() {
     let event = SandboxEvent::ProcessExited(ProcessExit {
         process_id: 1234,
