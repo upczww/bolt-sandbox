@@ -91,6 +91,13 @@ do not print command arguments, environment values, or paths.
 CLI option. A host integrating the library supplies the same digest through
 `SandboxConfig::component_manifest_sha256`; omitting it enables development
 self-consistency checks but does not establish a release trust root.
+`SandboxConfig::violation_aggregate_capacity` must be nonzero and is bounded by
+`MAX_VIOLATION_AGGREGATE_CAPACITY`; the default is 1,024 unique violations.
+The public event stream emits the first occurrence of each retained violation.
+`ExecutionResult::violation_aggregates` reports each retained first event with
+its saturating duplicate count, while `dropped_distinct_violations` reports
+new distinct violations that exceeded the configured capacity. Lifecycle,
+recovery, child-failure, and native `EventsDropped` events bypass aggregation.
 
 Create a versioned package from already built x64/x86 native components with:
 
