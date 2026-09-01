@@ -50,6 +50,7 @@ bool RunProcessStartupLatencyTests();
 bool RunDetoursTests();
 bool RunEventFrameTests();
 bool RunPolicyMappingTests();
+bool RunProjfsApiTests();
 bool RunRuntimePayloadTests();
 bool RunBuildXlTreeTests();
 bool RunFilesystemPolicyTests();
@@ -669,6 +670,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunPolicyMappingTests()) {
         return 10;
+    }
+    if (!RunProjfsApiTests()) {
+        return 52;
     }
     if (!RunRuntimePayloadTests()) {
         return 11;

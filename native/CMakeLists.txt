@@ -151,6 +151,7 @@ add_library(bolt-sandbox-common STATIC
     common/execution_job.cpp
     common/immutable_policy_mapping.cpp
     common/private_pipe.cpp
+    common/projfs_api.cpp
     common/suspended_process.cpp
 )
 bolt_native_warnings(bolt-sandbox-common)
@@ -340,6 +341,7 @@ add_executable(bolt-sandbox-native-tests
     tests/policy_payload_tests.cpp
     tests/policy_fixture.cpp
     tests/policy_mapping_tests.cpp
+    tests/projfs_api_tests.cpp
     tests/immutable_mapping_tests.cpp
     tests/process_tests.cpp
     tests/protocol_mutation_tests.cpp
