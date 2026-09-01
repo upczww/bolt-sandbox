@@ -66,6 +66,7 @@ reg-hide|required|registry|HKCU\Environment
 # Legacy runtime compatibility is intentionally read-only in the Profile.
 reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\Session Manager
 reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\WinSock2
+reg-exact-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\WinSock2\Parameters
 reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\WinSock
 reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters
 reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Winsock

@@ -197,6 +197,10 @@ GetPeerNameFunction g_get_peer_name = getpeername;
 CloseSocketFunction g_close_socket = closesocket;
 constexpr GUID kConnectExGuid = WSAID_CONNECTEX;
 constexpr GUID kWsaSendMsgGuid = WSAID_WSASENDMSG;
+constexpr GUID kAcceptExGuid = WSAID_ACCEPTEX;
+constexpr GUID kDisconnectExGuid = WSAID_DISCONNECTEX;
+constexpr GUID kGetAcceptExSockaddrsGuid = WSAID_GETACCEPTEXSOCKADDRS;
+constexpr GUID kTransmitFileGuid = WSAID_TRANSMITFILE;
 constexpr std::uint64_t kSyntheticAddressInfoMagic = 0x424c544144445231ULL;
 
 struct SyntheticAddressInfoHeader {
@@ -705,6 +709,21 @@ bool IsWsaSendMsgRequest(
         control_code, input, input_length, kWsaSendMsgGuid);
 }
 
+bool IsSafeNonEgressExtensionRequest(
+    const DWORD control_code,
+    const LPVOID input,
+    const DWORD input_length) noexcept {
+    return IsExtensionFunctionRequest(
+               control_code, input, input_length, kAcceptExGuid) ||
+           IsExtensionFunctionRequest(
+               control_code, input, input_length, kDisconnectExGuid) ||
+           IsExtensionFunctionRequest(
+               control_code, input, input_length,
+               kGetAcceptExSockaddrsGuid) ||
+           IsExtensionFunctionRequest(
+               control_code, input, input_length, kTransmitFileGuid);
+}
+
 bool IsExtensionFunctionControl(const DWORD control_code) noexcept {
     return control_code == SIO_GET_EXTENSION_FUNCTION_POINTER ||
            control_code == SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER;
@@ -1159,7 +1178,9 @@ int WSAAPI DetouredWsaIoctl(
         IsConnectExRequest(control_code, input, input_length);
     const bool send_msg_request =
         IsWsaSendMsgRequest(control_code, input, input_length);
-    if (!NetworkIsDenied() || !IsExtensionFunctionControl(control_code)) {
+    if (!NetworkIsDenied() || !IsExtensionFunctionControl(control_code) ||
+        IsSafeNonEgressExtensionRequest(
+            control_code, input, input_length)) {
         return g_wsa_ioctl(
             socket, control_code, input, input_length, output, output_length,
             bytes_returned, overlapped, completion_routine);
