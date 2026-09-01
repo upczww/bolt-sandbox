@@ -7,15 +7,17 @@ use std::{
 };
 
 use bolt_sandbox::{
-    AttributedSandboxEvent, ChildInjectionFailure, ChildInjectionFailureReason,
-    ChildProcessPolicy, CommandId, DEFAULT_STREAM_CAPACITY, DEFAULT_VIOLATION_AGGREGATE_CAPACITY,
-    EventStream, ExecutionAttribution, ExecutionHandle, ExecutionId, ExecutionResult,
-    FilesystemOperation, FilesystemPolicy, FilesystemViolation, IpCidr, MAX_TIMEOUT,
-    MAX_VIOLATION_AGGREGATE_CAPACITY, MIN_TIMEOUT, NetworkAllowList, NetworkPolicy, NetworkTarget,
-    NetworkViolation, PolicyGeneration, PortRange, ProcessExit, ProcessExitReason,
-    ProcessOperation, ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField, Sandbox,
-    SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest, ViolationAggregate,
+    AttributedSandboxEvent, ChildInjectionFailure, ChildInjectionFailureReason, ChildProcessPolicy,
+    CommandId, DEFAULT_STREAM_CAPACITY, DEFAULT_VIOLATION_AGGREGATE_CAPACITY, EventStream,
+    ExecutionAttribution, ExecutionHandle, ExecutionId, ExecutionResult, FilesystemOperation,
+    FilesystemPolicy, FilesystemViolation, IpCidr, MAX_TIMEOUT, MAX_VIOLATION_AGGREGATE_CAPACITY,
+    MIN_TIMEOUT, NetworkAllowList, NetworkPolicy, NetworkTarget, NetworkViolation,
+    PolicyGeneration, PortRange, ProcessExit, ProcessExitReason, ProcessOperation,
+    ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField, Sandbox, SandboxConfig,
+    SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest, ViolationAggregate,
 };
+
+fn assert_attributed_stream<T: Iterator<Item = AttributedSandboxEvent>>() {}
 
 #[test]
 fn attr_001_public_command_id_is_fixed_nonzero_and_can_start_an_execution() {
@@ -44,7 +46,6 @@ fn attr_003_public_events_carry_execution_command_and_policy_generation() {
     assert_eq!(event.attribution, attribution);
     assert_eq!(event.event, SandboxEvent::Ready);
 
-    fn assert_attributed_stream<T: Iterator<Item = AttributedSandboxEvent>>() {}
     assert_attributed_stream::<EventStream>();
 }
 

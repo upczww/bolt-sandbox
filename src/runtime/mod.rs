@@ -32,6 +32,7 @@ mod recovery_protocol;
 mod startup;
 #[cfg(test)]
 mod streams;
+mod workspace;
 
 use crate::{
     CommandId, ExecutionAttribution, ExecutionHandle, ExecutionId, InitializationStage,
