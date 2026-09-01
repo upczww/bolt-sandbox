@@ -1,20 +1,22 @@
 use std::{
     collections::BTreeMap,
     ffi::OsString,
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use bolt_sandbox::{
-    AttributedSandboxEvent, ChildInjectionFailure, ChildInjectionFailureReason, ChildProcessPolicy,
+    AccessDenial, AccessOperation, AccessResource, AttributedSandboxEvent,
+    ChildInjectionFailure, ChildInjectionFailureReason, ChildProcessPolicy,
     CommandId, DEFAULT_STREAM_CAPACITY, DEFAULT_VIOLATION_AGGREGATE_CAPACITY, EventStream,
     ExecutionAttribution, ExecutionHandle, ExecutionId, ExecutionOptions, ExecutionResult,
     FilesystemOperation, FilesystemPolicy, FilesystemViolation, IpCidr, MAX_TIMEOUT,
     MAX_VIOLATION_AGGREGATE_CAPACITY, MIN_TIMEOUT, NamedPipePolicy, NetworkAllowList,
     NetworkPolicy, NetworkTarget, NetworkViolation, PolicyGeneration, PortRange, ProcessExit,
     ProcessExitReason, ProcessOperation, ProcessViolation, PseudoConsoleSize, RecoveryPolicy,
-    RegistryPolicy, RequestField, Sandbox, SandboxConfig, SandboxError, SandboxEvent,
+    RegistryOperation, RegistryPolicy, RegistryViolation, RequestField, Sandbox, SandboxConfig,
+    SandboxError, SandboxEvent,
     SandboxPolicy, SandboxRequest, TerminalMode, ViolationAggregate, WorkspaceBackend,
     WorkspaceCapabilities, WorkspaceChange, WorkspaceControlError, WorkspaceLimits, WorkspaceMode,
     WorkspaceTransactionId,
@@ -257,6 +259,97 @@ fn evt_004_public_violation_aggregate_preserves_first_event_and_count() {
     const {
         assert!(MAX_VIOLATION_AGGREGATE_CAPACITY >= DEFAULT_VIOLATION_AGGREGATE_CAPACITY);
     }
+}
+
+#[test]
+fn compat_034_violation_aggregates_expose_one_uniform_denial_shape() {
+    let endpoint: SocketAddr = "203.0.113.7:443".parse().expect("valid endpoint");
+    let cases = [
+        (
+            ViolationAggregate {
+                event: SandboxEvent::FilesystemViolation(FilesystemViolation {
+                    process_id: 7,
+                    operation: FilesystemOperation::Read,
+                    path: PathBuf::from(r"C:\SDK\library.lib"),
+                }),
+                duplicate_count: 2,
+            },
+            AccessDenial {
+                process_id: 7,
+                operation: AccessOperation::Filesystem(FilesystemOperation::Read),
+                resource: AccessResource::FilesystemPath(PathBuf::from(
+                    r"C:\SDK\library.lib",
+                )),
+                occurrences: 3,
+            },
+        ),
+        (
+            ViolationAggregate {
+                event: SandboxEvent::RegistryViolation(RegistryViolation {
+                    process_id: 8,
+                    operation: RegistryOperation::Open,
+                    key: String::from(r"HKLM\SOFTWARE\Vendor"),
+                }),
+                duplicate_count: 0,
+            },
+            AccessDenial {
+                process_id: 8,
+                operation: AccessOperation::Registry(RegistryOperation::Open),
+                resource: AccessResource::RegistryKey(String::from(
+                    r"HKLM\SOFTWARE\Vendor",
+                )),
+                occurrences: 1,
+            },
+        ),
+        (
+            ViolationAggregate {
+                event: SandboxEvent::NetworkViolation(NetworkViolation {
+                    process_id: 9,
+                    operation: bolt_sandbox::NetworkOperation::Resolve,
+                    target: NetworkTarget::Domain(String::from("example.org")),
+                }),
+                duplicate_count: 1,
+            },
+            AccessDenial {
+                process_id: 9,
+                operation: AccessOperation::Network(
+                    bolt_sandbox::NetworkOperation::Resolve,
+                ),
+                resource: AccessResource::NetworkDomain(String::from("example.org")),
+                occurrences: 2,
+            },
+        ),
+        (
+            ViolationAggregate {
+                event: SandboxEvent::NetworkViolation(NetworkViolation {
+                    process_id: 10,
+                    operation: bolt_sandbox::NetworkOperation::Connect,
+                    target: NetworkTarget::Socket(endpoint),
+                }),
+                duplicate_count: 0,
+            },
+            AccessDenial {
+                process_id: 10,
+                operation: AccessOperation::Network(
+                    bolt_sandbox::NetworkOperation::Connect,
+                ),
+                resource: AccessResource::NetworkEndpoint(endpoint),
+                occurrences: 1,
+            },
+        ),
+    ];
+
+    for (aggregate, expected) in cases {
+        assert_eq!(aggregate.access_denial(), Some(expected));
+    }
+    assert_eq!(
+        ViolationAggregate {
+            event: SandboxEvent::Ready,
+            duplicate_count: u64::MAX,
+        }
+        .access_denial(),
+        None
+    );
 }
 
 #[test]

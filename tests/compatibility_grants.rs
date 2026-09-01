@@ -1,12 +1,13 @@
 use std::path::PathBuf;
 
 use bolt_sandbox::{
-    CompatibilityApplyError, CompatibilityApprovalScope, CompatibilityCapability,
+    AccessOperation, AccessResource, CompatibilityApplyError, CompatibilityApprovalScope,
+    CompatibilityCapability,
     CompatibilityCommandOutcome, CompatibilityDecision, CompatibilityDecisionCache,
     CompatibilityGrant, CompatibilityGrantContext, CompatibilityGrantResolver,
     CompatibilityNoPromptReason, CompatibilityPromptAction, CompatibilityResolution,
-    FilesystemOperation, FilesystemViolation, RegistryOperation, RegistryViolation, SandboxEvent,
-    SandboxPolicy, ViolationAggregate,
+    FilesystemOperation, FilesystemViolation, NetworkOperation, NetworkTarget, NetworkViolation,
+    RegistryOperation, RegistryViolation, SandboxEvent, SandboxPolicy, ViolationAggregate,
 };
 
 fn context() -> CompatibilityGrantContext {
@@ -124,6 +125,69 @@ fn compat_019_incomplete_violation_evidence_never_guesses_a_grant() {
         unavailable.capabilities,
         [CompatibilityCapability::IncompleteEvidence]
     );
+}
+
+#[test]
+fn compat_034_report_returns_explicit_file_registry_and_domain_denials() {
+    let resolver = CompatibilityGrantResolver::new(context()).expect("valid context");
+    let report = resolver.resolve_report(
+        CompatibilityCommandOutcome::Failed,
+        &[
+            filesystem_violation(FilesystemOperation::Read, r"C:\SDK\stdlib.lib"),
+            ViolationAggregate {
+                event: SandboxEvent::RegistryViolation(RegistryViolation {
+                    process_id: 42,
+                    operation: RegistryOperation::Open,
+                    key: String::from(r"HKLM\SOFTWARE\Vendor"),
+                }),
+                duplicate_count: 0,
+            },
+            ViolationAggregate {
+                event: SandboxEvent::NetworkViolation(NetworkViolation {
+                    process_id: 43,
+                    operation: NetworkOperation::Resolve,
+                    target: NetworkTarget::Domain(String::from("example.org")),
+                }),
+                duplicate_count: 3,
+            },
+        ],
+        0,
+    );
+
+    assert_eq!(report.denials.len(), 3);
+    assert_eq!(report.dropped_distinct_denials, 0);
+    assert!(report.denials.iter().any(|denial| {
+        matches!(
+            (&denial.operation, &denial.resource),
+            (
+                AccessOperation::Filesystem(FilesystemOperation::Read),
+                AccessResource::FilesystemPath(path)
+            ) if path == &PathBuf::from(r"C:\SDK\stdlib.lib")
+        )
+    }));
+    assert!(report.denials.iter().any(|denial| {
+        matches!(
+            (&denial.operation, &denial.resource),
+            (
+                AccessOperation::Registry(RegistryOperation::Open),
+                AccessResource::RegistryKey(key)
+            ) if key == r"HKLM\SOFTWARE\Vendor"
+        )
+    }));
+    assert!(report.denials.iter().any(|denial| {
+        matches!(
+            (&denial.operation, &denial.resource, denial.occurrences),
+            (
+                AccessOperation::Network(NetworkOperation::Resolve),
+                AccessResource::NetworkDomain(domain),
+                4
+            ) if domain == "example.org"
+        )
+    }));
+    assert!(matches!(
+        report.resolution,
+        CompatibilityResolution::NeedsAuthorization(_)
+    ));
 }
 
 fn read_proposal() -> bolt_sandbox::CompatibilityGrantProposal {
