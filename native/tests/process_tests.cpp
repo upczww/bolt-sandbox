@@ -736,7 +736,7 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     const auto installed_filesystem_hook_count =
         reinterpret_cast<InstalledFilesystemHookCountFunction>(
             GetProcAddress(hook, "BoltSandboxInstalledFilesystemHookCount"));
-    constexpr std::uint32_t required_filesystem_hook_count = 82;
+    constexpr std::uint32_t required_filesystem_hook_count = 86;
     const bool copy_file_2_present =
         GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CopyFile2") != nullptr;
     const std::uint32_t expected_filesystem_hook_count =
@@ -2815,7 +2815,7 @@ int RunInheritedProcessLeaf(const int argument_count, wchar_t** arguments) {
     constexpr std::uint32_t already_initialized = 1;
     const std::uint32_t hook_count_before =
         installed_hook_count == nullptr ? 0 : installed_hook_count();
-    constexpr std::uint32_t required_filesystem_hook_count = 82;
+    constexpr std::uint32_t required_filesystem_hook_count = 86;
     const bool copy_file_2_present =
         GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CopyFile2") != nullptr;
     const std::uint32_t expected_hook_count =

@@ -1648,7 +1648,16 @@ int RunFilesystemRaceChild(
         const std::filesystem::path root(arguments[3]);
         const auto allowed = root / L"path-forms-allowed";
         const auto denied = root / L"path-forms-denied";
+        DWORD sectors_per_cluster = 0;
+        DWORD bytes_per_sector = 0;
+        DWORD free_clusters = 0;
+        DWORD total_clusters = 0;
         if (!SetCurrentDirectoryW(allowed.c_str()) ||
+            !GetDiskFreeSpaceW(
+                nullptr, &sectors_per_cluster, &bytes_per_sector,
+                &free_clusters, &total_clusters) ||
+            sectors_per_cluster == 0 || bytes_per_sector == 0 ||
+            total_clusters == 0 ||
             !CreateDirectoryW(L"nested", nullptr) ||
             !CreateDirectoryW(L"nested-trailing\\", nullptr)) {
             return 314;

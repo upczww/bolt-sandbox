@@ -515,6 +515,7 @@ and reason code—not merely identical serialized bytes.
 | COMPAT-018 | Violations overlap mandatory-sensitive content or request host writes | No ordinary grant is proposed; typed unavailable capabilities identify the boundary |
 | COMPAT-019 | Distinct violation evidence was dropped or is incomplete | Resolver refuses to guess a grant and returns `IncompleteEvidence` |
 | COMPAT-020 | Trusted host requests isolated named-pipe compatibility | Default remains deny; explicit isolated mode rewrites only local Win32 pipe names into an execution-private namespace while remote/arbitrary native namespace access remains denied |
+| COMPAT-021 | Tool queries free-space metadata for the workspace volume | Capacity query succeeds without granting a root directory handle, file enumeration, content read, or another volume/share |
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |

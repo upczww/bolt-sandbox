@@ -39,7 +39,7 @@ namespace {
 
 std::unique_ptr<FilesystemPolicy> g_policy;
 HandleAccessCache g_handle_access_cache;
-constexpr LONG kRequiredFilesystemHookCount = 82;
+constexpr LONG kRequiredFilesystemHookCount = 86;
 volatile LONG g_installed_file_hook_count = 0;
 
 CreateFileW_t g_create_file_w = CreateFileW;
@@ -47,6 +47,10 @@ CreateFileA_t g_create_file_a = CreateFileA;
 decltype(&CreateNamedPipeW) g_create_named_pipe_w = CreateNamedPipeW;
 decltype(&CreateNamedPipeA) g_create_named_pipe_a = CreateNamedPipeA;
 decltype(&CreatePipe) g_create_pipe = CreatePipe;
+decltype(&GetDiskFreeSpaceW) g_get_disk_free_space_w = GetDiskFreeSpaceW;
+decltype(&GetDiskFreeSpaceA) g_get_disk_free_space_a = GetDiskFreeSpaceA;
+decltype(&GetDiskFreeSpaceExW) g_get_disk_free_space_ex_w = GetDiskFreeSpaceExW;
+decltype(&GetDiskFreeSpaceExA) g_get_disk_free_space_ex_a = GetDiskFreeSpaceExA;
 decltype(&CreateMailslotW) g_create_mailslot_w = CreateMailslotW;
 decltype(&CreateMailslotA) g_create_mailslot_a = CreateMailslotA;
 DeleteFileW_t g_delete_file_w = DeleteFileW;
@@ -3109,6 +3113,174 @@ NTSTATUS NTAPI DetouredNtWriteFile(
     return status_access_denied;
 }
 
+bool IsWorkspaceVolumeQuery(
+    const wchar_t* const directory_name,
+    std::wstring& authorized_path) noexcept {
+    authorized_path.clear();
+    try {
+        std::array<wchar_t, 32'768> current{};
+        std::array<wchar_t, 32'768> requested{};
+        std::array<wchar_t, 32'768> current_volume{};
+        std::array<wchar_t, 32'768> requested_volume{};
+        const DWORD current_length = GetCurrentDirectoryW(
+            static_cast<DWORD>(current.size()), current.data());
+        if (current_length == 0 || current_length >= current.size()) {
+            return false;
+        }
+        bool separators_only = directory_name != nullptr && directory_name[0] != L'\0';
+        if (directory_name != nullptr) {
+            for (const wchar_t* value = directory_name; *value != L'\0'; ++value) {
+                if (*value != L'\\' && *value != L'/') {
+                    separators_only = false;
+                    break;
+                }
+            }
+        }
+        const wchar_t* const query =
+            directory_name == nullptr || directory_name[0] == L'\0' || separators_only
+                ? current.data()
+                : directory_name;
+        const DWORD requested_length = GetFullPathNameW(
+            query, static_cast<DWORD>(requested.size()), requested.data(),
+            nullptr);
+        if (requested_length == 0 || requested_length >= requested.size() ||
+            !GetVolumePathNameW(
+                current.data(), current_volume.data(),
+                static_cast<DWORD>(current_volume.size())) ||
+            !GetVolumePathNameW(
+                requested.data(), requested_volume.data(),
+                static_cast<DWORD>(requested_volume.size()))) {
+            return false;
+        }
+        if (CompareStringOrdinal(
+                current_volume.data(), -1, requested_volume.data(), -1,
+                TRUE) != CSTR_EQUAL) {
+            return false;
+        }
+        authorized_path.assign(requested.data(), requested_length);
+        return true;
+    } catch (...) {
+        authorized_path.clear();
+        return false;
+    }
+}
+
+BOOL WINAPI DetouredGetDiskFreeSpaceW(
+    const LPCWSTR root_path_name,
+    const LPDWORD sectors_per_cluster,
+    const LPDWORD bytes_per_sector,
+    const LPDWORD number_of_free_clusters,
+    const LPDWORD total_number_of_clusters) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_get_disk_free_space_w(
+            root_path_name, sectors_per_cluster, bytes_per_sector,
+            number_of_free_clusters, total_number_of_clusters);
+    }
+    std::wstring authorized_path;
+    if (!IsWorkspaceVolumeQuery(root_path_name, authorized_path)) {
+        ReportDenied(
+            protocol::FilesystemOperation::kMetadata,
+            root_path_name == nullptr ? L"<current-volume>" : root_path_name);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return g_get_disk_free_space_w(
+        authorized_path.c_str(), sectors_per_cluster, bytes_per_sector,
+        number_of_free_clusters, total_number_of_clusters);
+}
+
+BOOL WINAPI DetouredGetDiskFreeSpaceA(
+    const LPCSTR root_path_name,
+    const LPDWORD sectors_per_cluster,
+    const LPDWORD bytes_per_sector,
+    const LPDWORD number_of_free_clusters,
+    const LPDWORD total_number_of_clusters) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_get_disk_free_space_a(
+            root_path_name, sectors_per_cluster, bytes_per_sector,
+            number_of_free_clusters, total_number_of_clusters);
+    }
+    std::wstring wide_path;
+    const wchar_t* query = nullptr;
+    if (root_path_name != nullptr) {
+        if (!ConvertAnsiPath(root_path_name, wide_path)) {
+            SetLastError(ERROR_INVALID_NAME);
+            return FALSE;
+        }
+        query = wide_path.c_str();
+    }
+    std::wstring authorized_path;
+    if (!IsWorkspaceVolumeQuery(query, authorized_path)) {
+        ReportDenied(
+            protocol::FilesystemOperation::kMetadata,
+            query == nullptr ? L"<current-volume>" : query);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return g_get_disk_free_space_w(
+        authorized_path.c_str(), sectors_per_cluster, bytes_per_sector,
+        number_of_free_clusters, total_number_of_clusters);
+}
+
+BOOL WINAPI DetouredGetDiskFreeSpaceExW(
+    const LPCWSTR directory_name,
+    const PULARGE_INTEGER free_bytes_available,
+    const PULARGE_INTEGER total_number_of_bytes,
+    const PULARGE_INTEGER total_number_of_free_bytes) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_get_disk_free_space_ex_w(
+            directory_name, free_bytes_available, total_number_of_bytes,
+            total_number_of_free_bytes);
+    }
+    std::wstring authorized_path;
+    if (!IsWorkspaceVolumeQuery(directory_name, authorized_path)) {
+        ReportDenied(
+            protocol::FilesystemOperation::kMetadata,
+            directory_name == nullptr ? L"<current-volume>" : directory_name);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return g_get_disk_free_space_ex_w(
+        authorized_path.c_str(), free_bytes_available, total_number_of_bytes,
+        total_number_of_free_bytes);
+}
+
+BOOL WINAPI DetouredGetDiskFreeSpaceExA(
+    const LPCSTR directory_name,
+    const PULARGE_INTEGER free_bytes_available,
+    const PULARGE_INTEGER total_number_of_bytes,
+    const PULARGE_INTEGER total_number_of_free_bytes) noexcept {
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled()) {
+        return g_get_disk_free_space_ex_a(
+            directory_name, free_bytes_available, total_number_of_bytes,
+            total_number_of_free_bytes);
+    }
+    std::wstring wide_path;
+    const wchar_t* query = nullptr;
+    if (directory_name != nullptr) {
+        if (!ConvertAnsiPath(directory_name, wide_path)) {
+            SetLastError(ERROR_INVALID_NAME);
+            return FALSE;
+        }
+        query = wide_path.c_str();
+    }
+    std::wstring authorized_path;
+    if (!IsWorkspaceVolumeQuery(query, authorized_path)) {
+        ReportDenied(
+            protocol::FilesystemOperation::kMetadata,
+            query == nullptr ? L"<current-volume>" : query);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return g_get_disk_free_space_ex_w(
+        authorized_path.c_str(), free_bytes_available, total_number_of_bytes,
+        total_number_of_free_bytes);
+}
+
 BOOL WINAPI DetouredCreatePipe(
     const PHANDLE read_pipe,
     const PHANDLE write_pipe,
@@ -4748,6 +4920,18 @@ HookInstallStatus InstallFileHooks(
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_pipe),
             reinterpret_cast<PVOID>(DetouredCreatePipe)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_get_disk_free_space_w),
+            reinterpret_cast<PVOID>(DetouredGetDiskFreeSpaceW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_get_disk_free_space_a),
+            reinterpret_cast<PVOID>(DetouredGetDiskFreeSpaceA)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_get_disk_free_space_ex_w),
+            reinterpret_cast<PVOID>(DetouredGetDiskFreeSpaceExW)) != NO_ERROR ||
+        DetourAttach(
+            reinterpret_cast<PVOID*>(&g_get_disk_free_space_ex_a),
+            reinterpret_cast<PVOID>(DetouredGetDiskFreeSpaceExA)) != NO_ERROR ||
         DetourAttach(
             reinterpret_cast<PVOID*>(&g_create_mailslot_w),
             reinterpret_cast<PVOID>(DetouredCreateMailslotW)) != NO_ERROR ||
