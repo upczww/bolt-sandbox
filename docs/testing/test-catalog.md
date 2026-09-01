@@ -486,3 +486,5 @@ registry virtualization, and hostile-binary containment are not initial-release
 claims. Their future cases must use separate prefixes and cannot be counted as
 passing or skipped initial-release coverage. `PROC-015`, `COMPAT-009`, and the
 `BYP`-class scenarios above verify that current limitations are explicit.
+`REC-011` is retained only for a future encrypted secret-store mode; initial
+release evidence is `REC-010`, which requires that no secret backup is created.

@@ -143,8 +143,9 @@ its catalog case ID and requirement IDs in machine-readable results.
 | ARC-REC-001 | Delete/truncate/replace/destructive rename can be backed up before mutation | REC-001..003 | Specified |
 | ARC-REC-002 | Recovery is bounded by size/count/retention and indexed by execution/path | REC-006..008, REC-013..014, PERF-009 | Specified |
 | ARC-REC-003 | Recovery is best effort and never weakens enforcement | REC-004..005, REC-009, REC-017 | Specified |
-| ARC-REC-004 | Recovery store is outside sandbox namespace with equivalent secret protection | REC-010..016, REC-019 | Specified |
+| ARC-REC-004 | Recovery store is outside sandbox namespace and initial mode never copies secret-tagged files without encrypted storage | REC-010, REC-012..016, REC-019 | Specified |
 | ARC-REC-005 | Trusted Rust selects/writes recovery destination; hook cannot choose it | REC-018..019, BND-007 | Specified |
+| ARC-REC-006 | A future protected encrypted store may back up secret-tagged files | REC-011 | Deferred |
 
 ## Security model and bypass disclosure
 
