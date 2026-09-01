@@ -12,6 +12,149 @@ use crate::{
 };
 
 const MAXIMUM_PROPOSAL_GRANTS: usize = 64;
+const MAXIMUM_DECISION_CACHE_ENTRIES: usize = 4_096;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompatibilityApprovalScope {
+    Once,
+    Workspace,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompatibilityDecision {
+    Approved,
+    Rejected,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompatibilityPromptAction {
+    Prompt,
+    UseApproved,
+    SuppressRejected,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompatibilityDecisionCacheError {
+    InvalidCapacity,
+    InvalidProposal,
+    CapacityExceeded,
+}
+
+#[derive(Clone, Debug)]
+struct CompatibilityDecisionEntry {
+    proposal_id: String,
+    executable_path: PathBuf,
+    executable_sha256: [u8; 32],
+    workspace: PathBuf,
+    decision: CompatibilityDecision,
+    scope: CompatibilityApprovalScope,
+}
+
+#[derive(Clone, Debug)]
+pub struct CompatibilityDecisionCache {
+    maximum_entries: usize,
+    entries: BTreeMap<String, CompatibilityDecisionEntry>,
+}
+
+impl CompatibilityDecisionCache {
+    /// Creates an in-memory trusted-host decision cache.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero or excessively large capacities.
+    pub fn new(maximum_entries: usize) -> Result<Self, CompatibilityDecisionCacheError> {
+        if !(1..=MAXIMUM_DECISION_CACHE_ENTRIES).contains(&maximum_entries) {
+            return Err(CompatibilityDecisionCacheError::InvalidCapacity);
+        }
+        Ok(Self {
+            maximum_entries,
+            entries: BTreeMap::new(),
+        })
+    }
+
+    #[must_use]
+    pub fn action(&self, proposal: &CompatibilityGrantProposal) -> CompatibilityPromptAction {
+        let Some(entry) = self.entries.get(&proposal.proposal_id) else {
+            return CompatibilityPromptAction::Prompt;
+        };
+        if !entry_matches(entry, proposal) {
+            return CompatibilityPromptAction::Prompt;
+        }
+        match entry.decision {
+            CompatibilityDecision::Approved => CompatibilityPromptAction::UseApproved,
+            CompatibilityDecision::Rejected => CompatibilityPromptAction::SuppressRejected,
+        }
+    }
+
+    /// Records one trusted decision without storing command arguments,
+    /// environment values, or violation payloads.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed proposal bindings and new entries beyond capacity.
+    pub fn record(
+        &mut self,
+        proposal: &CompatibilityGrantProposal,
+        decision: CompatibilityDecision,
+        scope: CompatibilityApprovalScope,
+    ) -> Result<(), CompatibilityDecisionCacheError> {
+        if !valid_proposal_binding(proposal) {
+            return Err(CompatibilityDecisionCacheError::InvalidProposal);
+        }
+        if !self.entries.contains_key(&proposal.proposal_id)
+            && self.entries.len() == self.maximum_entries
+        {
+            return Err(CompatibilityDecisionCacheError::CapacityExceeded);
+        }
+        self.entries.insert(
+            proposal.proposal_id.clone(),
+            CompatibilityDecisionEntry {
+                proposal_id: proposal.proposal_id.clone(),
+                executable_path: proposal.executable_path.clone(),
+                executable_sha256: proposal.executable_sha256,
+                workspace: proposal.workspace.clone(),
+                decision,
+                scope,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn consume_approval(&mut self, proposal: &CompatibilityGrantProposal) -> bool {
+        let Some(entry) = self.entries.get(&proposal.proposal_id) else {
+            return false;
+        };
+        if !entry_matches(entry, proposal) || entry.decision != CompatibilityDecision::Approved {
+            return false;
+        }
+        if entry.scope == CompatibilityApprovalScope::Once {
+            self.entries.remove(&proposal.proposal_id);
+        }
+        true
+    }
+}
+
+fn valid_proposal_binding(proposal: &CompatibilityGrantProposal) -> bool {
+    proposal.proposal_id.len() == 64
+        && proposal
+            .proposal_id
+            .bytes()
+            .all(|value| value.is_ascii_hexdigit())
+        && proposal.executable_path.is_absolute()
+        && proposal.executable_sha256 != [0; 32]
+        && proposal.workspace.is_absolute()
+        && !proposal.grants.is_empty()
+}
+
+fn entry_matches(
+    entry: &CompatibilityDecisionEntry,
+    proposal: &CompatibilityGrantProposal,
+) -> bool {
+    entry.proposal_id == proposal.proposal_id
+        && filesystem_key(&entry.executable_path) == filesystem_key(&proposal.executable_path)
+        && entry.executable_sha256 == proposal.executable_sha256
+        && filesystem_key(&entry.workspace) == filesystem_key(&proposal.workspace)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompatibilityCommandOutcome {
