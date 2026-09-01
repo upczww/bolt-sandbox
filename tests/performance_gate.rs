@@ -139,3 +139,35 @@ fn perf_010_signed_release_runs_collector_and_fail_closed_verifier() {
     assert!(workflow.contains("verify-performance-evidence.ps1"));
     assert!(workflow.contains("performance-evidence-x64.json"));
 }
+
+#[test]
+fn bundled_compatibility_profile_is_packaged_and_manifested() {
+    let package = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/scripts/package-windows.ps1"
+    ))
+    .expect("package script must be readable");
+    let build = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/scripts/build-windows.ps1"
+    ))
+    .expect("build script must be readable");
+    let manifest = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/scripts/write-component-manifest.ps1"
+    ))
+    .expect("manifest script must be readable");
+    let profile = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/config/bolt-sandbox-compatibility.profile"
+    ));
+
+    assert!(package.contains("bolt-sandbox-compatibility.profile"));
+    assert!(build.contains("bolt-sandbox-compatibility.profile"));
+    assert!(manifest.contains("bolt-sandbox-compatibility.profile"));
+    assert!(
+        profile
+            .expect("bundled compatibility profile must exist")
+            .starts_with("BSC1\n")
+    );
+}
