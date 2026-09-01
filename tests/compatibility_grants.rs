@@ -2,12 +2,11 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use bolt_sandbox::{
     AccessOperation, AccessResource, CompatibilityApplyError, CompatibilityApprovalScope,
-    CompatibilityCapability,
-    CompatibilityCommandOutcome, CompatibilityDecision, CompatibilityDecisionCache,
-    CompatibilityGrant, CompatibilityGrantContext, CompatibilityGrantResolver,
-    CompatibilityNoPromptReason, CompatibilityPromptAction, CompatibilityResolution,
-    FilesystemOperation, FilesystemViolation, IpCidr, NetworkAllowList, NetworkOperation,
-    NetworkPolicy, NetworkTarget, NetworkViolation, PortRange, RegistryOperation,
+    CompatibilityCapability, CompatibilityCommandOutcome, CompatibilityDecision,
+    CompatibilityDecisionCache, CompatibilityGrant, CompatibilityGrantContext,
+    CompatibilityGrantResolver, CompatibilityNoPromptReason, CompatibilityPromptAction,
+    CompatibilityResolution, FilesystemOperation, FilesystemViolation, IpCidr, NetworkAllowList,
+    NetworkOperation, NetworkPolicy, NetworkTarget, NetworkViolation, PortRange, RegistryOperation,
     RegistryViolation, SandboxEvent, SandboxPolicy, ViolationAggregate,
 };
 
@@ -240,8 +239,12 @@ fn compat_034_approved_endpoint_adds_only_exact_address_and_port() {
         panic!("exact endpoint must produce an authorization proposal");
     };
 
+    let original = SandboxPolicy {
+        network: NetworkPolicy::Denied,
+        ..SandboxPolicy::default()
+    };
     let applied = resolver
-        .apply_approved(&proposal, &SandboxPolicy::default())
+        .apply_approved(&proposal, &original)
         .expect("exact endpoint proposal must apply");
     assert_eq!(
         applied.network,
@@ -256,6 +259,43 @@ fn compat_034_approved_endpoint_adds_only_exact_address_and_port() {
                 end: 8_443,
             }],
         })
+    );
+}
+
+#[test]
+fn compat_034_endpoint_cannot_widen_existing_allow_list_cartesian_product() {
+    let resolver = CompatibilityGrantResolver::new(context()).expect("valid context");
+    let endpoint: SocketAddr = "203.0.113.7:8443".parse().expect("valid endpoint");
+    let report = resolver.resolve_report(
+        CompatibilityCommandOutcome::Failed,
+        &[ViolationAggregate {
+            event: SandboxEvent::NetworkViolation(NetworkViolation {
+                process_id: 44,
+                operation: NetworkOperation::Connect,
+                target: NetworkTarget::Socket(endpoint),
+            }),
+            duplicate_count: 0,
+        }],
+        0,
+    );
+    let CompatibilityResolution::NeedsAuthorization(proposal) = report.resolution else {
+        panic!("exact endpoint must produce an authorization proposal");
+    };
+    let existing = SandboxPolicy {
+        network: NetworkPolicy::AllowList(NetworkAllowList {
+            domains: Vec::new(),
+            addresses: vec![IpCidr {
+                address: "192.0.2.9".parse().expect("valid address"),
+                prefix_length: 32,
+            }],
+            ports: vec![PortRange { start: 80, end: 80 }],
+        }),
+        ..SandboxPolicy::default()
+    };
+
+    assert_eq!(
+        resolver.apply_approved(&proposal, &existing),
+        Err(CompatibilityApplyError::UnsupportedGrant)
     );
 }
 
