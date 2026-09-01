@@ -23,7 +23,7 @@ pub use compatibility::{
     CompatibilityDecisionCache, CompatibilityDecisionCacheError, CompatibilityGrant,
     CompatibilityGrantContext, CompatibilityGrantProposal, CompatibilityGrantResolver,
     CompatibilityNoPromptReason, CompatibilityPromptAction, CompatibilityResolution,
-    CompatibilityUnavailable,
+    CompatibilityRestartError, CompatibilityRestartPlan, CompatibilityUnavailable,
 };
 pub use error::{InvalidRequestReason, RequestField, SandboxError};
 pub use event::{

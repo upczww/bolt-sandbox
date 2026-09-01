@@ -90,3 +90,22 @@ broad host-writable caches, or process bypasses.
 - Denial aggregation and rejection suppress repeat prompts without suppressing
   final audit evidence.
 
+## Public host API
+
+The Rust boundary implements the flow as separate consumable objects:
+
+- `CompatibilityGrantResolver::resolve` returns `NoPrompt`, one aggregated
+  `NeedsAuthorization`, or `CapabilityUnavailable`.
+- `CompatibilityDecisionCache` records bounded once/workspace approvals and
+  rejections; it stores bindings and decisions, never command/environment data.
+- `CompatibilityGrantResolver::apply_approved` revalidates proposal identity,
+  tool hash, workspace, mandatory denies, and compiler limits before cloning a
+  minimally extended policy.
+- `CompatibilityGrantResolver::prepare_restart` accepts only a completed failed
+  result and consumes an existing approval.
+- `CompatibilityRestartPlan::start` consumes the plan, discards the retained
+  prior transaction first, and starts one new execution. A discard or start
+  error is returned without direct or unsandboxed fallback.
+
+The new `ExecutionId` and monotonic policy generation come from the normal
+`Sandbox::start_with_options` path; no alternate launcher semantics exist.

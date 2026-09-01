@@ -1,42 +1,34 @@
-use std::{
-    collections::BTreeMap,
-    ffi::OsString,
-    fs,
-    path::PathBuf,
-    time::Duration,
-};
+use std::{collections::BTreeMap, ffi::OsString, fs, path::PathBuf, time::Duration};
 
 use bolt_sandbox::{
     CompatibilityApprovalScope, CompatibilityCommandOutcome, CompatibilityDecision,
     CompatibilityDecisionCache, CompatibilityGrantContext, CompatibilityGrantResolver,
-    CompatibilityRestartError, ExecutionOptions, ExecutionTerminal, ProcessExitReason, Sandbox,
-    SandboxConfig, SandboxPolicy, SandboxRequest, WorkspaceControlError, WorkspaceMode,
-    DEFAULT_STREAM_CAPACITY, DEFAULT_VIOLATION_AGGREGATE_CAPACITY,
+    CompatibilityRestartError, DEFAULT_STREAM_CAPACITY, DEFAULT_VIOLATION_AGGREGATE_CAPACITY,
+    ExecutionOptions, ExecutionTerminal, ProcessExitReason, Sandbox, SandboxConfig, SandboxPolicy,
+    SandboxRequest, WorkspaceControlError, WorkspaceMode,
 };
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end test proves failure, approval, discard, and restart ordering"
+)]
 fn compat_028_to_030_approved_restart_discards_old_transaction_and_runs_once() {
     let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
     else {
         return;
     };
-    let fixture = std::env::temp_dir().join(format!(
-        "bolt-compat-restart-{}",
-        std::process::id()
-    ));
+    let fixture = std::env::temp_dir().join(format!("bolt-compat-restart-{}", std::process::id()));
     let source = fixture.join("source");
     let external = fixture.join("sdk.txt");
     fs::create_dir_all(&source).expect("source workspace must exist");
     fs::write(&external, "sdk\n").expect("external read fixture must exist");
-    let program = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
-        .join(r"System32\cmd.exe");
+    let program = component_root.join("bolt-sandbox-native-tests.exe");
     let request = SandboxRequest {
         program: program.clone(),
         arguments: vec![
-            OsString::from("/d"),
-            OsString::from("/s"),
-            OsString::from("/c"),
-            OsString::from(format!("type {} >NUL", external.display())),
+            OsString::from("--compatibility-read-fixture"),
+            external.clone().into_os_string(),
         ],
         cwd: source.clone(),
         environment: BTreeMap::new(),
@@ -98,28 +90,27 @@ fn compat_028_to_030_approved_restart_discards_old_transaction_and_runs_once() {
         .expect("approval must record");
 
     let plan = resolver
-        .prepare_restart(
-            &proposal,
-            request.clone(),
-            &first,
-            options,
-            &mut decisions,
-        )
+        .prepare_restart(&proposal, request.clone(), &first, options, &mut decisions)
         .expect("approved failed execution must prepare one restart");
-    assert_eq!(
+    assert!(matches!(
         resolver.prepare_restart(&proposal, request, &first, options, &mut decisions),
         Err(CompatibilityRestartError::ApprovalUnavailable)
-    );
+    ));
     let second = plan
         .start(&sandbox)
         .expect("approved restart must start")
         .wait()
         .expect("approved restart must finish");
-    assert!(matches!(
+    assert!(
+        matches!(
+            second.terminal,
+            ExecutionTerminal::Process(ref exit)
+                if exit.reason == ProcessExitReason::Exited && exit.exit_code == Some(0)
+        ),
+        "approved restart failed: terminal={:?} violations={:?}",
         second.terminal,
-        ExecutionTerminal::Process(ref exit)
-            if exit.reason == ProcessExitReason::Exited && exit.exit_code == Some(0)
-    ));
+        second.violation_aggregates
+    );
     assert_eq!(
         sandbox.query_workspace_changes(first_transaction),
         Err(WorkspaceControlError::NotFound)
@@ -133,4 +124,3 @@ fn compat_028_to_030_approved_restart_discards_old_transaction_and_runs_once() {
         .expect("approved restart transaction must discard");
     let _ = fs::remove_dir_all(&fixture);
 }
-

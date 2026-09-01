@@ -425,6 +425,10 @@ When an unknown safe resource blocks a tool, integrations may use the
 [dynamic compatibility grant proposal design](docs/architecture/dynamic-compatibility-grants.md)
 to ask once for a minimal grant. Approval always restarts under a new immutable
 policy; targets cannot hot-add or persist their own whitelist entries.
+The Rust API exposes `CompatibilityGrantResolver`,
+`CompatibilityDecisionCache`, and consumable `CompatibilityRestartPlan` types.
+Successful commands return `NoPrompt`; approved transactional retries discard
+the failed attempt before one new policy generation starts.
 
 Optional Rust coverage requires `cargo-llvm-cov 0.9.0`, a nightly toolchain,
 and matching LLVM tools:

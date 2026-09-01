@@ -180,6 +180,15 @@ pub enum CompatibilityCapability {
     TooManyDistinctResources,
 }
 
+impl CompatibilityCapability {
+    const fn is_hard_stop(self) -> bool {
+        !matches!(
+            self,
+            Self::DirectoryEnumeration | Self::RegistryEnumeration | Self::NetworkBindingRequired
+        )
+    }
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub enum CompatibilityGrant {
@@ -203,6 +212,7 @@ pub struct CompatibilityGrantProposal {
     pub executable_sha256: [u8; 32],
     pub workspace: PathBuf,
     pub grants: Vec<CompatibilityGrant>,
+    pub unavailable_capabilities: Vec<CompatibilityCapability>,
     pub duplicate_violations: u64,
 }
 
@@ -243,6 +253,46 @@ pub enum CompatibilityApplyError {
     InvalidProposal,
     UnsupportedGrant,
     PolicyRejected,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompatibilityRestartError {
+    ApprovalUnavailable,
+    InvalidPriorResult,
+    InvalidRequest,
+    Apply(CompatibilityApplyError),
+    Workspace(crate::WorkspaceControlError),
+    Sandbox(crate::SandboxError),
+}
+
+#[derive(Clone, Debug)]
+pub struct CompatibilityRestartPlan {
+    pub proposal_id: String,
+    request: crate::SandboxRequest,
+    options: crate::ExecutionOptions,
+    discard_transaction: Option<crate::WorkspaceTransactionId>,
+}
+
+impl CompatibilityRestartPlan {
+    /// Discards the prior transaction and starts one new approved execution.
+    ///
+    /// # Errors
+    ///
+    /// Discard and startup failures are returned without fallback. Consuming
+    /// `self` prevents reuse of the same plan.
+    pub fn start(
+        self,
+        sandbox: &crate::Sandbox,
+    ) -> Result<crate::ExecutionHandle, CompatibilityRestartError> {
+        if let Some(transaction) = self.discard_transaction {
+            sandbox
+                .discard_workspace(transaction)
+                .map_err(CompatibilityRestartError::Workspace)?;
+        }
+        sandbox
+            .start_with_options(self.request, self.options)
+            .map_err(CompatibilityRestartError::Sandbox)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -321,7 +371,10 @@ impl CompatibilityGrantResolver {
         if grants.len() > self.context.maximum_grants {
             return unavailable([], [CompatibilityCapability::TooManyDistinctResources]);
         }
-        if !capabilities.is_empty() {
+        if capabilities
+            .iter()
+            .any(|capability| capability.is_hard_stop())
+        {
             return CompatibilityResolution::CapabilityUnavailable(CompatibilityUnavailable {
                 grants,
                 capabilities,
@@ -332,13 +385,14 @@ impl CompatibilityGrantResolver {
                 CompatibilityNoPromptReason::NoEligibleViolations,
             );
         }
-        let proposal_id = proposal_id(&self.context, &grants);
+        let proposal_id = proposal_id(&self.context, &grants, &capabilities);
         CompatibilityResolution::NeedsAuthorization(CompatibilityGrantProposal {
             proposal_id,
             executable_path: self.context.executable_path.clone(),
             executable_sha256: self.context.executable_sha256,
             workspace: self.context.workspace.clone(),
             grants,
+            unavailable_capabilities: capabilities,
             duplicate_violations,
         })
     }
@@ -361,7 +415,11 @@ impl CompatibilityGrantResolver {
             || proposal.executable_sha256 != self.context.executable_sha256
             || filesystem_key(&proposal.workspace) != filesystem_key(&self.context.workspace)
             || proposal.grants.len() > self.context.maximum_grants
-            || proposal_id(&self.context, &proposal.grants) != proposal.proposal_id
+            || proposal_id(
+                &self.context,
+                &proposal.grants,
+                &proposal.unavailable_capabilities,
+            ) != proposal.proposal_id
         {
             return Err(CompatibilityApplyError::InvalidProposal);
         }
@@ -389,6 +447,55 @@ impl CompatibilityGrantResolver {
         crate::policy::compiler::compile(&applied, &self.context.workspace)
             .map_err(|_| CompatibilityApplyError::PolicyRejected)?;
         Ok(applied)
+    }
+
+    /// Prepares one approved restart from a completed failed execution.
+    ///
+    /// # Errors
+    ///
+    /// Rejects successful/infrastructure outcomes, mismatched request
+    /// identity, unavailable approval, invalid proposals, and backend changes.
+    pub fn prepare_restart(
+        &self,
+        proposal: &CompatibilityGrantProposal,
+        mut request: crate::SandboxRequest,
+        prior_result: &crate::ExecutionResult,
+        mut options: crate::ExecutionOptions,
+        decisions: &mut CompatibilityDecisionCache,
+    ) -> Result<CompatibilityRestartPlan, CompatibilityRestartError> {
+        let failed = matches!(
+            &prior_result.terminal,
+            crate::ExecutionTerminal::Process(exit)
+                if exit.reason != crate::ProcessExitReason::Exited || exit.exit_code != Some(0)
+        );
+        if !failed || prior_result.dropped_distinct_violations != 0 {
+            return Err(CompatibilityRestartError::InvalidPriorResult);
+        }
+        if filesystem_key(&request.program) != filesystem_key(&self.context.executable_path)
+            || filesystem_key(&request.cwd) != filesystem_key(&self.context.workspace)
+        {
+            return Err(CompatibilityRestartError::InvalidRequest);
+        }
+        options.workspace = match prior_result.workspace_backend {
+            crate::WorkspaceBackend::Direct => crate::WorkspaceMode::Direct,
+            crate::WorkspaceBackend::Staged => crate::WorkspaceMode::Staged,
+            crate::WorkspaceBackend::Projected => crate::WorkspaceMode::Projected,
+        };
+        let applied = self
+            .apply_approved(proposal, &request.policy)
+            .map_err(CompatibilityRestartError::Apply)?;
+        if decisions.action(proposal) != CompatibilityPromptAction::UseApproved
+            || !decisions.consume_approval(proposal)
+        {
+            return Err(CompatibilityRestartError::ApprovalUnavailable);
+        }
+        request.policy = applied;
+        Ok(CompatibilityRestartPlan {
+            proposal_id: proposal.proposal_id.clone(),
+            request,
+            options,
+            discard_transaction: prior_result.workspace_transaction,
+        })
     }
 
     fn validate_filesystem_grant(&self, path: &Path) -> Result<(), CompatibilityApplyError> {
@@ -633,13 +740,20 @@ fn is_filesystem_root(path: &Path) -> bool {
         .is_none_or(|parent| parent == path || parent.as_os_str().is_empty())
 }
 
-fn proposal_id(context: &CompatibilityGrantContext, grants: &[CompatibilityGrant]) -> String {
+fn proposal_id(
+    context: &CompatibilityGrantContext,
+    grants: &[CompatibilityGrant],
+    capabilities: &[CompatibilityCapability],
+) -> String {
     let mut digest = Sha256::new();
     digest.update(context.executable_sha256);
     digest.update(context.executable_path.to_string_lossy().to_lowercase());
     digest.update(context.workspace.to_string_lossy().to_lowercase());
     for grant in grants {
         digest.update(format!("{grant:?}"));
+    }
+    for capability in capabilities {
+        digest.update(format!("{capability:?}"));
     }
     digest
         .finalize()

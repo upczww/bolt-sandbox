@@ -382,6 +382,9 @@ pwsh scripts/test-agent-scenarios.ps1 `
 未知但安全的资源阻止工具运行时，集成层可以按照
 [动态兼容授权建议设计](docs/architecture/dynamic-compatibility-grants.md)只询问一次最小
 授权。批准后必须用新的不可变策略重新启动；目标进程不能热添加或持久化自己的白名单。
+Rust API 提供 `CompatibilityGrantResolver`、`CompatibilityDecisionCache` 和
+只能消费一次的 `CompatibilityRestartPlan`。成功命令返回 `NoPrompt`；事务模式批准
+重试会先丢弃失败尝试，再启动一个新的策略代次。
 
 可选 Rust 覆盖率需要 `cargo-llvm-cov 0.9.0`、Nightly Toolchain 和匹配的
 LLVM Tools：

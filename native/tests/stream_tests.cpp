@@ -332,6 +332,23 @@ int RunCliFixture(const int argument_count) {
     return 23;
 }
 
+int RunCompatibilityReadFixture(
+    const int argument_count,
+    wchar_t** arguments) {
+    if (argument_count != 3) {
+        return 41;
+    }
+    const HANDLE file = CreateFileW(
+        arguments[2], GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return 42;
+    }
+    CloseHandle(file);
+    return 0;
+}
+
 int RunDroppedEventChannelFixture(const int argument_count) {
     if (argument_count != 2) {
         return 329;
