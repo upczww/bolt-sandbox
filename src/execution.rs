@@ -950,4 +950,23 @@ mod tests {
             &[PathBuf::from(r"C:\Work\Agent-Other\.secrets")]
         ));
     }
+
+    #[test]
+    fn ws_022_staged_workspace_rejects_grants_that_expose_sibling_transactions() {
+        let source = PathBuf::from(r"C:\Work\Agent");
+        let mut policy = crate::SandboxPolicy::default();
+        policy.filesystem.read_only.push(PathBuf::from(r"c:\work"));
+        assert!(staged_policy_exposes_sibling_namespace(&source, &policy));
+
+        policy.filesystem.read_only.clear();
+        policy.filesystem.read_write.push(source.clone());
+        assert!(!staged_policy_exposes_sibling_namespace(&source, &policy));
+
+        policy.filesystem.read_write.clear();
+        policy
+            .filesystem
+            .read_only
+            .push(PathBuf::from(r"C:\Work\Other"));
+        assert!(!staged_policy_exposes_sibling_namespace(&source, &policy));
+    }
 }
