@@ -110,6 +110,44 @@ bool RunTcpProxyServerTests() {
         return false;
     }
 
+    const bolt::network::BindingKey service_agnostic_key{
+        session.nonce, 2'345, "api.example",
+        bolt::network::AddressFamily::kIpv4, resolved.data(), 4, 0};
+    if (bindings->Upsert(service_agnostic_key, 1'000, 30'000) !=
+            bolt::network::BindingStatus::kSuccess ||
+        bolt::protocol::EncodeTcpProxyRequest(
+            session, 6, 2'345,
+            bolt::protocol::DnsProxyAddressFamily::kIpv4, resolved, 443,
+            "api.example", request) !=
+            bolt::protocol::TcpProxyStatus::kSuccess ||
+        bolt::network::ProcessTcpProxyRequest(
+            session, *policy, *bindings, 6, request.data(), request.size(),
+            2'000, connector, response) !=
+            bolt::protocol::TcpProxyStatus::kSuccess ||
+        connector.calls != 2 ||
+        bolt::protocol::DecodeTcpProxyResponse(
+            session, response.data(), response.size(), 6, decoded) !=
+            bolt::protocol::TcpProxyStatus::kSuccess ||
+        decoded.result != bolt::protocol::TcpProxyResult::kConnected) {
+        return false;
+    }
+    if (bolt::protocol::EncodeTcpProxyRequest(
+            session, 7, 2'345,
+            bolt::protocol::DnsProxyAddressFamily::kIpv4, resolved, 80,
+            "api.example", request) !=
+            bolt::protocol::TcpProxyStatus::kSuccess ||
+        bolt::network::ProcessTcpProxyRequest(
+            session, *policy, *bindings, 7, request.data(), request.size(),
+            2'000, connector, response) !=
+            bolt::protocol::TcpProxyStatus::kSuccess ||
+        connector.calls != 2 ||
+        bolt::protocol::DecodeTcpProxyResponse(
+            session, response.data(), response.size(), 7, decoded) !=
+            bolt::protocol::TcpProxyStatus::kSuccess ||
+        decoded.result != bolt::protocol::TcpProxyResult::kDenied) {
+        return false;
+    }
+
     if (bolt::protocol::EncodeTcpProxyRequest(
             session, 2, 1'235,
             bolt::protocol::DnsProxyAddressFamily::kIpv4, resolved, 443,
@@ -119,7 +157,7 @@ bool RunTcpProxyServerTests() {
             session, *policy, *bindings, 2, request.data(), request.size(),
             2'000, connector, response) !=
             bolt::protocol::TcpProxyStatus::kSuccess ||
-        connector.calls != 1 ||
+        connector.calls != 2 ||
         bolt::protocol::DecodeTcpProxyResponse(
             session, response.data(), response.size(), 2, decoded) !=
             bolt::protocol::TcpProxyStatus::kSuccess ||
@@ -135,7 +173,7 @@ bool RunTcpProxyServerTests() {
             session, *policy, *bindings, 3, request.data(), request.size(),
             31'000, connector, response) !=
             bolt::protocol::TcpProxyStatus::kSuccess ||
-        connector.calls != 1 ||
+        connector.calls != 2 ||
         bolt::protocol::DecodeTcpProxyResponse(
             session, response.data(), response.size(), 3, decoded) !=
             bolt::protocol::TcpProxyStatus::kSuccess ||
@@ -156,7 +194,7 @@ bool RunTcpProxyServerTests() {
             session, *policy, *bindings, 4, request.data(), request.size(),
             2'000, connector, response) !=
             bolt::protocol::TcpProxyStatus::kSuccess ||
-        connector.calls != 2 || connector.last_address != direct) {
+        connector.calls != 3 || connector.last_address != direct) {
         return false;
     }
 
@@ -184,5 +222,5 @@ bool RunTcpProxyServerTests() {
                session, *policy, *bindings, 5, request.data(), request.size(),
                2'000, connector, response) ==
                bolt::protocol::TcpProxyStatus::kAuthenticationFailed &&
-           response.empty() && connector.calls == 3;
+           response.empty() && connector.calls == 4;
 }
