@@ -1025,3 +1025,28 @@ fn net_030_fixture_server_ignores_an_aborted_probe_connection() {
     assert!(server.join().expect("server must join"));
     assert!(response.starts_with(b"HTTP/1.1 200 OK"));
 }
+
+#[test]
+fn net_031_fixture_server_waits_for_a_delayed_request() {
+    let _guard = scenario_guard();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("listener must bind");
+    listener
+        .set_nonblocking(true)
+        .expect("listener must be nonblocking");
+    let address = listener.local_addr().expect("listener has address");
+    let server = thread::spawn(move || serve_one_http_request(&listener));
+
+    let mut client = TcpStream::connect(address).expect("client must connect");
+    thread::sleep(Duration::from_millis(100));
+    client
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .expect("read timeout must configure");
+    client
+        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .expect("delayed request must write");
+    let mut response = Vec::new();
+    let _ = client.read_to_end(&mut response);
+
+    assert!(server.join().expect("server must join"));
+    assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+}
