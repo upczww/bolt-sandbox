@@ -141,6 +141,7 @@ add_library(bolt-sandbox-protocol STATIC
     protocol/policy_payload.cpp
     protocol/recovery_protocol.cpp
     protocol/runtime_payload.cpp
+    protocol/workspace_security_protocol.cpp
 )
 bolt_native_warnings(bolt-sandbox-protocol)
 target_include_directories(bolt-sandbox-protocol PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
