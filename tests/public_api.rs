@@ -16,8 +16,7 @@ use bolt_sandbox::{
     ProcessOperation, ProcessViolation, PseudoConsoleSize, RecoveryPolicy, RegistryPolicy,
     RequestField, Sandbox, SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy,
     SandboxRequest, TerminalMode, ViolationAggregate, WorkspaceBackend, WorkspaceCapabilities,
-    WorkspaceChange, WorkspaceControlError, WorkspaceLimits, WorkspaceMode,
-    WorkspaceTransactionId,
+    WorkspaceChange, WorkspaceControlError, WorkspaceLimits, WorkspaceMode, WorkspaceTransactionId,
 };
 
 fn assert_attributed_stream<T: Iterator<Item = AttributedSandboxEvent>>() {}
