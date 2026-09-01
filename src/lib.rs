@@ -2,6 +2,7 @@
 
 mod attribution;
 mod compatibility;
+mod denial;
 mod error;
 mod event;
 mod execution;
@@ -18,13 +19,15 @@ pub use attribution::{
     AttributedSandboxEvent, CommandId, ExecutionAttribution, ExecutionId, PolicyGeneration,
 };
 pub use compatibility::{
-    CompatibilityApplyError, CompatibilityApprovalScope, CompatibilityCapability,
-    CompatibilityCommandOutcome, CompatibilityContextError, CompatibilityDecision,
-    CompatibilityDecisionCache, CompatibilityDecisionCacheError, CompatibilityGrant,
-    CompatibilityGrantContext, CompatibilityGrantProposal, CompatibilityGrantResolver,
-    CompatibilityNoPromptReason, CompatibilityPromptAction, CompatibilityResolution,
-    CompatibilityRestartError, CompatibilityRestartPlan, CompatibilityUnavailable,
+    AccessDenialReport, CompatibilityApplyError, CompatibilityApprovalScope,
+    CompatibilityCapability, CompatibilityCommandOutcome, CompatibilityContextError,
+    CompatibilityDecision, CompatibilityDecisionCache, CompatibilityDecisionCacheError,
+    CompatibilityGrant, CompatibilityGrantContext, CompatibilityGrantProposal,
+    CompatibilityGrantResolver, CompatibilityNoPromptReason, CompatibilityPromptAction,
+    CompatibilityResolution, CompatibilityRestartError, CompatibilityRestartPlan,
+    CompatibilityUnavailable,
 };
+pub use denial::{AccessDenial, AccessOperation, AccessResource};
 pub use error::{InvalidRequestReason, RequestField, SandboxError};
 pub use event::{
     ChildInjectionFailure, ChildInjectionFailureReason, EventsDropped, FilesystemOperation,

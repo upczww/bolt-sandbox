@@ -841,6 +841,16 @@ pub struct ExecutionResult {
     pub dropped_distinct_violations: u64,
 }
 
+impl ExecutionResult {
+    #[must_use]
+    pub fn access_denials(&self) -> Vec<crate::AccessDenial> {
+        self.violation_aggregates
+            .iter()
+            .filter_map(ViolationAggregate::access_denial)
+            .collect()
+    }
+}
+
 pub struct ByteStream {
     receiver: Receiver<Vec<u8>>,
 }

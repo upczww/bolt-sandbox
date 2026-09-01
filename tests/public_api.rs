@@ -7,16 +7,15 @@ use std::{
 };
 
 use bolt_sandbox::{
-    AccessDenial, AccessOperation, AccessResource, AttributedSandboxEvent,
-    ChildInjectionFailure, ChildInjectionFailureReason, ChildProcessPolicy,
-    CommandId, DEFAULT_STREAM_CAPACITY, DEFAULT_VIOLATION_AGGREGATE_CAPACITY, EventStream,
-    ExecutionAttribution, ExecutionHandle, ExecutionId, ExecutionOptions, ExecutionResult,
-    FilesystemOperation, FilesystemPolicy, FilesystemViolation, IpCidr, MAX_TIMEOUT,
-    MAX_VIOLATION_AGGREGATE_CAPACITY, MIN_TIMEOUT, NamedPipePolicy, NetworkAllowList,
-    NetworkPolicy, NetworkTarget, NetworkViolation, PolicyGeneration, PortRange, ProcessExit,
-    ProcessExitReason, ProcessOperation, ProcessViolation, PseudoConsoleSize, RecoveryPolicy,
-    RegistryOperation, RegistryPolicy, RegistryViolation, RequestField, Sandbox, SandboxConfig,
-    SandboxError, SandboxEvent,
+    AccessDenial, AccessOperation, AccessResource, AttributedSandboxEvent, ChildInjectionFailure,
+    ChildInjectionFailureReason, ChildProcessPolicy, CommandId, DEFAULT_STREAM_CAPACITY,
+    DEFAULT_VIOLATION_AGGREGATE_CAPACITY, EventStream, ExecutionAttribution, ExecutionHandle,
+    ExecutionId, ExecutionOptions, ExecutionResult, FilesystemOperation, FilesystemPolicy,
+    FilesystemViolation, IpCidr, MAX_TIMEOUT, MAX_VIOLATION_AGGREGATE_CAPACITY, MIN_TIMEOUT,
+    NamedPipePolicy, NetworkAllowList, NetworkPolicy, NetworkTarget, NetworkViolation,
+    PolicyGeneration, PortRange, ProcessExit, ProcessExitReason, ProcessOperation,
+    ProcessViolation, PseudoConsoleSize, RecoveryPolicy, RegistryOperation, RegistryPolicy,
+    RegistryViolation, RequestField, Sandbox, SandboxConfig, SandboxError, SandboxEvent,
     SandboxPolicy, SandboxRequest, TerminalMode, ViolationAggregate, WorkspaceBackend,
     WorkspaceCapabilities, WorkspaceChange, WorkspaceControlError, WorkspaceLimits, WorkspaceMode,
     WorkspaceTransactionId,
@@ -277,9 +276,7 @@ fn compat_034_violation_aggregates_expose_one_uniform_denial_shape() {
             AccessDenial {
                 process_id: 7,
                 operation: AccessOperation::Filesystem(FilesystemOperation::Read),
-                resource: AccessResource::FilesystemPath(PathBuf::from(
-                    r"C:\SDK\library.lib",
-                )),
+                resource: AccessResource::FilesystemPath(PathBuf::from(r"C:\SDK\library.lib")),
                 occurrences: 3,
             },
         ),
@@ -295,9 +292,7 @@ fn compat_034_violation_aggregates_expose_one_uniform_denial_shape() {
             AccessDenial {
                 process_id: 8,
                 operation: AccessOperation::Registry(RegistryOperation::Open),
-                resource: AccessResource::RegistryKey(String::from(
-                    r"HKLM\SOFTWARE\Vendor",
-                )),
+                resource: AccessResource::RegistryKey(String::from(r"HKLM\SOFTWARE\Vendor")),
                 occurrences: 1,
             },
         ),
@@ -312,9 +307,7 @@ fn compat_034_violation_aggregates_expose_one_uniform_denial_shape() {
             },
             AccessDenial {
                 process_id: 9,
-                operation: AccessOperation::Network(
-                    bolt_sandbox::NetworkOperation::Resolve,
-                ),
+                operation: AccessOperation::Network(bolt_sandbox::NetworkOperation::Resolve),
                 resource: AccessResource::NetworkDomain(String::from("example.org")),
                 occurrences: 2,
             },
@@ -330,9 +323,7 @@ fn compat_034_violation_aggregates_expose_one_uniform_denial_shape() {
             },
             AccessDenial {
                 process_id: 10,
-                operation: AccessOperation::Network(
-                    bolt_sandbox::NetworkOperation::Connect,
-                ),
+                operation: AccessOperation::Network(bolt_sandbox::NetworkOperation::Connect),
                 resource: AccessResource::NetworkEndpoint(endpoint),
                 occurrences: 1,
             },
@@ -349,6 +340,40 @@ fn compat_034_violation_aggregates_expose_one_uniform_denial_shape() {
         }
         .access_denial(),
         None
+    );
+}
+
+#[test]
+fn compat_034_process_denial_and_occurrence_overflow_are_explicit() {
+    assert_eq!(
+        ViolationAggregate {
+            event: SandboxEvent::ProcessViolation(ProcessViolation {
+                process_id: 11,
+                operation: ProcessOperation::ExternalDelegation,
+            }),
+            duplicate_count: 0,
+        }
+        .access_denial(),
+        Some(AccessDenial {
+            process_id: 11,
+            operation: AccessOperation::Process(ProcessOperation::ExternalDelegation),
+            resource: AccessResource::ProcessAuthority,
+            occurrences: 1,
+        })
+    );
+    assert_eq!(
+        ViolationAggregate {
+            event: SandboxEvent::FilesystemViolation(FilesystemViolation {
+                process_id: 12,
+                operation: FilesystemOperation::Read,
+                path: PathBuf::from(r"C:\SDK\overflow.lib"),
+            }),
+            duplicate_count: u64::MAX,
+        }
+        .access_denial()
+        .expect("violation must normalize")
+        .occurrences,
+        u64::MAX
     );
 }
 

@@ -173,6 +173,9 @@ fn net_002_cli_denied_blocks_curl_after_afd_device_creation() {
     assert_ne!(output.status.code(), Some(0));
     let stderr = String::from_utf8(output.stderr).expect("CLI diagnostics are UTF-8");
     assert!(stderr.contains("sandbox-event network-violation"));
+    assert!(stderr.contains("sandbox-denial pid="));
+    assert!(stderr.contains("kind=network-endpoint operation=Connect"));
+    assert!(stderr.contains(&format!("resource=127.0.0.1:{port}")));
 }
 
 #[test]

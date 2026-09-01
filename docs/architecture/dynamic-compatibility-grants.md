@@ -13,6 +13,10 @@ operation into an in-place allow.
    process, operation, and canonical resource identity.
 2. The trusted host aggregates duplicate violations and removes resources
    covered by mandatory denies or ineligible capability classes.
+   Every aggregate is also normalized into `AccessDenial`, whose common shape
+   contains process ID, typed operation, explicit resource, and occurrence
+   count. Resources distinguish filesystem paths, registry keys, network
+   domains, network endpoints, and process authority without string parsing.
 3. A host-side proposal engine may suggest the smallest representable grant:
    exact metadata, exact/recursive read-only, task-private read-write, exact
    registry read-only, or an explicit network rule.
@@ -47,6 +51,15 @@ The following never become a normal “add path to whitelist” prompt:
 - executable, DLL, script, or registry writes outside task-private storage;
 - broad user-profile, Program Files, registry-hive, drive, or UNC-share roots;
 - network wildcards that erase domain/address/port restrictions.
+
+A direct network endpoint proposal is applicable only to a `Denied` policy and
+creates an AllowList containing exactly one `/32` or `/128` address plus one
+port. Existing AllowLists reject endpoint proposals because independently
+appending addresses and ports would create an unsafe Cartesian-product grant;
+an `Unrestricted` policy also rejects the stale proposal. A domain-only denial
+remains `CapabilityUnavailable(NetworkBindingRequired)` until trusted DNS
+evidence binds the domain, endpoint, process, port, and TTL; the host never
+approves a transient resolved address as though it were the requested domain.
 
 These require a separately implemented typed capability with its own isolation
 and tests. If unavailable, the host reports `capability-unavailable` rather
@@ -96,6 +109,10 @@ The Rust boundary implements the flow as separate consumable objects:
 
 - `CompatibilityGrantResolver::resolve` returns `NoPrompt`, one aggregated
   `NeedsAuthorization`, or `CapabilityUnavailable`.
+- `CompatibilityGrantResolver::resolve_report` and `resolve_result` return an
+  `AccessDenialReport` containing every explicit denial, dropped-evidence
+  count, and the authorization resolution in one object. `ExecutionResult`
+  also exposes `access_denials()` for hosts that separate display from policy.
 - `CompatibilityDecisionCache` records bounded once/workspace approvals and
   rejections; it stores bindings and decisions, never command/environment data.
 - `CompatibilityGrantResolver::apply_approved` revalidates proposal identity,

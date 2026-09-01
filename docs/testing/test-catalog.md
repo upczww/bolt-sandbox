@@ -528,6 +528,7 @@ and reason code—not merely identical serialized bytes.
 | COMPAT-031 | A standard runtime requires an NT metadata device | Only a manifest-verified, configured exact `device-ro` name opens for read/metadata; writes, descendants, lookalikes, malformed rules, and unknown devices remain denied |
 | COMPAT-032 | A declared Agent scenario requires writable HKCU state | Writes are redirected into a workspace application Hive for the process and descendants; the real HKCU and every non-user Hive remain unchanged, and an external or read-only Hive path fails before readiness |
 | COMPAT-033 | A tool passes anonymous pipes to a descendant through an explicit handle list or inheritable legacy handles | Only listed or `HANDLE_FLAG_INHERIT` Pipe objects receive a bounded child capability; non-pipe and non-inheritable handles remain unavailable, and Playwright completes its DevTools exchange without a namespace grant |
+| COMPAT-034 | A failed command has filesystem, registry, domain, endpoint, or process denials | Public API and CLI return one uniform denial shape with explicit typed resource, operation, process, occurrence count, dropped-evidence count, and authorization resolution; non-violation events never become approval evidence |
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |

@@ -429,6 +429,12 @@ The Rust API exposes `CompatibilityGrantResolver`,
 `CompatibilityDecisionCache`, and consumable `CompatibilityRestartPlan` types.
 Successful commands return `NoPrompt`; approved transactional retries discard
 the failed attempt before one new policy generation starts.
+Failed executions can be passed directly to
+`CompatibilityGrantResolver::resolve_result`, which returns an
+`AccessDenialReport`. Each denial explicitly identifies a filesystem path,
+registry key, network domain/endpoint, or process authority. The CLI emits the
+same normalized evidence as one `sandbox-denial ...` line per aggregate, so an
+Agent never needs to infer an approval request from native error text.
 
 Optional Rust coverage requires `cargo-llvm-cov 0.9.0`, a nightly toolchain,
 and matching LLVM tools:

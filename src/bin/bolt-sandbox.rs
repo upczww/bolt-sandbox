@@ -93,6 +93,13 @@ fn run(arguments: Vec<OsString>) -> Result<u32, CliError> {
     {
         return Err(CliError::Stream);
     }
+    for denial in result
+        .violation_aggregates
+        .iter()
+        .filter_map(bolt_sandbox::ViolationAggregate::access_denial)
+    {
+        eprintln!("{}", format_denial(&denial));
+    }
     Ok(exit_code(&result.terminal))
 }
 
@@ -394,6 +401,38 @@ fn write_event(event: &SandboxEvent) {
 
 #[allow(
     clippy::unnecessary_debug_formatting,
+    reason = "denial resources must escape control characters in line-oriented diagnostics"
+)]
+fn format_denial(denial: &bolt_sandbox::AccessDenial) -> String {
+    let operation = match denial.operation {
+        bolt_sandbox::AccessOperation::Filesystem(operation) => format!("{operation:?}"),
+        bolt_sandbox::AccessOperation::Registry(operation) => format!("{operation:?}"),
+        bolt_sandbox::AccessOperation::Network(operation) => format!("{operation:?}"),
+        bolt_sandbox::AccessOperation::Process(operation) => format!("{operation:?}"),
+        _ => String::from("Unknown"),
+    };
+    let (kind, resource) = match &denial.resource {
+        bolt_sandbox::AccessResource::FilesystemPath(path) => ("filesystem", format!("{path:?}")),
+        bolt_sandbox::AccessResource::RegistryKey(key) => ("registry", format!("{key:?}")),
+        bolt_sandbox::AccessResource::NetworkDomain(domain) => {
+            ("network-domain", format!("{domain:?}"))
+        }
+        bolt_sandbox::AccessResource::NetworkEndpoint(endpoint) => {
+            ("network-endpoint", format!("{endpoint:?}"))
+        }
+        bolt_sandbox::AccessResource::ProcessAuthority => {
+            ("process", String::from("\"process-authority\""))
+        }
+        _ => ("unknown", String::from("\"unsupported\"")),
+    };
+    format!(
+        "sandbox-denial pid={} kind={kind} operation={operation} resource={resource} occurrences={}",
+        denial.process_id, denial.occurrences
+    )
+}
+
+#[allow(
+    clippy::unnecessary_debug_formatting,
     reason = "Debug path formatting escapes control characters in line-oriented diagnostics"
 )]
 fn format_event(event: &SandboxEvent) -> String {
@@ -506,9 +545,7 @@ mod tests {
             operation: bolt_sandbox::AccessOperation::Network(
                 bolt_sandbox::NetworkOperation::Resolve,
             ),
-            resource: bolt_sandbox::AccessResource::NetworkDomain(String::from(
-                "example.org",
-            )),
+            resource: bolt_sandbox::AccessResource::NetworkDomain(String::from("example.org")),
             occurrences: 1,
         };
 

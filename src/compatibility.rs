@@ -231,6 +231,13 @@ pub enum CompatibilityResolution {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccessDenialReport {
+    pub denials: Vec<crate::AccessDenial>,
+    pub dropped_distinct_denials: u64,
+    pub resolution: CompatibilityResolution,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompatibilityGrantContext {
     pub executable_path: PathBuf,
     pub executable_sha256: [u8; 32],
@@ -380,6 +387,12 @@ impl CompatibilityGrantResolver {
                 capabilities,
             });
         }
+        if grants.is_empty() && !capabilities.is_empty() {
+            return CompatibilityResolution::CapabilityUnavailable(CompatibilityUnavailable {
+                grants,
+                capabilities,
+            });
+        }
         if grants.is_empty() {
             return CompatibilityResolution::NoPrompt(
                 CompatibilityNoPromptReason::NoEligibleViolations,
@@ -395,6 +408,43 @@ impl CompatibilityGrantResolver {
             unavailable_capabilities: capabilities,
             duplicate_violations,
         })
+    }
+
+    #[must_use]
+    pub fn resolve_report(
+        &self,
+        outcome: CompatibilityCommandOutcome,
+        violations: &[ViolationAggregate],
+        dropped_distinct_violations: u64,
+    ) -> AccessDenialReport {
+        AccessDenialReport {
+            denials: violations
+                .iter()
+                .filter_map(ViolationAggregate::access_denial)
+                .collect(),
+            dropped_distinct_denials: dropped_distinct_violations,
+            resolution: self.resolve(outcome, violations, dropped_distinct_violations),
+        }
+    }
+
+    #[must_use]
+    pub fn resolve_result(&self, result: &crate::ExecutionResult) -> AccessDenialReport {
+        let outcome = match &result.terminal {
+            crate::ExecutionTerminal::Process(exit)
+                if exit.reason == crate::ProcessExitReason::Exited && exit.exit_code == Some(0) =>
+            {
+                CompatibilityCommandOutcome::Succeeded
+            }
+            crate::ExecutionTerminal::Process(_) => CompatibilityCommandOutcome::Failed,
+            crate::ExecutionTerminal::Infrastructure(_) => {
+                CompatibilityCommandOutcome::InfrastructureFailure
+            }
+        };
+        self.resolve_report(
+            outcome,
+            &result.violation_aggregates,
+            result.dropped_distinct_violations,
+        )
     }
 
     /// Applies one already-approved proposal to a cloned policy after
@@ -439,8 +489,29 @@ impl CompatibilityGrantResolver {
                     self.validate_registry_grant(key)?;
                     push_unique_registry(&mut applied.registry.exact_read_only, key);
                 }
-                CompatibilityGrant::NetworkEndpoint(_) => {
-                    return Err(CompatibilityApplyError::UnsupportedGrant);
+                CompatibilityGrant::NetworkEndpoint(endpoint) => {
+                    let address = crate::IpCidr {
+                        address: endpoint.ip(),
+                        prefix_length: if endpoint.is_ipv4() { 32 } else { 128 },
+                    };
+                    let port = crate::PortRange {
+                        start: endpoint.port(),
+                        end: endpoint.port(),
+                    };
+                    match &applied.network {
+                        crate::NetworkPolicy::Denied => {}
+                        crate::NetworkPolicy::AllowList(_) => {
+                            return Err(CompatibilityApplyError::UnsupportedGrant);
+                        }
+                        crate::NetworkPolicy::Unrestricted => {
+                            return Err(CompatibilityApplyError::InvalidProposal);
+                        }
+                    }
+                    applied.network = crate::NetworkPolicy::AllowList(crate::NetworkAllowList {
+                        domains: Vec::new(),
+                        addresses: vec![address],
+                        ports: vec![port],
+                    });
                 }
             }
         }
