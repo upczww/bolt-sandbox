@@ -294,6 +294,7 @@ bolt-sandbox.exe run `
   --manifest-sha256 <64-hex-trusted-manifest-digest> `
   --cwd C:\agent-work\task-123 `
   --timeout-ms 120000 `
+  --terminal pipes `
   --read-only C:\SDK `
   --read-write C:\package-cache `
   --deny C:\host-secrets `
@@ -309,6 +310,11 @@ Filesystem options are `--read-write`, `--read-only`, `--deny`,
 `--registry-read-write`. Recovery requires all four options:
 `--recovery-dir`, `--recovery-max-bytes`, `--recovery-max-items`, and
 `--recovery-retention-seconds`.
+
+Terminal modes are `pipes` (the default) and `pseudo-console`. Select
+`--terminal pseudo-console` for tools that require Windows console semantics,
+including PowerShell's ConsoleHost; the ConPTY is isolated and its capability
+is propagated to descendants without granting access to the host console.
 
 Network modes are `unrestricted`, `denied`, and `allow-list`. Allow-list rules
 use repeatable `--allow-domain`, `--allow-cidr`, and `--allow-port` options; a
@@ -394,6 +400,14 @@ pwsh scripts/test-agent-scenarios.ps1 `
   -ComponentRoot target\native\x64\Release `
   -PythonPath C:\trusted-runtimes\python\python.exe
 ```
+
+The scenario harness requires Shell, PowerShell, Node, Python, Git, Cargo/Rust,
+and a native compiler. It discovers installed tools, MSVC SDK read roots, and
+versioned Windows language-resource packages when possible; every concrete path
+is passed as host data and external roots receive read-only or metadata-only
+authority. Use `-NativeCompilerPath`, `-NativeCompilerKind`, and repeatable
+`-NativeCompilerReadRoot` when automatic discovery is unavailable. GCC is used
+when installed; otherwise the harness exercises MSVC compile, link, and run.
 
 Optional Rust coverage requires `cargo-llvm-cov 0.9.0`, a nightly toolchain,
 and matching LLVM tools:

@@ -262,7 +262,7 @@ and reason code—not merely identical serialized bytes.
 | REG-016 | Win32 registry wrappers perform the same operations | End-to-end decision matches NT Native path |
 | REG-017 | Transactional or remote registry operation is attempted | Initial release denies it with typed `UnsupportedRegistryOperation`; no operation reaches the remote/transactional target |
 | REG-018 | Concurrent key mutation and rename races | Unauthorized side effects never appear; event actor is correct |
-| REG-019 | Ordinary OS ACL, missing key, or sharing error occurs on allowed path | Original error is preserved and no false violation is emitted |
+| REG-019 | Ordinary OS ACL, missing key, or sharing error occurs on allowed path | Original error is preserved and no false violation is emitted; mixed-access opens on exact-read-only keys are attenuated to read-only without creating or mutating host state |
 | REG-020 | Registry event contains names/data resembling secrets | Event includes only permitted key metadata and passes canary scan |
 
 ## IPC, events, and audit reliability
@@ -448,7 +448,7 @@ and reason code—not merely identical serialized bytes.
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |
-| PTY-001 | Interactive cmd/PowerShell/Node/Python starts with PTY enabled | Input, output, resize, and exit are functional with typed lifecycle events |
+| PTY-001 | Interactive cmd/PowerShell/Node/Python starts with PTY enabled | Input, output, resize, and exit are functional with typed lifecycle events; the isolated-console capability reaches the injected target and not pipe-mode targets |
 | PTY-002 | Noninteractive command starts without PTY | Existing pipe path is selected with no PTY process or handle overhead |
 | PTY-003 | Unsupported PTY architecture/configuration is requested | Typed failure occurs before process resume |
 | PTY-004 | PTY command creates descendants | Every descendant remains in the Job and receives matching policy/hook |
@@ -507,6 +507,7 @@ and reason code—not merely identical serialized bytes.
 | COMPAT-010 | Paths/profile/tool output use non-ASCII locale | Policy, process, streams, and events preserve meaning without lossy conversion |
 | COMPAT-011 | One Agent workspace runs shell, PowerShell, Python, Node, Git, Cargo/Rust, and a declared native compiler | All in-workspace file, child-process, cache, build, and executable workflows succeed on the first attempt; external toolchain roots are data-driven and read-only |
 | COMPAT-012 | The Agent workspace path contains spaces and non-ASCII characters | Every supported tool preserves the path and keeps all generated state beneath the workspace |
+| COMPAT-013 | Compatibility Profile declares the users-hive root | Only exact-read-only `HKU` is accepted; recursive or SID-subtree grants fail closed |
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |

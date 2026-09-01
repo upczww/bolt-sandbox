@@ -231,6 +231,7 @@ ProcessStatus SuspendedProcess::Create(
     output.injected_ = false;
     output.initialization_started_ = false;
     output.resumed_ = false;
+    output.isolated_console_ = pseudo_console;
     output.duplicated_handles_.clear();
     if (pseudo_console) {
         try {
@@ -391,6 +392,7 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
         reinterpret_cast<std::uintptr_t>(recovery_mutex_);
     payload.recovery_counter_handle =
         reinterpret_cast<std::uintptr_t>(recovery_counter_);
+    payload.isolated_console = isolated_console_;
     if (!dns_absent) {
         payload.dns_request_handle = reinterpret_cast<std::uintptr_t>(
             RemoteHandle(dns_request_handle));
@@ -518,6 +520,7 @@ void SuspendedProcess::Close() noexcept {
     injected_ = false;
     initialization_started_ = false;
     resumed_ = false;
+    isolated_console_ = false;
     release_event_ = nullptr;
     standard_output_ = nullptr;
     standard_error_ = nullptr;

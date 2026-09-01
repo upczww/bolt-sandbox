@@ -95,7 +95,7 @@ its catalog case ID and requirement IDs in machine-readable results.
 | ARC-PROC-007 | Required process mitigations are applied and cannot be weakened | PROC-031..034 | Specified |
 | ARC-PROC-008 | Timeout/cancellation/crash terminate the entire tree deterministically | LIFE-003..008, LIFE-014..015 | Specified |
 | ARC-PROC-009 | stdout/stderr/event terminal ordering and backpressure are bounded | LIFE-001..002, LIFE-009..016, EVT-006..012 | Specified |
-| ARC-PROC-010 | Executable paths and compatibility tools preserve launch semantics | PROC-010, PROC-022, COMPAT-001..010 | Specified |
+| ARC-PROC-010 | Executable paths and compatibility tools preserve launch semantics | PROC-010, PROC-022, COMPAT-001..013 | Specified |
 
 ## Network policy
 
@@ -147,7 +147,7 @@ its catalog case ID and requirement IDs in machine-readable results.
 | ARC-WS-004 | Projection/provider/IPC failure terminates or rejects execution without direct fallback | WS-011..013, GATE-001 | Specified |
 | ARC-WS-005 | Query, commit, discard, and revert operate on a bounded per-session change journal | WS-014..017, REC-020..021 | Specified |
 | ARC-WS-006 | Commit revalidates source identity and refuses external conflicts or partial application | WS-018..020, REC-022 | Specified |
-| ARC-PTY-001 | PTY is an explicit capability and noninteractive pipe execution remains the default | PTY-001..003 | Specified |
+| ARC-PTY-001 | PTY is an explicit capability and noninteractive pipe execution remains the default | PTY-001..003, COMPAT-011 | Specified |
 | ARC-PTY-002 | PTY descendants remain in the Job with inherited policy and hooks | PTY-004..006, PROC-003..013 | Specified |
 | ARC-PTY-003 | PTY handles cannot authorize arbitrary named-pipe or cross-process access | PTY-007..009, FS-053 | Specified |
 | ARC-BRK-001 | Any prewarmed broker holds verified read-only state but creates fresh per-command authority | BRK-001..004 | Specified |
@@ -189,7 +189,7 @@ its catalog case ID and requirement IDs in machine-readable results.
 | ARC-LIC-001 | Detours/BuildXL revisions and native inputs are pinned | LIC-001, LIC-004 | Specified |
 | ARC-LIC-002 | Notices, origins, modifications, and transitive dependencies are recorded | LIC-002, LIC-005 | Specified |
 | ARC-LIC-003 | GPL and closed-source references are not copied | LIC-003, BYP-012, BND-008 | Specified |
-| ARC-COMP-001 | Required tools and Windows/architecture matrix pass | COMPAT-001..010 | Specified |
+| ARC-COMP-001 | Required tools and Windows/architecture matrix pass | COMPAT-001..013 | Specified |
 | ARC-PERF-001 | Warm startup overhead target is under 100 ms | PERF-001, PERF-004, PERF-010 | Specified |
 | ARC-PERF-002 | Hook handshake target is under 50 ms | PERF-002, PERF-004 | Specified |
 | ARC-PERF-003 | Filesystem overhead target is below 5% for defined workloads | PERF-003, PERF-010 | Specified |

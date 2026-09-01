@@ -178,6 +178,18 @@ bool WriteNullHandle(PHANDLE output) noexcept {
     }
 }
 
+bool WriteOpenedExistingDisposition(PULONG output) noexcept {
+    if (output == nullptr) {
+        return true;
+    }
+    __try {
+        *output = REG_OPENED_EXISTING_KEY;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 bool WriteNullRegistryKey(PHKEY output) noexcept {
     return WriteNullHandle(reinterpret_cast<PHANDLE>(output));
 }
@@ -435,6 +447,7 @@ bool AllowedNativeName(
         return false;
     }
     return decision == RegistryDecision::kAllow ||
+           decision == RegistryDecision::kAllowExactReadOnly ||
            decision == RegistryDecision::kInheritUser;
 }
 
@@ -449,6 +462,7 @@ bool AllowedNativeOpen(
     const RegistryDecision decision =
         g_policy->Decide(hive, relative.c_str(), access);
     if (decision == RegistryDecision::kAllow ||
+        decision == RegistryDecision::kAllowExactReadOnly ||
         decision == RegistryDecision::kInheritUser) {
         return true;
     }
@@ -550,9 +564,11 @@ NTSTATUS GuardOpen(
     const ACCESS_MASK desired_access,
     const OBJECT_ATTRIBUTES* attributes,
     const protocol::RegistryOperation operation,
+    const bool allow_read_attenuation,
     OpenCall&& call) {
     std::wstring requested;
-    const RegistryAccess access = AccessForMask(desired_access);
+    RegistryAccess access = AccessForMask(desired_access);
+    ACCESS_MASK effective_access = desired_access;
     if (!ReadObjectAttributesName(attributes, requested)) {
         WriteNullHandle(key);
         return kStatusAccessDenied;
@@ -570,11 +586,22 @@ NTSTATUS GuardOpen(
     }
     if (requested_decision == RegistryDecision::kDeny &&
         !AllowedNativeOpen(requested, access)) {
-        ReportRegistryViolation(requested, operation);
-        WriteNullHandle(key);
-        return kStatusAccessDenied;
+        RegistryDecision read_decision = RegistryDecision::kDeny;
+        const bool read_visible_write_probe =
+            access == RegistryAccess::kWrite &&
+            DecideNativeName(
+                requested, RegistryAccess::kRead, read_decision) &&
+            read_decision == RegistryDecision::kAllowExactReadOnly;
+        if (!allow_read_attenuation || !read_visible_write_probe) {
+            ReportRegistryViolation(requested, operation);
+            WriteNullHandle(key);
+            return kStatusAccessDenied;
+        }
+        effective_access = KEY_READ |
+            (desired_access & (KEY_WOW64_32KEY | KEY_WOW64_64KEY));
+        access = RegistryAccess::kEnumerate;
     }
-    const NTSTATUS status = call();
+    const NTSTATUS status = call(effective_access);
     if (!NtSuccess(status)) {
         return status;
     }
@@ -600,8 +627,8 @@ NTSTATUS NTAPI DetouredNtOpenKey(
     POBJECT_ATTRIBUTES attributes) {
     return GuardOpen(
         key, desired_access, attributes, protocol::RegistryOperation::kOpen,
-        [&] {
-        return g_nt_open_key(key, desired_access, attributes);
+        true, [&](const ACCESS_MASK effective_access) {
+        return g_nt_open_key(key, effective_access, attributes);
         });
 }
 
@@ -612,9 +639,9 @@ NTSTATUS NTAPI DetouredNtOpenKeyEx(
     const ULONG open_options) {
     return GuardOpen(
         key, desired_access, attributes, protocol::RegistryOperation::kOpen,
-        [&] {
+        true, [&](const ACCESS_MASK effective_access) {
         return g_nt_open_key_ex(
-            key, desired_access, attributes, open_options);
+            key, effective_access, attributes, open_options);
         });
 }
 
@@ -626,12 +653,38 @@ NTSTATUS NTAPI DetouredNtCreateKey(
     PUNICODE_STRING class_name,
     const ULONG create_options,
     PULONG disposition) {
+    std::wstring requested;
+    RegistryDecision read_decision = RegistryDecision::kDeny;
+    if (ReadObjectAttributesName(attributes, requested) &&
+        DecideNativeName(
+            requested, RegistryAccess::kRead, read_decision) &&
+        read_decision == RegistryDecision::kAllowExactReadOnly) {
+        const ACCESS_MASK read_access = KEY_READ |
+            (desired_access & (KEY_WOW64_32KEY | KEY_WOW64_64KEY));
+        const NTSTATUS status = GuardOpen(
+            key, read_access, attributes,
+            protocol::RegistryOperation::kCreate, true,
+            [&](const ACCESS_MASK effective_access) {
+                return g_nt_open_key(key, effective_access, attributes);
+            });
+        if (NtSuccess(status) &&
+            !WriteOpenedExistingDisposition(disposition)) {
+            HANDLE opened = nullptr;
+            if (ReadHandleOutput(key, opened)) {
+                g_nt_close(opened);
+            }
+            WriteNullHandle(key);
+            return kStatusAccessDenied;
+        }
+        return status;
+    }
     return GuardOpen(
         key,
         RegistryAccess::kWrite == AccessForMask(desired_access)
             ? desired_access
             : desired_access | KEY_CREATE_SUB_KEY,
-        attributes, protocol::RegistryOperation::kCreate, [&] {
+        attributes, protocol::RegistryOperation::kCreate, false,
+        [&](const ACCESS_MASK) {
                          return g_nt_create_key(
                              key, desired_access, attributes, title_index,
                              class_name, create_options, disposition);

@@ -25,6 +25,7 @@ enum class RegistryDecision : std::uint8_t {
     kDeny,
     kNotFound,
     kInheritUser,
+    kAllowExactReadOnly,
 };
 
 enum class RegistryPolicyLoadStatus : std::uint8_t {

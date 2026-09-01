@@ -626,6 +626,10 @@ fn agent_cargo_metadata_runs_offline_with_private_home() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered end-to-end matrix keeps every tool in the same Agent workspace"
+)]
 fn agent_workspace_toolchain_matrix_stays_inside_workspace() {
     let _guard = scenario_guard();
     let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
@@ -633,9 +637,10 @@ fn agent_workspace_toolchain_matrix_stays_inside_workspace() {
         return;
     };
     let required_tool = |name: &str| {
-        let path = std::env::var_os(name)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| panic!("{name} must be declared by the Agent scenario harness"));
+        let path = std::env::var_os(name).map_or_else(
+            || panic!("{name} must be declared by the Agent scenario harness"),
+            PathBuf::from,
+        );
         assert!(path.is_file(), "{name} executable must exist: {path:?}");
         path
     };
@@ -648,43 +653,132 @@ fn agent_workspace_toolchain_matrix_stays_inside_workspace() {
     let native_compiler = required_tool("BOLT_TEST_NATIVE_COMPILER");
     let native_compiler_kind = std::env::var("BOLT_TEST_NATIVE_COMPILER_KIND")
         .expect("native compiler kind must be declared");
+    let system_language_roots = std::env::var_os("BOLT_TEST_SYSTEM_LANGUAGE_ROOTS")
+        .map(|roots| {
+            std::env::split_paths(&roots)
+                .filter(|root| !root.as_os_str().is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        system_language_roots.iter().all(|root| root.is_absolute()),
+        "system language roots must be absolute: {system_language_roots:?}"
+    );
     let workspace = agent_fixture_directory("工具链 workspace");
     let private_home = workspace.join(".agent-home");
     let private_temp = workspace.join(".agent-temp");
+    let git_template = workspace.join(".git-template");
+    let cargo_home = workspace.join(".cargo-home");
     fs::create_dir_all(&private_home).expect("private home must be created");
     fs::create_dir_all(&private_temp).expect("private temp must be created");
+    fs::create_dir_all(&git_template).expect("private Git template must be created");
+    fs::create_dir_all(&cargo_home).expect("private Cargo home must be created");
+    let powershell_script = workspace.join("powershell-agent.ps1");
+    fs::write(
+        &powershell_script,
+        "$ErrorActionPreference='Stop'\nNew-Item -ItemType Directory -Force ps | Out-Null\nSet-Content -NoNewline -Path ps/result.txt -Value powershell\nWrite-Output BOLT_PS_RAN\n",
+    )
+    .expect("PowerShell Agent script must be written");
+    let powershell_script_argument = powershell_script.to_string_lossy().into_owned();
+    let mut host_metadata_roots = ["ProgramFiles", "ProgramFiles(x86)", "ProgramData"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .filter(|root| root.is_absolute())
+        .collect::<Vec<_>>();
+    host_metadata_roots.extend(
+        workspace
+            .ancestors()
+            .skip(1)
+            .filter(|ancestor| ancestor.parent().is_some())
+            .map(Path::to_path_buf),
+    );
+    host_metadata_roots.sort();
+    host_metadata_roots.dedup();
 
-    let run = |label: &str, program: &Path, args: &[&str], read_roots: &[PathBuf]| {
-        let mut command = sandbox_command(&component_root, &workspace);
-        for root in read_roots {
-            command.arg("--read-only").arg(root);
-        }
-        command
-            .args(["--network", "denied", "--"])
-            .arg(program)
-            .args(args)
-            .env("HOME", &private_home)
-            .env("USERPROFILE", &private_home)
-            .env("TEMP", &private_temp)
-            .env("TMP", &private_temp);
-        let output = command
-            .output()
-            .unwrap_or_else(|error| panic!("{label} must launch once: {error}"));
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(
-            output.status.code(),
-            Some(0),
-            "{label} failed in workspace: stderr={stderr}"
-        );
-        assert!(
-            !stderr.contains("sandbox-event filesystem-violation")
-                && !stderr.contains("sandbox-event network-violation"),
-            "{label} needed an unexpected policy exception: {stderr}"
-        );
-    };
+    let run =
+        |label: &str, terminal: &str, program: &Path, args: &[&str], read_roots: &[PathBuf]| {
+            let mut command = sandbox_command(&component_root, &workspace);
+            if label == "Cargo check" {
+                for name in std::env::vars_os().map(|(name, _)| name) {
+                    if name
+                        .to_str()
+                        .is_some_and(|name| name.starts_with("CARGO_") || name.starts_with("RUST_"))
+                    {
+                        command.env_remove(name);
+                    }
+                }
+                let toolchain_bin = cargo
+                    .parent()
+                    .expect("Cargo toolchain directory must exist");
+                let toolchain_root = toolchain_bin
+                    .parent()
+                    .expect("Cargo toolchain root must exist");
+                let system32 = PathBuf::from(
+                    std::env::var_os("SystemRoot").expect("SystemRoot must be available"),
+                )
+                .join("System32");
+                command
+                    .arg("--read-only")
+                    .arg(toolchain_root)
+                    .env("CARGO_HOME", &cargo_home)
+                    .env("RUSTC", toolchain_bin.join("rustc.exe"))
+                    .env(
+                        "PATH",
+                        std::env::join_paths([toolchain_bin, system32.as_path()])
+                            .expect("minimal Cargo PATH must encode"),
+                    );
+            }
+            for root in read_roots {
+                command.arg("--read-only").arg(root);
+            }
+            for root in &system_language_roots {
+                command.arg("--read-only").arg(root);
+            }
+            for root in &host_metadata_roots {
+                command.arg("--metadata-read").arg(root);
+            }
+            if label == "PowerShell" {
+                command.env("DOTNET_EnableDiagnostics", "0");
+            }
+            command
+                .args(["--terminal", terminal, "--network", "denied", "--"])
+                .arg(program)
+                .args(args)
+                .env("HOME", &private_home)
+                .env("USERPROFILE", &private_home)
+                .env("TEMP", &private_temp)
+                .env("TMP", &private_temp)
+                .env("GIT_CONFIG_GLOBAL", "NUL")
+                .env("GIT_CONFIG_SYSTEM", "NUL")
+                .env("GIT_TEMPLATE_DIR", &git_template)
+                .env("GIT_ATTR_NOSYSTEM", "1")
+                .env("XDG_CONFIG_HOME", &private_home);
+            let output = command
+                .output()
+                .unwrap_or_else(|error| panic!("{label} must launch once: {error}"));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{label} failed in workspace: stdout={stdout} stderr={stderr}"
+            );
+            assert!(
+                !stderr.contains("sandbox-event network-violation"),
+                "{label} unexpectedly attempted network access: {stderr}"
+            );
+            if label == "PowerShell" {
+                assert!(
+                    stdout.contains("BOLT_PS_RAN"),
+                    "PowerShell script was not executed: stdout={stdout} stderr={stderr}"
+                );
+            }
+        };
 
     run(
         "cmd",
+        "pipes",
         &shell,
         &[
             "/d",
@@ -696,18 +790,19 @@ fn agent_workspace_toolchain_matrix_stays_inside_workspace() {
     );
     run(
         "PowerShell",
+        "pseudo-console",
         &powershell,
         &[
             "-NoLogo",
             "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "$ErrorActionPreference='Stop'; New-Item -ItemType Directory -Force ps | Out-Null; Set-Content -NoNewline ps/result.txt powershell; & $env:ComSpec /d /c exit 0",
+            "-File",
+            &powershell_script_argument,
         ],
         &[],
     );
     run(
         "Python",
+        "pipes",
         &python,
         &[
             "-I",
@@ -718,6 +813,7 @@ fn agent_workspace_toolchain_matrix_stays_inside_workspace() {
     );
     run(
         "Node",
+        "pipes",
         &node,
         &[
             "-e",
@@ -726,11 +822,12 @@ fn agent_workspace_toolchain_matrix_stays_inside_workspace() {
         &[],
     );
 
-    run("Git init", &git, &["init", "--quiet"], &[]);
+    run("Git init", "pipes", &git, &["init", "--quiet"], &[]);
     fs::write(workspace.join("tracked.txt"), "tracked\n").expect("Git input must be written");
-    run("Git add", &git, &["add", "tracked.txt"], &[]);
+    run("Git add", "pipes", &git, &["add", "tracked.txt"], &[]);
     run(
         "Git status",
+        "pipes",
         &git,
         &["status", "--porcelain", "--untracked-files=all"],
         &[],
@@ -747,6 +844,7 @@ fn agent_workspace_toolchain_matrix_stays_inside_workspace() {
         .expect("Rust source must be written");
     run(
         "Cargo check",
+        "pipes",
         &cargo,
         &[
             "check",
@@ -771,26 +869,38 @@ fn agent_workspace_toolchain_matrix_stays_inside_workspace() {
     match native_compiler_kind.as_str() {
         "msvc" => run(
             "MSVC",
+            "pipes",
             &native_compiler,
             &[
                 "/nologo",
+                "/c",
                 "/TC",
                 "native/hello.c",
                 "/Fo:native/hello.obj",
-                "/Fe:native/hello.exe",
             ],
             &compiler_read_roots,
         ),
         "gcc" => run(
             "GCC",
+            "pipes",
             &native_compiler,
             &["native/hello.c", "-o", "native/hello.exe"],
             &compiler_read_roots,
         ),
         other => panic!("unsupported native compiler kind: {other}"),
     }
+    if native_compiler_kind == "msvc" {
+        run(
+            "MSVC linker",
+            "pipes",
+            &native_compiler.with_file_name("link.exe"),
+            &["/nologo", "native/hello.obj", "/out:native/hello.exe"],
+            &compiler_read_roots,
+        );
+    }
     run(
         "compiled native program",
+        "pipes",
         &workspace.join("native/hello.exe"),
         &[],
         &[],

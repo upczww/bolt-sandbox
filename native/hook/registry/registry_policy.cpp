@@ -288,7 +288,7 @@ RegistryDecision DecisionFor(
         case RuleKind::kReadOnlyKey:
             return access == RegistryAccess::kWrite
                        ? RegistryDecision::kDeny
-                       : RegistryDecision::kAllow;
+                       : RegistryDecision::kAllowExactReadOnly;
         case RuleKind::kHideKey:
             return access == RegistryAccess::kWrite
                        ? RegistryDecision::kDeny

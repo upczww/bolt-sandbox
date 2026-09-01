@@ -78,7 +78,7 @@ bool RunRegistryPolicyTests() {
             Access::kWrite) != Decision::kDeny ||
         policy->Decide(
             Hive::kLocalMachine, L"Software\\VersionMetadata",
-            Access::kRead) != Decision::kAllow ||
+            Access::kRead) != Decision::kAllowExactReadOnly ||
         policy->Decide(
             Hive::kLocalMachine, L"Software\\VersionMetadata",
             Access::kWrite) != Decision::kDeny ||

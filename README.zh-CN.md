@@ -265,6 +265,7 @@ bolt-sandbox.exe run `
   --manifest-sha256 <64-hex-trusted-manifest-digest> `
   --cwd C:\agent-work\task-123 `
   --timeout-ms 120000 `
+  --terminal pipes `
   --read-only C:\SDK `
   --read-write C:\package-cache `
   --deny C:\host-secrets `
@@ -280,6 +281,10 @@ bolt-sandbox.exe run `
 `--registry-inherit-user`、`--registry-read-write`。启用恢复时必须同时设置
 `--recovery-dir`、`--recovery-max-bytes`、`--recovery-max-items` 和
 `--recovery-retention-seconds`。
+
+终端模式包括默认的 `pipes` 和 `pseudo-console`。对于需要 Windows 控制台语义的
+工具（包括 PowerShell ConsoleHost），应使用 `--terminal pseudo-console`；
+ConPTY 与宿主控制台隔离，其能力会安全传递给后代进程，不会开放宿主控制台。
 
 网络模式包括 `unrestricted`、`denied` 和 `allow-list`。AllowList 使用可重复
 指定的 `--allow-domain`、`--allow-cidr`、`--allow-port`；端口可以是单值或
@@ -358,6 +363,12 @@ pwsh scripts/test-agent-scenarios.ps1 `
   -ComponentRoot target\native\x64\Release `
   -PythonPath C:\trusted-runtimes\python\python.exe
 ```
+
+场景 Harness 要求 Shell、PowerShell、Node、Python、Git、Cargo/Rust 和一个原生
+编译器。它会尽量自动发现已安装工具、MSVC SDK 只读根以及版本化 Windows 语言
+资源包；所有具体路径都由宿主以数据传入，外部根只获得只读或元数据只读权限。
+自动发现不可用时可传入 `-NativeCompilerPath`、`-NativeCompilerKind` 以及可重复的
+`-NativeCompilerReadRoot`。安装 GCC 时优先测试 GCC，否则测试 MSVC 编译、链接与运行。
 
 可选 Rust 覆盖率需要 `cargo-llvm-cov 0.9.0`、Nightly Toolchain 和匹配的
 LLVM Tools：

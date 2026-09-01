@@ -260,7 +260,7 @@ pub(crate) fn resolve_profile(
             RuleKind::RegistryReadOnly
             | RuleKind::RegistryExactReadOnly
             | RuleKind::RegistryHidden => {
-                let key = normalize_registry_key(&rule.suffix)?;
+                let key = normalize_registry_key(&rule.suffix, rule.kind)?;
                 let comparison = key.to_lowercase();
                 if !registry_keys.insert(comparison) {
                     return Err(ProfileError::DuplicateRule);
@@ -411,7 +411,7 @@ fn is_same_or_ancestor(ancestor: &Path, path: &Path) -> bool {
             .is_some_and(|suffix| suffix.starts_with('\\') || suffix.starts_with('/'))
 }
 
-fn normalize_registry_key(input: &str) -> Result<String, ProfileError> {
+fn normalize_registry_key(input: &str, kind: RuleKind) -> Result<String, ProfileError> {
     if input.contains(['/', '\0', ':', '*', '?']) {
         return Err(ProfileError::UnsafePath);
     }
@@ -422,6 +422,11 @@ fn normalize_registry_key(input: &str) -> Result<String, ProfileError> {
         "HKLM"
     } else if root.eq_ignore_ascii_case("HKCU") {
         "HKCU"
+    } else if root.eq_ignore_ascii_case("HKU")
+        && kind == RuleKind::RegistryExactReadOnly
+        && components.clone().next().is_none()
+    {
+        return Ok("HKU".to_owned());
     } else {
         return Err(ProfileError::UnsafePath);
     };
@@ -684,5 +689,24 @@ mod tests {
             resolved.registry_hidden,
             vec![String::from(r"HKCU\Environment")]
         );
+    }
+
+    #[test]
+    fn compat_013_users_hive_profile_access_is_limited_to_exact_root_read() {
+        let profile = parse_profile(b"BSC1\nreg-exact-ro|required|registry|HKU\n")
+            .expect("exact users-hive root rule must parse");
+        let resolved = resolve_profile(&profile, &context()).expect("exact root must resolve");
+        assert_eq!(resolved.registry_exact_read_only, [String::from("HKU")]);
+
+        for input in [
+            b"BSC1\nreg-ro|required|registry|HKU\n".as_slice(),
+            b"BSC1\nreg-exact-ro|required|registry|HKU\\S-1-5-18\n".as_slice(),
+        ] {
+            let profile = parse_profile(input).expect("syntax must parse before safe resolution");
+            assert_eq!(
+                resolve_profile(&profile, &context()),
+                Err(ProfileError::UnsafePath)
+            );
+        }
     }
 }

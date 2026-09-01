@@ -33,6 +33,63 @@ function Resolve-RequiredTool(
     return (Resolve-Path -LiteralPath $candidate).Path
 }
 
+function Resolve-SystemLanguageResourceRoots {
+    if (-not ('BoltSandbox.MuiLocator' -as [type])) {
+        $null = Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace BoltSandbox {
+    public static class MuiLocator {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool GetFileMUIPath(
+            uint flags, string filePath, StringBuilder language,
+            ref uint languageLength, StringBuilder muiPath,
+            ref uint muiPathLength, ref ulong enumerator);
+    }
+}
+'@
+    }
+    $systemFile = Join-Path $env:SystemRoot 'System32\kernelbase.dll'
+    $windowsApps = Join-Path $env:ProgramFiles 'WindowsApps'
+    $enumerator = [uint64]0
+    $roots = [System.Collections.Generic.List[string]]::new()
+    for ($index = 0; $index -lt 16; $index++) {
+        $language = [System.Text.StringBuilder]::new(85)
+        $languageLength = [uint32]$language.Capacity
+        $muiPath = [System.Text.StringBuilder]::new(32768)
+        $muiPathLength = [uint32]$muiPath.Capacity
+        $found = [BoltSandbox.MuiLocator]::GetFileMUIPath(
+            0x18, $systemFile, $language, [ref]$languageLength,
+            $muiPath, [ref]$muiPathLength, [ref]$enumerator)
+        if (-not $found) { break }
+        $candidate = [System.IO.DirectoryInfo]::new($muiPath.ToString()).Parent
+        while ($candidate -and $candidate.Parent -and
+            $candidate.Parent.FullName -ine $windowsApps) {
+            $candidate = $candidate.Parent
+        }
+        if ($candidate -and $candidate.Parent -and
+            $candidate.Parent.FullName -ieq $windowsApps -and
+            -not $roots.Contains($candidate.FullName)) {
+            $roots.Add($candidate.FullName)
+        }
+    }
+    $overlayPackages = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\LanguageOverlay\OverlayPackages'
+    if (Test-Path -LiteralPath $overlayPackages) {
+        Get-ChildItem -LiteralPath $overlayPackages | ForEach-Object {
+            $latest = (Get-ItemProperty -LiteralPath $_.PSPath -Name Latest -ErrorAction SilentlyContinue).Latest
+            if ($latest -and (Test-Path -LiteralPath $latest -PathType Container)) {
+                $candidate = [System.IO.DirectoryInfo]::new($latest)
+                if ($candidate.Parent -and $candidate.Parent.FullName -ieq $windowsApps -and
+                    -not $roots.Contains($candidate.FullName)) {
+                    $roots.Add($candidate.FullName)
+                }
+            }
+        }
+    }
+    return $roots.ToArray()
+}
+
 $node = Resolve-RequiredTool $NodePath 'node' 'Node'
 $python = Resolve-RequiredTool $PythonPath 'python' 'Python'
 $cargo = Resolve-RequiredTool $CargoPath 'cargo' 'Cargo'
@@ -109,6 +166,7 @@ $nativeCompilerReadRoots = @(
         ForEach-Object { (Resolve-Path -LiteralPath $_).Path } |
         Sort-Object -Unique
 )
+$systemLanguageResourceRoots = @(Resolve-SystemLanguageResourceRoots)
 
 $env:BOLT_NATIVE_COMPONENT_ROOT = $componentAbsolute
 $env:BOLT_TEST_NODE = $node
@@ -120,6 +178,7 @@ $env:BOLT_TEST_POWERSHELL = $powerShell
 $env:BOLT_TEST_NATIVE_COMPILER = $nativeCompiler
 $env:BOLT_TEST_NATIVE_COMPILER_KIND = $NativeCompilerKind
 $env:BOLT_TEST_NATIVE_COMPILER_READ_ROOTS = $nativeCompilerReadRoots -join ';'
+$env:BOLT_TEST_SYSTEM_LANGUAGE_ROOTS = $systemLanguageResourceRoots -join ';'
 
 & cargo test --test cli_integration -- --nocapture --test-threads=1
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -132,3 +191,4 @@ Write-Output "Cargo: $cargo"
 Write-Output "Shell: $shell"
 Write-Output "PowerShell: $powerShell"
 Write-Output "Native compiler ($NativeCompilerKind): $nativeCompiler"
+Write-Output "System language resource roots: $($systemLanguageResourceRoots.Count)"

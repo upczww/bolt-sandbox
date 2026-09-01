@@ -58,6 +58,14 @@ bool ResolveFinalPathForPolicy(
                 return true;
             }
             const DWORD error = GetLastError();
+            if ((error == ERROR_DIRECTORY || error == ERROR_INVALID_NAME) &&
+                candidate.filename().empty()) {
+                const auto parent = candidate.parent_path();
+                if (!parent.empty() && parent != candidate) {
+                    candidate = parent;
+                    continue;
+                }
+            }
             if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
                 return false;
             }

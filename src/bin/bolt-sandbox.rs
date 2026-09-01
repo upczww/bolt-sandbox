@@ -9,9 +9,10 @@ use std::{
 };
 
 use bolt_sandbox::{
-    ChildProcessPolicy, DEFAULT_STREAM_CAPACITY, ExecutionTerminal, IpCidr, NetworkAllowList,
-    NetworkPolicy, PortRange, ProcessExitReason, RecoveryLimits, RecoveryPolicy, Sandbox,
-    SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest,
+    ChildProcessPolicy, DEFAULT_STREAM_CAPACITY, ExecutionOptions, ExecutionTerminal, IpCidr,
+    NetworkAllowList, NetworkPolicy, PortRange, ProcessExitReason, PseudoConsoleSize,
+    RecoveryLimits, RecoveryPolicy, Sandbox, SandboxConfig, SandboxError, SandboxEvent,
+    SandboxPolicy, SandboxRequest, TerminalMode,
 };
 
 struct RunArguments {
@@ -22,6 +23,7 @@ struct RunArguments {
     arguments: Vec<OsString>,
     policy: SandboxPolicy,
     component_manifest_sha256: Option<[u8; 32]>,
+    terminal: TerminalMode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,7 +38,7 @@ fn main() {
         Ok(code) => code,
         Err(CliError::InvalidArguments) => {
             eprintln!(
-                "usage: bolt-sandbox run --component-root PATH --cwd PATH [--manifest-sha256 HEX] [--timeout-ms N] [--network unrestricted|denied|allow-list] [--allow-domain DOMAIN] [--allow-cidr CIDR] [--allow-port PORT[-PORT]] -- PROGRAM [ARG ...]"
+                "usage: bolt-sandbox run --component-root PATH --cwd PATH [--manifest-sha256 HEX] [--timeout-ms N] [--terminal pipes|pseudo-console] [--network unrestricted|denied|allow-list] [--allow-domain DOMAIN] [--allow-cidr CIDR] [--allow-port PORT[-PORT]] -- PROGRAM [ARG ...]"
             );
             2
         }
@@ -59,14 +61,20 @@ fn run(arguments: Vec<OsString>) -> Result<u32, CliError> {
     .map_err(|error| report_sandbox_error(&error))?;
     let environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
     let mut handle = sandbox
-        .start(SandboxRequest {
-            program: parsed.program,
-            arguments: parsed.arguments,
-            cwd: parsed.cwd,
-            environment,
-            policy: parsed.policy,
-            timeout: parsed.timeout,
-        })
+        .start_with_options(
+            SandboxRequest {
+                program: parsed.program,
+                arguments: parsed.arguments,
+                cwd: parsed.cwd,
+                environment,
+                policy: parsed.policy,
+                timeout: parsed.timeout,
+            },
+            ExecutionOptions {
+                terminal: parsed.terminal,
+                ..ExecutionOptions::default()
+            },
+        )
         .map_err(|error| report_sandbox_error(&error))?;
     let stdout = handle.take_stdout().map_err(|_| CliError::Stream)?;
     let stderr = handle.take_stderr().map_err(|_| CliError::Stream)?;
@@ -107,6 +115,8 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
     let mut network_addresses = Vec::new();
     let mut network_ports = Vec::new();
     let mut child_processes_set = false;
+    let mut terminal = TerminalMode::Pipes;
+    let mut terminal_set = false;
     let mut recovery_directory = None;
     let mut recovery_maximum_bytes = None;
     let mut recovery_maximum_items = None;
@@ -187,6 +197,16 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
                 };
                 child_processes_set = true;
             }
+            Some("--terminal") if !terminal_set => {
+                terminal = match next_string(&mut arguments)?.as_str() {
+                    "pipes" => TerminalMode::Pipes,
+                    "pseudo-console" => TerminalMode::PseudoConsole(
+                        PseudoConsoleSize::new(120, 40).ok_or(CliError::InvalidArguments)?,
+                    ),
+                    _ => return Err(CliError::InvalidArguments),
+                };
+                terminal_set = true;
+            }
             Some("--recovery-dir") if recovery_directory.is_none() => {
                 recovery_directory = Some(next_path(&mut arguments)?);
             }
@@ -249,6 +269,7 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
         arguments: program_and_arguments,
         policy,
         component_manifest_sha256,
+        terminal,
     })
 }
 
@@ -486,6 +507,46 @@ mod tests {
             ],
         ] {
             assert!(parse_run_arguments(arguments).is_err());
+        }
+    }
+
+    #[test]
+    fn cli_006_parser_selects_explicit_terminal_without_program_detection() {
+        let parsed = parse_run_arguments(vec![
+            OsString::from("run"),
+            OsString::from("--component-root"),
+            OsString::from(r"C:\components"),
+            OsString::from("--cwd"),
+            OsString::from(r"C:\work"),
+            OsString::from("--terminal"),
+            OsString::from("pseudo-console"),
+            OsString::from("--"),
+            OsString::from(r"C:\any-tool.exe"),
+        ])
+        .expect("explicit terminal must parse");
+
+        assert_eq!(
+            parsed.terminal,
+            TerminalMode::PseudoConsole(
+                PseudoConsoleSize::new(120, 40).expect("fixed CLI dimensions are valid")
+            )
+        );
+        for terminal in ["unknown", "pwsh"] {
+            assert!(
+                parse_run_arguments(vec![
+                    OsString::from("run"),
+                    OsString::from("--component-root"),
+                    OsString::from(r"C:\components"),
+                    OsString::from("--cwd"),
+                    OsString::from(r"C:\work"),
+                    OsString::from("--terminal"),
+                    OsString::from(terminal),
+                    OsString::from("--"),
+                    OsString::from(r"C:\any-tool.exe"),
+                ])
+                .is_err(),
+                "terminal selection must be capability-based, not tool-specific"
+            );
         }
     }
 

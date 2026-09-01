@@ -1755,7 +1755,7 @@ bool AuthorizeCreateFile(
     const wchar_t* path,
     const ClassifiedAccess& request,
     const DWORD flags_and_attributes) noexcept {
-    if (IsNetworkDevicePath(path)) {
+    if (IsNetworkDevicePath(path) || IsKernelSecurityDevicePath(path)) {
         return true;
     }
     const auto* policy = g_policy.get();

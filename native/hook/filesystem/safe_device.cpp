@@ -44,6 +44,16 @@ bool IsConsoleDevicePath(const wchar_t* const path) noexcept {
            EqualName(path, -1, L"\\\\.\\CONOUT$");
 }
 
+bool IsKernelSecurityDevicePath(const wchar_t* const path) noexcept {
+    if (path == nullptr || *path == L'\0') {
+        return false;
+    }
+    return EqualName(path, -1, L"KsecDD") ||
+           EqualName(path, -1, L"\\\\.\\KsecDD") ||
+           EqualName(path, -1, L"\\??\\KsecDD") ||
+           EqualName(path, -1, L"\\Device\\KsecDD");
+}
+
 bool IsNetworkDevicePath(const wchar_t* const path) noexcept {
     if (path == nullptr || *path == L'\0') {
         return false;

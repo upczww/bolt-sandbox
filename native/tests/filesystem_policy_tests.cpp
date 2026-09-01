@@ -110,7 +110,14 @@ std::vector<std::uint8_t> policy_payload() {
 }  // namespace
 
 bool RunFilesystemPolicyTests() {
-    if (!bolt::filesystem::IsNetworkDevicePath(L"\\Device\\Afd") ||
+    if (!bolt::filesystem::IsKernelSecurityDevicePath(L"KsecDD") ||
+        !bolt::filesystem::IsKernelSecurityDevicePath(L"\\\\.\\KsecDD") ||
+        !bolt::filesystem::IsKernelSecurityDevicePath(L"\\??\\KsecDD") ||
+        !bolt::filesystem::IsKernelSecurityDevicePath(L"\\Device\\KsecDD") ||
+        bolt::filesystem::IsKernelSecurityDevicePath(L"\\Device\\KsecDD\\child") ||
+        bolt::filesystem::IsKernelSecurityDevicePath(L"C:\\Device\\KsecDD") ||
+        bolt::filesystem::IsKernelSecurityDevicePath(L"\\Device\\KsecDD-lookalike") ||
+        !bolt::filesystem::IsNetworkDevicePath(L"\\Device\\Afd") ||
         !bolt::filesystem::IsNetworkDevicePath(
             L"\\Device\\Afd\\AsyncConnectHlp") ||
         bolt::filesystem::IsNetworkDevicePath(L"\\Device\\Af") ||

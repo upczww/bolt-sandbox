@@ -77,6 +77,11 @@ absolute target executable, never from the child environment carried in
 - An `absolute` entry cannot resolve to a volume, UNC share root, device path,
   user-profile root, or known mandatory-sensitive subtree.
 - Duplicate normalized rules are rejected rather than silently accepted.
+- Registry roots remain invalid except `reg-exact-ro|...|HKU`, which authorizes
+  only the users-hive root object and never a SID subtree or hive enumeration.
+- An existing exact-read-only registry key may attenuate a create-or-open call
+  to a read-only open. Missing keys preserve not-found, and every subsequent
+  mutation remains denied; no compatibility operation creates host state.
 
 Missing leaf files remain valid grants so harmless absent probes preserve the
 operating system's not-found result.
@@ -106,6 +111,11 @@ task-private tree for TEMP, TMP, HOME, package caches, and tool output, then
 grant that tree through ordinary request policy. Global npm, Cargo, Git, cloud,
 browser, SSH, GPG, and credential locations remain denied unless a trusted host
 explicitly grants a narrow non-secret subtree.
+
+Versioned system language-resource package paths are discovered by the trusted
+host from Windows MUI/LanguageOverlay metadata and supplied as read-only request
+data. The package version, locale, user profile, compiler SDK, and tool install
+paths are never embedded in product code.
 
 ## 6. Initial Bundled Profile
 

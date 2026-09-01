@@ -13,6 +13,9 @@ reg-ro|required|registry|HKLM\SOFTWARE\dotnet\Setup\InstalledVersions
 reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\Nls
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\AMSI
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Cryptography
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\msasn1
+reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\Cryptography
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\crypt32
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\SystemCertificates
 reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\SystemCertificates
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\EnterpriseCertificates
@@ -23,12 +26,19 @@ reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\PowerShellCore
 reg-ro|required|registry|HKCU\SOFTWARE\Policies\Microsoft\PowerShellCore
 reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell
 reg-ro|required|registry|HKCU\SOFTWARE\Policies\Microsoft\Windows\PowerShell
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\PowerShell
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\PowerShell
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\PowerShellCore
+reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\PowerShellCore
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WSMAN
 reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\Windows\Safer
 reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\Srp
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Server
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Time Zones
 
 # Exact metadata and hidden compatibility probes.
+reg-exact-ro|required|registry|HKU
+reg-exact-ro|required|registry|HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\WinTrust\Trust Providers\Software Publishing
 reg-exact-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion
 reg-exact-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion
 reg-hide|required|registry|HKCU\Environment
@@ -43,7 +53,7 @@ reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\OLE
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\AppModel\Lookaside\machine
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\AppModel\Lookaside\user
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Wow64\x86\xtajit
-reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Option
+reg-exact-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Option
 reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters
 reg-ro|required|registry|HKLM\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers
 reg-ro|required|registry|HKCU\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers

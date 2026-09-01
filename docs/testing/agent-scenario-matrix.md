@@ -54,6 +54,9 @@ evidence.
   private home, temporary directory, cache, and build output remains beneath the
   workspace. Compiler SDK roots are host-discovered or explicitly supplied and
   granted read-only; they are never embedded in product code.
+- Windows language resource package roots are resolved through `GetFileMUIPath`
+  from a System32 language-neutral DLL and granted read-only. Versioned package,
+  locale, user, and installation paths are not embedded in product or test code.
 
 ## Network Workflows
 
