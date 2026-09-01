@@ -70,6 +70,8 @@ pub(super) struct StagedWorkspaceTransaction {
 
 pub(super) struct CommittedWorkspace {
     changes: Vec<WorkspaceChange>,
+    source_root: PathBuf,
+    discarded_root: PathBuf,
     recovery_root: PathBuf,
 }
 
@@ -80,6 +82,23 @@ impl CommittedWorkspace {
 
     pub(super) fn recovery_root(&self) -> &Path {
         &self.recovery_root
+    }
+
+    pub(super) fn revert(self) -> Result<(), WorkspaceError> {
+        if !self.source_root.is_dir()
+            || !self.recovery_root.is_dir()
+            || self.discarded_root.exists()
+        {
+            return Err(WorkspaceError::Conflict);
+        }
+        fs::rename(&self.source_root, &self.discarded_root).map_err(map_io)?;
+        if fs::rename(&self.recovery_root, &self.source_root).is_err() {
+            if fs::rename(&self.discarded_root, &self.source_root).is_err() {
+                return Err(WorkspaceError::RollbackFailed);
+            }
+            return Err(WorkspaceError::Io);
+        }
+        fs::remove_dir_all(&self.discarded_root).map_err(map_io)
     }
 }
 
@@ -133,6 +152,8 @@ impl StagedWorkspaceTransaction {
         }
         Ok(CommittedWorkspace {
             changes,
+            source_root: self.source_root,
+            discarded_root: self.staging_root,
             recovery_root: recovery_root.to_path_buf(),
         })
     }
@@ -547,7 +568,10 @@ mod tests {
             }]
         );
         committed.revert().expect("revert must succeed");
-        assert_eq!(fs::read(source.join("file.txt")).expect("source"), b"before");
+        assert_eq!(
+            fs::read(source.join("file.txt")).expect("source"),
+            b"before"
+        );
         assert!(!recovery.exists());
         assert!(!staged.exists());
         fs::remove_dir_all(fixture).expect("fixture must clean");
