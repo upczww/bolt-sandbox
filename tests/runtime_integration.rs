@@ -444,6 +444,64 @@ fn pty_001_interactive_cmd_accepts_input_resize_and_exits_inside_job() {
 }
 
 #[test]
+fn pty_001_x86_target_accepts_controlled_pseudo_console_input() {
+    let Some(component_root) =
+        std::env::var_os("BOLT_NATIVE_X86_COMPONENT_ROOT").map(PathBuf::from)
+    else {
+        return;
+    };
+    let sandbox = Sandbox::new(SandboxConfig {
+        component_root: component_root.clone(),
+        credential_environment_variables: Vec::new(),
+        stream_capacity: 512 * 1_024,
+        violation_aggregate_capacity: bolt_sandbox::DEFAULT_VIOLATION_AGGREGATE_CAPACITY,
+        mandatory_filesystem_denies: Vec::new(),
+        mandatory_registry_denies: Vec::new(),
+        component_manifest_sha256: None,
+    })
+    .expect("x86 sandbox configuration must validate");
+    let mut handle = sandbox
+        .start_with_options(
+            SandboxRequest {
+                program: component_root.join("bolt-sandbox-native-tests.exe"),
+                arguments: vec![OsString::from("--pty-echo-fixture")],
+                cwd: std::env::temp_dir(),
+                environment: BTreeMap::new(),
+                policy: SandboxPolicy::default(),
+                timeout: Some(Duration::from_secs(5)),
+            },
+            ExecutionOptions {
+                terminal: TerminalMode::PseudoConsole(
+                    PseudoConsoleSize::new(80, 24).expect("valid size"),
+                ),
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("x86 PTY execution must start");
+    handle
+        .resize_pseudo_console(PseudoConsoleSize::new(100, 30).expect("valid resize"))
+        .expect("x86 PTY resize must queue");
+    handle
+        .write_input(b"BOLT_PTY_PING\r\n")
+        .expect("x86 PTY input must queue");
+    let stdout = handle.take_stdout().expect("stdout");
+    let stderr = handle.take_stderr().expect("stderr");
+    let events = handle.take_events().expect("events");
+    let (stdout, stderr, _events, result) = collect_execution(handle, stdout, stderr, events);
+
+    assert!(
+        String::from_utf8_lossy(&stdout).contains("BOLT_PTY_X86_ACK"),
+        "x86 PTY target must acknowledge input: {:?}",
+        (String::from_utf8_lossy(&stdout), &result)
+    );
+    assert!(stderr.is_empty());
+    assert!(matches!(
+        result.terminal,
+        ExecutionTerminal::Process(ref exit) if exit.exit_code == Some(0)
+    ));
+}
+
+#[test]
 fn life_012_public_runtime_transports_arbitrary_binary_stdout_and_stderr() {
     assert_dual_stream_execution("--dual-stream-writer");
 }

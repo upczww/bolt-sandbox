@@ -30,6 +30,7 @@ bool RunStreamTests();
 int RunDualStreamWriter(int argument_count, wchar_t** arguments);
 int RunDescendantDualStreamWriter(int argument_count, wchar_t** arguments);
 int RunBlockingStreamFixture(int argument_count);
+int RunPtyEchoFixture(int argument_count);
 int RunCorruptEventFixture(int argument_count);
 int RunCliFixture(int argument_count);
 int RunDroppedEventChannelFixture(int argument_count);
@@ -530,6 +531,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count >= 2 &&
         std::wstring(arguments[1]) == L"--blocking-stream-fixture") {
         return RunBlockingStreamFixture(argument_count);
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--pty-echo-fixture") {
+        return RunPtyEchoFixture(argument_count);
     }
     if (argument_count >= 2 &&
         std::wstring(arguments[1]) == L"--corrupt-event-fixture") {

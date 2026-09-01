@@ -224,6 +224,45 @@ int RunBlockingStreamFixture(const int argument_count) {
     return 322;
 }
 
+int RunPtyEchoFixture(const int argument_count) {
+    if (argument_count != 2) {
+        return 330;
+    }
+    std::array<wchar_t, 64> input{};
+    std::size_t total = 0;
+    while (total < input.size()) {
+        DWORD read = 0;
+        if (!ReadConsoleW(
+                GetStdHandle(STD_INPUT_HANDLE), input.data() + total,
+                static_cast<DWORD>(input.size() - total), &read, nullptr) ||
+            read == 0) {
+            return 331;
+        }
+        total += read;
+        if (std::find(input.begin(), input.begin() + total, L'\n') !=
+            input.begin() + total) {
+            break;
+        }
+    }
+    constexpr std::array<wchar_t, 16> expected = {
+        L'B', L'O', L'L', L'T', L'_', L'P', L'T', L'Y', L'_', L'P', L'I',
+        L'N', L'G', L'\r', L'\n', L'\0'};
+    if (total != expected.size() - 1 ||
+        !std::equal(input.begin(), input.begin() + total, expected.begin())) {
+        return 332;
+    }
+    constexpr std::array<wchar_t, 17> response = {
+        L'B', L'O', L'L', L'T', L'_', L'P', L'T', L'Y', L'_', L'X', L'8',
+        L'6', L'_', L'A', L'C', L'K', L'\n'};
+    DWORD written = 0;
+    return WriteConsoleW(
+               GetStdHandle(STD_OUTPUT_HANDLE), response.data(),
+               static_cast<DWORD>(response.size()), &written, nullptr) &&
+                   written == response.size()
+               ? 0
+               : 333;
+}
+
 int RunCorruptEventFixture(const int argument_count) {
     if (argument_count != 2 ||
         !WritePattern(
