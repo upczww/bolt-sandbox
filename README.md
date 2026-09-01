@@ -298,6 +298,9 @@ custom credential names, cancellation, or aggregate results.
 - More-specific grants may refine broader grants, but explicit and mandatory
   denies take precedence.
 - Child input cannot request compatibility grants or weaken mandatory denies.
+- The Windows installation and selected program directory receive trusted
+  read-only compatibility grants; a root-level executable never grants the
+  whole filesystem root.
 - `NetworkPolicy::Unrestricted` preserves normal OS-authorized behavior;
   `Denied` and `AllowList` enforce restrictive network interception.
 - `ChildProcessPolicy::Inherit` permits supported descendants only after the

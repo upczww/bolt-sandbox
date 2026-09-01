@@ -341,11 +341,21 @@ permit the minimum path traversal metadata required by Windows while denying
 content enumeration and file reads outside granted roots.
 
 Trusted host compatibility grants include recursive read-only access to the
-Windows installation root and exact read-only access to the conventional Node
-OpenSSL configuration probe at `Program Files\Common Files\SSL\openssl.cnf`.
-The latter may be absent: preserving the operating system's not-found result is
+Windows installation root and the selected program's containing directory,
+plus exact read-only access to the conventional Node OpenSSL configuration
+probe at `Program Files\Common Files\SSL\openssl.cnf`. A program placed directly
+at a filesystem root does not receive an implicit root-wide grant. The Node
+probe may be absent: preserving the operating system's not-found result is
 required because turning that probe into access-denied makes Node fail during
-startup. Explicit and mandatory denies retain precedence over both grants.
+startup. Explicit and mandatory denies retain precedence over all compatibility
+grants.
+
+The registry compatibility baseline includes read-only access to
+`HKLM\SOFTWARE\Microsoft\Cryptography` and the machine, user, enterprise, and
+policy certificate branches required to initialize TLS and validate peers
+against the Windows certificate stores. These grants expose provider and
+public certificate configuration but permit no mutation; mandatory
+sensitive-key denies still override them.
 
 Filesystem policy protocol version 1 accepts at most 1,024 request rules in
 each of `read_write`, `read_only`, `deny`, `metadata_read`, and `inherit_user`,

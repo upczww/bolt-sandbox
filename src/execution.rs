@@ -1,6 +1,6 @@
 use std::{
     ffi::OsString,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc::{Receiver, Sender},
 };
 
@@ -76,13 +76,19 @@ impl Sandbox {
             .policy
             .filesystem
             .read_only
-            .extend(default_compatibility_filesystem_paths());
+            .extend(default_compatibility_filesystem_paths(
+                &request.program,
+                &request.cwd,
+            ));
         request.validate()?;
         runtime::start_execution(request, &self.config)
     }
 }
 
-fn default_compatibility_filesystem_paths() -> impl Iterator<Item = PathBuf> {
+fn default_compatibility_filesystem_paths(
+    program: &Path,
+    cwd: &Path,
+) -> impl Iterator<Item = PathBuf> {
     let windows = std::env::var_os("SystemRoot")
         .or_else(|| std::env::var_os("WINDIR"))
         .into_iter()
@@ -92,8 +98,15 @@ fn default_compatibility_filesystem_paths() -> impl Iterator<Item = PathBuf> {
         .into_iter()
         .map(PathBuf::from)
         .map(|root| root.join(r"Common Files\SSL\openssl.cnf"));
+    let program_directory = program
+        .parent()
+        .filter(|parent| {
+            parent.is_absolute() && parent.parent().is_some() && !parent.starts_with(cwd)
+        })
+        .map(Path::to_path_buf);
     windows
         .chain(node_openssl_config)
+        .chain(program_directory)
         .filter(|path| path.is_absolute())
 }
 

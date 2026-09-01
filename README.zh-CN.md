@@ -274,6 +274,8 @@ CLI 会继承宿主环境，并用内置凭据名列表剥离已知 Broker/模�
   SHA-256 保护的 Native Payload。
 - 更具体的授权可以细化宽泛授权，但显式 Deny 和 Mandatory Deny 优先。
 - 子进程输入不能申请 Compatibility Grant，也不能弱化 Mandatory Deny。
+- Windows 安装目录和所选程序目录会获得可信只读兼容授权；位于文件系统根目录
+  的可执行文件不会导致整个根目录被授权。
 - `NetworkPolicy::Unrestricted` 保留操作系统正常授权行为；`Denied` 与
   `AllowList` 执行限制性网络拦截。
 - `ChildProcessPolicy::Inherit` 只在子进程安装匹配 Hook 与策略后允许执行；

@@ -310,7 +310,7 @@ fn net_005_cli_unrestricted_python_reads_its_runtime_and_reaches_local_server() 
         .output()
         .expect("Python CLI fixture must launch");
     let request_served = server_thread.join().expect("server thread must join");
-    let stderr = String::from_utf8(output.stderr).expect("CLI diagnostics are UTF-8");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8(output.stdout).expect("Python fixture output is UTF-8");
 
     assert!(
