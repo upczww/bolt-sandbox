@@ -102,6 +102,7 @@ fn ws_005_projected_mode_never_falls_back_when_optional_component_is_unavailable
     let system_root = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"));
     let command = system_root.join(r"System32\cmd.exe");
     let component_available = system_root.join(r"System32\ProjectedFSLib.dll").is_file();
+    let projected_cold_started = Instant::now();
     let started = sandbox.start_with_options(
         SandboxRequest {
             program: command,
@@ -145,6 +146,10 @@ fn ws_005_projected_mode_never_falls_back_when_optional_component_is_unavailable
                 component_available,
                 "projection cannot bypass missing ProjFS"
             );
+            assert!(
+                projected_cold_started.elapsed() <= Duration::from_millis(250),
+                "cold projected startup must stay within 250 ms"
+            );
             let result = handle.wait().expect("projected execution must finish");
             let transaction = result
                 .workspace_transaction
@@ -154,9 +159,46 @@ fn ws_005_projected_mode_never_falls_back_when_optional_component_is_unavailable
                 .commit_workspace(transaction)
                 .expect("trusted projected commit must succeed");
             assert!(source.join("created.txt").is_file());
+            assert_warm_projected_budget(&sandbox, &source, &system_root);
         }
     }
     fs::remove_dir_all(fixture).expect("fixture must clean");
+}
+
+fn assert_warm_projected_budget(sandbox: &Sandbox, source: &Path, system_root: &Path) {
+    let started = Instant::now();
+    let handle = sandbox
+        .start_with_options(
+            SandboxRequest {
+                program: system_root.join(r"System32\cmd.exe"),
+                arguments: vec![
+                    OsString::from("/d"),
+                    OsString::from("/c"),
+                    OsString::from("exit 0"),
+                ],
+                cwd: source.to_path_buf(),
+                environment: BTreeMap::new(),
+                policy: SandboxPolicy::default(),
+                timeout: Some(Duration::from_secs(5)),
+            },
+            ExecutionOptions {
+                workspace: WorkspaceMode::Projected,
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("warm projected execution must start");
+    assert!(
+        started.elapsed() <= Duration::from_millis(100),
+        "warm projected dispatch must stay within 100 ms"
+    );
+    let transaction = handle
+        .wait()
+        .expect("warm projected execution must finish")
+        .workspace_transaction
+        .expect("warm projected execution must return transaction");
+    sandbox
+        .discard_workspace(transaction)
+        .expect("warm projected transaction must discard");
 }
 
 #[test]
