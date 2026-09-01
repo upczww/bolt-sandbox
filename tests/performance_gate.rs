@@ -97,3 +97,30 @@ fn perf_010_complete_in_budget_evidence_passes() {
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("PASS"));
 }
+
+#[test]
+fn perf_014_collector_rejects_missing_inputs_without_creating_evidence() {
+    let root = fixture_directory();
+    fs::create_dir_all(&root).expect("fixture directory must be created");
+    let evidence = root.join("evidence.json");
+    let output = Command::new("pwsh")
+        .args([
+            "-NoProfile",
+            "-File",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/scripts/measure-windows-performance.ps1"
+            ),
+            "-ComponentRoot",
+            r"C:\missing-components",
+            "-EvidencePath",
+        ])
+        .arg(&evidence)
+        .output()
+        .expect("performance collector must run");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("benchmark input"));
+    assert!(!evidence.exists());
+    fs::remove_dir_all(root).expect("fixture directory must be removed");
+}
