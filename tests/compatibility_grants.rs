@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 use bolt_sandbox::{
-    CompatibilityApprovalScope, CompatibilityCapability, CompatibilityCommandOutcome,
-    CompatibilityDecision, CompatibilityDecisionCache, CompatibilityGrant,
+    CompatibilityApplyError, CompatibilityApprovalScope, CompatibilityCapability,
+    CompatibilityCommandOutcome, CompatibilityDecision, CompatibilityDecisionCache, CompatibilityGrant,
     CompatibilityGrantContext, CompatibilityGrantResolver, CompatibilityNoPromptReason,
     CompatibilityPromptAction, CompatibilityResolution, FilesystemOperation, FilesystemViolation,
-    SandboxEvent, ViolationAggregate,
+    RegistryOperation, RegistryViolation, SandboxEvent, SandboxPolicy, ViolationAggregate,
 };
 
 fn context() -> CompatibilityGrantContext {
@@ -204,4 +204,62 @@ fn compat_024_workspace_approval_reuses_only_identical_tool_and_grants() {
     let mut changed = proposal;
     changed.executable_sha256[0] ^= 1;
     assert_eq!(cache.action(&changed), CompatibilityPromptAction::Prompt);
+}
+
+#[test]
+fn compat_025_approved_grants_create_a_new_minimal_policy() {
+    let resolver = CompatibilityGrantResolver::new(context()).expect("valid context");
+    let proposal = read_proposal();
+    let original = SandboxPolicy::default();
+    let applied = resolver
+        .apply_approved(&proposal, &original)
+        .expect("valid read proposal must apply");
+
+    assert!(original.filesystem.read_only.is_empty());
+    assert_eq!(
+        applied.filesystem.read_only,
+        [PathBuf::from(r"C:\SDK\toolchain\stdlib.lib")]
+    );
+}
+
+#[test]
+fn compat_026_forged_or_sensitive_proposal_cannot_be_applied() {
+    let resolver = CompatibilityGrantResolver::new(context()).expect("valid context");
+    let mut proposal = read_proposal();
+    proposal.grants = vec![CompatibilityGrant::FilesystemReadOnly(PathBuf::from(
+        r"C:\Users\agent\.ssh\config",
+    ))];
+
+    assert_eq!(
+        resolver.apply_approved(&proposal, &SandboxPolicy::default()),
+        Err(CompatibilityApplyError::InvalidProposal)
+    );
+}
+
+#[test]
+fn compat_027_registry_approval_is_exact_read_only_not_recursive() {
+    let resolver = CompatibilityGrantResolver::new(context()).expect("valid context");
+    let CompatibilityResolution::NeedsAuthorization(proposal) = resolver.resolve(
+        CompatibilityCommandOutcome::Failed,
+        &[ViolationAggregate {
+            event: SandboxEvent::RegistryViolation(RegistryViolation {
+                process_id: 52,
+                operation: RegistryOperation::Query,
+                key: String::from(r"HKLM\SOFTWARE\Vendor\Tool\Metadata"),
+            }),
+            duplicate_count: 0,
+        }],
+        0,
+    ) else {
+        panic!("registry read must produce a proposal");
+    };
+    let applied = resolver
+        .apply_approved(&proposal, &SandboxPolicy::default())
+        .expect("exact registry proposal must apply");
+
+    assert!(applied.registry.read_only.is_empty());
+    assert_eq!(
+        applied.registry.exact_read_only,
+        [String::from(r"HKLM\SOFTWARE\Vendor\Tool\Metadata")]
+    );
 }

@@ -519,6 +519,9 @@ and reason code—not merely identical serialized bytes.
 | COMPAT-022 | User rejects one aggregated compatibility proposal | Identical proposal is suppressed in its workspace scope without hiding final audit evidence |
 | COMPAT-023 | User approves a proposal for one restart | Approval is consumable exactly once, then the same proposal requires a new decision |
 | COMPAT-024 | User approves a proposal for the workspace | Identical tool identity and grants reuse approval; changed executable hash, workspace, or proposal content does not |
+| COMPAT-025 | Trusted host applies an approved filesystem proposal | A cloned policy gains only the proposed exact read/metadata authority; original policy remains unchanged |
+| COMPAT-026 | Proposal fields are forged or changed to mandatory-sensitive content | Application fails with `InvalidProposal` and produces no policy |
+| COMPAT-027 | Approved registry query proposal is applied | New policy receives exact-key read-only authority, never a recursive registry subtree |
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |
