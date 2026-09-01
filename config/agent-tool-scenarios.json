@@ -67,7 +67,7 @@
 
     { "id": "tar", "family": "archive-copy", "requiredOnHost": true, "commands": ["tar"], "terminal": "pipes" },
     { "id": "robocopy", "family": "archive-copy", "requiredOnHost": true, "commands": ["robocopy"], "terminal": "pipes" },
-    { "id": "7zip", "family": "archive-copy", "requiredOnHost": false, "commands": ["7z"], "terminal": "pipes" },
+    { "id": "sevenzip", "family": "archive-copy", "requiredOnHost": false, "commands": ["7z"], "terminal": "pipes" },
 
     { "id": "curl", "family": "network", "requiredOnHost": true, "commands": ["curl"], "terminal": "pipes" },
     { "id": "wget", "family": "network", "requiredOnHost": false, "commands": ["wget"], "terminal": "pipes" },
@@ -81,4 +81,3 @@
     { "id": "signtool", "family": "signing", "requiredOnHost": false, "commands": ["signtool"], "terminal": "pipes", "privileged": true }
   ]
 }
-
