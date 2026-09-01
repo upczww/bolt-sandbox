@@ -438,6 +438,8 @@ and reason code—not merely identical serialized bytes.
 | WS-020 | Large/concurrent changes exceed configured bounds | Further changes/commit fail with typed quota status and bounded resources |
 | WS-021 | A staged source contains, equals, or is contained by a mandatory-deny path | Preparation fails closed before any protected content is copied or target process starts; case variants cannot bypass the check |
 | WS-022 | A staged request explicitly grants a source ancestor that exposes sibling transaction namespaces | Preparation fails closed; source-scoped grants remain valid and generated transaction IDs are never treated as authorization |
+| WS-023 | Staged workspace authorization metadata is copied and revalidated through the trusted helper | Owner, group, DACL protection/inheritance, and mandatory label remain equivalent; paths travel only in bounded integrity-protected IPC |
+| WS-024 | Target creates an object and applies an explicit or protected ACL in Staged mode | Commit returns conflict, source remains unchanged, and the transaction remains discardable |
 | REC-020 | Projected destructive commit targets an ordinary file | Complete pre-commit content is captured before trusted mutation |
 | REC-021 | Projected session expires | Retention GC removes only inactive verified session state |
 | REC-022 | Recovery creation fails during projected commit | Commit stops before source mutation and reports typed failure |

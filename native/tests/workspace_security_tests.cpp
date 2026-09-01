@@ -109,3 +109,21 @@ bool RunWorkspaceSecurityTests() {
            changed == bolt::common::WorkspaceSecurityStatus::kMismatch &&
            !cleanup_error;
 }
+
+int RunWorkspaceAclMutationFixture(
+    const int argument_count,
+    wchar_t** arguments) noexcept {
+    if (argument_count != 3 || arguments == nullptr || arguments[2] == nullptr) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    const std::filesystem::path path(arguments[2]);
+    const HANDLE file = CreateFileW(
+        path.c_str(), GENERIC_WRITE | READ_CONTROL | WRITE_DAC, 0, nullptr,
+        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return GetLastError();
+    }
+    CloseHandle(file);
+    return SetDaclProtection(path, true) ? ERROR_SUCCESS
+                                         : ERROR_ACCESS_DENIED;
+}

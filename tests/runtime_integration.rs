@@ -271,6 +271,56 @@ fn ws_018_conflicted_commit_preserves_inspectable_transaction() {
 }
 
 #[test]
+fn ws_024_staged_acl_mutation_is_rejected_before_commit() {
+    let Some((sandbox, component_root)) = configured_sandbox() else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let source = std::env::temp_dir().join(format!(
+        "bolt-sandbox-staged-acl-{}-{fixture_id}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&source).expect("source must create");
+    let handle = sandbox
+        .start_with_options(
+            SandboxRequest {
+                program: component_root.join("bolt-sandbox-native-tests.exe"),
+                arguments: vec![
+                    OsString::from("--workspace-acl-mutation-fixture"),
+                    OsString::from("created.txt"),
+                ],
+                cwd: source.clone(),
+                environment: BTreeMap::new(),
+                policy: SandboxPolicy::default(),
+                timeout: Some(Duration::from_secs(5)),
+            },
+            ExecutionOptions {
+                workspace: WorkspaceMode::Staged,
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("staged ACL fixture must start");
+    let result = handle.wait().expect("staged ACL fixture must finish");
+    assert!(matches!(
+        result.terminal,
+        ExecutionTerminal::Process(ref exit) if exit.exit_code == Some(0)
+    ));
+    let transaction = result
+        .workspace_transaction
+        .expect("staged ACL fixture must return a transaction");
+
+    assert_eq!(
+        sandbox.commit_workspace(transaction),
+        Err(WorkspaceControlError::Conflict)
+    );
+    assert!(!source.join("created.txt").exists());
+    sandbox
+        .discard_workspace(transaction)
+        .expect("rejected ACL transaction must remain discardable");
+    fs::remove_dir_all(source).expect("fixture must clean");
+}
+
+#[test]
 fn pty_001_interactive_cmd_accepts_input_resize_and_exits_inside_job() {
     let Some((sandbox, _component_root)) = configured_sandbox() else {
         return;

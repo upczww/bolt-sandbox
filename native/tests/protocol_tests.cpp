@@ -54,6 +54,7 @@ bool RunProjfsApiTests();
 bool RunWorkspaceSecurityTests();
 bool RunWorkspaceSecurityProtocolTests();
 bool RunWorkspaceSecurityLauncherTests(const std::filesystem::path& directory);
+int RunWorkspaceAclMutationFixture(int argument_count, wchar_t** arguments) noexcept;
 bool RunRuntimePayloadTests();
 bool RunBuildXlTreeTests();
 bool RunFilesystemPolicyTests();
@@ -630,6 +631,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count >= 2 &&
         std::wstring(arguments[1]) == L"--cross-architecture-parent") {
         return RunCrossArchitectureProcessParent(argument_count, arguments);
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--workspace-acl-mutation-fixture") {
+        return RunWorkspaceAclMutationFixture(argument_count, arguments);
     }
     constexpr std::uint8_t expected_magic[] = {'B', 'L', 'P', '1'};
     for (std::size_t index = 0; index < sizeof(expected_magic); ++index) {

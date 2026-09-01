@@ -143,7 +143,7 @@ its catalog case ID and requirement IDs in machine-readable results.
 | --- | --- | --- | --- |
 | ARC-WS-001 | Workspace behavior is selected through a trusted `WorkspaceBackend`; Direct preserves current semantics | WS-001..003 | Specified |
 | ARC-WS-002 | ProjFS is optional and never replaces filesystem/process/network/registry enforcement | WS-004..006, SEC-019 | Specified |
-| ARC-WS-003 | Projected or staged execution cannot expose or write the source workspace, sibling transactions, or mandatory-deny content directly or through path aliases | WS-007..010, WS-021..022, BYP-005..008 | Specified |
+| ARC-WS-003 | Projected or staged execution cannot expose or write the source workspace, sibling transactions, or mandatory-deny content directly or through path aliases | WS-007..010, WS-021..024, BYP-005..008 | Specified |
 | ARC-WS-004 | Projection/provider/IPC failure terminates or rejects execution without direct fallback | WS-011..013, GATE-001 | Specified |
 | ARC-WS-005 | Query, commit, discard, and revert operate on a bounded per-session change journal | WS-014..017, REC-020..021 | Specified |
 | ARC-WS-006 | Commit revalidates source identity and refuses external conflicts or partial application | WS-018..020, REC-022 | Specified |
