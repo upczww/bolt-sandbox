@@ -4,7 +4,9 @@ use std::{
     sync::mpsc::{Receiver, Sender},
 };
 
-use crate::{ProcessExit, SandboxError, SandboxEvent, SandboxRequest, ViolationAggregate, runtime};
+use crate::{
+    CommandId, ProcessExit, SandboxError, SandboxEvent, SandboxRequest, ViolationAggregate, runtime,
+};
 
 pub const DEFAULT_STREAM_CAPACITY: usize = 1_048_576;
 const MAX_STREAM_CAPACITY: usize = 64 * 1_048_576;
@@ -71,8 +73,26 @@ impl Sandbox {
     /// failures are returned as typed initialization stages; this function
     /// never falls back to an unsandboxed process.
     pub fn start(&self, request: SandboxRequest) -> Result<ExecutionHandle, SandboxError> {
+        let command_id =
+            CommandId::generate().map_err(|()| SandboxError::InitializationFailed {
+                stage: InitializationStage::Identity,
+            })?;
+        self.start_with_command_id(request, command_id)
+    }
+
+    /// Starts one execution associated with a caller-provided opaque command ID.
+    ///
+    /// # Errors
+    ///
+    /// Validation and initialization failures are returned without falling back
+    /// to an unattributed or unsandboxed execution.
+    pub fn start_with_command_id(
+        &self,
+        request: SandboxRequest,
+        command_id: CommandId,
+    ) -> Result<ExecutionHandle, SandboxError> {
         request.validate()?;
-        runtime::start_execution(request, &self.config)
+        runtime::start_execution(request, &self.config, command_id)
     }
 }
 
@@ -195,6 +215,7 @@ pub enum ExecutionControlError {
 
 pub struct ExecutionHandle {
     process_id: u32,
+    command_id: CommandId,
     stdout: Option<ByteStream>,
     stderr: Option<ByteStream>,
     events: Option<EventStream>,
@@ -205,6 +226,7 @@ pub struct ExecutionHandle {
 impl ExecutionHandle {
     pub(crate) fn new(
         process_id: u32,
+        command_id: CommandId,
         stdout: Receiver<Vec<u8>>,
         stderr: Receiver<Vec<u8>>,
         events: Receiver<SandboxEvent>,
@@ -213,6 +235,7 @@ impl ExecutionHandle {
     ) -> Self {
         Self {
             process_id,
+            command_id,
             stdout: Some(ByteStream { receiver: stdout }),
             stderr: Some(ByteStream { receiver: stderr }),
             events: Some(EventStream { receiver: events }),
@@ -224,6 +247,11 @@ impl ExecutionHandle {
     #[must_use]
     pub fn process_id(&self) -> u32 {
         self.process_id
+    }
+
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        self.command_id
     }
 
     /// Takes the stdout byte stream exactly once.

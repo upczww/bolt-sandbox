@@ -1,5 +1,6 @@
 //! Public Rust integration boundary for Bolt Sandbox.
 
+mod attribution;
 mod error;
 mod event;
 mod execution;
@@ -11,6 +12,7 @@ mod runtime;
 #[cfg(test)]
 mod test_support;
 
+pub use attribution::CommandId;
 pub use error::{InvalidRequestReason, RequestField, SandboxError};
 pub use event::{
     ChildInjectionFailure, ChildInjectionFailureReason, EventsDropped, FilesystemOperation,

@@ -10,8 +10,8 @@ use std::{
 
 use crate::ipc::aggregation::{AggregationDisposition, AggregationError, ViolationAggregator};
 use crate::{
-    ExecutionHandle, ExecutionResult, ExecutionTerminal, InitializationStage, ProcessExit,
-    ProcessExitReason, ReceiverLoss, SandboxError, SandboxEvent,
+    CommandId, ExecutionHandle, ExecutionResult, ExecutionTerminal, InitializationStage,
+    ProcessExit, ProcessExitReason, ReceiverLoss, SandboxError, SandboxEvent,
 };
 
 use super::{
@@ -37,6 +37,7 @@ pub(super) fn start(
     prepared: PreparedLaunch,
     stream_capacity: usize,
     violation_aggregate_capacity: usize,
+    command_id: CommandId,
 ) -> Result<ExecutionHandle, SandboxError> {
     let recovery = RecoveryCoordinator::new(prepared.recovery(), prepared.handshake_nonce())
         .map_err(|_| SandboxError::InitializationFailed {
@@ -55,6 +56,7 @@ pub(super) fn start(
         violation_aggregate_capacity,
         nonce,
         recovery,
+        command_id,
         prepared,
     ))
 }
@@ -120,6 +122,7 @@ fn build_execution_handle(
     violation_aggregate_capacity: usize,
     nonce: [u8; 16],
     recovery: Option<RecoveryCoordinator>,
+    command_id: CommandId,
     execution_lease: PreparedLaunch,
 ) -> ExecutionHandle {
     let chunk_slots = stream_capacity.div_ceil(4_096).max(1);
@@ -150,6 +153,7 @@ fn build_execution_handle(
     });
     ExecutionHandle::new(
         process_id,
+        command_id,
         stdout_receiver,
         stderr_receiver,
         event_receiver,
