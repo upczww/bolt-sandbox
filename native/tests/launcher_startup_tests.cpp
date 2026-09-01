@@ -57,6 +57,7 @@ bool RunLauncherStartupTests() {
     expected.has_timeout = true;
     expected.timeout_milliseconds = 5'000;
     expected.nonce.fill(0xA5);
+    expected.endpoint_identifier.fill(0x3C);
     expected.recovery_enabled = true;
 
     auto truncated_command = expected;
@@ -78,6 +79,12 @@ bool RunLauncherStartupTests() {
             encoded.data(), encoded.size(), decoded) !=
             bolt::protocol::LauncherStartStatus::kSuccess ||
         !(decoded == expected)) {
+        return false;
+    }
+    if (encoded.size() < bolt::protocol::kLauncherStartHeaderLength ||
+        encoded[4] != bolt::protocol::kLauncherStartVersion ||
+        bolt::protocol::kLauncherStartVersion != 2 ||
+        bolt::protocol::kLauncherStartHeaderLength != 112) {
         return false;
     }
 

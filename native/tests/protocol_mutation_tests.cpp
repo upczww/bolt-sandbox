@@ -94,6 +94,7 @@ std::vector<std::uint8_t> LauncherSeed() {
     request.has_timeout = true;
     request.timeout_milliseconds = 5'000;
     request.nonce.fill(0xa5U);
+    request.endpoint_identifier.fill(0x3cU);
     std::vector<std::uint8_t> encoded;
     if (bolt::protocol::EncodeLauncherStartRequest(request, encoded) !=
         bolt::protocol::LauncherStartStatus::kSuccess) {

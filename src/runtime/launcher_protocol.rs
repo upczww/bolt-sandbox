@@ -341,6 +341,7 @@ mod tests {
             hook_path: hook,
             timeout_milliseconds: Some(5_000),
             nonce: [0xA5; 16],
+            endpoint_identifier: [0x3C; 16],
             recovery_enabled: true,
         }
     }
@@ -373,6 +374,7 @@ mod tests {
         assert_eq!(decoded.hook_path, hook);
         assert_eq!(decoded.timeout_milliseconds, Some(5_000));
         assert_eq!(decoded.nonce, [0xA5; 16]);
+        assert_eq!(decoded.endpoint_identifier, [0x3C; 16]);
         assert!(decoded.recovery_enabled);
     }
 
@@ -427,6 +429,29 @@ mod tests {
                 b"policy",
                 &hook,
             )),
+            Err(LauncherProtocolError::InvalidField)
+        );
+    }
+
+    #[test]
+    fn ipc_023_launcher_v2_rejects_zero_endpoint_identity() {
+        let program: Vec<u16> = r"C:\tool.exe".encode_utf16().collect();
+        let cwd: Vec<u16> = r"C:\work".encode_utf16().collect();
+        let command: Vec<u16> = "tool\0".encode_utf16().collect();
+        let environment: Vec<u16> = "\0\0".encode_utf16().collect();
+        let hook: Vec<u16> = r"C:\hook.dll".encode_utf16().collect();
+        let mut request = request(
+            &program,
+            &cwd,
+            &command,
+            &environment,
+            b"policy",
+            &hook,
+        );
+        request.endpoint_identifier = [0; 16];
+
+        assert_eq!(
+            encode_start_request(request),
             Err(LauncherProtocolError::InvalidField)
         );
     }
