@@ -91,6 +91,18 @@ CLI option. A host integrating the library supplies the same digest through
 `SandboxConfig::component_manifest_sha256`; omitting it enables development
 self-consistency checks but does not establish a release trust root.
 
+Create a versioned package from already built x64/x86 native components with:
+
+```powershell
+pwsh scripts/package-windows.ps1 -Version 0.1.0
+```
+
+The command builds the release CLI, copies only the five named runtime files
+into a unique staging directory, optionally requires valid Authenticode
+signatures, writes the manifest over the final signed bytes, and renames the
+staging directory into place. Release pipelines use `-RequireSigned`; unsigned
+development packages are reported as `NotSigned` and fail that strict mode.
+
 The runtime is distributed as a component set rather than a single binary:
 
 - `bolt-sandbox.exe`, the optional Agent-facing CLI.

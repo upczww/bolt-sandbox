@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $resolvedRoot = (Resolve-Path -LiteralPath $ComponentRoot).Path
 $knownNames = @(
+    'bolt-sandbox.exe',
     'bolt-sandbox-launcher.exe',
     'bolt-sandbox-launcher-x86.exe',
     'bolt-sandbox-x64.dll',
