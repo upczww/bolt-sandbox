@@ -141,7 +141,7 @@ its catalog case ID and requirement IDs in machine-readable results.
 
 | Requirement ID | Architecture requirement | Catalog evidence | Status |
 | --- | --- | --- | --- |
-| ARC-WS-001 | Workspace behavior is selected through a trusted `WorkspaceBackend`; Direct preserves current semantics | WS-001..003 | Specified |
+| ARC-WS-001 | Workspace behavior is selected through a trusted `WorkspaceBackend`; Direct preserves current semantics and automatic transactional selection never chooses Direct | WS-001..003, WS-025 | Specified |
 | ARC-WS-002 | ProjFS is optional and never replaces filesystem/process/network/registry enforcement | WS-004..006, SEC-019 | Specified |
 | ARC-WS-003 | Projected or staged execution cannot expose or write the source workspace, sibling transactions, or mandatory-deny content directly or through path aliases | WS-007..010, WS-021..024, BYP-005..008 | Specified |
 | ARC-WS-004 | Projection/provider/IPC failure terminates or rejects execution without direct fallback | WS-011..013, GATE-001 | Specified |

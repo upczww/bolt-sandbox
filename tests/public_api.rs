@@ -15,8 +15,9 @@ use bolt_sandbox::{
     NetworkViolation, PolicyGeneration, PortRange, ProcessExit, ProcessExitReason,
     ProcessOperation, ProcessViolation, PseudoConsoleSize, RecoveryPolicy, RegistryPolicy,
     RequestField, Sandbox, SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy,
-    SandboxRequest, TerminalMode, ViolationAggregate, WorkspaceChange, WorkspaceControlError,
-    WorkspaceLimits, WorkspaceMode, WorkspaceTransactionId,
+    SandboxRequest, TerminalMode, ViolationAggregate, WorkspaceBackend, WorkspaceCapabilities,
+    WorkspaceChange, WorkspaceControlError, WorkspaceLimits, WorkspaceMode,
+    WorkspaceTransactionId,
 };
 
 fn assert_attributed_stream<T: Iterator<Item = AttributedSandboxEvent>>() {}
@@ -80,6 +81,22 @@ fn ws_002_projected_mode_is_explicit_and_fails_before_component_fallback() {
             stage: bolt_sandbox::InitializationStage::Workspace
         })
     ));
+}
+
+#[test]
+fn ws_025_auto_transactional_is_explicit_and_reports_capabilities() {
+    assert_ne!(WorkspaceMode::AutoTransactional, WorkspaceMode::Direct);
+    let _: fn(&Sandbox) -> Result<WorkspaceCapabilities, SandboxError> =
+        Sandbox::workspace_capabilities;
+    let capabilities = WorkspaceCapabilities {
+        direct: true,
+        staged: true,
+        projected: false,
+    };
+    assert!(capabilities.direct);
+    assert!(capabilities.staged);
+    assert!(!capabilities.projected);
+    assert_ne!(WorkspaceBackend::Staged, WorkspaceBackend::Projected);
 }
 
 #[test]

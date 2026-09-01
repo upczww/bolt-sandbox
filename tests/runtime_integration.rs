@@ -11,7 +11,8 @@ use bolt_sandbox::{
     AttributedSandboxEvent, ExecutionOptions, ExecutionTerminal, InfrastructureFailure,
     ProcessExitReason, PseudoConsoleSize, ReceiverLoss, RecoveryFailureReason, RecoveryLimits,
     RecoveryPolicy, Sandbox, SandboxConfig, SandboxEvent, SandboxPolicy, SandboxRequest,
-    TerminalMode, WorkspaceChangeKind, WorkspaceControlError, WorkspaceLimits, WorkspaceMode,
+    TerminalMode, WorkspaceBackend, WorkspaceChangeKind, WorkspaceControlError, WorkspaceLimits,
+    WorkspaceMode,
 };
 
 const STREAM_BYTES: usize = 256 * 1_024;
@@ -163,6 +164,61 @@ fn ws_005_projected_mode_never_falls_back_when_optional_component_is_unavailable
         }
     }
     fs::remove_dir_all(fixture).expect("fixture must clean");
+}
+
+#[test]
+fn ws_025_auto_transactional_uses_staged_when_projfs_is_unavailable() {
+    let Some((sandbox, _component_root)) = configured_sandbox() else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let source = std::env::temp_dir().join(format!(
+        "bolt-sandbox-auto-workspace-{}-{fixture_id}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&source).expect("source must create");
+    let system_root = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"));
+    let handle = sandbox
+        .start_with_options(
+            SandboxRequest {
+                program: system_root.join(r"System32\cmd.exe"),
+                arguments: vec![
+                    OsString::from("/d"),
+                    OsString::from("/c"),
+                    OsString::from("echo auto>created.txt"),
+                ],
+                cwd: source.clone(),
+                environment: BTreeMap::new(),
+                policy: SandboxPolicy::default(),
+                timeout: Some(Duration::from_secs(5)),
+            },
+            ExecutionOptions {
+                workspace: WorkspaceMode::AutoTransactional,
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("auto transactional execution must start");
+    let result = handle.wait().expect("auto execution must finish");
+    let projected_available = system_root
+        .join(r"System32\ProjectedFSLib.dll")
+        .is_file();
+    assert_eq!(
+        result.workspace_backend,
+        if projected_available {
+            WorkspaceBackend::Projected
+        } else {
+            WorkspaceBackend::Staged
+        }
+    );
+    assert!(!source.join("created.txt").exists());
+    let transaction = result
+        .workspace_transaction
+        .expect("auto transactional execution must return transaction");
+    sandbox
+        .commit_workspace(transaction)
+        .expect("auto transaction must commit");
+    assert!(source.join("created.txt").is_file());
+    fs::remove_dir_all(source).expect("fixture must clean");
 }
 
 fn assert_warm_projected_budget(sandbox: &Sandbox, source: &Path, system_root: &Path) {

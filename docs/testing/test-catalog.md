@@ -440,6 +440,7 @@ and reason code—not merely identical serialized bytes.
 | WS-022 | A staged request explicitly grants a source ancestor that exposes sibling transaction namespaces | Preparation fails closed; source-scoped grants remain valid and generated transaction IDs are never treated as authorization |
 | WS-023 | Staged workspace authorization metadata is copied and revalidated through the trusted helper | Owner, group, DACL protection/inheritance, and mandatory label remain equivalent; paths travel only in bounded integrity-protected IPC |
 | WS-024 | Target creates an object and applies an explicit or protected ACL in Staged mode | Commit returns conflict, source remains unchanged, and the transaction remains discardable |
+| WS-025 | Trusted host requests automatic transactional workspace selection | ProjFS capability selects Projected when available and Staged otherwise; actual backend is reported and Direct/unsandboxed fallback is impossible |
 | REC-020 | Projected destructive commit targets an ordinary file | Complete pre-commit content is captured before trusted mutation |
 | REC-021 | Projected session expires | Retention GC removes only inactive verified session state |
 | REC-022 | Recovery creation fails during projected commit | Commit stops before source mutation and reports typed failure |
