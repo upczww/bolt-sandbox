@@ -154,6 +154,7 @@ add_library(bolt-sandbox-common STATIC
     common/projfs_api.cpp
     common/pseudo_console.cpp
     common/suspended_process.cpp
+    common/workspace_security.cpp
 )
 bolt_native_warnings(bolt-sandbox-common)
 target_include_directories(bolt-sandbox-common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
