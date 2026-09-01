@@ -95,6 +95,8 @@ fn ws_014_public_transaction_control_stays_in_trusted_sandbox() {
     ) -> Result<Vec<WorkspaceChange>, WorkspaceControlError> = Sandbox::commit_workspace;
     let _: fn(&Sandbox, WorkspaceTransactionId) -> Result<(), WorkspaceControlError> =
         Sandbox::discard_workspace;
+    let _: fn(&Sandbox, WorkspaceTransactionId) -> Result<(), WorkspaceControlError> =
+        Sandbox::revert_workspace;
 }
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {
