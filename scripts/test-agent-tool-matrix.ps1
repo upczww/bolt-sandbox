@@ -34,6 +34,24 @@ $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer
 if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
     $visualStudio = & $vswhere -latest -products * -property installationPath
 }
+
+function Resolve-DeclaredToolRoot([string]$CommandName) {
+    $overrideName = 'BOLT_TOOL_' + ($CommandName.ToUpperInvariant() -replace '[^A-Z0-9]', '_')
+    $candidate = [Environment]::GetEnvironmentVariable($overrideName)
+    if (-not $candidate) {
+        $command = Get-Command $CommandName -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($command) { $candidate = $command.Source }
+    }
+    if (-not $candidate -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        return ''
+    }
+    return Split-Path -Parent (Resolve-Path -LiteralPath $candidate).Path
+}
+
+$pythonRoot = Resolve-DeclaredToolRoot 'python'
+$rustBin = Resolve-DeclaredToolRoot 'cargo'
+$rustToolchain = if ($rustBin) { Split-Path -Parent $rustBin } else { '' }
 $baseTokens = @{
     ProgramFiles = $env:ProgramFiles
     ProgramFilesX86 = ${env:ProgramFiles(x86)}
@@ -43,6 +61,8 @@ $baseTokens = @{
     LocalAppData = $env:LOCALAPPDATA
     AppData = $env:APPDATA
     VisualStudio = $visualStudio
+    PythonRoot = $pythonRoot
+    RustToolchain = $rustToolchain
     ComponentRoot = $componentPath
 }
 
