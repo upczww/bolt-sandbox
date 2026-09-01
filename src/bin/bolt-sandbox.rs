@@ -355,7 +355,12 @@ fn default_credential_names() -> Vec<OsString> {
 
 #[cfg(test)]
 mod tests {
-    use std::{ffi::OsString, path::PathBuf, time::Duration};
+    use std::{
+        ffi::OsString,
+        net::{IpAddr, Ipv4Addr, Ipv6Addr},
+        path::PathBuf,
+        time::Duration,
+    };
 
     use super::*;
 
@@ -464,5 +469,82 @@ mod tests {
                 retention: Duration::from_secs(86_400),
             })
         );
+    }
+
+    #[test]
+    fn cli_005_parser_builds_network_allow_list_from_typed_rules() {
+        let parsed = parse_run_arguments(vec![
+            OsString::from("run"),
+            OsString::from("--component-root"),
+            OsString::from(r"C:\components"),
+            OsString::from("--cwd"),
+            OsString::from(r"C:\work"),
+            OsString::from("--network"),
+            OsString::from("allow-list"),
+            OsString::from("--allow-domain"),
+            OsString::from("example.org"),
+            OsString::from("--allow-domain"),
+            OsString::from("*.example.net"),
+            OsString::from("--allow-cidr"),
+            OsString::from("192.0.2.0/24"),
+            OsString::from("--allow-cidr"),
+            OsString::from("2001:db8::/32"),
+            OsString::from("--allow-port"),
+            OsString::from("443"),
+            OsString::from("--allow-port"),
+            OsString::from("8000-8080"),
+            OsString::from("--"),
+            OsString::from(r"C:\tool.exe"),
+        ])
+        .expect("valid allow-list arguments must parse");
+
+        assert_eq!(
+            parsed.policy.network,
+            NetworkPolicy::AllowList(bolt_sandbox::NetworkAllowList {
+                domains: vec!["example.org".into(), "*.example.net".into()],
+                addresses: vec![
+                    bolt_sandbox::IpCidr {
+                        address: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 0)),
+                        prefix_length: 24,
+                    },
+                    bolt_sandbox::IpCidr {
+                        address: IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 0,)),
+                        prefix_length: 32,
+                    },
+                ],
+                ports: vec![
+                    bolt_sandbox::PortRange {
+                        start: 443,
+                        end: 443
+                    },
+                    bolt_sandbox::PortRange {
+                        start: 8_000,
+                        end: 8_080,
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn cli_005_parser_rejects_incomplete_or_mixed_network_allow_list() {
+        for network_arguments in [
+            vec!["--network", "allow-list"],
+            vec!["--network", "denied", "--allow-domain", "example.org"],
+            vec!["--network", "allow-list", "--allow-cidr", "192.0.2.1/24"],
+            vec!["--network", "allow-list", "--allow-port", "0"],
+            vec!["--network", "allow-list", "--allow-port", "9000-8000"],
+        ] {
+            let mut arguments = vec![
+                OsString::from("run"),
+                OsString::from("--component-root"),
+                OsString::from(r"C:\components"),
+                OsString::from("--cwd"),
+                OsString::from(r"C:\work"),
+            ];
+            arguments.extend(network_arguments.into_iter().map(OsString::from));
+            arguments.extend([OsString::from("--"), OsString::from(r"C:\tool.exe")]);
+            assert!(parse_run_arguments(arguments).is_err());
+        }
     }
 }
