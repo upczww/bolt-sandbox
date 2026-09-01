@@ -125,3 +125,12 @@ The first deliverable is attribution plus a behavior-preserving workspace
 abstraction. ProjFS, transactional commit, PTY, and broker prewarming are
 separate gated increments. A later phase cannot begin while the previous phase
 has failing x64/x86, Agent-scenario, security, or performance evidence.
+
+## Open-source reference boundary
+
+The ProjFS lifecycle and callback shape are informed by Microsoft's MIT-licensed
+`Windows-classic-samples/Samples/ProjectedFileSystem` at revision
+`d59e5f1dc9c768615e4e1ab1f0f009e6a3ed747c`. Bolt does not import that sample's
+registry provider. Its native adapter is a smaller dynamic system-library
+boundary so machines without the optional ProjFS component still start and
+return a typed unavailable result.
