@@ -361,3 +361,38 @@ impl ExecutionHandle {
             .map_err(|_| SandboxError::ControlChannelClosed)?
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sandbox_with_generation(next: u64) -> Sandbox {
+        Sandbox {
+            config: SandboxConfig {
+                component_root: PathBuf::from(r"C:\components"),
+                credential_environment_variables: Vec::new(),
+                stream_capacity: DEFAULT_STREAM_CAPACITY,
+                violation_aggregate_capacity: DEFAULT_VIOLATION_AGGREGATE_CAPACITY,
+                mandatory_filesystem_denies: Vec::new(),
+                mandatory_registry_denies: Vec::new(),
+                component_manifest_sha256: None,
+            },
+            next_policy_generation: Arc::new(AtomicU64::new(next)),
+        }
+    }
+
+    #[test]
+    fn attr_003_policy_generations_are_nonzero_monotonic_and_do_not_wrap() {
+        let sandbox = sandbox_with_generation(1);
+        assert_eq!(sandbox.allocate_policy_generation().expect("first").get(), 1);
+        assert_eq!(sandbox.allocate_policy_generation().expect("second").get(), 2);
+
+        let exhausted = sandbox_with_generation(u64::MAX);
+        assert!(matches!(
+            exhausted.allocate_policy_generation(),
+            Err(SandboxError::InitializationFailed {
+                stage: InitializationStage::Identity
+            })
+        ));
+    }
+}
