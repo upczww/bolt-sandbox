@@ -38,6 +38,7 @@ fn assert_dual_stream_execution(mode: &str) {
         stream_capacity: 512 * 1_024,
         mandatory_filesystem_denies: Vec::new(),
         mandatory_registry_denies: Vec::new(),
+        component_manifest_sha256: None,
     })
     .expect("native component root must be valid");
     let mut handle = sandbox
@@ -163,6 +164,7 @@ fn configured_sandbox() -> Option<(Sandbox, PathBuf)> {
         stream_capacity: 512 * 1_024,
         mandatory_filesystem_denies: Vec::new(),
         mandatory_registry_denies: Vec::new(),
+        component_manifest_sha256: None,
     })
     .expect("native component root must be valid");
     Some((sandbox, component_root))
@@ -852,6 +854,7 @@ fn pol_007_host_mandatory_deny_overrides_broad_grant_and_recovery() {
         stream_capacity: 512 * 1_024,
         mandatory_filesystem_denies: vec![protected.clone()],
         mandatory_registry_denies: Vec::new(),
+        component_manifest_sha256: None,
     })
     .expect("sandbox configuration must be valid");
     let mut policy = SandboxPolicy {

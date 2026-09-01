@@ -16,6 +16,7 @@ pub struct SandboxConfig {
     pub stream_capacity: usize,
     pub mandatory_filesystem_denies: Vec<PathBuf>,
     pub mandatory_registry_denies: Vec<String>,
+    pub component_manifest_sha256: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug)]
@@ -69,6 +70,7 @@ impl Sandbox {
             self.config.stream_capacity,
             &self.config.mandatory_filesystem_denies,
             &self.config.mandatory_registry_denies,
+            self.config.component_manifest_sha256.as_ref(),
         )
     }
 }

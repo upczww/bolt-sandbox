@@ -3,6 +3,7 @@
     reason = "image architecture selection is connected to launcher component selection later"
 )]
 mod architecture;
+mod component_manifest;
 #[allow(
     dead_code,
     reason = "opened native components are connected to the launcher adapter later"
@@ -59,6 +60,7 @@ pub(crate) fn start_execution(
     stream_capacity: usize,
     mandatory_filesystem_denies: &[std::path::PathBuf],
     mandatory_registry_denies: &[String],
+    expected_component_manifest_sha256: Option<&[u8; 32]>,
 ) -> Result<ExecutionHandle, SandboxError> {
     let prepared = preparation::prepare_launch_with_security_denies(
         &request,
@@ -66,6 +68,7 @@ pub(crate) fn start_execution(
         component_root,
         mandatory_filesystem_denies,
         mandatory_registry_denies,
+        expected_component_manifest_sha256,
     )
     .map_err(|error| match error {
         preparation::LaunchPreparationError::Request(error) => error,

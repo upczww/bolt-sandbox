@@ -51,6 +51,7 @@ fn run(arguments: Vec<OsString>) -> Result<u32, CliError> {
         stream_capacity: DEFAULT_STREAM_CAPACITY,
         mandatory_filesystem_denies: Vec::new(),
         mandatory_registry_denies: Vec::new(),
+        component_manifest_sha256: None,
     })
     .map_err(|_| CliError::Sandbox)?;
     let environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();

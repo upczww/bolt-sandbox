@@ -37,4 +37,6 @@ foreach ($currentArchitecture in $architectures) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $cmake --build $buildDirectory --config $Configuration
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & (Join-Path $PSScriptRoot 'write-component-manifest.ps1') `
+        -ComponentRoot (Join-Path $buildDirectory $Configuration)
 }

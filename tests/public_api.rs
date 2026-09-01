@@ -197,6 +197,7 @@ fn req_001_public_start_rejects_invalid_request_before_component_access() {
         stream_capacity: DEFAULT_STREAM_CAPACITY,
         mandatory_filesystem_denies: Vec::new(),
         mandatory_registry_denies: Vec::new(),
+        component_manifest_sha256: None,
     })
     .expect("absolute component root must configure the sandbox");
     let request = minimal_request(Path::new("relative-program.exe"), &cwd);

@@ -49,11 +49,20 @@ pub(super) enum ComponentOpenError {
     InvalidManifest,
     LauncherHashMismatch,
     HookHashMismatch,
+    ManifestHashMismatch,
 }
 
 pub(super) fn open_components(
     root: &Path,
     target_architecture: ImageArchitecture,
+) -> Result<OpenedComponents, ComponentOpenError> {
+    open_components_with_manifest_digest(root, target_architecture, None)
+}
+
+pub(super) fn open_components_with_manifest_digest(
+    root: &Path,
+    target_architecture: ImageArchitecture,
+    expected_manifest_digest: Option<&[u8; 32]>,
 ) -> Result<OpenedComponents, ComponentOpenError> {
     if !root.is_absolute() {
         return Err(ComponentOpenError::RootNotAbsolute);
@@ -70,7 +79,8 @@ pub(super) fn open_components(
     let mut launcher_handle =
         File::open(&launcher_path).map_err(|_| ComponentOpenError::LauncherOpen)?;
     let mut hook_handle = File::open(&hook_path).map_err(|_| ComponentOpenError::HookOpen)?;
-    let manifest = read_manifest(root).map_err(map_manifest_open_error)?;
+    let manifest =
+        read_manifest(root, expected_manifest_digest).map_err(map_manifest_open_error)?;
     let launcher_name = launcher_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -112,6 +122,7 @@ pub(super) fn open_components(
 const fn map_manifest_open_error(error: ManifestError) -> ComponentOpenError {
     match error {
         ManifestError::Open => ComponentOpenError::ManifestOpen,
+        ManifestError::DigestMismatch => ComponentOpenError::ManifestHashMismatch,
         ManifestError::Read
         | ManifestError::Invalid
         | ManifestError::LengthMismatch
@@ -304,10 +315,8 @@ mod tests {
         let manifest_path = fixture
             .root
             .join(crate::runtime::component_manifest::MANIFEST_NAME);
-        let expected: [u8; 32] = Sha256::digest(
-            fs::read(&manifest_path).expect("manifest must be readable"),
-        )
-        .into();
+        let expected: [u8; 32] =
+            Sha256::digest(fs::read(&manifest_path).expect("manifest must be readable")).into();
         let hook = fixture.root.join(X64_HOOK_NAME);
         let mut tampered = fs::read(&hook).expect("hook must be readable");
         tampered.push(0x5A);

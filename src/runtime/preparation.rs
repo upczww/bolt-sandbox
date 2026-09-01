@@ -8,7 +8,9 @@ use std::{
 use super::architecture::{
     ImageArchitecture, ImageArchitectureError, detect_image_architecture_from_reader,
 };
-use super::components::{ComponentOpenError, OpenedComponents, open_components};
+use super::components::{
+    ComponentOpenError, OpenedComponents, open_components_with_manifest_digest,
+};
 use crate::{
     SandboxError, SandboxRequest,
     ipc::identity::ExecutionIdentity,
@@ -121,7 +123,14 @@ pub(super) fn prepare_launch(
     credential_names: &[OsString],
     component_root: &Path,
 ) -> Result<PreparedLaunch, LaunchPreparationError> {
-    prepare_launch_with_security_denies(request_value, credential_names, component_root, &[], &[])
+    prepare_launch_with_security_denies(
+        request_value,
+        credential_names,
+        component_root,
+        &[],
+        &[],
+        None,
+    )
 }
 
 pub(super) fn prepare_launch_with_security_denies(
@@ -130,6 +139,7 @@ pub(super) fn prepare_launch_with_security_denies(
     component_root: &Path,
     mandatory_filesystem_denies: &[PathBuf],
     mandatory_registry_denies: &[String],
+    expected_component_manifest_sha256: Option<&[u8; 32]>,
 ) -> Result<PreparedLaunch, LaunchPreparationError> {
     prepare_launch_with_identity_factory_and_denies(
         request_value,
@@ -138,6 +148,7 @@ pub(super) fn prepare_launch_with_security_denies(
         || ExecutionIdentity::generate().map_err(|_| LaunchPreparationError::ExecutionIdentity),
         mandatory_filesystem_denies,
         mandatory_registry_denies,
+        expected_component_manifest_sha256,
     )
 }
 
@@ -154,6 +165,7 @@ fn prepare_launch_with_identity_factory(
         create_identity,
         &[],
         &[],
+        None,
     )
 }
 
@@ -164,6 +176,7 @@ fn prepare_launch_with_identity_factory_and_denies(
     create_identity: impl FnOnce() -> Result<ExecutionIdentity, LaunchPreparationError>,
     mandatory_filesystem_denies: &[PathBuf],
     mandatory_registry_denies: &[String],
+    expected_component_manifest_sha256: Option<&[u8; 32]>,
 ) -> Result<PreparedLaunch, LaunchPreparationError> {
     request_value
         .validate()
@@ -201,8 +214,12 @@ fn prepare_launch_with_identity_factory_and_denies(
         File::open(&request_value.program).map_err(|_| LaunchPreparationError::ProgramOpen)?;
     let architecture = detect_image_architecture_from_reader(&mut program_handle)
         .map_err(map_architecture_error)?;
-    let components =
-        open_components(component_root, architecture).map_err(LaunchPreparationError::Component)?;
+    let components = open_components_with_manifest_digest(
+        component_root,
+        architecture,
+        expected_component_manifest_sha256,
+    )
+    .map_err(LaunchPreparationError::Component)?;
     let execution_identity = create_identity()?;
 
     Ok(PreparedLaunch {
@@ -237,6 +254,7 @@ const fn map_architecture_error(error: ImageArchitectureError) -> LaunchPreparat
 
 #[cfg(test)]
 mod tests {
+    use sha2::{Digest, Sha256};
     use std::{
         collections::BTreeMap,
         ffi::{OsStr, OsString},
@@ -297,6 +315,10 @@ mod tests {
             .expect("launcher fixture must be written");
             fs::write(self.root.join("bolt-sandbox-x64.dll"), pe_image(0x8664))
                 .expect("x64 hook fixture must be written");
+            write_manifest(
+                &self.root,
+                &["bolt-sandbox-launcher.exe", "bolt-sandbox-x64.dll"],
+            );
         }
     }
 
@@ -318,6 +340,40 @@ mod tests {
         image[PE_OFFSET..PE_OFFSET + 4].copy_from_slice(b"PE\0\0");
         image[PE_OFFSET + 4..PE_OFFSET + 6].copy_from_slice(&machine.to_le_bytes());
         image
+    }
+
+    fn write_manifest(root: &Path, names: &[&str]) {
+        let mut manifest = Vec::from(*b"BCM1");
+        manifest.extend_from_slice(&1_u16.to_le_bytes());
+        manifest.extend_from_slice(&16_u16.to_le_bytes());
+        manifest.extend_from_slice(
+            &u16::try_from(names.len())
+                .expect("record count fits")
+                .to_le_bytes(),
+        );
+        manifest.extend_from_slice(&crate::ipc::framing::PROTOCOL_VERSION.to_le_bytes());
+        manifest.extend_from_slice(&[0; 4]);
+        for name in names {
+            let bytes = fs::read(root.join(name)).expect("component must be readable");
+            manifest.extend_from_slice(
+                &u16::try_from(name.len())
+                    .expect("name length fits")
+                    .to_le_bytes(),
+            );
+            manifest.extend_from_slice(&0_u16.to_le_bytes());
+            manifest.extend_from_slice(
+                &u64::try_from(bytes.len())
+                    .expect("component length fits")
+                    .to_le_bytes(),
+            );
+            manifest.extend_from_slice(&Sha256::digest(&bytes));
+            manifest.extend_from_slice(name.as_bytes());
+        }
+        fs::write(
+            root.join(crate::runtime::component_manifest::MANIFEST_NAME),
+            manifest,
+        )
+        .expect("manifest must be written");
     }
 
     fn block_contains(block: &[u16], text: &str) -> bool {
