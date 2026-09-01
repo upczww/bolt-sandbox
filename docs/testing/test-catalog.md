@@ -522,6 +522,9 @@ and reason code—not merely identical serialized bytes.
 | COMPAT-025 | Trusted host applies an approved filesystem proposal | A cloned policy gains only the proposed exact read/metadata authority; original policy remains unchanged |
 | COMPAT-026 | Proposal fields are forged or changed to mandatory-sensitive content | Application fails with `InvalidProposal` and produces no policy |
 | COMPAT-027 | Approved registry query proposal is applied | New policy receives exact-key read-only authority, never a recursive registry subtree |
+| COMPAT-028 | A completed failed transactional command has one approved proposal | Restart plan consumes approval and rejects a second plan for the same one-shot decision |
+| COMPAT-029 | Approved restart has a retained staged/projected transaction | Old transaction is discarded before new target creation; discard failure prevents restart |
+| COMPAT-030 | Approved restart starts with minimally extended policy | New execution/policy generation succeeds from the beginning; no live Job receives widened authority |
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |
