@@ -3379,6 +3379,21 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
         return 335;
     }
 
+    const HANDLE nested_job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION strengthened_job{};
+    strengthened_job.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (nested_job == nullptr ||
+        !AssignProcessToJobObject(nested_job, GetCurrentProcess()) ||
+        !SetInformationJobObject(
+            nested_job, JobObjectExtendedLimitInformation, &strengthened_job,
+            sizeof(strengthened_job))) {
+        if (nested_job != nullptr) {
+            CloseHandle(nested_job);
+        }
+        return 336;
+    }
+
     const std::wstring executable = CurrentExecutable();
     const std::wstring missing_breakaway_image =
         executable + L".missing-breakaway-image";
