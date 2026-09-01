@@ -186,6 +186,39 @@ bool RunProjectedWorkspaceProviderTests() {
                   &callback_data, &enumeration);
     provider.Stop();
 
+    const auto view = fixture / L"view";
+    const auto materialized = fixture / L"materialized";
+    const bool view_created =
+        std::filesystem::create_directories(view / L"nested") &&
+        CopyFileW(
+            (source / L"目录" / L"数据.txt").c_str(),
+            (view / L"nested" / L"copy.txt").c_str(), TRUE);
+    const auto materialized_status =
+        bolt::common::MaterializeProjectedWorkspace(
+            view, materialized,
+            bolt::common::ProjectedWorkspaceLimits{16, 1'024});
+    std::string materialized_contents(10, '\0');
+    {
+        HANDLE file = CreateFileW(
+            (materialized / L"nested" / L"copy.txt").c_str(), GENERIC_READ,
+            FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        DWORD read_length = 0;
+        const bool read_materialized = file != INVALID_HANDLE_VALUE &&
+                                       ReadFile(
+                                           file, materialized_contents.data(),
+                                           static_cast<DWORD>(
+                                               materialized_contents.size()),
+                                           &read_length, nullptr) &&
+                                       read_length ==
+                                           materialized_contents.size();
+        if (file != INVALID_HANDLE_VALUE) {
+            CloseHandle(file);
+        }
+        if (!read_materialized) {
+            materialized_contents.clear();
+        }
+    }
+
     const auto outside = fixture / L"outside.bin";
     {
         HANDLE file = CreateFileW(
@@ -221,6 +254,10 @@ bool RunProjectedWorkspaceProviderTests() {
            enumeration_started == S_OK && enumeration_read == S_OK &&
            enumeration_ended == S_OK && g_names.size() == 2 &&
            g_names[0] == L"alpha" && g_names[1] == L"目录" && g_stopped &&
+           view_created &&
+           materialized_status ==
+               bolt::common::ProjectedWorkspaceStatus::kSuccess &&
+           materialized_contents == contents &&
            linked &&
            hardlink_status ==
                bolt::common::ProjectedWorkspaceStatus::kUnsupportedObject &&
