@@ -340,6 +340,7 @@ add_executable(bolt-sandbox-native-tests
     tests/policy_mapping_tests.cpp
     tests/immutable_mapping_tests.cpp
     tests/process_tests.cpp
+    tests/protocol_mutation_tests.cpp
     tests/protocol_tests.cpp
     tests/runtime_payload_tests.cpp
     tests/shell_file_operation_tests.cpp

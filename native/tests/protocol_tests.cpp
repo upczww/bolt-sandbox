@@ -23,6 +23,7 @@ static_assert(bolt::protocol::kPolicyDigestOffset == 12);
 static_assert(bolt::protocol::kPolicyMaximumBodyLength == 1'048'576);
 
 bool RunPolicyPayloadTests();
+bool RunProtocolMutationTests();
 bool RunJobTests();
 bool RunLauncherStartupTests();
 bool RunStreamTests();
@@ -641,6 +642,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunPolicyPayloadTests()) {
         return 4;
+    }
+    if (!RunProtocolMutationTests()) {
+        return 53;
     }
     if (!RunJobTests()) {
         return 5;
