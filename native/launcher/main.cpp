@@ -8,6 +8,7 @@
 #include "common/execution_job.h"
 #include "common/immutable_policy_mapping.h"
 #include "common/private_pipe.h"
+#include "common/pseudo_console.h"
 #include "common/suspended_process.h"
 #include "hook/network/dns_proxy_process.h"
 #include "hook/network/network_policy.h"
@@ -38,6 +39,7 @@ constexpr DWORD kEventClosureGraceMilliseconds = 100;
 constexpr std::size_t kStreamChunkLength = 4'096;
 constexpr std::uint32_t kDnsProxyMaximumFrameLength = 64 * 1'024;
 constexpr std::uint32_t kDnsProxyMaximumRequests = 1'024;
+constexpr std::uint32_t kPseudoConsoleMaximumInput = 64 * 1'024;
 
 void CloseIfValid(const HANDLE handle) noexcept {
     if (handle != nullptr && handle != INVALID_HANDLE_VALUE) {
@@ -415,6 +417,7 @@ struct ControlReaderContext {
     HANDLE input = nullptr;
     HANDLE signaled = nullptr;
     HANDLE recovery_response = nullptr;
+    bolt::common::PseudoConsole* pseudo_console = nullptr;
     std::atomic<std::uint16_t> kind{0};
 };
 
@@ -463,6 +466,57 @@ DWORD WINAPI ReadControlFrame(LPVOID parameter) noexcept {
                 !WriteExact(
                     context->recovery_response, response.data(),
                     response.size())) {
+                break;
+            }
+            continue;
+        }
+        if (magic == std::array<std::uint8_t, 4>{'B', 'L', 'I', '1'} &&
+            context->pseudo_console != nullptr) {
+            std::array<std::uint8_t, 8> header{};
+            if (!ReadExact(context->input, header.data(), header.size())) {
+                break;
+            }
+            std::uint16_t version = 0;
+            std::uint16_t header_length = 0;
+            std::uint32_t payload_length = 0;
+            std::memcpy(&version, header.data(), sizeof(version));
+            std::memcpy(&header_length, header.data() + 2, sizeof(header_length));
+            std::memcpy(&payload_length, header.data() + 4, sizeof(payload_length));
+            if (version != 1 || header_length != 12 || payload_length == 0 ||
+                payload_length > kPseudoConsoleMaximumInput) {
+                break;
+            }
+            std::vector<std::uint8_t> payload;
+            try {
+                payload.resize(payload_length);
+            } catch (...) {
+                break;
+            }
+            if (!ReadExact(context->input, payload.data(), payload.size()) ||
+                !WriteExact(
+                    context->pseudo_console->input(), payload.data(),
+                    payload.size())) {
+                break;
+            }
+            continue;
+        }
+        if (magic == std::array<std::uint8_t, 4>{'B', 'L', 'R', '1'} &&
+            context->pseudo_console != nullptr) {
+            std::array<std::uint8_t, 8> payload{};
+            if (!ReadExact(context->input, payload.data(), payload.size())) {
+                break;
+            }
+            std::uint16_t version = 0;
+            std::uint16_t frame_length = 0;
+            std::uint16_t columns = 0;
+            std::uint16_t rows = 0;
+            std::memcpy(&version, payload.data(), sizeof(version));
+            std::memcpy(&frame_length, payload.data() + 2, sizeof(frame_length));
+            std::memcpy(&columns, payload.data() + 4, sizeof(columns));
+            std::memcpy(&rows, payload.data() + 6, sizeof(rows));
+            if (version != 1 || frame_length != 12 ||
+                context->pseudo_console->Resize(columns, rows) !=
+                    bolt::common::PseudoConsoleStatus::kSuccess) {
                 break;
             }
             continue;
@@ -593,6 +647,14 @@ bool ToAnsiPath(const std::wstring& path, std::string& encoded) {
 
 int RunDecodedSession(
     const bolt::protocol::LauncherStartRequest& request) noexcept {
+    for (const DWORD stream : {
+             STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE}) {
+        const HANDLE handle = GetStdHandle(stream);
+        if (handle != nullptr && handle != INVALID_HANDLE_VALUE &&
+            !SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0)) {
+            return ERROR_INVALID_HANDLE;
+        }
+    }
     bolt::common::ImmutablePolicyMapping policy;
     bolt::common::PrivatePipe event_pipe;
     bolt::common::ExecutionJob job;
@@ -629,13 +691,27 @@ int RunDecodedSession(
     HANDLE stdout_write = nullptr;
     HANDLE stderr_read = nullptr;
     HANDLE stderr_write = nullptr;
+    HANDLE stdin_read = nullptr;
+    bolt::common::PseudoConsole pseudo_console;
     RecoveryChannels recovery_channels;
-    const HANDLE stdin_read = CreateFileW(
-        L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-        &inheritable, OPEN_EXISTING, 0, nullptr);
-    if (stdin_read == INVALID_HANDLE_VALUE ||
-        !CreateTargetPipe(stdout_read, stdout_write) ||
-        !CreateTargetPipe(stderr_read, stderr_write) ||
+    bool terminal_created = false;
+    if (request.pseudo_console_enabled) {
+        terminal_created = pseudo_console.Create(
+                               request.pseudo_console_columns,
+                               request.pseudo_console_rows) ==
+                           bolt::common::PseudoConsoleStatus::kSuccess;
+        if (terminal_created) {
+            stdout_read = pseudo_console.TakeOutput();
+        }
+    } else {
+        stdin_read = CreateFileW(
+            L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            &inheritable, OPEN_EXISTING, 0, nullptr);
+        terminal_created = stdin_read != INVALID_HANDLE_VALUE &&
+                           CreateTargetPipe(stdout_read, stdout_write) &&
+                           CreateTargetPipe(stderr_read, stderr_write);
+    }
+    if (!terminal_created ||
         !recovery_channels.Create(request.recovery_enabled)) {
         CloseIfValid(stdin_read);
         CloseIfValid(stdout_read);
@@ -645,7 +721,8 @@ int RunDecodedSession(
         CloseIfValid(dns_request);
         CloseIfValid(dns_response);
         CloseHandle(release);
-        return ERROR_NOT_ENOUGH_MEMORY;
+        return request.pseudo_console_enabled ? ERROR_NOT_SUPPORTED
+                                              : ERROR_NOT_ENOUGH_MEMORY;
     }
     const HANDLE event_client = CreateFileW(
         pipe_name.c_str(), FILE_WRITE_DATA, 0, &inheritable, OPEN_EXISTING, 0,
@@ -653,11 +730,11 @@ int RunDecodedSession(
     if (event_client == INVALID_HANDLE_VALUE ||
         event_pipe.Accept() != bolt::common::PipeStatus::kSuccess) {
         CloseIfValid(event_client);
-        CloseHandle(stdin_read);
-        CloseHandle(stdout_read);
-        CloseHandle(stdout_write);
-        CloseHandle(stderr_read);
-        CloseHandle(stderr_write);
+        CloseIfValid(stdin_read);
+        CloseIfValid(stdout_read);
+        CloseIfValid(stdout_write);
+        CloseIfValid(stderr_read);
+        CloseIfValid(stderr_write);
         CloseIfValid(dns_request);
         CloseIfValid(dns_response);
         CloseHandle(release);
@@ -665,9 +742,13 @@ int RunDecodedSession(
     }
     std::wstring command(
         request.command_line.begin(), request.command_line.end() - 1);
-    std::array<HANDLE, 11> inherited = {
-        policy.handle(), event_client, stdin_read, stdout_write, stderr_write};
-    std::size_t inherited_count = 5;
+    std::array<HANDLE, 11> inherited = {policy.handle(), event_client};
+    std::size_t inherited_count = 2;
+    if (!request.pseudo_console_enabled) {
+        inherited[inherited_count++] = stdin_read;
+        inherited[inherited_count++] = stdout_write;
+        inherited[inherited_count++] = stderr_write;
+    }
     if (request.recovery_enabled) {
         inherited[inherited_count++] = recovery_channels.request_write;
         inherited[inherited_count++] = recovery_channels.response_read;
@@ -692,12 +773,15 @@ int RunDecodedSession(
         recovery_channels.request_write,
         recovery_channels.response_read,
         recovery_channels.mutex,
-        recovery_channels.counter};
+        recovery_channels.counter,
+        pseudo_console.handle()};
     bolt::common::SuspendedProcess process;
     std::string hook_path;
-    const bool prepared = ToAnsiPath(request.hook_path, hook_path) &&
+    const bool process_created = ToAnsiPath(request.hook_path, hook_path) &&
         bolt::common::SuspendedProcess::Create(options, process) ==
-            bolt::common::ProcessStatus::kSuccess &&
+            bolt::common::ProcessStatus::kSuccess;
+    pseudo_console.CloseClientCreationHandles();
+    const bool prepared = process_created &&
         process.AssignTo(job) == bolt::common::ProcessStatus::kSuccess &&
         process.InstallRuntimePayload(
             policy.handle(), policy.length(), event_client, release,
@@ -711,9 +795,9 @@ int RunDecodedSession(
         process.BeginHookInitialization() ==
             bolt::common::ProcessStatus::kSuccess;
     CloseHandle(event_client);
-    CloseHandle(stdin_read);
-    CloseHandle(stdout_write);
-    CloseHandle(stderr_write);
+    CloseIfValid(stdin_read);
+    CloseIfValid(stdout_write);
+    CloseIfValid(stderr_write);
     CloseIfValid(dns_request);
     CloseIfValid(dns_response);
     recovery_channels.CloseTargetEnds();
@@ -726,8 +810,8 @@ int RunDecodedSession(
     if (!ready_ok) {
         job.Terminate(ERROR_DLL_INIT_FAILED);
         process.Wait(5'000);
-        CloseHandle(stdout_read);
-        CloseHandle(stderr_read);
+        CloseIfValid(stdout_read);
+        CloseIfValid(stderr_read);
         CloseHandle(release);
         return ERROR_DLL_INIT_FAILED;
     }
@@ -737,6 +821,9 @@ int RunDecodedSession(
     ControlReaderContext control{};
     control.input = GetStdHandle(STD_INPUT_HANDLE);
     control.recovery_response = recovery_channels.response_write;
+    control.pseudo_console = request.pseudo_console_enabled
+                                 ? &pseudo_console
+                                 : nullptr;
     control.signaled = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     const HANDLE event_failure_signal =
         CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -758,8 +845,8 @@ int RunDecodedSession(
         StopControlReader(control_thread);
         CloseIfValid(control.signaled);
         CloseIfValid(event_failure_signal);
-        CloseHandle(stdout_read);
-        CloseHandle(stderr_read);
+        CloseIfValid(stdout_read);
+        CloseIfValid(stderr_read);
         CloseHandle(release);
         return ERROR_BROKEN_PIPE;
     }
@@ -772,8 +859,8 @@ int RunDecodedSession(
         StopControlReader(control_thread);
         CloseHandle(control.signaled);
         CloseHandle(event_failure_signal);
-        CloseHandle(stdout_read);
-        CloseHandle(stderr_read);
+        CloseIfValid(stdout_read);
+        CloseIfValid(stderr_read);
         CloseHandle(release);
         return ERROR_BROKEN_PIPE;
     }
@@ -787,11 +874,17 @@ int RunDecodedSession(
             bolt::protocol::LauncherTransportKind::kStdout,
             bolt::protocol::LauncherTransportKind::kStdoutEof,
             std::ref(writer));
-        stderr_thread = std::thread(
-            ForwardByteStream, stderr_read,
-            bolt::protocol::LauncherTransportKind::kStderr,
-            bolt::protocol::LauncherTransportKind::kStderrEof,
-            std::ref(writer));
+        if (request.pseudo_console_enabled) {
+            writer.Write(
+                bolt::protocol::LauncherTransportKind::kStderrEof, nullptr,
+                0);
+        } else {
+            stderr_thread = std::thread(
+                ForwardByteStream, stderr_read,
+                bolt::protocol::LauncherTransportKind::kStderr,
+                bolt::protocol::LauncherTransportKind::kStderrEof,
+                std::ref(writer));
+        }
         event_thread = std::thread(
             ForwardEventStream, event_pipe.handle(), process.process_handle(),
             event_failure_signal, std::ref(event_failure),
@@ -804,6 +897,8 @@ int RunDecodedSession(
     } catch (...) {
         job.Terminate(ERROR_NOT_ENOUGH_MEMORY);
         process.Wait(5'000);
+        StopControlReader(control_thread);
+        pseudo_console.Close();
         if (stdout_thread.joinable()) {
             stdout_thread.join();
         } else {
@@ -820,7 +915,6 @@ int RunDecodedSession(
         if (recovery_thread.joinable()) {
             recovery_thread.join();
         }
-        StopControlReader(control_thread);
         CloseHandle(control.signaled);
         CloseHandle(event_failure_signal);
         CloseHandle(release);
@@ -886,10 +980,13 @@ int RunDecodedSession(
         process.Wait(5'000);
     }
     StopControlReader(control_thread);
+    pseudo_console.Close();
     CloseHandle(control.signaled);
     CloseHandle(event_failure_signal);
     stdout_thread.join();
-    stderr_thread.join();
+    if (stderr_thread.joinable()) {
+        stderr_thread.join();
+    }
     event_thread.join();
     if (recovery_thread.joinable()) {
         recovery_thread.join();

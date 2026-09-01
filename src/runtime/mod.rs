@@ -40,7 +40,7 @@ pub(crate) mod workspace;
 
 use crate::{
     CommandId, ExecutionAttribution, ExecutionHandle, ExecutionId, InitializationStage,
-    PolicyGeneration, SandboxConfig, SandboxError, SandboxRequest,
+    PolicyGeneration, SandboxConfig, SandboxError, SandboxRequest, TerminalMode,
 };
 
 pub(crate) fn start_execution(
@@ -48,6 +48,7 @@ pub(crate) fn start_execution(
     config: &SandboxConfig,
     command_id: CommandId,
     policy_generation: PolicyGeneration,
+    terminal: TerminalMode,
 ) -> Result<ExecutionHandle, SandboxError> {
     let prepared = preparation::prepare_launch_with_security_denies(
         &request,
@@ -100,5 +101,6 @@ pub(crate) fn start_execution(
         config.stream_capacity,
         config.violation_aggregate_capacity,
         attribution,
+        terminal,
     )
 }

@@ -5,6 +5,9 @@ const VERSION: u16 = 1;
 const HEADER_LENGTH: usize = 12;
 const MAX_PAYLOAD_LENGTH: usize = 1_048_576;
 const CONTROL_MAGIC: [u8; 4] = *b"BLC1";
+const PSEUDO_CONSOLE_INPUT_MAGIC: [u8; 4] = *b"BLI1";
+const PSEUDO_CONSOLE_RESIZE_MAGIC: [u8; 4] = *b"BLR1";
+const PSEUDO_CONSOLE_MAXIMUM_INPUT: usize = 64 * 1_024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TransportKind {
@@ -31,6 +34,38 @@ pub(super) fn write_control(writer: &mut impl Write, kind: ControlKind) -> io::R
     encoded[..4].copy_from_slice(&CONTROL_MAGIC);
     encoded[4..6].copy_from_slice(&VERSION.to_le_bytes());
     encoded[6..8].copy_from_slice(&(kind as u16).to_le_bytes());
+    writer.write_all(&encoded)?;
+    writer.flush()
+}
+
+pub(super) fn write_pseudo_console_input(writer: &mut impl Write, input: &[u8]) -> io::Result<()> {
+    if input.is_empty() || input.len() > PSEUDO_CONSOLE_MAXIMUM_INPUT {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    let mut header = [0_u8; 12];
+    header[..4].copy_from_slice(&PSEUDO_CONSOLE_INPUT_MAGIC);
+    header[4..6].copy_from_slice(&VERSION.to_le_bytes());
+    header[6..8].copy_from_slice(&12_u16.to_le_bytes());
+    header[8..12].copy_from_slice(
+        &u32::try_from(input.len())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?
+            .to_le_bytes(),
+    );
+    writer.write_all(&header)?;
+    writer.write_all(input)?;
+    writer.flush()
+}
+
+pub(super) fn write_pseudo_console_resize(
+    writer: &mut impl Write,
+    size: crate::PseudoConsoleSize,
+) -> io::Result<()> {
+    let mut encoded = [0_u8; 12];
+    encoded[..4].copy_from_slice(&PSEUDO_CONSOLE_RESIZE_MAGIC);
+    encoded[4..6].copy_from_slice(&VERSION.to_le_bytes());
+    encoded[6..8].copy_from_slice(&12_u16.to_le_bytes());
+    encoded[8..10].copy_from_slice(&size.columns().to_le_bytes());
+    encoded[10..12].copy_from_slice(&size.rows().to_le_bytes());
     writer.write_all(&encoded)?;
     writer.flush()
 }
@@ -213,6 +248,18 @@ mod tests {
         let mut timeout = Vec::new();
         write_control(&mut timeout, ControlKind::Timeout).expect("timeout must encode");
         assert_eq!(timeout, b"BLC1\x01\x00\x02\x00");
+
+        let mut input = Vec::new();
+        write_pseudo_console_input(&mut input, &[0, 0xff, b'\n']).expect("PTY input must encode");
+        assert_eq!(input, b"BLI1\x01\x00\x0c\x00\x03\x00\x00\x00\x00\xff\n");
+
+        let mut resize = Vec::new();
+        write_pseudo_console_resize(
+            &mut resize,
+            crate::PseudoConsoleSize::new(120, 40).expect("valid size"),
+        )
+        .expect("PTY resize must encode");
+        assert_eq!(resize, b"BLR1\x01\x00\x0c\x00\x78\x00\x28\x00");
     }
 
     #[test]

@@ -11,7 +11,8 @@ use std::{
 use crate::ipc::aggregation::{AggregationDisposition, AggregationError, ViolationAggregator};
 use crate::{
     ExecutionAttribution, ExecutionHandle, ExecutionResult, ExecutionTerminal, InitializationStage,
-    ProcessExit, ProcessExitReason, ReceiverLoss, SandboxError, SandboxEvent,
+    ProcessExit, ProcessExitReason, ReceiverLoss, SandboxError, SandboxEvent, TerminalMode,
+    execution::ExecutionControlRequest,
 };
 
 use super::{
@@ -38,6 +39,7 @@ pub(super) fn start(
     stream_capacity: usize,
     violation_aggregate_capacity: usize,
     attribution: ExecutionAttribution,
+    terminal: TerminalMode,
 ) -> Result<ExecutionHandle, SandboxError> {
     let recovery = RecoveryCoordinator::new(prepared.recovery(), prepared.handshake_nonce())
         .map_err(|_| SandboxError::InitializationFailed {
@@ -45,7 +47,7 @@ pub(super) fn start(
         })?;
     let timeout = prepared.timeout();
     let nonce = *prepared.handshake_nonce();
-    let (launcher, control, process_id, transport) = spawn_and_acknowledge(&prepared)?;
+    let (launcher, control, process_id, transport) = spawn_and_acknowledge(&prepared, terminal)?;
     Ok(build_execution_handle(
         launcher,
         control,
@@ -58,13 +60,15 @@ pub(super) fn start(
         recovery,
         attribution,
         prepared,
+        terminal,
     ))
 }
 
 fn spawn_and_acknowledge(
     prepared: &PreparedLaunch,
+    terminal: TerminalMode,
 ) -> Result<(Child, ChildStdin, u32, ChildStdout), SandboxError> {
-    let request = encode_request(prepared)?;
+    let request = encode_request(prepared, terminal)?;
     let mut launcher = Command::new(prepared.launcher_component_path())
         .arg("--stdio-session")
         .stdin(Stdio::piped())
@@ -124,12 +128,13 @@ fn build_execution_handle(
     recovery: Option<RecoveryCoordinator>,
     attribution: ExecutionAttribution,
     execution_lease: PreparedLaunch,
+    terminal: TerminalMode,
 ) -> ExecutionHandle {
     let chunk_slots = stream_capacity.div_ceil(4_096).max(1);
     let (stdout_sender, stdout_receiver) = mpsc::sync_channel(chunk_slots);
     let (stderr_sender, stderr_receiver) = mpsc::sync_channel(chunk_slots);
     let (event_sender, event_receiver) = mpsc::sync_channel(64);
-    let (cancel_sender, cancel_receiver) = mpsc::channel();
+    let (control_sender, control_receiver) = mpsc::sync_channel(64);
     let (completion_sender, completion_receiver) = mpsc::sync_channel(1);
     let (transport_sender, transport_receiver) = mpsc::channel();
     thread::spawn(move || read_transport(transport, &transport_sender));
@@ -142,7 +147,7 @@ fn build_execution_handle(
             timeout,
             nonce,
             violation_aggregate_capacity,
-            &cancel_receiver,
+            &control_receiver,
             &transport_receiver,
             &stdout_sender,
             &stderr_sender,
@@ -158,8 +163,9 @@ fn build_execution_handle(
         stdout_receiver,
         stderr_receiver,
         event_receiver,
-        cancel_sender,
+        control_sender,
         completion_receiver,
+        terminal,
     )
 }
 
@@ -188,6 +194,7 @@ fn read_transport(
 
 #[allow(
     clippy::too_many_arguments,
+    clippy::too_many_lines,
     reason = "the worker owns each independent public execution channel"
 )]
 fn run_execution(
@@ -197,7 +204,7 @@ fn run_execution(
     timeout: Option<Duration>,
     nonce: [u8; 16],
     violation_aggregate_capacity: usize,
-    cancel: &mpsc::Receiver<()>,
+    control_requests: &mpsc::Receiver<ExecutionControlRequest>,
     transport: &mpsc::Receiver<Result<Option<TransportFrame>, launcher_transport::TransportError>>,
     stdout: &SyncSender<Vec<u8>>,
     stderr: &SyncSender<Vec<u8>>,
@@ -215,7 +222,32 @@ fn run_execution(
         attribution,
     );
     loop {
-        let cancelled = matches!(cancel.try_recv(), Ok(()) | Err(TryRecvError::Disconnected));
+        let mut cancelled = false;
+        loop {
+            match control_requests.try_recv() {
+                Ok(ExecutionControlRequest::Input(input)) => {
+                    if launcher_transport::write_pseudo_console_input(control, &input).is_err() {
+                        terminate_launcher(launcher);
+                        return state.infrastructure_result(
+                            crate::InfrastructureFailure::ProtocolIntegrity,
+                        );
+                    }
+                }
+                Ok(ExecutionControlRequest::Resize(size)) => {
+                    if launcher_transport::write_pseudo_console_resize(control, size).is_err() {
+                        terminate_launcher(launcher);
+                        return state.infrastructure_result(
+                            crate::InfrastructureFailure::ProtocolIntegrity,
+                        );
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Ok(ExecutionControlRequest::Cancel) | Err(TryRecvError::Disconnected) => {
+                    cancelled = true;
+                    break;
+                }
+            }
+        }
         let timed_out = deadline
             .as_ref()
             .is_some_and(|deadline| deadline.has_expired(Instant::now()));
@@ -696,7 +728,10 @@ fn decode_infrastructure_failure(payload: &[u8]) -> Result<LifecycleInfrastructu
     }
 }
 
-fn encode_request(prepared: &PreparedLaunch) -> Result<Vec<u8>, SandboxError> {
+fn encode_request(
+    prepared: &PreparedLaunch,
+    terminal: TerminalMode,
+) -> Result<Vec<u8>, SandboxError> {
     let program = encode_path(prepared.program());
     let cwd = encode_path(prepared.cwd());
     let hook = encode_path(prepared.hook_component_path());
@@ -716,6 +751,10 @@ fn encode_request(prepared: &PreparedLaunch) -> Result<Vec<u8>, SandboxError> {
         nonce: *prepared.handshake_nonce(),
         endpoint_identifier: *prepared.ipc_endpoint_identifier(),
         recovery_enabled: prepared.recovery().is_some(),
+        pseudo_console_size: match terminal {
+            TerminalMode::Pipes => None,
+            TerminalMode::PseudoConsole(size) => Some(size),
+        },
     })
     .map_err(|_| initialization_failure())
 }

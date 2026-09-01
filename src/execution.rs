@@ -6,7 +6,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
-        mpsc::{Receiver, Sender},
+        mpsc::{Receiver, SyncSender, TrySendError},
     },
     time::{Duration, Instant},
 };
@@ -54,11 +54,46 @@ pub enum WorkspaceMode {
     Projected,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PseudoConsoleSize {
+    columns: u16,
+    rows: u16,
+}
+
+impl PseudoConsoleSize {
+    #[must_use]
+    pub const fn new(columns: u16, rows: u16) -> Option<Self> {
+        if columns == 0 || rows == 0 || columns > i16::MAX as u16 || rows > i16::MAX as u16 {
+            None
+        } else {
+            Some(Self { columns, rows })
+        }
+    }
+
+    #[must_use]
+    pub const fn columns(self) -> u16 {
+        self.columns
+    }
+
+    #[must_use]
+    pub const fn rows(self) -> u16 {
+        self.rows
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TerminalMode {
+    #[default]
+    Pipes,
+    PseudoConsole(PseudoConsoleSize),
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ExecutionOptions {
     pub command_id: Option<CommandId>,
     pub workspace: WorkspaceMode,
     pub workspace_limits: crate::WorkspaceLimits,
+    pub terminal: TerminalMode,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -154,9 +189,14 @@ impl Sandbox {
                 stage: InitializationStage::Identity,
             })?;
         if options.workspace == WorkspaceMode::Staged {
-            return self.start_staged(request, command_id, options.workspace_limits);
+            return self.start_staged(
+                request,
+                command_id,
+                options.workspace_limits,
+                options.terminal,
+            );
         }
-        self.start_validated(request, command_id)
+        self.start_validated(request, command_id, options.terminal)
     }
 
     /// Starts one execution associated with a caller-provided opaque command ID.
@@ -184,9 +224,16 @@ impl Sandbox {
         &self,
         request: SandboxRequest,
         command_id: CommandId,
+        terminal: TerminalMode,
     ) -> Result<ExecutionHandle, SandboxError> {
         let policy_generation = self.allocate_policy_generation()?;
-        runtime::start_execution(request, &self.config, command_id, policy_generation)
+        runtime::start_execution(
+            request,
+            &self.config,
+            command_id,
+            policy_generation,
+            terminal,
+        )
     }
 
     fn allocate_policy_generation(&self) -> Result<PolicyGeneration, SandboxError> {
@@ -208,6 +255,7 @@ impl Sandbox {
         mut request: SandboxRequest,
         command_id: CommandId,
         limits: crate::WorkspaceLimits,
+        terminal: TerminalMode,
     ) -> Result<ExecutionHandle, SandboxError> {
         if limits.maximum_items == 0
             || limits.maximum_bytes == 0
@@ -260,7 +308,8 @@ impl Sandbox {
         let mut config = self.config.clone();
         config.mandatory_filesystem_denies.push(source_root);
         let policy_generation = self.allocate_policy_generation()?;
-        let mut handle = runtime::start_execution(request, &config, command_id, policy_generation)?;
+        let mut handle =
+            runtime::start_execution(request, &config, command_id, policy_generation, terminal)?;
         handle.attach_workspace(
             transaction_id,
             WorkspaceTransactionRecord::Pending {
@@ -618,6 +667,15 @@ pub enum ExecutionControlError {
     AlreadyTaken,
     ControlChannelClosed,
     CompletionChannelClosed,
+    NotPseudoConsole,
+    InputTooLarge,
+    ControlQueueFull,
+}
+
+pub(crate) enum ExecutionControlRequest {
+    Cancel,
+    Input(Vec<u8>),
+    Resize(PseudoConsoleSize),
 }
 
 pub struct ExecutionHandle {
@@ -626,9 +684,10 @@ pub struct ExecutionHandle {
     stdout: Option<ByteStream>,
     stderr: Option<ByteStream>,
     events: Option<EventStream>,
-    cancel: Sender<()>,
+    control: SyncSender<ExecutionControlRequest>,
     completion: Receiver<Result<ExecutionResult, SandboxError>>,
     pending_workspace: Option<PendingWorkspace>,
+    terminal: TerminalMode,
 }
 
 struct PendingWorkspace {
@@ -640,14 +699,19 @@ struct PendingWorkspace {
 }
 
 impl ExecutionHandle {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the handle owns each independent stream and control capability"
+    )]
     pub(crate) fn new(
         process_id: u32,
         attribution: ExecutionAttribution,
         stdout: Receiver<Vec<u8>>,
         stderr: Receiver<Vec<u8>>,
         events: Receiver<SandboxEvent>,
-        cancel: Sender<()>,
+        control: SyncSender<ExecutionControlRequest>,
         completion: Receiver<Result<ExecutionResult, SandboxError>>,
+        terminal: TerminalMode,
     ) -> Self {
         Self {
             process_id,
@@ -658,9 +722,10 @@ impl ExecutionHandle {
                 receiver: events,
                 attribution,
             }),
-            cancel,
+            control,
             completion,
             pending_workspace: None,
+            terminal,
         }
     }
 
@@ -739,9 +804,49 @@ impl ExecutionHandle {
     /// Returns [`ExecutionControlError::ControlChannelClosed`] when execution
     /// has already completed and its control worker has exited.
     pub fn cancel(&self) -> Result<(), ExecutionControlError> {
-        self.cancel
-            .send(())
-            .map_err(|_| ExecutionControlError::ControlChannelClosed)
+        self.send_control(ExecutionControlRequest::Cancel)
+    }
+
+    /// Writes bounded input to an explicitly requested pseudo console.
+    ///
+    /// # Errors
+    ///
+    /// Pipe-mode executions reject the operation, and input larger than one
+    /// transport frame is rejected before reaching the launcher.
+    pub fn write_input(&self, input: &[u8]) -> Result<(), ExecutionControlError> {
+        if self.terminal == TerminalMode::Pipes {
+            return Err(ExecutionControlError::NotPseudoConsole);
+        }
+        if input.len() > 64 * 1_024 {
+            return Err(ExecutionControlError::InputTooLarge);
+        }
+        if input.is_empty() {
+            return Ok(());
+        }
+        self.send_control(ExecutionControlRequest::Input(input.to_vec()))
+    }
+
+    /// Resizes an explicitly requested pseudo console.
+    ///
+    /// # Errors
+    ///
+    /// Pipe-mode executions reject the operation. A closed PTY control
+    /// channel reports [`ExecutionControlError::ControlChannelClosed`].
+    pub fn resize_pseudo_console(
+        &self,
+        size: PseudoConsoleSize,
+    ) -> Result<(), ExecutionControlError> {
+        if self.terminal == TerminalMode::Pipes {
+            return Err(ExecutionControlError::NotPseudoConsole);
+        }
+        self.send_control(ExecutionControlRequest::Resize(size))
+    }
+
+    fn send_control(&self, request: ExecutionControlRequest) -> Result<(), ExecutionControlError> {
+        self.control.try_send(request).map_err(|error| match error {
+            TrySendError::Full(_) => ExecutionControlError::ControlQueueFull,
+            TrySendError::Disconnected(_) => ExecutionControlError::ControlChannelClosed,
+        })
     }
 
     /// Waits for the final drained execution result.

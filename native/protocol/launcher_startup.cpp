@@ -15,10 +15,11 @@ namespace bolt::protocol {
 namespace {
 
 constexpr std::array<std::uint8_t, 4> kMagic = {'B', 'L', 'S', '1'};
-constexpr std::size_t kDigestOffset = 80;
+constexpr std::size_t kDigestOffset = 84;
 constexpr std::size_t kDigestLength = 32;
 constexpr std::uint32_t kHasTimeout = 1;
 constexpr std::uint32_t kRecoveryEnabled = 2;
+constexpr std::uint32_t kPseudoConsoleEnabled = 4;
 constexpr std::size_t kMaximumPathCodeUnits = 32'767;
 constexpr std::size_t kMaximumCommandCodeUnits = 32'767;
 constexpr std::size_t kMaximumEnvironmentCodeUnits = 524'288;
@@ -162,7 +163,10 @@ bool ValidRequest(const LauncherStartRequest& request) noexcept {
            std::any_of(
                request.endpoint_identifier.begin(),
                request.endpoint_identifier.end(),
-               [](const std::uint8_t byte) { return byte != 0; });
+               [](const std::uint8_t byte) { return byte != 0; }) &&
+           request.pseudo_console_enabled ==
+               (request.pseudo_console_columns != 0 &&
+                request.pseudo_console_rows != 0);
 }
 
 bool CheckedAdd(
@@ -215,7 +219,10 @@ bool LauncherStartRequest::operator==(
            timeout_milliseconds == other.timeout_milliseconds &&
            nonce == other.nonce &&
            endpoint_identifier == other.endpoint_identifier &&
-           recovery_enabled == other.recovery_enabled;
+           recovery_enabled == other.recovery_enabled &&
+           pseudo_console_enabled == other.pseudo_console_enabled &&
+           pseudo_console_columns == other.pseudo_console_columns &&
+           pseudo_console_rows == other.pseudo_console_rows;
 }
 
 LauncherStartStatus EncodeLauncherStartRequest(
@@ -263,10 +270,13 @@ LauncherStartStatus EncodeLauncherStartRequest(
         WriteU32(
             encoded.data(), 60,
             (request.has_timeout ? kHasTimeout : 0) |
-                (request.recovery_enabled ? kRecoveryEnabled : 0));
+                (request.recovery_enabled ? kRecoveryEnabled : 0) |
+                (request.pseudo_console_enabled ? kPseudoConsoleEnabled : 0));
         std::copy(
             request.endpoint_identifier.begin(),
             request.endpoint_identifier.end(), encoded.begin() + 64);
+        WriteU16(encoded.data(), 80, request.pseudo_console_columns);
+        WriteU16(encoded.data(), 82, request.pseudo_console_rows);
         AppendUtf16(encoded, request.program.data(), request.program.size());
         AppendUtf16(encoded, request.cwd.data(), request.cwd.size());
         AppendUtf16(
@@ -313,8 +323,14 @@ LauncherStartStatus DecodeLauncherStartRequest(
     }
     const std::uint32_t flags = ReadU32(encoded, 60);
     const std::uint64_t timeout = ReadU64(encoded, 36);
-    if ((flags & ~(kHasTimeout | kRecoveryEnabled)) != 0 ||
-        ((flags & kHasTimeout) == 0) != (timeout == 0)) {
+    const std::uint16_t pseudo_console_columns = ReadU16(encoded, 80);
+    const std::uint16_t pseudo_console_rows = ReadU16(encoded, 82);
+    const bool pseudo_console_enabled =
+        (flags & kPseudoConsoleEnabled) != 0;
+    if ((flags & ~(kHasTimeout | kRecoveryEnabled | kPseudoConsoleEnabled)) != 0 ||
+        ((flags & kHasTimeout) == 0) != (timeout == 0) ||
+        pseudo_console_enabled !=
+            (pseudo_console_columns != 0 && pseudo_console_rows != 0)) {
         return LauncherStartStatus::kInvalidFlags;
     }
     std::array<std::uint8_t, kDigestLength> digest{};
@@ -326,6 +342,9 @@ LauncherStartStatus DecodeLauncherStartRequest(
     LauncherStartRequest decoded{};
     decoded.has_timeout = (flags & kHasTimeout) != 0;
     decoded.recovery_enabled = (flags & kRecoveryEnabled) != 0;
+    decoded.pseudo_console_enabled = pseudo_console_enabled;
+    decoded.pseudo_console_columns = pseudo_console_columns;
+    decoded.pseudo_console_rows = pseudo_console_rows;
     decoded.timeout_milliseconds = timeout;
     std::copy(encoded + 44, encoded + 60, decoded.nonce.begin());
     std::copy(

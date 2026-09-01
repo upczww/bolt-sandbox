@@ -16,8 +16,12 @@ namespace {
 
 class AttributeList final {
   public:
-    bool Initialize(const HANDLE* handles, const std::size_t count) noexcept {
-        const DWORD attribute_count = count == 0 ? 1 : 2;
+    bool Initialize(
+        const HANDLE* handles,
+        const std::size_t count,
+        const HPCON pseudo_console) noexcept {
+        const DWORD attribute_count = 1 + (count == 0 ? 0 : 1) +
+                                      (pseudo_console == nullptr ? 0 : 1);
         SIZE_T bytes = 0;
         InitializeProcThreadAttributeList(
             nullptr, attribute_count, 0, &bytes);
@@ -41,7 +45,11 @@ class AttributeList final {
              !UpdateProcThreadAttribute(
                  list_, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
                  const_cast<HANDLE*>(handles), count * sizeof(HANDLE), nullptr,
-                 nullptr))) {
+                 nullptr)) ||
+            (pseudo_console != nullptr &&
+             !UpdateProcThreadAttribute(
+                 list_, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                 pseudo_console, sizeof(HPCON), nullptr, nullptr))) {
             DeleteProcThreadAttributeList(list_);
             list_ = nullptr;
             return false;
@@ -100,6 +108,9 @@ bool ValidateStandardHandles(const ProcessLaunchOptions& options) noexcept {
                      options.standard_error != nullptr;
     if (!any) {
         return true;
+    }
+    if (options.pseudo_console != nullptr) {
+        return false;
     }
     return options.standard_input != nullptr &&
            options.standard_output != nullptr &&
@@ -184,9 +195,16 @@ ProcessStatus SuspendedProcess::Create(
         startup.StartupInfo.hStdInput = options.standard_input;
         startup.StartupInfo.hStdOutput = options.standard_output;
         startup.StartupInfo.hStdError = options.standard_error;
+    } else if (options.pseudo_console != nullptr) {
+        // Windows otherwise copies redirected parent standard handles even
+        // when ordinary handle inheritance is disabled, bypassing ConPTY.
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     }
+    const bool pseudo_console = options.pseudo_console != nullptr;
     if (!attributes.Initialize(
-            options.inherited_handles, options.inherited_handle_count)) {
+            pseudo_console ? nullptr : options.inherited_handles,
+            pseudo_console ? 0 : options.inherited_handle_count,
+            options.pseudo_console)) {
         return ProcessStatus::kAttributeListFailed;
     }
     startup.lpAttributeList = attributes.get();
@@ -198,7 +216,8 @@ ProcessStatus SuspendedProcess::Create(
     PROCESS_INFORMATION process{};
     if (!CreateProcessW(
             application.c_str(), command_line.data(), nullptr, nullptr,
-            options.inherited_handle_count != 0, flags, options.environment,
+            !pseudo_console && options.inherited_handle_count != 0, flags,
+            options.environment,
             current_directory.empty() ? nullptr : current_directory.c_str(), &startup.StartupInfo,
             &process)) {
         return ProcessStatus::kCreateFailed;
@@ -212,13 +231,35 @@ ProcessStatus SuspendedProcess::Create(
     output.injected_ = false;
     output.initialization_started_ = false;
     output.resumed_ = false;
+    output.duplicated_handles_.clear();
+    if (pseudo_console) {
+        try {
+            output.duplicated_handles_.reserve(options.inherited_handle_count);
+        } catch (...) {
+            output.Close();
+            return ProcessStatus::kAllocationFailed;
+        }
+        for (std::size_t index = 0; index < options.inherited_handle_count;
+             ++index) {
+            HANDLE remote = nullptr;
+            if (!DuplicateHandle(
+                    GetCurrentProcess(), options.inherited_handles[index],
+                    output.process_, &remote, 0, FALSE,
+                    DUPLICATE_SAME_ACCESS)) {
+                output.Close();
+                return ProcessStatus::kInvalidInheritedHandle;
+            }
+            output.duplicated_handles_.emplace_back(
+                options.inherited_handles[index], remote);
+        }
+    }
     output.release_event_ = nullptr;
     output.standard_output_ = options.standard_output;
     output.standard_error_ = options.standard_error;
-    output.recovery_request_ = options.recovery_request;
-    output.recovery_response_ = options.recovery_response;
-    output.recovery_mutex_ = options.recovery_mutex;
-    output.recovery_counter_ = options.recovery_counter;
+    output.recovery_request_ = output.RemoteHandle(options.recovery_request);
+    output.recovery_response_ = output.RemoteHandle(options.recovery_response);
+    output.recovery_mutex_ = output.RemoteHandle(options.recovery_mutex);
+    output.recovery_counter_ = output.RemoteHandle(options.recovery_counter);
     return ProcessStatus::kSuccess;
 }
 
@@ -329,8 +370,10 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
     protocol::RuntimePayload payload{};
     payload.target_process_id = process_id;
     payload.policy_length = static_cast<std::uint32_t>(policy_length);
-    payload.policy_handle = reinterpret_cast<std::uintptr_t>(policy_handle);
-    payload.event_handle = reinterpret_cast<std::uintptr_t>(event_handle);
+    payload.policy_handle =
+        reinterpret_cast<std::uintptr_t>(RemoteHandle(policy_handle));
+    payload.event_handle =
+        reinterpret_cast<std::uintptr_t>(RemoteHandle(event_handle));
     payload.release_handle = reinterpret_cast<std::uintptr_t>(remote_release);
     payload.handshake_nonce = nonce;
     payload.descendant_startup_fault = descendant_startup_fault;
@@ -349,10 +392,10 @@ ProcessStatus SuspendedProcess::InstallRuntimePayload(
     payload.recovery_counter_handle =
         reinterpret_cast<std::uintptr_t>(recovery_counter_);
     if (!dns_absent) {
-        payload.dns_request_handle =
-            reinterpret_cast<std::uintptr_t>(dns_request_handle);
-        payload.dns_response_handle =
-            reinterpret_cast<std::uintptr_t>(dns_response_handle);
+        payload.dns_request_handle = reinterpret_cast<std::uintptr_t>(
+            RemoteHandle(dns_request_handle));
+        payload.dns_response_handle = reinterpret_cast<std::uintptr_t>(
+            RemoteHandle(dns_response_handle));
         payload.dns_authentication_key = *dns_authentication_key;
         payload.dns_maximum_frame_length = dns_maximum_frame_length;
         payload.tcp_proxy_port = tcp_proxy_port;
@@ -454,6 +497,16 @@ ProcessStatus SuspendedProcess::ExitCode(DWORD& exit_code) const noexcept {
     return ProcessStatus::kSuccess;
 }
 
+HANDLE SuspendedProcess::RemoteHandle(const HANDLE local) const noexcept {
+    if (local == nullptr || duplicated_handles_.empty()) {
+        return local;
+    }
+    const auto found = std::find_if(
+        duplicated_handles_.begin(), duplicated_handles_.end(),
+        [local](const auto& handles) { return handles.first == local; });
+    return found == duplicated_handles_.end() ? nullptr : found->second;
+}
+
 void SuspendedProcess::Close() noexcept {
     const HANDLE process = process_;
     const HANDLE thread = thread_;
@@ -472,6 +525,7 @@ void SuspendedProcess::Close() noexcept {
     recovery_response_ = nullptr;
     recovery_mutex_ = nullptr;
     recovery_counter_ = nullptr;
+    duplicated_handles_.clear();
     if (process != nullptr && !resumed) {
         TerminateProcess(process, ERROR_PROCESS_ABORTED);
     }

@@ -9,9 +9,9 @@ use std::{
 
 use bolt_sandbox::{
     AttributedSandboxEvent, ExecutionOptions, ExecutionTerminal, InfrastructureFailure,
-    ProcessExitReason, ReceiverLoss, RecoveryFailureReason, RecoveryLimits, RecoveryPolicy,
-    Sandbox, SandboxConfig, SandboxEvent, SandboxPolicy, SandboxRequest, WorkspaceChangeKind,
-    WorkspaceControlError, WorkspaceLimits, WorkspaceMode,
+    ProcessExitReason, PseudoConsoleSize, ReceiverLoss, RecoveryFailureReason, RecoveryLimits,
+    RecoveryPolicy, Sandbox, SandboxConfig, SandboxEvent, SandboxPolicy, SandboxRequest,
+    TerminalMode, WorkspaceChangeKind, WorkspaceControlError, WorkspaceLimits, WorkspaceMode,
 };
 
 const STREAM_BYTES: usize = 256 * 1_024;
@@ -268,6 +268,56 @@ fn ws_018_conflicted_commit_preserves_inspectable_transaction() {
         b"external"
     );
     fs::remove_dir_all(source).expect("fixture must clean");
+}
+
+#[test]
+fn pty_001_interactive_cmd_accepts_input_resize_and_exits_inside_job() {
+    let Some((sandbox, _component_root)) = configured_sandbox() else {
+        return;
+    };
+    let command = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+        .join(r"System32\cmd.exe");
+    let initial_size = PseudoConsoleSize::new(80, 24).expect("valid initial size");
+    let mut handle = sandbox
+        .start_with_options(
+            SandboxRequest {
+                program: command,
+                arguments: vec![OsString::from("/d"), OsString::from("/q")],
+                cwd: std::env::temp_dir(),
+                environment: BTreeMap::new(),
+                policy: SandboxPolicy::default(),
+                timeout: Some(Duration::from_secs(5)),
+            },
+            ExecutionOptions {
+                terminal: TerminalMode::PseudoConsole(initial_size),
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("PTY execution must start");
+    handle
+        .resize_pseudo_console(PseudoConsoleSize::new(100, 30).expect("valid resize"))
+        .expect("PTY resize must queue");
+    handle
+        .write_input(b"echo BOLT_PTY_OK\r\nexit 0\r\n")
+        .expect("PTY input must queue");
+    let stdout = handle.take_stdout().expect("stdout");
+    let stderr = handle.take_stderr().expect("stderr");
+    let events = handle.take_events().expect("events");
+    let (stdout, stderr, _events, result) = collect_execution(handle, stdout, stderr, events);
+
+    assert!(
+        String::from_utf8_lossy(&stdout).contains("BOLT_PTY_OK"),
+        "PTY output must contain command marker: {:?}",
+        (String::from_utf8_lossy(&stdout), &result)
+    );
+    assert!(
+        stderr.is_empty(),
+        "ConPTY combines terminal output on stdout"
+    );
+    assert!(matches!(
+        result.terminal,
+        ExecutionTerminal::Process(ref exit) if exit.exit_code == Some(0)
+    ));
 }
 
 #[test]

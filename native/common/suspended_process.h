@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <array>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <windows.h>
 
@@ -30,6 +32,7 @@ struct ProcessLaunchOptions {
     HANDLE recovery_response = nullptr;
     HANDLE recovery_mutex = nullptr;
     HANDLE recovery_counter = nullptr;
+    HPCON pseudo_console = nullptr;
 };
 
 enum class ProcessStatus : std::uint8_t {
@@ -109,6 +112,9 @@ class SuspendedProcess final {
     HANDLE recovery_response_ = nullptr;
     HANDLE recovery_mutex_ = nullptr;
     HANDLE recovery_counter_ = nullptr;
+    std::vector<std::pair<HANDLE, HANDLE>> duplicated_handles_;
+
+    [[nodiscard]] HANDLE RemoteHandle(HANDLE local) const noexcept;
 };
 
 }  // namespace bolt::common

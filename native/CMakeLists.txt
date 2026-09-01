@@ -152,6 +152,7 @@ add_library(bolt-sandbox-common STATIC
     common/immutable_policy_mapping.cpp
     common/private_pipe.cpp
     common/projfs_api.cpp
+    common/pseudo_console.cpp
     common/suspended_process.cpp
 )
 bolt_native_warnings(bolt-sandbox-common)

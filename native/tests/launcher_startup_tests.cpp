@@ -59,6 +59,9 @@ bool RunLauncherStartupTests() {
     expected.nonce.fill(0xA5);
     expected.endpoint_identifier.fill(0x3C);
     expected.recovery_enabled = true;
+    expected.pseudo_console_enabled = true;
+    expected.pseudo_console_columns = 80;
+    expected.pseudo_console_rows = 24;
 
     auto truncated_command = expected;
     truncated_command.command_line = {
@@ -83,8 +86,8 @@ bool RunLauncherStartupTests() {
     }
     if (encoded.size() < bolt::protocol::kLauncherStartHeaderLength ||
         encoded[4] != bolt::protocol::kLauncherStartVersion ||
-        bolt::protocol::kLauncherStartVersion != 2 ||
-        bolt::protocol::kLauncherStartHeaderLength != 112) {
+        bolt::protocol::kLauncherStartVersion != 3 ||
+        bolt::protocol::kLauncherStartHeaderLength != 116) {
         return false;
     }
 
@@ -96,7 +99,7 @@ bool RunLauncherStartupTests() {
         return false;
     }
     auto invalid_flags = encoded;
-    invalid_flags[60] = 4;
+    invalid_flags[60] = 8;
     return bolt::protocol::DecodeLauncherStartRequest(
                invalid_flags.data(), invalid_flags.size(), decoded) ==
            bolt::protocol::LauncherStartStatus::kInvalidFlags;

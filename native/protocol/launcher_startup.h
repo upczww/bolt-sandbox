@@ -8,8 +8,8 @@
 
 namespace bolt::protocol {
 
-inline constexpr std::uint16_t kLauncherStartVersion = 2;
-inline constexpr std::size_t kLauncherStartHeaderLength = 112;
+inline constexpr std::uint16_t kLauncherStartVersion = 3;
+inline constexpr std::size_t kLauncherStartHeaderLength = 116;
 inline constexpr std::size_t kLauncherStartMaximumLength = 3 * 1'048'576;
 
 struct LauncherStartRequest {
@@ -24,6 +24,9 @@ struct LauncherStartRequest {
     std::array<std::uint8_t, 16> nonce{};
     std::array<std::uint8_t, 16> endpoint_identifier{};
     bool recovery_enabled = false;
+    bool pseudo_console_enabled = false;
+    std::uint16_t pseudo_console_columns = 0;
+    std::uint16_t pseudo_console_rows = 0;
 
     bool operator==(const LauncherStartRequest& other) const noexcept;
 };

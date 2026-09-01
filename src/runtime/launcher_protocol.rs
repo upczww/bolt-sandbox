@@ -1,12 +1,13 @@
 use sha2::{Digest, Sha256};
 
 const MAGIC: [u8; 4] = *b"BLS1";
-const LAUNCHER_START_VERSION: u16 = 2;
-const HEADER_LENGTH: usize = 112;
-const DIGEST_OFFSET: usize = 80;
+const LAUNCHER_START_VERSION: u16 = 3;
+const HEADER_LENGTH: usize = 116;
+const DIGEST_OFFSET: usize = 84;
 const DIGEST_LENGTH: usize = 32;
 const FLAG_HAS_TIMEOUT: u32 = 1;
 const FLAG_RECOVERY_ENABLED: u32 = 2;
+const FLAG_PSEUDO_CONSOLE: u32 = 4;
 const MAX_START_REQUEST_LENGTH: usize = 3 * 1_048_576;
 const MAX_PATH_CODE_UNITS: usize = 32_767;
 const MAX_COMMAND_CODE_UNITS: usize = 32_767;
@@ -25,6 +26,7 @@ pub(super) struct LauncherStartRequest<'a> {
     pub(super) nonce: [u8; 16],
     pub(super) endpoint_identifier: [u8; 16],
     pub(super) recovery_enabled: bool,
+    pub(super) pseudo_console_size: Option<crate::PseudoConsoleSize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -51,6 +53,7 @@ pub(super) struct DecodedLauncherStartRequest<'a> {
     pub(super) nonce: [u8; 16],
     pub(super) endpoint_identifier: [u8; 16],
     pub(super) recovery_enabled: bool,
+    pub(super) pseudo_console_size: Option<crate::PseudoConsoleSize>,
 }
 
 pub(super) fn encode_start_request(
@@ -115,9 +118,17 @@ pub(super) fn encode_start_request(
             FLAG_RECOVERY_ENABLED
         } else {
             0
+        }) | (if request.pseudo_console_size.is_some() {
+            FLAG_PSEUDO_CONSOLE
+        } else {
+            0
         }),
     );
     encoded[64..80].copy_from_slice(&request.endpoint_identifier);
+    if let Some(size) = request.pseudo_console_size {
+        write_u16(&mut encoded, 80, size.columns());
+        write_u16(&mut encoded, 82, size.rows());
+    }
     append_utf16(&mut encoded, request.program);
     append_utf16(&mut encoded, request.cwd);
     append_utf16(&mut encoded, request.command_line);
@@ -148,7 +159,7 @@ pub(super) fn decode_start_request(
         return Err(LauncherProtocolError::InvalidLength);
     }
     let flags = read_u32(encoded, 60)?;
-    if flags & !(FLAG_HAS_TIMEOUT | FLAG_RECOVERY_ENABLED) != 0 {
+    if flags & !(FLAG_HAS_TIMEOUT | FLAG_RECOVERY_ENABLED | FLAG_PSEUDO_CONSOLE) != 0 {
         return Err(LauncherProtocolError::InvalidFlags);
     }
     if request_digest(encoded) != encoded[DIGEST_OFFSET..DIGEST_OFFSET + DIGEST_LENGTH] {
@@ -174,6 +185,15 @@ pub(super) fn decode_start_request(
     nonce.copy_from_slice(&encoded[44..60]);
     let mut endpoint_identifier = [0_u8; 16];
     endpoint_identifier.copy_from_slice(&encoded[64..80]);
+    let columns = read_u16(encoded, 80)?;
+    let rows = read_u16(encoded, 82)?;
+    let pseudo_console_size = match (flags & FLAG_PSEUDO_CONSOLE != 0, columns, rows) {
+        (false, 0, 0) => None,
+        (true, columns, rows) => crate::PseudoConsoleSize::new(columns, rows)
+            .ok_or(LauncherProtocolError::InvalidField)
+            .map(Some)?,
+        _ => return Err(LauncherProtocolError::InvalidFlags),
+    };
     if nonce.iter().all(|byte| *byte == 0) || endpoint_identifier.iter().all(|byte| *byte == 0) {
         return Err(LauncherProtocolError::InvalidField);
     }
@@ -203,6 +223,7 @@ pub(super) fn decode_start_request(
         nonce,
         endpoint_identifier,
         recovery_enabled: flags & FLAG_RECOVERY_ENABLED != 0,
+        pseudo_console_size,
     };
     validate_decoded(&decoded)?;
     Ok(decoded)
@@ -250,6 +271,7 @@ fn validate_decoded(
         nonce: request.nonce,
         endpoint_identifier: request.endpoint_identifier,
         recovery_enabled: request.recovery_enabled,
+        pseudo_console_size: request.pseudo_console_size,
     })
 }
 
@@ -352,6 +374,7 @@ mod tests {
             nonce: [0xA5; 16],
             endpoint_identifier: [0x3C; 16],
             recovery_enabled: true,
+            pseudo_console_size: crate::PseudoConsoleSize::new(80, 24),
         }
     }
 
@@ -385,6 +408,10 @@ mod tests {
         assert_eq!(decoded.nonce, [0xA5; 16]);
         assert_eq!(decoded.endpoint_identifier, [0x3C; 16]);
         assert!(decoded.recovery_enabled);
+        assert_eq!(
+            decoded.pseudo_console_size,
+            crate::PseudoConsoleSize::new(80, 24)
+        );
     }
 
     #[test]
@@ -443,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn ipc_023_launcher_v2_rejects_zero_endpoint_identity() {
+    fn ipc_023_launcher_v3_rejects_zero_endpoint_identity() {
         let program: Vec<u16> = r"C:\tool.exe".encode_utf16().collect();
         let cwd: Vec<u16> = r"C:\work".encode_utf16().collect();
         let command: Vec<u16> = "tool\0".encode_utf16().collect();

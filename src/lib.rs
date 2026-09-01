@@ -27,8 +27,8 @@ pub use execution::{
     ByteStream, ConfigurationErrorReason, ConfigurationField, DEFAULT_STREAM_CAPACITY,
     DEFAULT_VIOLATION_AGGREGATE_CAPACITY, EventStream, ExecutionControlError, ExecutionHandle,
     ExecutionOptions, ExecutionResult, ExecutionTerminal, InfrastructureFailure,
-    InitializationStage, MAX_VIOLATION_AGGREGATE_CAPACITY, ReceiverLoss, Sandbox, SandboxConfig,
-    WorkspaceMode,
+    InitializationStage, MAX_VIOLATION_AGGREGATE_CAPACITY, PseudoConsoleSize, ReceiverLoss,
+    Sandbox, SandboxConfig, TerminalMode, WorkspaceMode,
 };
 pub use policy::{
     ChildProcessPolicy, FilesystemPolicy, IpCidr, NetworkAllowList, NetworkPolicy, PortRange,

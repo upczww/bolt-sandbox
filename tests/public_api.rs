@@ -14,9 +14,9 @@ use bolt_sandbox::{
     MAX_VIOLATION_AGGREGATE_CAPACITY, MIN_TIMEOUT, NetworkAllowList, NetworkPolicy, NetworkTarget,
     NetworkViolation, PolicyGeneration, PortRange, ProcessExit, ProcessExitReason,
     ProcessOperation, ProcessViolation, PseudoConsoleSize, RecoveryPolicy, RegistryPolicy,
-    RequestField, Sandbox, SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest,
-    TerminalMode, ViolationAggregate, WorkspaceChange, WorkspaceControlError, WorkspaceLimits,
-    WorkspaceMode, WorkspaceTransactionId,
+    RequestField, Sandbox, SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy,
+    SandboxRequest, TerminalMode, ViolationAggregate, WorkspaceChange, WorkspaceControlError,
+    WorkspaceLimits, WorkspaceMode, WorkspaceTransactionId,
 };
 
 fn assert_attributed_stream<T: Iterator<Item = AttributedSandboxEvent>>() {}
@@ -112,6 +112,7 @@ fn pty_001_pseudo_console_is_an_explicit_bounded_capability() {
     assert_eq!(ExecutionOptions::default().terminal, TerminalMode::Pipes);
     assert!(PseudoConsoleSize::new(0, 24).is_none());
     assert!(PseudoConsoleSize::new(80, 0).is_none());
+    assert!(PseudoConsoleSize::new(u16::MAX, 24).is_none());
     let size = PseudoConsoleSize::new(80, 24).expect("nonzero PTY size must be valid");
     assert_eq!(size.columns(), 80);
     assert_eq!(size.rows(), 24);
