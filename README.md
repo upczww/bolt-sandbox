@@ -106,6 +106,13 @@ Before publication, the packager removes inherited ACL entries, rejects
 reparse points, grants mutation rights only to the current packaging identity,
 SYSTEM, and Administrators, and verifies every packaged file and directory.
 
+The manually dispatched `Signed Windows release` workflow requires the
+`WINDOWS_SIGNING_PFX_BASE64` and `WINDOWS_SIGNING_PFX_PASSWORD` secrets in the
+protected `release` environment, plus an HTTPS RFC3161 timestamp URL input. It
+imports the certificate only for the job, signs all five final component
+files, packages with `-RequireSigned`, and removes the certificate in an
+`always()` cleanup step.
+
 The runtime is distributed as a component set rather than a single binary:
 
 - `bolt-sandbox.exe`, the optional Agent-facing CLI.

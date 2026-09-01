@@ -3,6 +3,7 @@ param(
     [string]$Configuration = 'Release',
     [string]$Version = '0.1.0',
     [string]$OutputRoot = '',
+    [switch]$SkipBuildCli,
     [switch]$RequireSigned
 )
 
@@ -29,8 +30,10 @@ if (-not $stagingAbsolute.StartsWith($expectedPrefix, [StringComparison]::Ordina
 
 try {
     New-Item -ItemType Directory -Path $stagingAbsolute | Out-Null
-    & cargo build --release --bin bolt-sandbox
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if (-not $SkipBuildCli) {
+        & cargo build --release --bin bolt-sandbox
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
 
     $sources = [ordered]@{
         'bolt-sandbox.exe' = Join-Path $repositoryRoot 'target\release\bolt-sandbox.exe'
