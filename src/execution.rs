@@ -180,6 +180,7 @@ pub enum InitializationStage {
     Components,
     Policy,
     Identity,
+    Workspace,
     LauncherAdapter,
     RecoveryCoordinator,
 }

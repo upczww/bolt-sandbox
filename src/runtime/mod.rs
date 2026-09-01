@@ -76,6 +76,9 @@ pub(crate) fn start_execution(
                 stage: InitializationStage::Identity,
             }
         }
+        preparation::LaunchPreparationError::Workspace => SandboxError::InitializationFailed {
+            stage: InitializationStage::Workspace,
+        },
     })?;
     let execution_id = ExecutionId::new(*prepared.ipc_endpoint_identifier()).ok_or(
         SandboxError::InitializationFailed {

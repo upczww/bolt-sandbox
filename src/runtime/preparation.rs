@@ -12,6 +12,9 @@ use super::components::{
     ComponentOpenError, OpenedComponents, open_components_with_manifest_digest_and_network_proxy,
     open_read_lease,
 };
+use super::workspace::{
+    DirectWorkspaceBackend, PreparedWorkspace, WorkspaceBackend, WorkspaceKind,
+};
 use crate::{
     SandboxError, SandboxRequest,
     ipc::identity::ExecutionIdentity,
@@ -24,7 +27,7 @@ use crate::{
 
 pub(super) struct PreparedLaunch {
     program: PathBuf,
-    cwd: PathBuf,
+    workspace: PreparedWorkspace,
     program_handle: File,
     architecture: ImageArchitecture,
     command_line: Vec<u16>,
@@ -52,7 +55,7 @@ impl PreparedLaunch {
     }
 
     pub(super) fn cwd(&self) -> &Path {
-        &self.cwd
+        self.workspace.execution_root()
     }
 
     pub(super) const fn architecture(&self) -> ImageArchitecture {
@@ -126,6 +129,7 @@ pub(super) enum LaunchPreparationError {
     CompatibilityProfile,
     PolicyPayload,
     ExecutionIdentity,
+    Workspace,
 }
 
 pub(super) fn prepare_launch(
@@ -191,6 +195,12 @@ fn prepare_launch_with_identity_factory_and_denies(
     request_value
         .validate()
         .map_err(LaunchPreparationError::Request)?;
+    let workspace = DirectWorkspaceBackend
+        .prepare(&request_value.cwd)
+        .map_err(|_| LaunchPreparationError::Workspace)?;
+    debug_assert_eq!(workspace.kind(), WorkspaceKind::Direct);
+    debug_assert_eq!(workspace.source_root(), request_value.cwd);
+    let execution_root = workspace.execution_root();
 
     let prepared_environment =
         request::prepare_environment(&request_value.environment, credential_names)
@@ -202,7 +212,7 @@ fn prepare_launch_with_identity_factory_and_denies(
         .map_err(LaunchPreparationError::Request)?;
     let validated_policy = compiler::compile_with_security_denies(
         &request_value.policy,
-        &request_value.cwd,
+        execution_root,
         mandatory_filesystem_denies,
         mandatory_registry_denies,
     )
@@ -226,14 +236,14 @@ fn prepare_launch_with_identity_factory_and_denies(
         &profile,
         &ResolutionContext::from_host(
             &request_value.program,
-            &request_value.cwd,
+            execution_root,
             mandatory_filesystem_denies,
         ),
     )
     .map_err(|_| LaunchPreparationError::CompatibilityProfile)?;
     let compiled_policy = compiler::compile_with_security_denies_and_compatibility(
         &request_value.policy,
-        &request_value.cwd,
+        execution_root,
         mandatory_filesystem_denies,
         mandatory_registry_denies,
         &profile,
@@ -256,7 +266,7 @@ fn prepare_launch_with_identity_factory_and_denies(
 
     Ok(PreparedLaunch {
         program: request_value.program.clone(),
-        cwd: request_value.cwd.clone(),
+        workspace,
         program_handle,
         architecture,
         command_line,
