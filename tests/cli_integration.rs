@@ -1,13 +1,17 @@
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::{
+    fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::Command,
+    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
 };
+
+static NEXT_AGENT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 fn component_manifest_digest(component_root: &Path) -> String {
     let manifest = std::fs::read(component_root.join("bolt-sandbox-components.manifest"))
@@ -321,6 +325,106 @@ fn net_005_cli_unrestricted_python_reads_its_runtime_and_reaches_local_server() 
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stdout.trim(), "python=200");
     assert!(!stderr.contains("sandbox-event network-violation"));
+}
+
+#[test]
+fn agent_git_status_runs_in_task_workspace_without_network() {
+    let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
+    else {
+        return;
+    };
+    let Some(git) = std::env::var_os("BOLT_TEST_GIT").map(PathBuf::from) else {
+        return;
+    };
+    assert!(git.is_file(), "declared Git runtime must exist");
+    let workspace = agent_fixture_directory("git");
+    fs::create_dir_all(&workspace).expect("Git workspace must be created");
+    let initialized = Command::new(&git)
+        .args(["init", "--quiet"])
+        .current_dir(&workspace)
+        .status()
+        .expect("Git fixture initialization must run");
+    assert!(initialized.success());
+    fs::write(workspace.join("agent.txt"), b"sandbox\n").expect("Git fixture must be written");
+
+    let output = sandbox_command(&component_root, &workspace)
+        .arg("--network")
+        .arg("denied")
+        .arg("--")
+        .arg(&git)
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()
+        .expect("sandboxed Git must launch");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let _ = fs::remove_dir_all(&workspace);
+    assert_eq!(output.status.code(), Some(0), "stderr={stderr}");
+    assert!(stdout.contains("?? agent.txt"), "stdout={stdout}");
+    assert!(!stderr.contains("sandbox-event network-violation"));
+}
+
+#[test]
+fn agent_cargo_metadata_runs_offline_with_read_only_toolchain() {
+    let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
+    else {
+        return;
+    };
+    let Some(cargo) = std::env::var_os("BOLT_TEST_CARGO").map(PathBuf::from) else {
+        return;
+    };
+    assert!(cargo.is_file(), "declared Cargo runtime must exist");
+    let workspace = agent_fixture_directory("cargo");
+    fs::create_dir_all(workspace.join("src")).expect("Cargo workspace must be created");
+    fs::write(
+        workspace.join("Cargo.toml"),
+        b"[package]\nname = \"agent-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .expect("Cargo manifest must be written");
+    fs::write(workspace.join(r"src\main.rs"), b"fn main() {}\n")
+        .expect("Cargo source must be written");
+
+    let output = sandbox_command(&component_root, &workspace)
+        .arg("--network")
+        .arg("denied")
+        .arg("--")
+        .arg(&cargo)
+        .args(["metadata", "--format-version", "1", "--no-deps", "--offline"])
+        .output()
+        .expect("sandboxed Cargo must launch");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let _ = fs::remove_dir_all(&workspace);
+    assert_eq!(output.status.code(), Some(0), "stderr={stderr}");
+    assert!(
+        stdout.contains("agent-fixture"),
+        "stdout={stdout} stderr={stderr}"
+    );
+    assert!(!stderr.contains("sandbox-event network-violation"));
+}
+
+fn sandbox_command(component_root: &Path, cwd: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bolt-sandbox"));
+    command
+        .arg("run")
+        .arg("--component-root")
+        .arg(component_root)
+        .arg("--cwd")
+        .arg(cwd)
+        .arg("--manifest-sha256")
+        .arg(component_manifest_digest(component_root))
+        .arg("--timeout-ms")
+        .arg("10000");
+    command
+}
+
+fn agent_fixture_directory(kind: &str) -> PathBuf {
+    let id = NEXT_AGENT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "bolt-agent-{kind}-{}-{id}",
+        std::process::id()
+    ))
 }
 
 fn serve_one_http_request(listener: &TcpListener) -> bool {

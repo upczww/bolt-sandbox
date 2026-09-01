@@ -348,7 +348,7 @@ fn normalize_registry_key(input: &str) -> Result<String, ProfileError> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{fmt::Write as _, path::PathBuf};
 
     use super::{
         MAX_PROFILE_LENGTH, MAX_PROFILE_RULES, ProfileError, ResolutionContext, parse_profile,
@@ -402,9 +402,11 @@ mod tests {
 
         let mut too_many = String::from("BSC1\n");
         for index in 0..=MAX_PROFILE_RULES {
-            too_many.push_str(&format!(
-                "fs-ro|optional|program-files|runtime\\file-{index}\n"
-            ));
+            writeln!(
+                too_many,
+                "fs-ro|optional|program-files|runtime\\file-{index}"
+            )
+            .expect("writing to a string cannot fail");
         }
         assert_eq!(
             parse_profile(too_many.as_bytes()),
