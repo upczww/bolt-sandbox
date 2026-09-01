@@ -12,7 +12,9 @@ mod runtime;
 #[cfg(test)]
 mod test_support;
 
-pub use attribution::CommandId;
+pub use attribution::{
+    AttributedSandboxEvent, CommandId, ExecutionAttribution, ExecutionId, PolicyGeneration,
+};
 pub use error::{InvalidRequestReason, RequestField, SandboxError};
 pub use event::{
     ChildInjectionFailure, ChildInjectionFailureReason, EventsDropped, FilesystemOperation,

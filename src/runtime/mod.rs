@@ -34,13 +34,15 @@ mod startup;
 mod streams;
 
 use crate::{
-    CommandId, ExecutionHandle, InitializationStage, SandboxConfig, SandboxError, SandboxRequest,
+    CommandId, ExecutionAttribution, ExecutionHandle, ExecutionId, InitializationStage,
+    PolicyGeneration, SandboxConfig, SandboxError, SandboxRequest,
 };
 
 pub(crate) fn start_execution(
     request: SandboxRequest,
     config: &SandboxConfig,
     command_id: CommandId,
+    policy_generation: PolicyGeneration,
 ) -> Result<ExecutionHandle, SandboxError> {
     let prepared = preparation::prepare_launch_with_security_denies(
         &request,
@@ -74,11 +76,21 @@ pub(crate) fn start_execution(
             }
         }
     })?;
+    let execution_id = ExecutionId::new(*prepared.ipc_endpoint_identifier()).ok_or(
+        SandboxError::InitializationFailed {
+            stage: InitializationStage::Identity,
+        },
+    )?;
+    let attribution = ExecutionAttribution {
+        execution_id,
+        command_id,
+        policy_generation,
+    };
     drop(request);
     launcher_adapter::start(
         prepared,
         config.stream_capacity,
         config.violation_aggregate_capacity,
-        command_id,
+        attribution,
     )
 }

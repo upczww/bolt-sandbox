@@ -75,7 +75,7 @@ fn run(arguments: Vec<OsString>) -> Result<u32, CliError> {
     let stderr_thread = thread::spawn(move || copy_stream(stderr, io::stderr()));
     let event_thread = thread::spawn(move || {
         for event in events {
-            write_event(&event);
+            write_event(&event.event);
         }
     });
     let result = handle.wait().map_err(|_| CliError::Sandbox)?;

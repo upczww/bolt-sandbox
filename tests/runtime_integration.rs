@@ -8,9 +8,9 @@ use std::{
 };
 
 use bolt_sandbox::{
-    ExecutionTerminal, InfrastructureFailure, ProcessExitReason, ReceiverLoss,
-    RecoveryFailureReason, RecoveryLimits, RecoveryPolicy, Sandbox, SandboxConfig, SandboxEvent,
-    SandboxPolicy, SandboxRequest,
+    AttributedSandboxEvent, ExecutionTerminal, InfrastructureFailure, ProcessExitReason,
+    ReceiverLoss, RecoveryFailureReason, RecoveryLimits, RecoveryPolicy, Sandbox, SandboxConfig,
+    SandboxEvent, SandboxPolicy, SandboxRequest,
 };
 
 const STREAM_BYTES: usize = 256 * 1_024;
@@ -74,11 +74,25 @@ fn assert_dual_stream_execution(mode: &str) {
 
     assert_pattern(&stdout, false);
     assert_pattern(&stderr, true);
-    assert_eq!(events.first(), Some(&SandboxEvent::Ready));
+    assert!(matches!(
+        events.first(),
+        Some(AttributedSandboxEvent {
+            event: SandboxEvent::Ready,
+            ..
+        })
+    ));
     assert!(matches!(
         events.last(),
-        Some(SandboxEvent::ProcessExited(_))
+        Some(AttributedSandboxEvent {
+            event: SandboxEvent::ProcessExited(_),
+            ..
+        })
     ));
+    assert!(
+        events
+            .iter()
+            .all(|event| event.attribution == result.attribution)
+    );
     assert!(matches!(
         result.terminal,
         ExecutionTerminal::Process(ref exit)
@@ -191,7 +205,7 @@ fn collect_execution(
 ) -> (
     Vec<u8>,
     Vec<u8>,
-    Vec<SandboxEvent>,
+    Vec<AttributedSandboxEvent>,
     bolt_sandbox::ExecutionResult,
 ) {
     std::thread::scope(|scope| {
@@ -208,10 +222,10 @@ fn collect_execution(
     })
 }
 
-fn terminal_reasons(events: &[SandboxEvent]) -> Vec<ProcessExitReason> {
+fn terminal_reasons(events: &[AttributedSandboxEvent]) -> Vec<ProcessExitReason> {
     events
         .iter()
-        .filter_map(|event| match event {
+        .filter_map(|event| match &event.event {
             SandboxEvent::ProcessExited(exit) => Some(exit.reason),
             _ => None,
         })
@@ -319,7 +333,7 @@ fn rec_001_allowed_delete_is_backed_up_and_indexed_before_mutation() {
         expected
     );
     assert!(events.iter().any(|event| matches!(
-        event,
+        &event.event,
         SandboxEvent::RecoveryArtifactCreated(artifact)
             if artifact.original_path == source && artifact.byte_count == expected.len() as u64
     )));
@@ -401,7 +415,7 @@ fn rec_002_truncate_backs_up_complete_pre_mutation_content() {
         expected
     );
     assert!(events.iter().any(|event| matches!(
-        event,
+        &event.event,
         SandboxEvent::RecoveryArtifactCreated(artifact)
             if artifact.original_path == source && artifact.byte_count == expected.len() as u64
     )));
@@ -483,7 +497,7 @@ fn rec_003_replace_and_overwrite_rename_preserve_destroyed_objects() {
     );
     let recovered_paths: Vec<_> = events
         .iter()
-        .filter_map(|event| match event {
+        .filter_map(|event| match &event.event {
             SandboxEvent::RecoveryArtifactCreated(artifact) => Some(artifact.original_path.clone()),
             _ => None,
         })
@@ -550,7 +564,7 @@ fn rec_019_target_cannot_write_directly_to_recovery_channel() {
     assert!(
         !events
             .iter()
-            .any(|event| matches!(event, SandboxEvent::RecoveryArtifactCreated(_)))
+            .any(|event| matches!(&event.event, SandboxEvent::RecoveryArtifactCreated(_)))
     );
     assert!(matches!(
         result.terminal,
@@ -616,12 +630,12 @@ fn rec_006_007_exact_quota_succeeds_and_next_byte_reports_typed_failure() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, SandboxEvent::RecoveryArtifactCreated(_)))
+            .filter(|event| matches!(&event.event, SandboxEvent::RecoveryArtifactCreated(_)))
             .count(),
         1
     );
     assert!(events.iter().any(|event| matches!(
-        event,
+        &event.event,
         SandboxEvent::RecoveryFailed(failure)
             if failure.reason == RecoveryFailureReason::QuotaExceeded
     )));
@@ -692,7 +706,7 @@ fn rec_014_handle_delete_and_child_delete_share_execution_recovery() {
     );
     let artifact_processes: Vec<u32> = events
         .iter()
-        .filter_map(|event| match event {
+        .filter_map(|event| match &event.event {
             SandboxEvent::RecoveryArtifactCreated(artifact) => Some(artifact.process_id),
             _ => None,
         })
@@ -761,7 +775,7 @@ fn rec_012_native_disposition_delete_preserves_original_content() {
         b"native-content"
     );
     assert!(events.iter().any(|event| matches!(
-        event,
+        &event.event,
         SandboxEvent::RecoveryArtifactCreated(artifact)
             if artifact.original_path == source
     )));
@@ -832,7 +846,7 @@ fn rec_009_store_failure_is_typed_and_does_not_change_allowed_delete() {
     assert!(!source.exists());
     assert!(recovery_files(&recovery).is_empty());
     assert!(events.iter().any(|event| matches!(
-        event,
+        &event.event,
         SandboxEvent::RecoveryFailed(failure)
             if failure.reason == RecoveryFailureReason::StoreUnavailable
     )));
@@ -906,7 +920,7 @@ fn pol_007_host_mandatory_deny_overrides_broad_grant_and_recovery() {
     );
     assert!(recovery_files(&recovery).is_empty());
     assert!(!events.iter().any(|event| matches!(
-        event,
+        &event.event,
         SandboxEvent::RecoveryArtifactCreated(_) | SandboxEvent::RecoveryFailed(_)
     )));
     assert!(matches!(
@@ -987,7 +1001,7 @@ fn rec_013_concurrent_children_commit_unique_consistent_artifacts() {
     );
     let mut artifact_ids: Vec<u64> = events
         .iter()
-        .filter_map(|event| match event {
+        .filter_map(|event| match &event.event {
             SandboxEvent::RecoveryArtifactCreated(artifact) => Some(artifact.artifact_id),
             _ => None,
         })

@@ -10,7 +10,7 @@ use std::{
 
 use crate::ipc::aggregation::{AggregationDisposition, AggregationError, ViolationAggregator};
 use crate::{
-    CommandId, ExecutionHandle, ExecutionResult, ExecutionTerminal, InitializationStage,
+    ExecutionAttribution, ExecutionHandle, ExecutionResult, ExecutionTerminal, InitializationStage,
     ProcessExit, ProcessExitReason, ReceiverLoss, SandboxError, SandboxEvent,
 };
 
@@ -37,7 +37,7 @@ pub(super) fn start(
     prepared: PreparedLaunch,
     stream_capacity: usize,
     violation_aggregate_capacity: usize,
-    command_id: CommandId,
+    attribution: ExecutionAttribution,
 ) -> Result<ExecutionHandle, SandboxError> {
     let recovery = RecoveryCoordinator::new(prepared.recovery(), prepared.handshake_nonce())
         .map_err(|_| SandboxError::InitializationFailed {
@@ -56,7 +56,7 @@ pub(super) fn start(
         violation_aggregate_capacity,
         nonce,
         recovery,
-        command_id,
+        attribution,
         prepared,
     ))
 }
@@ -122,7 +122,7 @@ fn build_execution_handle(
     violation_aggregate_capacity: usize,
     nonce: [u8; 16],
     recovery: Option<RecoveryCoordinator>,
-    command_id: CommandId,
+    attribution: ExecutionAttribution,
     execution_lease: PreparedLaunch,
 ) -> ExecutionHandle {
     let chunk_slots = stream_capacity.div_ceil(4_096).max(1);
@@ -148,12 +148,13 @@ fn build_execution_handle(
             &stderr_sender,
             &event_sender,
             recovery,
+            attribution,
         );
         let _ = completion_sender.send(Ok(result));
     });
     ExecutionHandle::new(
         process_id,
-        command_id,
+        attribution,
         stdout_receiver,
         stderr_receiver,
         event_receiver,
@@ -202,6 +203,7 @@ fn run_execution(
     stderr: &SyncSender<Vec<u8>>,
     events: &SyncSender<SandboxEvent>,
     mut recovery: Option<RecoveryCoordinator>,
+    attribution: ExecutionAttribution,
 ) -> ExecutionResult {
     let started = Instant::now();
     let deadline = timeout.and_then(|limit| MonotonicDeadline::new(started, limit));
@@ -210,6 +212,7 @@ fn run_execution(
         process_id,
         NonZeroUsize::new(violation_aggregate_capacity)
             .expect("validated aggregate capacity is nonzero"),
+        attribution,
     );
     loop {
         let cancelled = matches!(cancel.try_recv(), Ok(()) | Err(TryRecvError::Disconnected));
@@ -295,6 +298,7 @@ fn run_execution(
 }
 
 struct TransportState {
+    attribution: ExecutionAttribution,
     session: crate::ipc::session::SessionProtocol,
     lifecycle: LifecycleController,
     expected_process_id: u32,
@@ -311,8 +315,10 @@ impl TransportState {
         nonce: [u8; 16],
         expected_process_id: u32,
         violation_aggregate_capacity: NonZeroUsize,
+        attribution: ExecutionAttribution,
     ) -> Self {
         let mut state = Self {
+            attribution,
             session: crate::ipc::session::SessionProtocol::new(nonce),
             lifecycle: LifecycleController::new(),
             expected_process_id,
@@ -517,7 +523,7 @@ impl TransportState {
                 if self.outcome.is_some() {
                     return Err(());
                 }
-                self.outcome = Some(public_outcome(outcome));
+                self.outcome = Some(public_outcome(outcome, self.attribution));
                 Ok(())
             }
             LifecycleAction::Launch | LifecycleAction::TerminateJob(_) => Err(()),
@@ -537,6 +543,7 @@ impl TransportState {
         };
         send_bounded(events, SandboxEvent::ProcessExited(process_exit.clone()));
         self.with_aggregates(ExecutionResult {
+            attribution: self.attribution,
             terminal: ExecutionTerminal::Process(process_exit),
             receiver_loss: public_receiver_loss(self.lifecycle.receiver_loss()),
             violation_aggregates: Vec::new(),
@@ -546,6 +553,7 @@ impl TransportState {
 
     fn infrastructure_result(&self, failure: crate::InfrastructureFailure) -> ExecutionResult {
         self.with_aggregates(ExecutionResult {
+            attribution: self.attribution,
             terminal: ExecutionTerminal::Infrastructure(failure),
             receiver_loss: public_receiver_loss(self.lifecycle.receiver_loss()),
             violation_aggregates: Vec::new(),
@@ -607,7 +615,7 @@ fn empty_eof(payload: &[u8]) -> Result<(), ()> {
     payload.is_empty().then_some(()).ok_or(())
 }
 
-fn public_outcome(outcome: LifecycleOutcome) -> ExecutionResult {
+fn public_outcome(outcome: LifecycleOutcome, attribution: ExecutionAttribution) -> ExecutionResult {
     let terminal = match outcome.terminal {
         LifecycleTerminal::Process(exit) => ExecutionTerminal::Process(exit),
         LifecycleTerminal::Infrastructure(failure) => {
@@ -615,6 +623,7 @@ fn public_outcome(outcome: LifecycleOutcome) -> ExecutionResult {
         }
     };
     ExecutionResult {
+        attribution,
         terminal,
         receiver_loss: public_receiver_loss(outcome.receiver_loss),
         violation_aggregates: Vec::new(),
@@ -746,6 +755,14 @@ mod tests {
     use super::*;
     use crate::{FilesystemOperation, FilesystemViolation};
 
+    fn attribution() -> ExecutionAttribution {
+        ExecutionAttribution {
+            execution_id: crate::ExecutionId::new([0x11; 16]).expect("nonzero"),
+            command_id: crate::CommandId::new([0x22; 16]).expect("nonzero"),
+            policy_generation: crate::PolicyGeneration::new(1).expect("nonzero"),
+        }
+    }
+
     #[test]
     fn launcher_ack_requires_magic_version_length_and_nonzero_pid() {
         let mut acknowledgment = *b"BLA1\x01\x00\x0c\x00\x2a\x00\x00\x00";
@@ -761,7 +778,12 @@ mod tests {
     #[test]
     fn evt_004_runtime_publishes_first_violation_and_aggregates_duplicates() {
         const NONCE: [u8; 16] = [0x5a; 16];
-        let mut state = TransportState::new(NONCE, 42, NonZeroUsize::new(2).expect("nonzero"));
+        let mut state = TransportState::new(
+            NONCE,
+            42,
+            NonZeroUsize::new(2).expect("nonzero"),
+            attribution(),
+        );
         let (stdout_sender, _stdout) = mpsc::sync_channel(4);
         let (stderr_sender, _stderr) = mpsc::sync_channel(4);
         let (event_sender, event_receiver) = mpsc::sync_channel(8);

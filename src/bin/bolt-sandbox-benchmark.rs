@@ -370,7 +370,7 @@ fn run_sandbox(
             }
         }
         for event in events {
-            if let SandboxEvent::FilesystemViolation(violation) = event {
+            if let SandboxEvent::FilesystemViolation(violation) = event.event {
                 eprintln!(
                     "benchmark-sandbox-error filesystem-operation={:?} scope={}",
                     violation.operation,

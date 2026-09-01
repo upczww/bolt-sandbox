@@ -1,11 +1,16 @@
 use std::{
     ffi::OsString,
     path::PathBuf,
-    sync::mpsc::{Receiver, Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{Receiver, Sender},
+    },
 };
 
 use crate::{
-    CommandId, ProcessExit, SandboxError, SandboxEvent, SandboxRequest, ViolationAggregate, runtime,
+    AttributedSandboxEvent, CommandId, ExecutionAttribution, PolicyGeneration, ProcessExit,
+    SandboxError, SandboxEvent, SandboxRequest, ViolationAggregate, runtime,
 };
 
 pub const DEFAULT_STREAM_CAPACITY: usize = 1_048_576;
@@ -27,6 +32,7 @@ pub struct SandboxConfig {
 #[derive(Clone, Debug)]
 pub struct Sandbox {
     config: SandboxConfig,
+    next_policy_generation: Arc<AtomicU64>,
 }
 
 impl Sandbox {
@@ -62,7 +68,10 @@ impl Sandbox {
         config
             .mandatory_registry_denies
             .extend(default_sensitive_registry_keys().map(str::to_owned));
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            next_policy_generation: Arc::new(AtomicU64::new(1)),
+        })
     }
 
     /// Validates, prepares, and starts one sandboxed execution.
@@ -73,11 +82,12 @@ impl Sandbox {
     /// failures are returned as typed initialization stages; this function
     /// never falls back to an unsandboxed process.
     pub fn start(&self, request: SandboxRequest) -> Result<ExecutionHandle, SandboxError> {
+        request.validate()?;
         let command_id =
             CommandId::generate().map_err(|()| SandboxError::InitializationFailed {
                 stage: InitializationStage::Identity,
             })?;
-        self.start_with_command_id(request, command_id)
+        self.start_validated(request, command_id)
     }
 
     /// Starts one execution associated with a caller-provided opaque command ID.
@@ -92,7 +102,27 @@ impl Sandbox {
         command_id: CommandId,
     ) -> Result<ExecutionHandle, SandboxError> {
         request.validate()?;
-        runtime::start_execution(request, &self.config, command_id)
+        self.start_validated(request, command_id)
+    }
+
+    fn start_validated(
+        &self,
+        request: SandboxRequest,
+        command_id: CommandId,
+    ) -> Result<ExecutionHandle, SandboxError> {
+        let generation = self
+            .next_policy_generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| SandboxError::InitializationFailed {
+                stage: InitializationStage::Identity,
+            })?;
+        let policy_generation =
+            PolicyGeneration::new(generation).ok_or(SandboxError::InitializationFailed {
+                stage: InitializationStage::Identity,
+            })?;
+        runtime::start_execution(request, &self.config, command_id, policy_generation)
     }
 }
 
@@ -176,6 +206,7 @@ pub enum ExecutionTerminal {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionResult {
+    pub attribution: ExecutionAttribution,
     pub terminal: ExecutionTerminal,
     pub receiver_loss: ReceiverLoss,
     pub violation_aggregates: Vec<ViolationAggregate>,
@@ -196,13 +227,20 @@ impl Iterator for ByteStream {
 
 pub struct EventStream {
     receiver: Receiver<SandboxEvent>,
+    attribution: ExecutionAttribution,
 }
 
 impl Iterator for EventStream {
-    type Item = SandboxEvent;
+    type Item = AttributedSandboxEvent;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.receiver.recv().ok()
+        self.receiver
+            .recv()
+            .ok()
+            .map(|event| AttributedSandboxEvent {
+                attribution: self.attribution,
+                event,
+            })
     }
 }
 
@@ -215,7 +253,7 @@ pub enum ExecutionControlError {
 
 pub struct ExecutionHandle {
     process_id: u32,
-    command_id: CommandId,
+    attribution: ExecutionAttribution,
     stdout: Option<ByteStream>,
     stderr: Option<ByteStream>,
     events: Option<EventStream>,
@@ -226,7 +264,7 @@ pub struct ExecutionHandle {
 impl ExecutionHandle {
     pub(crate) fn new(
         process_id: u32,
-        command_id: CommandId,
+        attribution: ExecutionAttribution,
         stdout: Receiver<Vec<u8>>,
         stderr: Receiver<Vec<u8>>,
         events: Receiver<SandboxEvent>,
@@ -235,10 +273,13 @@ impl ExecutionHandle {
     ) -> Self {
         Self {
             process_id,
-            command_id,
+            attribution,
             stdout: Some(ByteStream { receiver: stdout }),
             stderr: Some(ByteStream { receiver: stderr }),
-            events: Some(EventStream { receiver: events }),
+            events: Some(EventStream {
+                receiver: events,
+                attribution,
+            }),
             cancel,
             completion,
         }
@@ -251,7 +292,12 @@ impl ExecutionHandle {
 
     #[must_use]
     pub const fn command_id(&self) -> CommandId {
-        self.command_id
+        self.attribution.command_id
+    }
+
+    #[must_use]
+    pub const fn attribution(&self) -> ExecutionAttribution {
+        self.attribution
     }
 
     /// Takes the stdout byte stream exactly once.
