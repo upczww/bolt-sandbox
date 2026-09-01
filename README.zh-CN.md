@@ -78,8 +78,10 @@ Native 代码负责最小化 Windows Launcher、基于 Detours 的拦截和有�
 ## 当前状态与性能
 
 当前实现包括 Rust 库与 CLI、x64/x86 Launcher 和 Hook DLL、文件/进程/网络/
-注册表策略、有界恢复、组件 Manifest、ACL 加固打包、Rust 与 Native 协议
-Mutation 测试，以及签名发布工作流。
+注册表策略、有界恢复、事务式 Staged Workspace、显式 ConPTY、组件 Manifest、
+ACL 加固打包、Rust 与 Native 协议 Mutation 测试，以及签名发布工作流。
+ProjFS 目前是可选能力探测：主机未安装 Windows 功能时，请求 `Projected` 会
+明确失败，绝不回退到 Direct。
 
 当前发布预算要求：
 
@@ -218,6 +220,19 @@ Agent 集成原则：
 
 `ExecutionHandle::cancel()` 会请求取消整个 Job。Request Timeout 同样终止完整
 后代树，然后 Drain 终态流。
+
+需要在写回源工作区前审查变更时，使用 `start_with_options` 并设置
+`WorkspaceMode::Staged`。命令会在同级、隔离且有配额的副本中运行；完成后的
+`ExecutionResult::workspace_transaction` 是事务标识。可信宿主随后可调用
+`query_workspace_changes`、`commit_workspace`、`discard_workspace` 或
+`revert_workspace`。Commit 前会重新校验源目录，检测到外部修改就拒绝；任何
+Mandatory Deny 路径与 Staged Root 重叠时也会在复制和启动前 Fail Closed。
+
+交互工具需要显式选择
+`TerminalMode::PseudoConsole(PseudoConsoleSize::new(columns, rows).unwrap())`，
+再通过 `ExecutionHandle::write_input` 和 `resize_pseudo_console` 输入及调整窗口。
+输入帧和控制队列都有界。默认仍是低开销 Pipe 模式，不创建 ConPTY 资源；
+ConPTY 的终端输出统一从 stdout 返回，stderr 会无数据结束。
 
 ### 3. 非 Rust Agent 使用 CLI
 

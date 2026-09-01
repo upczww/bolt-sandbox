@@ -104,6 +104,11 @@ Execution Job -> launcher -> injected hook -> complete descendant tree
 - Reject stale broker state and terminate associated Jobs if the broker exits.
 - Do not ship the broker if improvement is less than 10 ms.
 
+Decision: no broker ships by default. Seven current release samples measured
+36.522–38.498 ms warm Direct startup (37.445 ms mean), and no bounded broker
+prototype has demonstrated the required repeatable 10 ms improvement. See
+ADR-0003. The no-evidence case fails the feature gate closed.
+
 ### Phase 7: optional hardened deployment backend
 
 - Evaluate a dedicated low-privilege account and WFP enforcement for managed

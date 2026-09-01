@@ -87,8 +87,11 @@ licenses; no closed-source product code is copied.
 
 The implementation includes the Rust library and CLI, x64/x86 launchers and
 hook DLLs, filesystem/process/network/registry enforcement, bounded recovery,
-component manifests, ACL-hardened packaging, deterministic Rust and native
-protocol mutation tests, and a signed-release workflow.
+transactional staged workspaces, explicit ConPTY sessions, component manifests,
+ACL-hardened packaging, deterministic Rust and native protocol mutation tests,
+and a signed-release workflow. ProjFS remains an optional capability probe:
+requesting `Projected` on a host without the Windows feature fails explicitly
+and never falls back to Direct.
 
 The checked release budgets currently require:
 
@@ -238,6 +241,22 @@ Agent integration guidance:
 
 `ExecutionHandle::cancel()` requests whole-Job cancellation. A request timeout
 also terminates the complete descendant tree and then drains terminal streams.
+
+For changes that must be reviewed before reaching the source workspace, call
+`start_with_options` with `WorkspaceMode::Staged`. The command runs in a bounded
+isolated sibling copy; `ExecutionResult::workspace_transaction` identifies the
+completed transaction. Trusted host code can then call
+`query_workspace_changes`, `commit_workspace`, `discard_workspace`, or
+`revert_workspace`. Commit revalidates the source and fails on external
+conflicts. Mandatory-deny paths may not overlap a staged root, so staging cannot
+copy secrets into a newly readable namespace.
+
+Interactive tools opt in with
+`TerminalMode::PseudoConsole(PseudoConsoleSize::new(columns, rows).unwrap())`.
+Use `ExecutionHandle::write_input` and `resize_pseudo_console`; input frames and
+the control queue are bounded. Pipe mode remains the default and has no ConPTY
+process or handle overhead. ConPTY combines terminal output on stdout, so its
+stderr stream reaches EOF without data.
 
 ### 3. Use the CLI from non-Rust agents
 
