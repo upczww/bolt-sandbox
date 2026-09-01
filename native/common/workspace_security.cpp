@@ -226,10 +226,16 @@ WorkspaceSecurityStatus VisitPairs(
     const std::uint32_t maximum_items,
     const bool allow_missing_destination,
     Visitor&& visitor) noexcept {
+    std::error_code source_error;
+    std::error_code destination_error;
+    const bool source_directory =
+        std::filesystem::is_directory(source_root, source_error);
+    const bool destination_directory =
+        std::filesystem::is_directory(destination_root, destination_error);
     if (maximum_items == 0 || !source_root.is_absolute() ||
         !destination_root.is_absolute() ||
-        !std::filesystem::is_directory(source_root) ||
-        !std::filesystem::is_directory(destination_root) ||
+        source_error || destination_error || !source_directory ||
+        !destination_directory ||
         !IsSupportedPath(source_root) || !IsSupportedPath(destination_root)) {
         return WorkspaceSecurityStatus::kInvalidRoot;
     }
@@ -341,9 +347,15 @@ WorkspaceSecurityStatus CopyExistingWorkspaceAuthorization(
 WorkspaceSecurityStatus CopyWorkspaceRootAuthorization(
     const std::filesystem::path& source_root,
     const std::filesystem::path& destination_root) noexcept {
+    std::error_code source_error;
+    std::error_code destination_error;
+    const bool source_directory =
+        std::filesystem::is_directory(source_root, source_error);
+    const bool destination_directory =
+        std::filesystem::is_directory(destination_root, destination_error);
     if (!source_root.is_absolute() || !destination_root.is_absolute() ||
-        !std::filesystem::is_directory(source_root) ||
-        !std::filesystem::is_directory(destination_root) ||
+        source_error || destination_error || !source_directory ||
+        !destination_directory ||
         !IsSupportedPath(source_root) || !IsSupportedPath(destination_root)) {
         return WorkspaceSecurityStatus::kInvalidRoot;
     }

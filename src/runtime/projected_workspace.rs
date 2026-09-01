@@ -99,7 +99,10 @@ impl ProjectedWorkspaceController {
             terminate(&mut child);
             return Err(WorkspaceError::Io);
         }
-        let result = ready.0.map_err(|_| WorkspaceError::Io)?;
+        let Ok(result) = ready.0 else {
+            terminate(&mut child);
+            return Err(WorkspaceError::Io);
+        };
         if result != ProjectedWorkspaceResult::Success {
             terminate(&mut child);
             return Err(map_result(result));
