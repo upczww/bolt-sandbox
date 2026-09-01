@@ -345,6 +345,7 @@ add_executable(bolt-sandbox-native-tests
     tests/policy_fixture.cpp
     tests/policy_mapping_tests.cpp
     tests/projfs_api_tests.cpp
+    tests/projected_workspace_provider_tests.cpp
     tests/immutable_mapping_tests.cpp
     tests/process_tests.cpp
     tests/protocol_mutation_tests.cpp
