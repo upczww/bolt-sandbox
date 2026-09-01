@@ -67,7 +67,7 @@
 
     { "id": "tar", "family": "archive-copy", "requiredOnHost": true, "commands": ["tar"], "terminal": "pipes", "files": { "input.txt": "archive\n" }, "arguments": ["-cf", "{Workspace}\\output.tar", "-C", "{Workspace}", "input.txt"], "expectedFiles": ["output.tar"] },
     { "id": "robocopy", "family": "archive-copy", "requiredOnHost": true, "commands": ["robocopy"], "terminal": "pipes", "files": { "source/input.txt": "copy\n" }, "arguments": ["{Workspace}\\source", "{Workspace}\\destination", "input.txt", "/NJH", "/NJS", "/NDL", "/NFL", "/R:0", "/W:0"], "acceptedExitCodes": [0, 1], "expectedFiles": ["destination/input.txt"] },
-    { "id": "sevenzip", "family": "archive-copy", "requiredOnHost": false, "commands": ["7z"], "terminal": "pipes", "readOnly": ["{ToolRoot}"], "files": { "input.txt": "archive\n" }, "arguments": ["a", "-bd", "-y", "{Workspace}\\output.7z", "{Workspace}\\input.txt"], "expectedFiles": ["output.7z"] },
+    { "id": "sevenzip", "family": "archive-copy", "requiredOnHost": false, "commands": ["7z"], "terminal": "pipes", "readOnly": ["{ToolDirectory}"], "files": { "input.txt": "archive\n" }, "arguments": ["a", "-bd", "-y", "{Workspace}\\output.7z", "{Workspace}\\input.txt"], "expectedFiles": ["output.7z"] },
 
     { "id": "curl", "family": "network", "requiredOnHost": true, "commands": ["curl"], "terminal": "pipes", "arguments": ["--version"], "stdoutContains": ["curl"] },
     { "id": "wget", "family": "network", "requiredOnHost": false, "commands": ["wget"], "terminal": "pipes" },
