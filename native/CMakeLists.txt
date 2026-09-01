@@ -231,6 +231,7 @@ add_library(bolt-sandbox-filesystem STATIC
     hook/filesystem/filesystem_policy.cpp
     hook/filesystem/handle_access_cache.cpp
     hook/filesystem/path_cache.cpp
+    hook/filesystem/policy_decision_cache.cpp
     hook/filesystem/safe_device.cpp
 )
 bolt_native_warnings(bolt-sandbox-filesystem)
@@ -299,6 +300,7 @@ add_executable(bolt-sandbox-native-tests
     tests/detours_tests.cpp
     tests/event_frame_tests.cpp
     tests/handle_access_cache_tests.cpp
+    tests/policy_decision_cache_tests.cpp
     tests/filesystem_policy_tests.cpp
     tests/filesystem_race_tests.cpp
     tests/job_tests.cpp
