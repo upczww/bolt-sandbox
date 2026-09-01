@@ -1,6 +1,7 @@
 //! Public Rust integration boundary for Bolt Sandbox.
 
 mod attribution;
+mod compatibility;
 mod error;
 mod event;
 mod execution;
@@ -15,6 +16,12 @@ mod test_support;
 
 pub use attribution::{
     AttributedSandboxEvent, CommandId, ExecutionAttribution, ExecutionId, PolicyGeneration,
+};
+pub use compatibility::{
+    CompatibilityCapability, CompatibilityCommandOutcome, CompatibilityContextError,
+    CompatibilityGrant, CompatibilityGrantContext, CompatibilityGrantProposal,
+    CompatibilityGrantResolver, CompatibilityNoPromptReason, CompatibilityResolution,
+    CompatibilityUnavailable,
 };
 pub use error::{InvalidRequestReason, RequestField, SandboxError};
 pub use event::{
