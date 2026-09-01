@@ -334,6 +334,8 @@ mod tests {
             OsString::from(r"C:\work"),
             OsString::from("--timeout-ms"),
             OsString::from("2500"),
+            OsString::from("--manifest-sha256"),
+            OsString::from("abababababababababababababababababababababababababababababababab"),
             OsString::from("--"),
             OsString::from(r"C:\Program Files\tool.exe"),
             OsString::from(""),
@@ -344,6 +346,7 @@ mod tests {
         assert_eq!(parsed.component_root, PathBuf::from(r"C:\components"));
         assert_eq!(parsed.cwd, PathBuf::from(r"C:\work"));
         assert_eq!(parsed.timeout, Some(Duration::from_millis(2_500)));
+        assert_eq!(parsed.component_manifest_sha256, Some([0xAB; 32]));
         assert_eq!(parsed.program, PathBuf::from(r"C:\Program Files\tool.exe"));
         assert_eq!(
             parsed.arguments,
