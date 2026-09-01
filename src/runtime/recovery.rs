@@ -1,9 +1,13 @@
 use std::{
     ffi::OsString,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::Write,
-    os::windows::ffi::{OsStrExt, OsStringExt},
+    os::windows::{
+        ffi::{OsStrExt, OsStringExt},
+        fs::OpenOptionsExt,
+    },
     path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::policy::compiler::{CompiledFilesystemPolicy, FilesystemAccess, FilesystemDecision};
@@ -16,6 +20,8 @@ use super::{
 
 pub(super) struct RecoveryCoordinator {
     execution_directory: PathBuf,
+    active_lock: Option<File>,
+    active_lock_path: PathBuf,
     maximum_bytes: u64,
     maximum_items: u32,
     used_bytes: u64,
@@ -51,6 +57,11 @@ impl RecoveryCoordinator {
         {
             return Err(RecoveryCoordinatorError::InvalidStore);
         }
+        let _ = cleanup_expired(
+            &configuration.directory,
+            configuration.retention,
+            SystemTime::now(),
+        );
         let mut execution_name = String::from("bolt-");
         for byte in nonce {
             use std::fmt::Write as _;
@@ -60,8 +71,23 @@ impl RecoveryCoordinator {
         let execution_directory = configuration.directory.join(execution_name);
         fs::create_dir(&execution_directory)
             .map_err(|_| RecoveryCoordinatorError::CreateExecutionDirectory)?;
+        let active_lock_path = execution_directory.join("active.lock");
+        let active_lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .share_mode(1)
+            .open(&active_lock_path)
+            .map_err(|_| RecoveryCoordinatorError::CreateExecutionDirectory)?;
+        if !write_execution_marker(&execution_directory, SystemTime::now()) {
+            drop(active_lock);
+            let _ = fs::remove_dir_all(&execution_directory);
+            return Err(RecoveryCoordinatorError::CreateExecutionDirectory);
+        }
         Ok(Some(Self {
             execution_directory,
+            active_lock: Some(active_lock),
+            active_lock_path,
             maximum_bytes: configuration.maximum_bytes,
             maximum_items: configuration.maximum_items,
             used_bytes: 0,
@@ -241,10 +267,74 @@ fn display_path(path: &Path) -> PathBuf {
 
 impl Drop for RecoveryCoordinator {
     fn drop(&mut self) {
+        drop(self.active_lock.take());
+        let _ = fs::remove_file(&self.active_lock_path);
         if self.used_items == 0 {
+            let _ = fs::remove_file(self.execution_directory.join("execution.bin"));
             let _ = fs::remove_dir(&self.execution_directory);
         }
     }
+}
+
+fn write_execution_marker(directory: &Path, created: SystemTime) -> bool {
+    let Ok(created_millis) = created
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .ok_or(())
+    else {
+        return false;
+    };
+    let mut marker = Vec::from(*b"BRE1");
+    marker.extend_from_slice(&created_millis.to_le_bytes());
+    let path = directory.join("execution.bin");
+    let file = OpenOptions::new().write(true).create_new(true).open(path);
+    let Ok(mut file) = file else {
+        return false;
+    };
+    file.write_all(&marker).is_ok() && file.sync_all().is_ok()
+}
+
+fn cleanup_expired(root: &Path, retention: Duration, now: SystemTime) -> std::io::Result<()> {
+    let now_millis = now
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0);
+    let retention_millis = u64::try_from(retention.as_millis()).unwrap_or(u64::MAX);
+    for entry in fs::read_dir(root)? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let path = entry.path();
+        let name_matches = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("bolt-"));
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !name_matches || !metadata.is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        let Ok(marker) = fs::read(path.join("execution.bin")) else {
+            continue;
+        };
+        if marker.len() != 12 || marker[..4] != *b"BRE1" {
+            continue;
+        }
+        let created = u64::from_le_bytes(marker[4..12].try_into().expect("marker length checked"));
+        if now_millis.saturating_sub(created) < retention_millis {
+            continue;
+        }
+        match fs::remove_file(path.join("active.lock")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => continue,
+        }
+        let _ = fs::remove_dir_all(path);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

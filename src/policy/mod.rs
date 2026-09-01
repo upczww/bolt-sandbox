@@ -3,7 +3,7 @@ mod filesystem;
 mod network;
 mod registry;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 pub use filesystem::FilesystemPolicy;
 pub use network::{IpCidr, NetworkAllowList, NetworkPolicy, PortRange};
@@ -37,4 +37,5 @@ pub struct RecoveryLimits {
     pub directory: PathBuf,
     pub maximum_bytes: u64,
     pub maximum_items: u32,
+    pub retention: Duration,
 }

@@ -287,6 +287,7 @@ fn rec_001_allowed_delete_is_backed_up_and_indexed_before_mutation() {
             directory: recovery.clone(),
             maximum_bytes: 1_048_576,
             maximum_items: 16,
+            retention: Duration::from_secs(24 * 60 * 60),
         }),
         ..SandboxPolicy::default()
     };
@@ -365,6 +366,7 @@ fn rec_002_truncate_backs_up_complete_pre_mutation_content() {
             directory: recovery.clone(),
             maximum_bytes: 1_048_576,
             maximum_items: 16,
+            retention: Duration::from_secs(24 * 60 * 60),
         }),
         ..SandboxPolicy::default()
     };
@@ -435,6 +437,7 @@ fn rec_003_replace_and_overwrite_rename_preserve_destroyed_objects() {
             directory: recovery.clone(),
             maximum_bytes: 1_048_576,
             maximum_items: 16,
+            retention: Duration::from_secs(24 * 60 * 60),
         }),
         ..SandboxPolicy::default()
     };
@@ -515,6 +518,7 @@ fn rec_019_target_cannot_write_directly_to_recovery_channel() {
             directory: recovery.clone(),
             maximum_bytes: 1_048_576,
             maximum_items: 16,
+            retention: Duration::from_secs(24 * 60 * 60),
         }),
         ..SandboxPolicy::default()
     };
@@ -576,6 +580,7 @@ fn rec_006_007_exact_quota_succeeds_and_next_byte_reports_typed_failure() {
             directory: recovery.clone(),
             maximum_bytes: 4,
             maximum_items: 2,
+            retention: Duration::from_secs(24 * 60 * 60),
         }),
         ..SandboxPolicy::default()
     };
@@ -648,6 +653,7 @@ fn rec_014_handle_delete_and_child_delete_share_execution_recovery() {
             directory: recovery.clone(),
             maximum_bytes: 1_048_576,
             maximum_items: 16,
+            retention: Duration::from_secs(24 * 60 * 60),
         }),
         ..SandboxPolicy::default()
     };
@@ -723,6 +729,7 @@ fn rec_012_native_disposition_delete_preserves_original_content() {
             directory: recovery.clone(),
             maximum_bytes: 1_048_576,
             maximum_items: 16,
+            retention: Duration::from_secs(24 * 60 * 60),
         }),
         ..SandboxPolicy::default()
     };
@@ -785,6 +792,7 @@ fn rec_009_store_failure_is_typed_and_does_not_change_allowed_delete() {
             directory: recovery.clone(),
             maximum_bytes: 1_048_576,
             maximum_items: 16,
+            retention: Duration::from_secs(24 * 60 * 60),
         }),
         ..SandboxPolicy::default()
     };
@@ -808,7 +816,11 @@ fn rec_009_store_failure_is_typed_and_does_not_change_allowed_delete() {
         .expect("execution directory must exist")
         .expect("execution entry must be readable")
         .path();
-    fs::remove_dir(&execution_directory).expect("empty execution directory must be removable");
+    fs::write(
+        execution_directory.join("artifact-0000000000000001.partial"),
+        b"block artifact directory creation",
+    )
+    .expect("artifact path blocker must be written");
     fs::write(&signal, b"continue").expect("signal must be written");
     let stdout = handle.take_stdout().expect("stdout is available");
     let stderr = handle.take_stderr().expect("stderr is available");
@@ -862,6 +874,7 @@ fn pol_007_host_mandatory_deny_overrides_broad_grant_and_recovery() {
             directory: recovery.clone(),
             maximum_bytes: 1_048_576,
             maximum_items: 16,
+            retention: Duration::from_secs(24 * 60 * 60),
         }),
         ..SandboxPolicy::default()
     };
@@ -927,6 +940,7 @@ fn rec_013_concurrent_children_commit_unique_consistent_artifacts() {
             directory: recovery.clone(),
             maximum_bytes: 1_048_576,
             maximum_items: 16,
+            retention: Duration::from_secs(24 * 60 * 60),
         }),
         ..SandboxPolicy::default()
     };

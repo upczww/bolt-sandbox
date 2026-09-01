@@ -38,6 +38,7 @@ pub(super) struct PreparedRecovery {
     pub(super) directory: PathBuf,
     pub(super) maximum_bytes: u64,
     pub(super) maximum_items: u32,
+    pub(super) retention: Duration,
     pub(super) filesystem: CompiledFilesystemPolicy,
 }
 
@@ -203,6 +204,7 @@ fn prepare_launch_with_identity_factory_and_denies(
             directory: limits.directory().to_path_buf(),
             maximum_bytes: limits.maximum_bytes(),
             maximum_items: limits.maximum_items(),
+            retention: limits.retention(),
             filesystem: compiled_policy.filesystem.clone(),
         }),
     };

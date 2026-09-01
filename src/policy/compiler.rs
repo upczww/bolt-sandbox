@@ -3,6 +3,7 @@ use std::{
     net::IpAddr,
     os::windows::ffi::OsStrExt,
     path::{Component, Path},
+    time::Duration,
 };
 
 use super::{
@@ -124,6 +125,7 @@ const MAX_COMPILED_REGISTRY_RULES: usize = MAX_TOTAL_REGISTRY_RULES
     + DEFAULT_REGISTRY_HIDDEN_COMPATIBILITY_KEYS.len()
     + DEFAULT_REGISTRY_COMPATIBILITY_GRANTS.len();
 const MAX_REGISTRY_KEY_CODE_UNITS: usize = 255;
+const MAX_RECOVERY_RETENTION: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
 pub(crate) fn compile(policy: &SandboxPolicy, cwd: &Path) -> Result<CompiledPolicy, SandboxError> {
     compile_with_mandatory_denies(policy, cwd, &[])
@@ -238,6 +240,7 @@ pub(crate) struct CompiledRecoveryLimits {
     directory: std::path::PathBuf,
     maximum_bytes: u64,
     maximum_items: u32,
+    retention: Duration,
 }
 
 impl CompiledRecoveryLimits {
@@ -251,6 +254,10 @@ impl CompiledRecoveryLimits {
 
     pub(crate) const fn maximum_items(&self) -> u32 {
         self.maximum_items
+    }
+
+    pub(crate) const fn retention(&self) -> Duration {
+        self.retention
     }
 }
 
@@ -338,13 +345,18 @@ fn compile_recovery_policy(
             InvalidRequestReason::InvalidCharacter,
         ));
     }
-    if limits.maximum_bytes == 0 || limits.maximum_items == 0 {
+    if limits.maximum_bytes == 0
+        || limits.maximum_items == 0
+        || limits.retention.is_zero()
+        || limits.retention > MAX_RECOVERY_RETENTION
+    {
         return Err(invalid_recovery_policy(InvalidRequestReason::OutOfRange));
     }
     Ok(CompiledRecoveryPolicy::Enabled(CompiledRecoveryLimits {
         directory: limits.directory.clone(),
         maximum_bytes: limits.maximum_bytes,
         maximum_items: limits.maximum_items,
+        retention: limits.retention,
     }))
 }
 
@@ -2409,6 +2421,7 @@ mod tests {
                 directory: PathBuf::from(r"C:\trusted-recovery"),
                 maximum_bytes,
                 maximum_items,
+                retention: Duration::from_secs(24 * 60 * 60),
             }),
             ..SandboxPolicy::default()
         }

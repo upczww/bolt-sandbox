@@ -105,6 +105,7 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
     let mut recovery_directory = None;
     let mut recovery_maximum_bytes = None;
     let mut recovery_maximum_items = None;
+    let mut recovery_retention = None;
     let mut program_and_arguments = None;
     while let Some(argument) = arguments.next() {
         if argument == "--" {
@@ -185,6 +186,9 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
                         .map_err(|_| CliError::InvalidArguments)?,
                 );
             }
+            Some("--recovery-retention-seconds") if recovery_retention.is_none() => {
+                recovery_retention = Some(Duration::from_secs(next_nonzero_u64(&mut arguments)?));
+            }
             _ => return Err(CliError::InvalidArguments),
         }
     }
@@ -197,13 +201,15 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
         recovery_directory,
         recovery_maximum_bytes,
         recovery_maximum_items,
+        recovery_retention,
     ) {
-        (None, None, None) => {}
-        (Some(directory), Some(maximum_bytes), Some(maximum_items)) => {
+        (None, None, None, None) => {}
+        (Some(directory), Some(maximum_bytes), Some(maximum_items), Some(retention)) => {
             policy.recovery = RecoveryPolicy::Enabled(RecoveryLimits {
                 directory,
                 maximum_bytes,
                 maximum_items,
+                retention,
             });
         }
         _ => return Err(CliError::InvalidArguments),
@@ -426,6 +432,8 @@ mod tests {
             OsString::from("4096"),
             OsString::from("--recovery-max-items"),
             OsString::from("8"),
+            OsString::from("--recovery-retention-seconds"),
+            OsString::from("86400"),
             OsString::from("--"),
             OsString::from(r"C:\tool.exe"),
         ])
@@ -452,6 +460,7 @@ mod tests {
                 directory: PathBuf::from(r"C:\recovery"),
                 maximum_bytes: 4_096,
                 maximum_items: 8,
+                retention: Duration::from_secs(86_400),
             })
         );
     }
