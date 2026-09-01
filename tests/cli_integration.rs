@@ -664,7 +664,10 @@ fn agent_workspace_toolchain_matrix_stays_inside_workspace() {
         system_language_roots.iter().all(|root| root.is_absolute()),
         "system language roots must be absolute: {system_language_roots:?}"
     );
-    let workspace = agent_fixture_directory("工具链 workspace");
+    // Keep the cross-tool fixture portable across narrow-character Windows
+    // toolchains. Unicode path behavior is covered independently by the native
+    // filesystem and process suites.
+    let workspace = agent_fixture_directory("agent-toolchain-workspace");
     let private_home = workspace.join(".agent-home");
     let private_temp = workspace.join(".agent-temp");
     let git_template = workspace.join(".git-template");
