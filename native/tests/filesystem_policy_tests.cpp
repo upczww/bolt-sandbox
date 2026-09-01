@@ -1,5 +1,6 @@
 #include "hook/filesystem/filesystem_policy.h"
 #include "hook/filesystem/access_classifier.h"
+#include "hook/filesystem/safe_device.h"
 
 #include "protocol/version.h"
 
@@ -109,6 +110,15 @@ std::vector<std::uint8_t> policy_payload() {
 }  // namespace
 
 bool RunFilesystemPolicyTests() {
+    if (!bolt::filesystem::IsNetworkDevicePath(L"\\Device\\Afd") ||
+        !bolt::filesystem::IsNetworkDevicePath(
+            L"\\Device\\Afd\\AsyncConnectHlp") ||
+        bolt::filesystem::IsNetworkDevicePath(L"\\Device\\Af") ||
+        bolt::filesystem::IsNetworkDevicePath(
+            L"\\Device\\AfdLookalike\\AsyncConnectHlp") ||
+        bolt::filesystem::IsNetworkDevicePath(L"C:\\Device\\Afd")) {
+        return false;
+    }
     const auto payload = policy_payload();
     std::unique_ptr<bolt::filesystem::FilesystemPolicy> policy;
     if (payload.empty() || bolt::filesystem::FilesystemPolicy::Load(payload.data(), payload.size(), policy) !=
