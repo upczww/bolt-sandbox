@@ -11,6 +11,7 @@ const LAUNCHER_NAME: &str = "bolt-sandbox-launcher.exe";
 const X86_LAUNCHER_NAME: &str = "bolt-sandbox-launcher-x86.exe";
 const X86_HOOK_NAME: &str = "bolt-sandbox-x86.dll";
 const X64_HOOK_NAME: &str = "bolt-sandbox-x64.dll";
+const DNS_PROXY_NAME: &str = "bolt-sandbox-dns-proxy.exe";
 const FILE_SHARE_READ: u32 = 1;
 
 pub(super) fn open_read_lease(path: &Path) -> std::io::Result<File> {
@@ -25,6 +26,8 @@ pub(super) struct OpenedComponents {
     hook_path: PathBuf,
     launcher_handle: File,
     hook_handle: File,
+    dns_proxy_path: Option<PathBuf>,
+    dns_proxy_handle: Option<File>,
 }
 
 impl OpenedComponents {
@@ -43,6 +46,14 @@ impl OpenedComponents {
     pub(super) const fn hook_handle(&self) -> &File {
         &self.hook_handle
     }
+
+    pub(super) fn dns_proxy_path(&self) -> Option<&Path> {
+        self.dns_proxy_path.as_deref()
+    }
+
+    pub(super) const fn dns_proxy_handle(&self) -> Option<&File> {
+        self.dns_proxy_handle.as_ref()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,14 +61,18 @@ pub(super) enum ComponentOpenError {
     RootNotAbsolute,
     LauncherOpen,
     HookOpen,
+    DnsProxyOpen,
     InvalidLauncherImage,
     InvalidHookImage,
+    InvalidDnsProxyImage,
     LauncherArchitectureMismatch,
     HookArchitectureMismatch,
+    DnsProxyArchitectureMismatch,
     ManifestOpen,
     InvalidManifest,
     LauncherHashMismatch,
     HookHashMismatch,
+    DnsProxyHashMismatch,
     ManifestHashMismatch,
 }
 
@@ -73,6 +88,20 @@ pub(super) fn open_components_with_manifest_digest(
     target_architecture: ImageArchitecture,
     expected_manifest_digest: Option<&[u8; 32]>,
 ) -> Result<OpenedComponents, ComponentOpenError> {
+    open_components_with_manifest_digest_and_network_proxy(
+        root,
+        target_architecture,
+        expected_manifest_digest,
+        false,
+    )
+}
+
+pub(super) fn open_components_with_manifest_digest_and_network_proxy(
+    root: &Path,
+    target_architecture: ImageArchitecture,
+    expected_manifest_digest: Option<&[u8; 32]>,
+    require_network_proxy: bool,
+) -> Result<OpenedComponents, ComponentOpenError> {
     if !root.is_absolute() {
         return Err(ComponentOpenError::RootNotAbsolute);
     }
@@ -85,9 +114,15 @@ pub(super) fn open_components_with_manifest_digest(
         ImageArchitecture::X86 => X86_HOOK_NAME,
         ImageArchitecture::X64 => X64_HOOK_NAME,
     });
+    let dns_proxy_path = require_network_proxy.then(|| root.join(DNS_PROXY_NAME));
     let mut launcher_handle =
         open_read_lease(&launcher_path).map_err(|_| ComponentOpenError::LauncherOpen)?;
     let mut hook_handle = open_read_lease(&hook_path).map_err(|_| ComponentOpenError::HookOpen)?;
+    let mut dns_proxy_handle = dns_proxy_path
+        .as_deref()
+        .map(open_read_lease)
+        .transpose()
+        .map_err(|_| ComponentOpenError::DnsProxyOpen)?;
     let manifest =
         read_manifest(root, expected_manifest_digest).map_err(map_manifest_open_error)?;
     let launcher_name = launcher_path
@@ -108,6 +143,21 @@ pub(super) fn open_components_with_manifest_digest(
         .map_err(|_| ComponentOpenError::LauncherHashMismatch)?;
     verify_component(&mut hook_handle, hook_record)
         .map_err(|_| ComponentOpenError::HookHashMismatch)?;
+    if let (Some(path), Some(handle)) = (dns_proxy_path.as_deref(), dns_proxy_handle.as_mut()) {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(ComponentOpenError::InvalidManifest)?;
+        let record = manifest
+            .get(name)
+            .ok_or(ComponentOpenError::InvalidManifest)?;
+        verify_component(handle, record).map_err(|_| ComponentOpenError::DnsProxyHashMismatch)?;
+        let architecture = detect_image_architecture_from_reader(handle)
+            .map_err(|_| ComponentOpenError::InvalidDnsProxyImage)?;
+        if architecture != ImageArchitecture::X64 {
+            return Err(ComponentOpenError::DnsProxyArchitectureMismatch);
+        }
+    }
 
     let launcher_architecture = detect_image_architecture_from_reader(&mut launcher_handle)
         .map_err(|_| ComponentOpenError::InvalidLauncherImage)?;
@@ -125,6 +175,8 @@ pub(super) fn open_components_with_manifest_digest(
         hook_path,
         launcher_handle,
         hook_handle,
+        dns_proxy_path,
+        dns_proxy_handle,
     })
 }
 
@@ -172,7 +224,7 @@ mod tests {
                 .expect("x86 hook fixture must be written");
             fs::write(root.join(X64_HOOK_NAME), pe_image(0x8664))
                 .expect("x64 hook fixture must be written");
-            fs::write(root.join("bolt-sandbox-dns-proxy.exe"), pe_image(0x8664))
+            fs::write(root.join(DNS_PROXY_NAME), pe_image(0x8664))
                 .expect("DNS proxy fixture must be written");
             write_manifest(&root);
             Self { root }
@@ -205,7 +257,7 @@ mod tests {
             X86_LAUNCHER_NAME,
             X86_HOOK_NAME,
             X64_HOOK_NAME,
-            "bolt-sandbox-dns-proxy.exe",
+            DNS_PROXY_NAME,
         ];
         let mut manifest = Vec::from(*b"BCM1");
         manifest.extend_from_slice(&1_u16.to_le_bytes());
@@ -354,14 +406,12 @@ mod tests {
             true,
         )
         .expect("allow-list components must open");
-        assert_eq!(
-            components.dns_proxy_path(),
-            Some(fixture.root.join("bolt-sandbox-dns-proxy.exe").as_path())
-        );
+        let expected_proxy = fixture.root.join(DNS_PROXY_NAME);
+        assert_eq!(components.dns_proxy_path(), Some(expected_proxy.as_path()));
         assert!(components.dns_proxy_handle().is_some());
         drop(components);
 
-        fs::remove_file(fixture.root.join("bolt-sandbox-dns-proxy.exe"))
+        fs::remove_file(fixture.root.join(DNS_PROXY_NAME))
             .expect("DNS proxy fixture must be removed");
         assert_eq!(
             open_components_with_manifest_digest_and_network_proxy(

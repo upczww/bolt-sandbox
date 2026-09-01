@@ -9,6 +9,8 @@
 #include "common/immutable_policy_mapping.h"
 #include "common/private_pipe.h"
 #include "common/suspended_process.h"
+#include "hook/network/dns_proxy_process.h"
+#include "hook/network/network_policy.h"
 
 #include <algorithm>
 #include <array>
@@ -18,6 +20,8 @@
 #include <cstring>
 #include <cwchar>
 #include <limits>
+#include <filesystem>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -25,12 +29,15 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <bcrypt.h>
 
 namespace {
 
 constexpr DWORD kStartupTimeoutMilliseconds = 5'000;
 constexpr DWORD kEventClosureGraceMilliseconds = 100;
 constexpr std::size_t kStreamChunkLength = 4'096;
+constexpr std::uint32_t kDnsProxyMaximumFrameLength = 64 * 1'024;
+constexpr std::uint32_t kDnsProxyMaximumRequests = 1'024;
 
 void CloseIfValid(const HANDLE handle) noexcept {
     if (handle != nullptr && handle != INVALID_HANDLE_VALUE) {
@@ -491,6 +498,79 @@ std::wstring EventPipeName(
     return name;
 }
 
+bool CurrentExecutablePath(std::filesystem::path& path) {
+    std::wstring buffer(32'768, L'\0');
+    const DWORD length = GetModuleFileNameW(
+        nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length == buffer.size()) {
+        return false;
+    }
+    buffer.resize(length);
+    path = std::move(buffer);
+    return path.is_absolute();
+}
+
+bool DuplicateInheritableHandle(
+    const HANDLE source,
+    HANDLE& duplicate) noexcept {
+    duplicate = nullptr;
+    return source != nullptr && source != INVALID_HANDLE_VALUE &&
+           DuplicateHandle(
+               GetCurrentProcess(), source, GetCurrentProcess(), &duplicate,
+               0, TRUE, DUPLICATE_SAME_ACCESS) != FALSE;
+}
+
+bool StartNetworkProxy(
+    const bolt::protocol::LauncherStartRequest& request,
+    bolt::common::ExecutionJob& job,
+    std::unique_ptr<bolt::network::DnsProxyProcess>& process,
+    bolt::protocol::DnsProxySession& session,
+    HANDLE& target_request,
+    HANDLE& target_response) noexcept {
+    std::unique_ptr<bolt::network::NetworkPolicy> policy;
+    if (bolt::network::NetworkPolicy::Load(
+            request.policy.data(), request.policy.size(), policy) !=
+            bolt::network::PolicyLoadStatus::kValid ||
+        policy == nullptr) {
+        return false;
+    }
+    if (policy->mode() != bolt::network::Mode::kAllowList) {
+        return true;
+    }
+    session.nonce = request.nonce;
+    if (BCryptGenRandom(
+            nullptr, session.authentication_key.data(),
+            static_cast<ULONG>(session.authentication_key.size()),
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) {
+        return false;
+    }
+    std::filesystem::path launcher;
+    if (!CurrentExecutablePath(launcher)) {
+        return false;
+    }
+    const auto proxy =
+        launcher.parent_path() / L"bolt-sandbox-dns-proxy.exe";
+    if (bolt::network::DnsProxyProcess::Start(
+            proxy, request.policy.data(), request.policy.size(), session,
+            kDnsProxyMaximumFrameLength, kDnsProxyMaximumRequests, process) !=
+            bolt::network::DnsProxyProcessStatus::kSuccess ||
+        process == nullptr ||
+        job.Assign(process->process_handle()) !=
+            bolt::common::JobStatus::kSuccess ||
+        !DuplicateInheritableHandle(
+            process->request_write_handle(), target_request) ||
+        !DuplicateInheritableHandle(
+            process->response_read_handle(), target_response)) {
+        CloseIfValid(target_request);
+        CloseIfValid(target_response);
+        target_request = nullptr;
+        target_response = nullptr;
+        return false;
+    }
+    process->CloseClientHandles();
+    return true;
+}
+
 bool ToAnsiPath(const std::wstring& path, std::string& encoded) {
     const int required = WideCharToMultiByte(
         CP_ACP, WC_NO_BEST_FIT_CHARS, path.c_str(), -1, nullptr, 0, nullptr,
@@ -532,6 +612,16 @@ int RunDecodedSession(
         }
         return ERROR_NOT_ENOUGH_MEMORY;
     }
+    std::unique_ptr<bolt::network::DnsProxyProcess> dns_proxy;
+    bolt::protocol::DnsProxySession dns_session{};
+    HANDLE dns_request = nullptr;
+    HANDLE dns_response = nullptr;
+    if (!StartNetworkProxy(
+            request, job, dns_proxy, dns_session, dns_request,
+            dns_response)) {
+        CloseHandle(release);
+        return ERROR_NETWORK_UNREACHABLE;
+    }
     SECURITY_ATTRIBUTES inheritable{};
     inheritable.nLength = sizeof(inheritable);
     inheritable.bInheritHandle = TRUE;
@@ -552,6 +642,8 @@ int RunDecodedSession(
         CloseIfValid(stdout_write);
         CloseIfValid(stderr_read);
         CloseIfValid(stderr_write);
+        CloseIfValid(dns_request);
+        CloseIfValid(dns_response);
         CloseHandle(release);
         return ERROR_NOT_ENOUGH_MEMORY;
     }
@@ -566,12 +658,14 @@ int RunDecodedSession(
         CloseHandle(stdout_write);
         CloseHandle(stderr_read);
         CloseHandle(stderr_write);
+        CloseIfValid(dns_request);
+        CloseIfValid(dns_response);
         CloseHandle(release);
         return ERROR_PIPE_NOT_CONNECTED;
     }
     std::wstring command(
         request.command_line.begin(), request.command_line.end() - 1);
-    std::array<HANDLE, 9> inherited = {
+    std::array<HANDLE, 11> inherited = {
         policy.handle(), event_client, stdin_read, stdout_write, stderr_write};
     std::size_t inherited_count = 5;
     if (request.recovery_enabled) {
@@ -579,6 +673,10 @@ int RunDecodedSession(
         inherited[inherited_count++] = recovery_channels.response_read;
         inherited[inherited_count++] = recovery_channels.mutex;
         inherited[inherited_count++] = recovery_channels.counter;
+    }
+    if (dns_proxy != nullptr) {
+        inherited[inherited_count++] = dns_request;
+        inherited[inherited_count++] = dns_response;
     }
     bolt::common::ProcessLaunchOptions options{
         request.program,
@@ -603,7 +701,12 @@ int RunDecodedSession(
         process.AssignTo(job) == bolt::common::ProcessStatus::kSuccess &&
         process.InstallRuntimePayload(
             policy.handle(), policy.length(), event_client, release,
-            request.nonce) == bolt::common::ProcessStatus::kSuccess &&
+            request.nonce, dns_request, dns_response,
+            dns_proxy == nullptr ? nullptr : &dns_session.authentication_key,
+            dns_proxy == nullptr ? 0 : kDnsProxyMaximumFrameLength,
+            dns_proxy == nullptr ? 0 : dns_proxy->tcp_proxy_port(),
+            dns_proxy == nullptr ? 0 : dns_proxy->tcp_proxy_ipv6_port()) ==
+            bolt::common::ProcessStatus::kSuccess &&
         process.Inject(hook_path) == bolt::common::ProcessStatus::kSuccess &&
         process.BeginHookInitialization() ==
             bolt::common::ProcessStatus::kSuccess;
@@ -611,6 +714,8 @@ int RunDecodedSession(
     CloseHandle(stdin_read);
     CloseHandle(stdout_write);
     CloseHandle(stderr_write);
+    CloseIfValid(dns_request);
+    CloseIfValid(dns_response);
     recovery_channels.CloseTargetEnds();
     std::array<std::uint8_t, bolt::protocol::kReadyFrameLength> ready{};
     const bool ready_ok = prepared &&

@@ -116,7 +116,9 @@ directory:
 - `bolt-sandbox-launcher.exe` — x64 launcher;
 - `bolt-sandbox-launcher-x86.exe` — x86 launcher;
 - `bolt-sandbox-x64.dll` — x64 hook;
-- `bolt-sandbox-x86.dll` — x86 hook; and
+- `bolt-sandbox-x86.dll` — x86 hook;
+- `bolt-sandbox-dns-proxy.exe` — trusted x64 DNS/TCP policy proxy used only by
+  `AllowList`; and
 - `bolt-sandbox-components.manifest` — version, length, and SHA-256 identity for
   the compatible set.
 
@@ -261,6 +263,27 @@ Filesystem options are `--read-write`, `--read-only`, `--deny`,
 `--registry-read-write`. Recovery requires all four options:
 `--recovery-dir`, `--recovery-max-bytes`, `--recovery-max-items`, and
 `--recovery-retention-seconds`.
+
+Network modes are `unrestricted`, `denied`, and `allow-list`. Allow-list rules
+use repeatable `--allow-domain`, `--allow-cidr`, and `--allow-port` options; a
+port may be a single value or an inclusive range:
+
+```powershell
+bolt-sandbox.exe run `
+  --component-root C:\Bolt\sandbox\0.1.0 `
+  --cwd C:\agent-work\task-123 `
+  --network allow-list `
+  --allow-domain example.org `
+  --allow-domain *.example.net `
+  --allow-cidr 192.0.2.0/24 `
+  --allow-port 443 `
+  --allow-port 8000-8080 `
+  -- C:\Windows\System32\curl.exe --noproxy * https://example.org
+```
+
+At least one allow-list rule is required. Domain authorization is bound to the
+resolved IP and requesting process for the DNS TTL; the requested TCP port is
+checked independently. Unsupported restrictive-mode transports fail closed.
 
 The CLI inherits the host environment and relies on its configured credential
 name list to strip known broker/model secrets. Its diagnostics print fixed

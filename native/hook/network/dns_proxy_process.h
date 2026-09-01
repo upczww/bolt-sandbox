@@ -48,6 +48,7 @@ class DnsProxyProcess final {
     std::uint16_t tcp_proxy_ipv6_port() const noexcept {
         return tcp_proxy_ipv6_port_;
     }
+    HANDLE process_handle() const noexcept { return process_; }
 
   private:
     DnsProxyProcess() noexcept = default;

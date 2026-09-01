@@ -12,6 +12,122 @@ namespace {
 
 constexpr std::size_t kPrefixLength = 4;
 constexpr std::size_t kMaximumResponseLength = 1'024;
+constexpr DWORD kProxyHandshakeTimeoutMilliseconds = 2'000;
+
+class NonblockingHandshakeScope final {
+  public:
+    explicit NonblockingHandshakeScope(const SOCKET socket) noexcept
+        : socket_(socket) {}
+
+    ~NonblockingHandshakeScope() noexcept {
+        if (!active_) {
+            return;
+        }
+        setsockopt(
+            socket_, SOL_SOCKET, SO_RCVTIMEO,
+            reinterpret_cast<const char*>(&receive_timeout_),
+            sizeof(receive_timeout_));
+        setsockopt(
+            socket_, SOL_SOCKET, SO_SNDTIMEO,
+            reinterpret_cast<const char*>(&send_timeout_),
+            sizeof(send_timeout_));
+        RestoreNonblocking();
+    }
+
+    NonblockingHandshakeScope(const NonblockingHandshakeScope&) = delete;
+    NonblockingHandshakeScope& operator=(
+        const NonblockingHandshakeScope&) = delete;
+
+    bool CompletePendingConnect(std::uint32_t& network_error) noexcept {
+        fd_set writable{};
+        fd_set failed{};
+        FD_ZERO(&writable);
+        FD_ZERO(&failed);
+        FD_SET(socket_, &writable);
+        FD_SET(socket_, &failed);
+        timeval timeout{};
+        timeout.tv_sec =
+            static_cast<long>(kProxyHandshakeTimeoutMilliseconds / 1'000);
+        timeout.tv_usec = static_cast<long>(
+            (kProxyHandshakeTimeoutMilliseconds % 1'000) * 1'000);
+        const int selected =
+            select(0, nullptr, &writable, &failed, &timeout);
+        if (selected <= 0) {
+            network_error = selected == 0
+                                ? WSAETIMEDOUT
+                                : static_cast<std::uint32_t>(WSAGetLastError());
+            return false;
+        }
+        int socket_error = 0;
+        int error_length = sizeof(socket_error);
+        if (getsockopt(
+                socket_, SOL_SOCKET, SO_ERROR,
+                reinterpret_cast<char*>(&socket_error), &error_length) ==
+                SOCKET_ERROR ||
+            socket_error != 0) {
+            network_error = socket_error == 0
+                                ? static_cast<std::uint32_t>(WSAGetLastError())
+                                : static_cast<std::uint32_t>(socket_error);
+            return false;
+        }
+        int option_length = sizeof(receive_timeout_);
+        if (getsockopt(
+                socket_, SOL_SOCKET, SO_RCVTIMEO,
+                reinterpret_cast<char*>(&receive_timeout_), &option_length) ==
+                SOCKET_ERROR) {
+            network_error = static_cast<std::uint32_t>(WSAGetLastError());
+            return false;
+        }
+        option_length = sizeof(send_timeout_);
+        if (getsockopt(
+                socket_, SOL_SOCKET, SO_SNDTIMEO,
+                reinterpret_cast<char*>(&send_timeout_), &option_length) ==
+                SOCKET_ERROR) {
+            network_error = static_cast<std::uint32_t>(WSAGetLastError());
+            return false;
+        }
+        u_long disabled = 0;
+        const DWORD timeout_value = kProxyHandshakeTimeoutMilliseconds;
+        if (ioctlsocket(socket_, FIONBIO, &disabled) == SOCKET_ERROR) {
+            network_error = static_cast<std::uint32_t>(WSAGetLastError());
+            return false;
+        }
+        if (setsockopt(
+                socket_, SOL_SOCKET, SO_RCVTIMEO,
+                reinterpret_cast<const char*>(&timeout_value),
+                sizeof(timeout_value)) == SOCKET_ERROR) {
+            network_error = static_cast<std::uint32_t>(WSAGetLastError());
+            RestoreNonblocking();
+            return false;
+        }
+        if (setsockopt(
+                socket_, SOL_SOCKET, SO_SNDTIMEO,
+                reinterpret_cast<const char*>(&timeout_value),
+                sizeof(timeout_value)) == SOCKET_ERROR) {
+            network_error = static_cast<std::uint32_t>(WSAGetLastError());
+            setsockopt(
+                socket_, SOL_SOCKET, SO_RCVTIMEO,
+                reinterpret_cast<const char*>(&receive_timeout_),
+                sizeof(receive_timeout_));
+            RestoreNonblocking();
+            return false;
+        }
+        active_ = true;
+        network_error = 0;
+        return true;
+    }
+
+  private:
+    void RestoreNonblocking() const noexcept {
+        u_long enabled = 1;
+        ioctlsocket(socket_, FIONBIO, &enabled);
+    }
+
+    SOCKET socket_ = INVALID_SOCKET;
+    DWORD receive_timeout_ = 0;
+    DWORD send_timeout_ = 0;
+    bool active_ = false;
+};
 
 bool WriteExact(
     const SOCKET socket,
@@ -152,11 +268,15 @@ TcpProxyClientStatus ConnectTcpSocketThroughProxy(
             endpoint->sin6_port = htons(proxy_port);
             proxy_length = sizeof(*endpoint);
         }
+        NonblockingHandshakeScope nonblocking_handshake(socket);
         if (original_connect(
                 socket, reinterpret_cast<const sockaddr*>(&proxy),
                 proxy_length) == SOCKET_ERROR) {
             network_error = static_cast<std::uint32_t>(WSAGetLastError());
-            return TcpProxyClientStatus::kProxyConnectFailed;
+            if (network_error != WSAEWOULDBLOCK ||
+                !nonblocking_handshake.CompletePendingConnect(network_error)) {
+                return TcpProxyClientStatus::kProxyConnectFailed;
+            }
         }
         const auto request_prefix = Prefix(request.size());
         if (!WriteExact(

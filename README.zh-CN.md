@@ -104,6 +104,8 @@ Agent 必须把以下文件作为一个整体放到受 ACL 保护、带版本的
 - `bolt-sandbox-launcher-x86.exe`：x86 Launcher；
 - `bolt-sandbox-x64.dll`：x64 Hook；
 - `bolt-sandbox-x86.dll`：x86 Hook；
+- `bolt-sandbox-dns-proxy.exe`：仅由 `AllowList` 使用的可信 x64 DNS/TCP
+  策略代理；
 - `bolt-sandbox-components.manifest`：兼容组件集的版本、长度与 SHA-256 身份。
 
 不要在不同 Release 之间单独复制 DLL。生产宿主应固定 Manifest SHA-256，要求
@@ -240,6 +242,27 @@ bolt-sandbox.exe run `
 `--registry-inherit-user`、`--registry-read-write`。启用恢复时必须同时设置
 `--recovery-dir`、`--recovery-max-bytes`、`--recovery-max-items` 和
 `--recovery-retention-seconds`。
+
+网络模式包括 `unrestricted`、`denied` 和 `allow-list`。AllowList 使用可重复
+指定的 `--allow-domain`、`--allow-cidr`、`--allow-port`；端口可以是单值或
+闭区间：
+
+```powershell
+bolt-sandbox.exe run `
+  --component-root C:\Bolt\sandbox\0.1.0 `
+  --cwd C:\agent-work\task-123 `
+  --network allow-list `
+  --allow-domain example.org `
+  --allow-domain *.example.net `
+  --allow-cidr 192.0.2.0/24 `
+  --allow-port 443 `
+  --allow-port 8000-8080 `
+  -- C:\Windows\System32\curl.exe --noproxy * https://example.org
+```
+
+AllowList 至少需要一条规则。域名授权会在 DNS TTL 内绑定到解析出的 IP 和
+发起请求的进程；TCP 目标端口仍独立校验。限制模式下不支持的传输会 Fail
+Closed。
 
 CLI 会继承宿主环境，并用内置凭据名列表剥离已知 Broker/模型 Secret。诊断只
 输出固定类别与 PID，不输出命令参数、环境值或路径。需要类型化事件、自定义

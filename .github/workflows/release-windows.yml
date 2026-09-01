@@ -130,7 +130,8 @@ jobs:
             'target\native\x64\Release\bolt-sandbox-launcher.exe',
             'target\native\x86\Release\bolt-sandbox-launcher-x86.exe',
             'target\native\x64\Release\bolt-sandbox-x64.dll',
-            'target\native\x86\Release\bolt-sandbox-x86.dll'
+            'target\native\x86\Release\bolt-sandbox-x86.dll',
+            'target\native\x64\Release\bolt-sandbox-dns-proxy.exe'
           )
           foreach ($file in $files) {
             & $signtool.FullName sign /sha1 $env:CERTIFICATE_THUMBPRINT `

@@ -31,7 +31,13 @@ bool IsAuthorized(
     const BindingKey key{
         session.nonce, request.process_id, request.ascii_domain.c_str(), family,
         request.address.data(), address_length, request.port};
-    return bindings.IsAuthorized(key, now);
+    if (bindings.IsAuthorized(key, now)) {
+        return true;
+    }
+    const BindingKey service_agnostic_key{
+        session.nonce, request.process_id, request.ascii_domain.c_str(), family,
+        request.address.data(), address_length, 0};
+    return bindings.IsAuthorized(service_agnostic_key, now);
 }
 
 }  // namespace

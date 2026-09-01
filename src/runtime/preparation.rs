@@ -9,7 +9,8 @@ use super::architecture::{
     ImageArchitecture, ImageArchitectureError, detect_image_architecture_from_reader,
 };
 use super::components::{
-    ComponentOpenError, OpenedComponents, open_components_with_manifest_digest, open_read_lease,
+    ComponentOpenError, OpenedComponents, open_components_with_manifest_digest_and_network_proxy,
+    open_read_lease,
 };
 use crate::{
     SandboxError, SandboxRequest,
@@ -212,6 +213,7 @@ fn prepare_launch_with_identity_factory_and_denies(
             filesystem: compiled_policy.filesystem.clone(),
         }),
     };
+    let requires_network_proxy = compiled_policy.requires_network_proxy();
     let policy_payload = payload::seal(&compiled_policy)
         .map_err(|_| LaunchPreparationError::PolicyPayload)?
         .into_bytes();
@@ -220,10 +222,11 @@ fn prepare_launch_with_identity_factory_and_denies(
         open_read_lease(&request_value.program).map_err(|_| LaunchPreparationError::ProgramOpen)?;
     let architecture = detect_image_architecture_from_reader(&mut program_handle)
         .map_err(map_architecture_error)?;
-    let components = open_components_with_manifest_digest(
+    let components = open_components_with_manifest_digest_and_network_proxy(
         component_root,
         architecture,
         expected_component_manifest_sha256,
+        requires_network_proxy,
     )
     .map_err(LaunchPreparationError::Component)?;
     let execution_identity = create_identity()?;

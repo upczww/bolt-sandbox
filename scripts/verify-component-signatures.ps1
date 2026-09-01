@@ -13,7 +13,8 @@ $names = @(
     'bolt-sandbox-launcher.exe',
     'bolt-sandbox-launcher-x86.exe',
     'bolt-sandbox-x64.dll',
-    'bolt-sandbox-x86.dll'
+    'bolt-sandbox-x86.dll',
+    'bolt-sandbox-dns-proxy.exe'
 )
 $found = 0
 foreach ($name in $names) {

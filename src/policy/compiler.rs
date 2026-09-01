@@ -229,6 +229,12 @@ pub(crate) struct CompiledPolicy {
     pub(crate) recovery: CompiledRecoveryPolicy,
 }
 
+impl CompiledPolicy {
+    pub(crate) const fn requires_network_proxy(&self) -> bool {
+        matches!(self.network, CompiledNetworkPolicy::AllowList(_))
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum CompiledRecoveryPolicy {
     Disabled,

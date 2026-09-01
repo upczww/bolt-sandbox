@@ -870,9 +870,11 @@ The production package contains:
 - `bolt-sandbox-launcher.exe` and `bolt-sandbox-launcher-x86.exe`, private
   architecture-matched implementation artifacts.
 - `bolt-sandbox-x64.dll` and `bolt-sandbox-x86.dll`.
+- `bolt-sandbox-dns-proxy.exe`, a trusted x64 DNS/TCP policy proxy required by
+  allow-list mode for both x64 and x86 targets.
 
-Both launchers and both DLLs must share a compatible protocol version and be
-shipped, signed, integrity-checked, and updated as one unit. Packaging may embed
+Both launchers, both DLLs, and the proxy must share a compatible protocol
+version and be shipped, signed, integrity-checked, and updated as one unit. Packaging may embed
 the launcher and DLLs in the Agent-facing executable, but execution still
 requires architecture-specific DLLs to be extracted into a per-version,
 access-controlled directory. Extraction must be atomic, verify hashes before
@@ -1049,9 +1051,9 @@ Accepted:
 - Rust owns public APIs, policy, process lifecycle, and events.
 - The Rust library is the preferred Agent interface; an optional CLI is a thin
   adapter for standalone and cross-language use.
-- Releases are a compatible component set containing x64/x86 launchers and
-  x86/x64 hook DLLs, even when packaging presents a single executable to the
-  user.
+- Releases are a compatible component set containing x64/x86 launchers,
+  x86/x64 hook DLLs, and the trusted x64 DNS/TCP proxy, even when packaging
+  presents a single executable to the user.
 - Begin with one Rust crate and split the protocol only when reuse, fuzzing, or
   independent versioning requires it.
 - Detours and selected BuildXL native code provide the Windows hook foundation.

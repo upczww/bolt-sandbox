@@ -253,7 +253,9 @@ bolt_native_warnings(bolt-sandbox-launcher)
 target_include_directories(bolt-sandbox-launcher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(bolt-sandbox-launcher PRIVATE
     bolt-sandbox-common
+    bolt-sandbox-network
     bolt-sandbox-protocol
+    bcrypt
 )
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     set_target_properties(

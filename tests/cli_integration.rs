@@ -158,6 +158,69 @@ fn net_002_cli_denied_blocks_curl_after_afd_device_creation() {
     assert!(stderr.contains("sandbox-event network-violation"));
 }
 
+#[test]
+fn net_003_cli_allow_list_proxies_nonblocking_curl_for_allowed_endpoint_and_port() {
+    let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
+    else {
+        return;
+    };
+    let curl = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot must be available"))
+        .join(r"System32\curl.exe");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("local listener must bind");
+    listener
+        .set_nonblocking(true)
+        .expect("listener must be nonblocking");
+    let port = listener.local_addr().expect("listener has address").port();
+    let server_thread = thread::spawn(move || serve_one_http_request(&listener));
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-sandbox"))
+        .arg("run")
+        .arg("--component-root")
+        .arg(&component_root)
+        .arg("--cwd")
+        .arg(&component_root)
+        .arg("--manifest-sha256")
+        .arg(component_manifest_digest(&component_root))
+        .arg("--timeout-ms")
+        .arg("10000")
+        .arg("--network")
+        .arg("allow-list")
+        .arg("--allow-domain")
+        .arg("localhost")
+        .arg("--allow-cidr")
+        .arg("127.0.0.1/32")
+        .arg("--allow-port")
+        .arg(port.to_string())
+        .arg("--")
+        .arg(curl)
+        .args([
+            "--ipv4",
+            "--noproxy",
+            "*",
+            "--max-time",
+            "5",
+            "--silent",
+            "--show-error",
+            "--output",
+            "NUL",
+            "--write-out",
+            "http=%{http_code}",
+        ])
+        .arg(format!("http://localhost:{port}/"))
+        .output()
+        .expect("allow-list CLI curl fixture must launch");
+    let request_served = server_thread.join().expect("server thread must join");
+    let stderr = String::from_utf8(output.stderr).expect("CLI diagnostics are UTF-8");
+
+    assert!(
+        request_served,
+        "allow-listed curl never reached the local server: exit={:?} stderr={stderr}",
+        output.status.code()
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.stdout, b"http=200");
+    assert!(!stderr.contains("sandbox-event network-violation"));
+}
+
 fn serve_one_http_request(listener: &TcpListener) -> bool {
     let deadline = Instant::now() + Duration::from_secs(7);
     while Instant::now() < deadline {

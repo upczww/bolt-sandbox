@@ -26,7 +26,8 @@ $files = @(
     (Join-Path $repositoryRoot 'target\native\x64\Release\bolt-sandbox-launcher.exe'),
     (Join-Path $repositoryRoot 'target\native\x86\Release\bolt-sandbox-launcher-x86.exe'),
     (Join-Path $repositoryRoot 'target\native\x64\Release\bolt-sandbox-x64.dll'),
-    (Join-Path $repositoryRoot 'target\native\x86\Release\bolt-sandbox-x86.dll')
+    (Join-Path $repositoryRoot 'target\native\x86\Release\bolt-sandbox-x86.dll'),
+    (Join-Path $repositoryRoot 'target\native\x64\Release\bolt-sandbox-dns-proxy.exe')
 )
 foreach ($file in $files) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
