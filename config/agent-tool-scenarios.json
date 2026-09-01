@@ -44,8 +44,8 @@
     { "id": "msvc", "family": "native", "requiredOnHost": true, "commands": ["cl"], "candidates": ["{VisualStudio}\\VC\\Tools\\MSVC\\*\\bin\\Hostx64\\x64\\cl.exe"], "terminal": "pipes", "arguments": ["/nologo"], "acceptedExitCodes": [0, 2] },
 
     { "id": "go", "family": "go", "requiredOnHost": true, "commands": ["go"], "candidates": ["{ProgramFiles}\\Go\\bin\\go.exe"], "terminal": "pipes", "namedPipes": "isolated", "readOnly": ["{ToolRoot}"], "files": { "go.mod": "module agenttool\n\ngo 1.26\n", "main.go": "package main\nimport (\"fmt\";\"os\")\nfunc main(){os.WriteFile(\"go.txt\",[]byte(\"go\"),0600);fmt.Println(\"GO_OK\")}\n" }, "arguments": ["run", "."], "stdoutContains": ["GO_OK"], "expectedFiles": ["go.txt"], "environment": { "GOCACHE": "{Workspace}\\.go-cache", "GOPATH": "{Workspace}\\.go-path", "GOMODCACHE": "{Workspace}\\.go-mod-cache", "GOTOOLCHAIN": "local", "GOPROXY": "off" } },
-    { "id": "java", "family": "jvm", "requiredOnHost": false, "commands": ["java"], "terminal": "pipes" },
-    { "id": "javac", "family": "jvm", "requiredOnHost": false, "commands": ["javac"], "terminal": "pipes" },
+    { "id": "java", "family": "jvm", "requiredOnHost": false, "commands": ["java"], "terminal": "pipes", "namedPipes": "isolated", "readOnly": ["{ToolRoot}"], "files": { "Main.java": "public class Main { public static void main(String[] args) { System.out.println(\"JAVA_OK\"); } }" }, "arguments": ["{Workspace}\\Main.java"], "stdoutContains": ["JAVA_OK"], "environment": { "JAVA_TOOL_OPTIONS": "-Djava.io.tmpdir={Workspace}\\.temp -Duser.home={Workspace}\\.home" } },
+    { "id": "javac", "family": "jvm", "requiredOnHost": false, "commands": ["javac"], "terminal": "pipes", "namedPipes": "isolated", "readOnly": ["{ToolRoot}"], "files": { "Main.java": "public class Main { public static void main(String[] args) {} }" }, "arguments": ["{Workspace}\\Main.java"], "expectedFiles": ["Main.class"], "environment": { "JAVA_TOOL_OPTIONS": "-Djava.io.tmpdir={Workspace}\\.temp -Duser.home={Workspace}\\.home" } },
     { "id": "maven", "family": "jvm", "requiredOnHost": false, "commands": ["mvn"], "terminal": "pipes" },
     { "id": "gradle", "family": "jvm", "requiredOnHost": false, "commands": ["gradle"], "terminal": "pipes" },
     { "id": "dotnet", "family": "dotnet", "requiredOnHost": false, "commands": ["dotnet"], "terminal": "pipes" },
@@ -67,12 +67,12 @@
 
     { "id": "tar", "family": "archive-copy", "requiredOnHost": true, "commands": ["tar"], "terminal": "pipes", "files": { "input.txt": "archive\n" }, "arguments": ["-cf", "{Workspace}\\output.tar", "-C", "{Workspace}", "input.txt"], "expectedFiles": ["output.tar"] },
     { "id": "robocopy", "family": "archive-copy", "requiredOnHost": true, "commands": ["robocopy"], "terminal": "pipes", "files": { "source/input.txt": "copy\n" }, "arguments": ["{Workspace}\\source", "{Workspace}\\destination", "input.txt", "/NJH", "/NJS", "/NDL", "/NFL", "/R:0", "/W:0"], "acceptedExitCodes": [0, 1], "expectedFiles": ["destination/input.txt"] },
-    { "id": "sevenzip", "family": "archive-copy", "requiredOnHost": false, "commands": ["7z"], "terminal": "pipes" },
+    { "id": "sevenzip", "family": "archive-copy", "requiredOnHost": false, "commands": ["7z"], "terminal": "pipes", "readOnly": ["{ToolRoot}"], "files": { "input.txt": "archive\n" }, "arguments": ["a", "-bd", "-y", "{Workspace}\\output.7z", "{Workspace}\\input.txt"], "expectedFiles": ["output.7z"] },
 
     { "id": "curl", "family": "network", "requiredOnHost": true, "commands": ["curl"], "terminal": "pipes", "arguments": ["--version"], "stdoutContains": ["curl"] },
     { "id": "wget", "family": "network", "requiredOnHost": false, "commands": ["wget"], "terminal": "pipes" },
 
-    { "id": "sqlite", "family": "database", "requiredOnHost": false, "commands": ["sqlite3"], "terminal": "pipes" },
+    { "id": "sqlite", "family": "database", "requiredOnHost": false, "commands": ["sqlite3"], "terminal": "pipes", "readOnly": ["{ToolRoot}"], "arguments": ["{Workspace}\\agent.db", "CREATE TABLE item(value INTEGER); INSERT INTO item VALUES(7); SELECT value FROM item;"], "stdoutContains": ["7"], "expectedFiles": ["agent.db"] },
     { "id": "psql", "family": "database", "requiredOnHost": false, "commands": ["psql"], "terminal": "pipes" },
     { "id": "mysql", "family": "database", "requiredOnHost": false, "commands": ["mysql"], "terminal": "pipes" },
 
