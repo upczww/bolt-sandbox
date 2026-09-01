@@ -1,4 +1,5 @@
 #include "hook/filesystem/filesystem_policy.h"
+#include "hook/filesystem/policy_decision_cache.h"
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -365,6 +366,7 @@ Decision ApplyRule(const RuleKind kind, const Access access) noexcept {
 struct FilesystemPolicy::Impl {
     std::vector<Rule> rules;
     std::vector<PathAlias> aliases;
+    mutable PolicyDecisionCache decision_cache;
 };
 
 FilesystemPolicy::FilesystemPolicy(std::unique_ptr<Impl> implementation) noexcept
@@ -438,6 +440,9 @@ PolicyEvaluation FilesystemPolicy::Evaluate(
         evaluation.normalized_path = L"NUL";
         return evaluation;
     }
+    if (implementation_->decision_cache.Lookup(path, access, evaluation)) {
+        return evaluation;
+    }
     try {
         if (!AssignPolicyPath(
                 path, implementation_->aliases, evaluation.normalized_path)) {
@@ -468,6 +473,8 @@ PolicyEvaluation FilesystemPolicy::Evaluate(
                 }
             }
         }
+        static_cast<void>(
+            implementation_->decision_cache.Store(path, access, evaluation));
         return evaluation;
     } catch (...) {
         return PolicyEvaluation{};
