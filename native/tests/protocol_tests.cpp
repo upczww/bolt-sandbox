@@ -73,6 +73,7 @@ bool RunDnsBindingTests();
 bool RunDnsRecordParserTests();
 bool RunDnsProxyProtocolTests();
 bool RunBoundedDnsResolverTests();
+bool RunBoundedResolvedPathCacheTests();
 bool RunTcpProxyProtocolTests();
 bool RunTcpProxyServerTests();
 bool RunSystemTcpConnectorTests();
@@ -716,6 +717,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunBoundedDnsResolverTests()) {
         return 45;
+    }
+    if (!RunBoundedResolvedPathCacheTests()) {
+        return 52;
     }
     if (!RunDnsProxyServerTests()) {
         return 20;
