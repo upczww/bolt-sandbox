@@ -350,6 +350,7 @@ add_executable(bolt-sandbox-native-tests
     tests/runtime_payload_tests.cpp
     tests/shell_file_operation_tests.cpp
     tests/stream_tests.cpp
+    tests/workspace_security_tests.cpp
 )
 bolt_native_warnings(bolt-sandbox-native-tests)
 target_include_directories(bolt-sandbox-native-tests PRIVATE

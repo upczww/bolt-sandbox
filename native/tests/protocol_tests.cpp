@@ -51,6 +51,7 @@ bool RunDetoursTests();
 bool RunEventFrameTests();
 bool RunPolicyMappingTests();
 bool RunProjfsApiTests();
+bool RunWorkspaceSecurityTests();
 bool RunRuntimePayloadTests();
 bool RunBuildXlTreeTests();
 bool RunFilesystemPolicyTests();
@@ -673,6 +674,9 @@ int wmain(const int argument_count, wchar_t** arguments) {
     }
     if (!RunProjfsApiTests()) {
         return 52;
+    }
+    if (!RunWorkspaceSecurityTests()) {
+        return 54;
     }
     if (!RunRuntimePayloadTests()) {
         return 11;
