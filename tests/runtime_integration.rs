@@ -896,3 +896,107 @@ fn pol_007_host_mandatory_deny_overrides_broad_grant_and_recovery() {
     ));
     fs::remove_dir_all(fixture_root).expect("mandatory deny fixture must clean up");
 }
+
+#[test]
+fn rec_013_concurrent_children_commit_unique_consistent_artifacts() {
+    let Some((sandbox, component_root)) = configured_sandbox() else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let fixture_root = std::env::temp_dir().join(format!(
+        "bolt-sandbox-recovery-concurrent-{}-{fixture_id}",
+        std::process::id()
+    ));
+    let work = fixture_root.join("work");
+    let recovery = fixture_root.join("recovery");
+    fs::create_dir_all(&work).expect("work directory must be created");
+    fs::create_dir_all(&recovery).expect("recovery directory must be created");
+    let sources: Vec<PathBuf> = (0..4)
+        .map(|index| {
+            let path = work.join(format!("concurrent-{index}.bin"));
+            fs::write(&path, format!("content-{index}"))
+                .expect("concurrent source must be written");
+            path
+        })
+        .collect();
+    let policy = SandboxPolicy {
+        recovery: RecoveryPolicy::Enabled(RecoveryLimits {
+            directory: recovery.clone(),
+            maximum_bytes: 1_048_576,
+            maximum_items: 16,
+        }),
+        ..SandboxPolicy::default()
+    };
+    let mut arguments = vec![OsString::from("--recovery-concurrent-children-fixture")];
+    arguments.extend(sources.iter().map(|path| path.as_os_str().to_os_string()));
+    let mut handle = sandbox
+        .start(SandboxRequest {
+            program: component_root.join("bolt-sandbox-native-tests.exe"),
+            arguments,
+            cwd: work,
+            environment: BTreeMap::new(),
+            policy,
+            timeout: Some(Duration::from_secs(15)),
+        })
+        .expect("concurrent recovery fixture must start");
+    let stdout = handle.take_stdout().expect("stdout is available");
+    let stderr = handle.take_stderr().expect("stderr is available");
+    let events = handle.take_events().expect("events are available");
+    let (_stdout, stderr, events, result) = collect_execution(handle, stdout, stderr, events);
+
+    let remaining: Vec<_> = sources
+        .iter()
+        .filter(|path| path.exists())
+        .cloned()
+        .collect();
+    assert!(
+        remaining.is_empty(),
+        "remaining={remaining:?} result={result:?} events={events:?} stderr={}",
+        String::from_utf8_lossy(&stderr)
+    );
+    let mut contents: Vec<_> = recovery_files(&recovery)
+        .iter()
+        .map(|path| fs::read(path).expect("artifact must be readable"))
+        .collect();
+    contents.sort();
+    assert_eq!(
+        contents,
+        (0..4)
+            .map(|index| format!("content-{index}").into_bytes())
+            .collect::<Vec<_>>()
+    );
+    let mut artifact_ids: Vec<u64> = events
+        .iter()
+        .filter_map(|event| match event {
+            SandboxEvent::RecoveryArtifactCreated(artifact) => Some(artifact.artifact_id),
+            _ => None,
+        })
+        .collect();
+    artifact_ids.sort_unstable();
+    assert_eq!(artifact_ids, vec![1, 2, 3, 4]);
+    assert!(!contains_partial_directory(&recovery));
+    assert!(matches!(
+        result.terminal,
+        ExecutionTerminal::Process(ref exit) if exit.exit_code == Some(0)
+    ));
+    fs::remove_dir_all(fixture_root).expect("concurrent fixture must clean up");
+}
+
+fn contains_partial_directory(root: &Path) -> bool {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory).expect("recovery directory must be readable") {
+            let path = entry.expect("recovery entry must be readable").path();
+            if path.is_dir() {
+                if path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with(".partial"))
+                {
+                    return true;
+                }
+                pending.push(path);
+            }
+        }
+    }
+    false
+}

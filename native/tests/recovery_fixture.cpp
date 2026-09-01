@@ -1,11 +1,13 @@
 #include "protocol/recovery_protocol.h"
 #include "protocol/runtime_payload.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cwchar>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
@@ -288,4 +290,60 @@ int RunRecoveryDelayedDeleteFixture(
         return 359;
     }
     return DeleteFileW(arguments[2]) ? 0 : 360;
+}
+
+int RunRecoveryConcurrentChildrenFixture(
+    const int argument_count,
+    wchar_t** arguments) noexcept {
+    constexpr std::size_t child_count = 4;
+    if (argument_count != 2 + static_cast<int>(child_count)) {
+        return 361;
+    }
+    const std::wstring executable = CurrentExecutable();
+    if (executable.empty()) {
+        return 362;
+    }
+    std::array<int, child_count> results{};
+    std::array<std::thread, child_count> children;
+    for (std::size_t index = 0; index < child_count; ++index) {
+        children[index] = std::thread([&, index] {
+            std::wstring command = L"\"" + executable +
+                                   L"\" --recovery-delete-fixture \"" +
+                                   arguments[2 + index] + L"\"";
+            STARTUPINFOW startup{};
+            startup.cb = sizeof(startup);
+            PROCESS_INFORMATION process{};
+            if (!CreateProcessW(
+                    executable.c_str(), command.data(), nullptr, nullptr,
+                    TRUE, 0, nullptr, nullptr, &startup, &process)) {
+                results[index] = 363;
+                return;
+            }
+            const DWORD wait = WaitForSingleObject(process.hProcess, 10'000);
+            DWORD exit_code = 364;
+            if (wait != WAIT_OBJECT_0 ||
+                !GetExitCodeProcess(process.hProcess, &exit_code)) {
+                TerminateProcess(process.hProcess, 364);
+                WaitForSingleObject(process.hProcess, 5'000);
+            }
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+            results[index] = static_cast<int>(exit_code);
+        });
+    }
+    for (auto& child : children) {
+        child.join();
+    }
+    for (std::size_t index = 0; index < child_count; ++index) {
+        if (results[index] != 0) {
+            std::fwprintf(
+                stderr, L"recovery child %zu exit=%d\n", index,
+                results[index]);
+        }
+    }
+    return std::all_of(
+               results.begin(), results.end(),
+               [](const int result) { return result == 0; })
+               ? 0
+               : 365;
 }
