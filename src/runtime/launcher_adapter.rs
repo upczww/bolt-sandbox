@@ -32,23 +32,26 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 pub(super) fn start(
-    prepared: &PreparedLaunch,
+    prepared: PreparedLaunch,
     stream_capacity: usize,
 ) -> Result<ExecutionHandle, SandboxError> {
     let recovery = RecoveryCoordinator::new(prepared.recovery(), prepared.handshake_nonce())
         .map_err(|_| SandboxError::InitializationFailed {
             stage: InitializationStage::RecoveryCoordinator,
         })?;
-    let (launcher, control, process_id, transport) = spawn_and_acknowledge(prepared)?;
+    let timeout = prepared.timeout();
+    let nonce = *prepared.handshake_nonce();
+    let (launcher, control, process_id, transport) = spawn_and_acknowledge(&prepared)?;
     Ok(build_execution_handle(
         launcher,
         control,
         transport,
         process_id,
-        prepared.timeout(),
+        timeout,
         stream_capacity,
-        *prepared.handshake_nonce(),
+        nonce,
         recovery,
+        prepared,
     ))
 }
 
@@ -112,6 +115,7 @@ fn build_execution_handle(
     stream_capacity: usize,
     nonce: [u8; 16],
     recovery: Option<RecoveryCoordinator>,
+    execution_lease: PreparedLaunch,
 ) -> ExecutionHandle {
     let chunk_slots = stream_capacity.div_ceil(4_096).max(1);
     let (stdout_sender, stdout_receiver) = mpsc::sync_channel(chunk_slots);
@@ -122,6 +126,7 @@ fn build_execution_handle(
     let (transport_sender, transport_receiver) = mpsc::channel();
     thread::spawn(move || read_transport(transport, &transport_sender));
     thread::spawn(move || {
+        let _execution_lease = execution_lease;
         let result = run_execution(
             &mut launcher,
             &mut control,

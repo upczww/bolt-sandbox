@@ -92,5 +92,5 @@ pub(crate) fn start_execution(
         }
     })?;
     drop(request);
-    launcher_adapter::start(&prepared, stream_capacity)
+    launcher_adapter::start(prepared, stream_capacity)
 }

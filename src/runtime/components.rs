@@ -1,5 +1,6 @@
 use std::{
-    fs::File,
+    fs::{File, OpenOptions},
+    os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
@@ -10,6 +11,14 @@ const LAUNCHER_NAME: &str = "bolt-sandbox-launcher.exe";
 const X86_LAUNCHER_NAME: &str = "bolt-sandbox-launcher-x86.exe";
 const X86_HOOK_NAME: &str = "bolt-sandbox-x86.dll";
 const X64_HOOK_NAME: &str = "bolt-sandbox-x64.dll";
+const FILE_SHARE_READ: u32 = 1;
+
+pub(super) fn open_read_lease(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+}
 
 pub(super) struct OpenedComponents {
     launcher_path: PathBuf,
@@ -77,8 +86,8 @@ pub(super) fn open_components_with_manifest_digest(
         ImageArchitecture::X64 => X64_HOOK_NAME,
     });
     let mut launcher_handle =
-        File::open(&launcher_path).map_err(|_| ComponentOpenError::LauncherOpen)?;
-    let mut hook_handle = File::open(&hook_path).map_err(|_| ComponentOpenError::HookOpen)?;
+        open_read_lease(&launcher_path).map_err(|_| ComponentOpenError::LauncherOpen)?;
+    let mut hook_handle = open_read_lease(&hook_path).map_err(|_| ComponentOpenError::HookOpen)?;
     let manifest =
         read_manifest(root, expected_manifest_digest).map_err(map_manifest_open_error)?;
     let launcher_name = launcher_path
