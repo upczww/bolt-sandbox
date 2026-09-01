@@ -2,6 +2,7 @@
 
 #include <limits>
 #include <memory>
+#include <atomic>
 #include <string>
 #include <utility>
 
@@ -162,11 +163,68 @@ WorkspaceSecurityStatus ApplyDescriptor(
                : WorkspaceSecurityStatus::kSecurityApplyFailed;
 }
 
+WorkspaceSecurityStatus VerifyCreatedAuthorization(
+    const std::filesystem::path& path,
+    const bool is_directory) noexcept {
+    const auto parent = path.parent_path();
+    if (parent.empty()) {
+        return WorkspaceSecurityStatus::kUnsupportedObject;
+    }
+    static std::atomic_uint64_t next_probe{1};
+    std::filesystem::path probe;
+    HANDLE probe_file = INVALID_HANDLE_VALUE;
+    bool created = false;
+    for (std::uint32_t attempt = 0; attempt < 16 && !created; ++attempt) {
+        const auto identifier = next_probe.fetch_add(1, std::memory_order_relaxed);
+        probe = parent /
+                (L".bolt-acl-probe-" +
+                 std::to_wstring(GetCurrentProcessId()) + L"-" +
+                 std::to_wstring(identifier));
+        if (is_directory) {
+            created = CreateDirectoryW(probe.c_str(), nullptr) != FALSE;
+        } else {
+            probe_file = CreateFileW(
+                probe.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+            created = probe_file != INVALID_HANDLE_VALUE;
+        }
+        if (!created && GetLastError() != ERROR_ALREADY_EXISTS &&
+            GetLastError() != ERROR_FILE_EXISTS) {
+            return WorkspaceSecurityStatus::kSecurityQueryFailed;
+        }
+    }
+    if (!created) {
+        return WorkspaceSecurityStatus::kSecurityQueryFailed;
+    }
+    if (probe_file != INVALID_HANDLE_VALUE) {
+        CloseHandle(probe_file);
+    }
+    std::wstring expected;
+    std::wstring actual;
+    const auto expected_status = DescribeDescriptor(probe, expected);
+    const auto actual_status = DescribeDescriptor(path, actual);
+    const bool removed = is_directory
+                             ? RemoveDirectoryW(probe.c_str()) != FALSE
+                             : DeleteFileW(probe.c_str()) != FALSE;
+    if (!removed) {
+        return WorkspaceSecurityStatus::kSecurityQueryFailed;
+    }
+    if (expected_status != WorkspaceSecurityStatus::kSuccess) {
+        return expected_status;
+    }
+    if (actual_status != WorkspaceSecurityStatus::kSuccess) {
+        return actual_status;
+    }
+    return expected == actual ? WorkspaceSecurityStatus::kSuccess
+                              : WorkspaceSecurityStatus::kMismatch;
+}
+
 template <typename Visitor>
 WorkspaceSecurityStatus VisitPairs(
     const std::filesystem::path& source_root,
     const std::filesystem::path& destination_root,
     const std::uint32_t maximum_items,
+    const bool allow_missing_destination,
     Visitor&& visitor) noexcept {
     if (maximum_items == 0 || !source_root.is_absolute() ||
         !destination_root.is_absolute() ||
@@ -190,8 +248,16 @@ WorkspaceSecurityStatus VisitPairs(
             const auto relative =
                 std::filesystem::relative(entry.path(), source_root);
             const auto destination = destination_root / relative;
-            if (!IsSupportedPath(entry.path()) ||
-                !IsSupportedPath(destination) ||
+            if (!IsSupportedPath(entry.path())) {
+                return WorkspaceSecurityStatus::kUnsupportedObject;
+            }
+            if (!std::filesystem::exists(destination)) {
+                if (allow_missing_destination) {
+                    continue;
+                }
+                return WorkspaceSecurityStatus::kUnsupportedObject;
+            }
+            if (!IsSupportedPath(destination) ||
                 entry.is_directory() !=
                     std::filesystem::is_directory(destination) ||
                 entry.is_regular_file() !=
@@ -209,6 +275,43 @@ WorkspaceSecurityStatus VisitPairs(
     return WorkspaceSecurityStatus::kSuccess;
 }
 
+WorkspaceSecurityStatus VerifyCreatedEntries(
+    const std::filesystem::path& source_root,
+    const std::filesystem::path& destination_root,
+    const std::uint32_t maximum_items) noexcept {
+    std::uint32_t item_count = 0;
+    try {
+        for (const auto& entry :
+             std::filesystem::recursive_directory_iterator(destination_root)) {
+            if (item_count == maximum_items) {
+                return WorkspaceSecurityStatus::kQuotaExceeded;
+            }
+            ++item_count;
+            if (!IsSupportedPath(entry.path())) {
+                return WorkspaceSecurityStatus::kUnsupportedObject;
+            }
+            const auto relative =
+                std::filesystem::relative(entry.path(), destination_root);
+            const auto source = source_root / relative;
+            if (std::filesystem::exists(source)) {
+                continue;
+            }
+            const bool is_directory = entry.is_directory();
+            if (!is_directory && !entry.is_regular_file()) {
+                return WorkspaceSecurityStatus::kUnsupportedObject;
+            }
+            const auto status =
+                VerifyCreatedAuthorization(entry.path(), is_directory);
+            if (status != WorkspaceSecurityStatus::kSuccess) {
+                return status;
+            }
+        }
+    } catch (...) {
+        return WorkspaceSecurityStatus::kUnsupportedObject;
+    }
+    return WorkspaceSecurityStatus::kSuccess;
+}
+
 }  // namespace
 
 WorkspaceSecurityStatus CopyWorkspaceAuthorization(
@@ -216,7 +319,7 @@ WorkspaceSecurityStatus CopyWorkspaceAuthorization(
     const std::filesystem::path& destination_root,
     const std::uint32_t maximum_items) noexcept {
     return VisitPairs(
-        source_root, destination_root, maximum_items,
+        source_root, destination_root, maximum_items, false,
         [](const std::filesystem::path& source,
            const std::filesystem::path& destination) {
             return ApplyDescriptor(source, destination);
@@ -227,8 +330,8 @@ WorkspaceSecurityStatus VerifyWorkspaceAuthorization(
     const std::filesystem::path& source_root,
     const std::filesystem::path& destination_root,
     const std::uint32_t maximum_items) noexcept {
-    return VisitPairs(
-        source_root, destination_root, maximum_items,
+    const auto existing = VisitPairs(
+        source_root, destination_root, maximum_items, true,
         [](const std::filesystem::path& source,
            const std::filesystem::path& destination) {
             std::wstring source_descriptor;
@@ -247,6 +350,11 @@ WorkspaceSecurityStatus VerifyWorkspaceAuthorization(
                        ? WorkspaceSecurityStatus::kSuccess
                        : WorkspaceSecurityStatus::kMismatch;
         });
+    if (existing != WorkspaceSecurityStatus::kSuccess) {
+        return existing;
+    }
+    return VerifyCreatedEntries(
+        source_root, destination_root, maximum_items);
 }
 
 }  // namespace bolt::common
