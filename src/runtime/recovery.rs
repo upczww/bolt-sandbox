@@ -252,6 +252,10 @@ mod tests {
     use super::*;
     use crate::{SandboxPolicy, policy::compiler};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{
+        os::windows::fs::OpenOptionsExt,
+        time::{Duration, SystemTime},
+    };
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -276,6 +280,7 @@ mod tests {
             directory: store.clone(),
             maximum_bytes: 1_024,
             maximum_items: 4,
+            retention: std::time::Duration::from_secs(24 * 60 * 60),
             filesystem: compiled.filesystem,
         };
         let mut coordinator = RecoveryCoordinator::new(Some(&configuration), &[0xA5; 16])
@@ -313,6 +318,7 @@ mod tests {
             directory: store.clone(),
             maximum_bytes: 1_024,
             maximum_items: 4,
+            retention: std::time::Duration::from_secs(24 * 60 * 60),
             filesystem: compiled.filesystem,
         };
         let mut coordinator = RecoveryCoordinator::new(Some(&configuration), &[0x5A; 16])
@@ -357,6 +363,54 @@ mod tests {
         assert!(metadata.ends_with(&encoded_path));
         drop(coordinator);
         fs::remove_dir_all(root).expect("fixture must clean up");
+    }
+
+    #[test]
+    fn rec_008_cleanup_skips_active_and_fresh_execution_directories() {
+        let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "bolt-recovery-retention-unit-{}-{id}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("retention root must be created");
+        let stale = root.join("bolt-stale");
+        let active = root.join("bolt-active");
+        let fresh = root.join("bolt-fresh");
+        for directory in [&stale, &active, &fresh] {
+            fs::create_dir(directory).expect("execution directory must be created");
+        }
+        write_test_execution_marker(&stale, 0);
+        write_test_execution_marker(&active, 0);
+        let now = SystemTime::now();
+        let now_millis = u64::try_from(
+            now.duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_millis(),
+        )
+        .expect("current time fits");
+        write_test_execution_marker(&fresh, now_millis);
+        fs::write(active.join("active.lock"), []).expect("active marker must be written");
+        let active_lease = OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(active.join("active.lock"))
+            .expect("active lease must open");
+
+        cleanup_expired(&root, Duration::from_secs(1), now)
+            .expect("retention cleanup must succeed");
+
+        assert!(!stale.exists());
+        assert!(active.exists());
+        assert!(fresh.exists());
+        drop(active_lease);
+        fs::remove_dir_all(root).expect("retention fixture must clean up");
+    }
+
+    fn write_test_execution_marker(directory: &Path, created_millis: u64) {
+        let mut marker = Vec::from(*b"BRE1");
+        marker.extend_from_slice(&created_millis.to_le_bytes());
+        fs::write(directory.join("execution.bin"), marker)
+            .expect("execution marker must be written");
     }
 
     fn recovery_files_for_test(root: &Path) -> Vec<PathBuf> {
