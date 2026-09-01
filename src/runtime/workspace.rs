@@ -21,6 +21,7 @@ pub(super) enum WorkspaceError {
     QuotaExceeded,
     UnsupportedObject,
     Io,
+    Conflict,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +90,13 @@ impl WorkspaceSnapshot {
             }
         }
         Ok(changes)
+    }
+
+    pub(super) fn validate_source_unchanged(&self, root: &Path) -> Result<(), WorkspaceError> {
+        let current = capture_entries(root, self.limits)?;
+        (current == self.entries)
+            .then_some(())
+            .ok_or(WorkspaceError::Conflict)
     }
 }
 
@@ -290,10 +298,8 @@ mod tests {
 
     #[test]
     fn ws_018_snapshot_rejects_external_source_conflicts() {
-        let fixture = std::env::temp_dir().join(format!(
-            "bolt-workspace-conflict-{}",
-            std::process::id()
-        ));
+        let fixture =
+            std::env::temp_dir().join(format!("bolt-workspace-conflict-{}", std::process::id()));
         let _ = fs::remove_dir_all(&fixture);
         fs::create_dir_all(&fixture).expect("fixture must create");
         fs::write(fixture.join("source.txt"), b"before").expect("seed must write");
