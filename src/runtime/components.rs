@@ -201,6 +201,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::policy::compatibility_profile::PROFILE_NAME;
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -226,6 +227,11 @@ mod tests {
                 .expect("x64 hook fixture must be written");
             fs::write(root.join(DNS_PROXY_NAME), pe_image(0x8664))
                 .expect("DNS proxy fixture must be written");
+            fs::write(
+                root.join(PROFILE_NAME),
+                b"BSC1\nfs-ro|required|system-root|.\n",
+            )
+            .expect("compatibility profile fixture must be written");
             write_manifest(&root);
             Self { root }
         }
@@ -258,6 +264,7 @@ mod tests {
             X86_HOOK_NAME,
             X64_HOOK_NAME,
             DNS_PROXY_NAME,
+            PROFILE_NAME,
         ];
         let mut manifest = Vec::from(*b"BCM1");
         manifest.extend_from_slice(&1_u16.to_le_bytes());
@@ -422,6 +429,54 @@ mod tests {
             )
             .err(),
             Some(ComponentOpenError::DnsProxyOpen)
+        );
+    }
+
+    #[test]
+    fn compat_011_profile_is_manifest_verified_and_held_by_a_read_lease() {
+        let fixture = Fixture::new();
+        let components = open_components(&fixture.root, ImageArchitecture::X64)
+            .expect("components and profile must open");
+        assert_eq!(
+            components.compatibility_profile_bytes(),
+            b"BSC1\nfs-ro|required|system-root|.\n"
+        );
+        assert!(components.compatibility_profile_handle().metadata().is_ok());
+        assert!(fs::rename(
+            fixture.root.join(PROFILE_NAME),
+            fixture.root.join("moved.profile")
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn compat_012_missing_unmanifested_and_tampered_profiles_fail_closed() {
+        let fixture = Fixture::new();
+        fs::remove_file(fixture.root.join(PROFILE_NAME))
+            .expect("profile fixture must be removed");
+        assert_eq!(
+            open_components(&fixture.root, ImageArchitecture::X64).err(),
+            Some(ComponentOpenError::CompatibilityProfileOpen)
+        );
+
+        fs::write(fixture.root.join(PROFILE_NAME), b"BSC1\n")
+            .expect("replacement profile must be written");
+        assert_eq!(
+            open_components(&fixture.root, ImageArchitecture::X64).err(),
+            Some(ComponentOpenError::CompatibilityProfileHashMismatch)
+        );
+
+        write_manifest(&fixture.root);
+        let manifest = fixture
+            .root
+            .join(crate::runtime::component_manifest::MANIFEST_NAME);
+        let encoded = fs::read(&manifest).expect("manifest must be readable");
+        let profile_record_length = 44 + PROFILE_NAME.len();
+        fs::write(&manifest, &encoded[..encoded.len() - profile_record_length])
+            .expect("profile record must be removed");
+        assert_eq!(
+            open_components(&fixture.root, ImageArchitecture::X64).err(),
+            Some(ComponentOpenError::InvalidManifest)
         );
     }
 }
