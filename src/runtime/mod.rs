@@ -59,9 +59,12 @@ pub(crate) fn start_execution(
         preparation::LaunchPreparationError::Component(_) => SandboxError::InitializationFailed {
             stage: InitializationStage::Components,
         },
-        preparation::LaunchPreparationError::PolicyPayload => SandboxError::InitializationFailed {
-            stage: InitializationStage::Policy,
-        },
+        preparation::LaunchPreparationError::PolicyPayload
+        | preparation::LaunchPreparationError::CompatibilityProfile => {
+            SandboxError::InitializationFailed {
+                stage: InitializationStage::Policy,
+            }
+        }
         preparation::LaunchPreparationError::ExecutionIdentity => {
             SandboxError::InitializationFailed {
                 stage: InitializationStage::Identity,

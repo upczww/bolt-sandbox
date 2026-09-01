@@ -15,7 +15,10 @@ use super::components::{
 use crate::{
     SandboxError, SandboxRequest,
     ipc::identity::ExecutionIdentity,
-    policy::compiler::{self, CompiledFilesystemPolicy, CompiledRecoveryPolicy, payload},
+    policy::{
+        compatibility_profile::{ResolutionContext, parse_profile, resolve_profile},
+        compiler::{self, CompiledFilesystemPolicy, CompiledRecoveryPolicy, payload},
+    },
     request,
 };
 
@@ -120,6 +123,7 @@ pub(super) enum LaunchPreparationError {
     InvalidProgramImage,
     UnsupportedArchitecture { machine: u16 },
     Component(ComponentOpenError),
+    CompatibilityProfile,
     PolicyPayload,
     ExecutionIdentity,
 }
@@ -196,8 +200,48 @@ fn prepare_launch_with_identity_factory_and_denies(
             .map_err(LaunchPreparationError::Request)?;
     let environment_block = request::encode_environment_block(&prepared_environment.variables)
         .map_err(LaunchPreparationError::Request)?;
-    let compiled_policy = compiler::compile_with_security_denies(
+    let validated_policy = compiler::compile_with_security_denies(
         &request_value.policy,
+        &request_value.cwd,
+        mandatory_filesystem_denies,
+        mandatory_registry_denies,
+    )
+    .map_err(LaunchPreparationError::Request)?;
+    let requires_network_proxy = validated_policy.requires_network_proxy();
+
+    let mut program_handle =
+        open_read_lease(&request_value.program).map_err(|_| LaunchPreparationError::ProgramOpen)?;
+    let architecture = detect_image_architecture_from_reader(&mut program_handle)
+        .map_err(map_architecture_error)?;
+    let components = open_components_with_manifest_digest_and_network_proxy(
+        component_root,
+        architecture,
+        expected_component_manifest_sha256,
+        requires_network_proxy,
+    )
+    .map_err(LaunchPreparationError::Component)?;
+    let profile = parse_profile(components.compatibility_profile_bytes())
+        .map_err(|_| LaunchPreparationError::CompatibilityProfile)?;
+    let profile = resolve_profile(
+        &profile,
+        &ResolutionContext::from_host(
+            &request_value.program,
+            &request_value.cwd,
+            mandatory_filesystem_denies,
+        ),
+    )
+    .map_err(|_| LaunchPreparationError::CompatibilityProfile)?;
+    let mut effective_policy = request_value.policy.clone();
+    effective_policy
+        .filesystem
+        .read_only
+        .extend(profile.filesystem_read_only);
+    effective_policy
+        .registry
+        .read_only
+        .extend(profile.registry_read_only);
+    let compiled_policy = compiler::compile_with_security_denies(
+        &effective_policy,
         &request_value.cwd,
         mandatory_filesystem_denies,
         mandatory_registry_denies,
@@ -213,22 +257,9 @@ fn prepare_launch_with_identity_factory_and_denies(
             filesystem: compiled_policy.filesystem.clone(),
         }),
     };
-    let requires_network_proxy = compiled_policy.requires_network_proxy();
     let policy_payload = payload::seal(&compiled_policy)
         .map_err(|_| LaunchPreparationError::PolicyPayload)?
         .into_bytes();
-
-    let mut program_handle =
-        open_read_lease(&request_value.program).map_err(|_| LaunchPreparationError::ProgramOpen)?;
-    let architecture = detect_image_architecture_from_reader(&mut program_handle)
-        .map_err(map_architecture_error)?;
-    let components = open_components_with_manifest_digest_and_network_proxy(
-        component_root,
-        architecture,
-        expected_component_manifest_sha256,
-        requires_network_proxy,
-    )
-    .map_err(LaunchPreparationError::Component)?;
     let execution_identity = create_identity()?;
 
     Ok(PreparedLaunch {
@@ -538,8 +569,11 @@ mod tests {
     #[test]
     fn compat_013_malformed_verified_profile_fails_before_identity_creation() {
         let fixture = Fixture::x64();
-        fs::write(fixture.root.join(PROFILE_NAME), b"BSC1\nfs-rw|required|system-root|.\n")
-            .expect("malformed profile must be written");
+        fs::write(
+            fixture.root.join(PROFILE_NAME),
+            b"BSC1\nfs-rw|required|system-root|.\n",
+        )
+        .expect("malformed profile must be written");
         write_manifest(
             &fixture.root,
             &[
@@ -550,17 +584,16 @@ mod tests {
         );
         let entropy_consumed = std::cell::Cell::new(false);
 
-        let result = prepare_launch_with_identity_factory(
-            &fixture.request(),
-            &[],
-            &fixture.root,
-            || {
+        let result =
+            prepare_launch_with_identity_factory(&fixture.request(), &[], &fixture.root, || {
                 entropy_consumed.set(true);
                 Err(LaunchPreparationError::ExecutionIdentity)
-            },
-        );
+            });
 
-        assert_eq!(result.err(), Some(LaunchPreparationError::CompatibilityProfile));
+        assert_eq!(
+            result.err(),
+            Some(LaunchPreparationError::CompatibilityProfile)
+        );
         assert!(!entropy_consumed.get());
     }
 }

@@ -66,6 +66,33 @@ pub(crate) struct ResolutionContext {
     pub(crate) mandatory_filesystem_denies: Vec<PathBuf>,
 }
 
+impl ResolutionContext {
+    pub(crate) fn from_host(
+        program: &Path,
+        cwd: &Path,
+        mandatory_filesystem_denies: &[PathBuf],
+    ) -> Self {
+        Self {
+            system_root: host_path("SystemRoot").or_else(|| host_path("WINDIR")),
+            program_dir: program.parent().map(Path::to_path_buf),
+            program_files: host_path("ProgramW6432").or_else(|| host_path("ProgramFiles")),
+            program_files_x86: host_path("ProgramFiles(x86)"),
+            program_data: host_path("ProgramData"),
+            local_app_data: host_path("LOCALAPPDATA"),
+            cargo_home: host_path("CARGO_HOME"),
+            rustup_home: host_path("RUSTUP_HOME"),
+            cwd: cwd.to_path_buf(),
+            mandatory_filesystem_denies: mandatory_filesystem_denies.to_vec(),
+        }
+    }
+}
+
+fn host_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProfileError {
     TooLarge,
