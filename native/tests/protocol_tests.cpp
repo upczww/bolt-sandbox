@@ -30,6 +30,7 @@ int RunDualStreamWriter(int argument_count, wchar_t** arguments);
 int RunDescendantDualStreamWriter(int argument_count, wchar_t** arguments);
 int RunBlockingStreamFixture(int argument_count);
 int RunCorruptEventFixture(int argument_count);
+int RunCliFixture(int argument_count);
 int RunDroppedEventChannelFixture(int argument_count);
 int RunRecoveryDeleteFixture(int argument_count, wchar_t** arguments) noexcept;
 int RunRecoveryTruncateFixture(int argument_count, wchar_t** arguments) noexcept;
@@ -523,6 +524,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count >= 2 &&
         std::wstring(arguments[1]) == L"--corrupt-event-fixture") {
         return RunCorruptEventFixture(argument_count);
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--cli-fixture") {
+        return RunCliFixture(argument_count);
     }
     if (argument_count >= 2 &&
         std::wstring(arguments[1]) == L"--drop-event-channel-fixture") {

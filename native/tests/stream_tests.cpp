@@ -271,6 +271,28 @@ int RunCorruptEventFixture(const int argument_count) {
     return 328;
 }
 
+int RunCliFixture(const int argument_count) {
+    if (argument_count != 2) {
+        return 366;
+    }
+    constexpr std::array<std::uint8_t, 7> output = {
+        'c', 'l', 'i', '-', 'o', 'u', 't'};
+    constexpr std::array<std::uint8_t, 7> error = {
+        'c', 'l', 'i', '-', 'e', 'r', 'r'};
+    DWORD written = 0;
+    if (!WriteFile(
+            GetStdHandle(STD_OUTPUT_HANDLE), output.data(),
+            static_cast<DWORD>(output.size()), &written, nullptr) ||
+        written != static_cast<DWORD>(output.size()) ||
+        !WriteFile(
+            GetStdHandle(STD_ERROR_HANDLE), error.data(),
+            static_cast<DWORD>(error.size()), &written, nullptr) ||
+        written != static_cast<DWORD>(error.size())) {
+        return 367;
+    }
+    return 23;
+}
+
 int RunDroppedEventChannelFixture(const int argument_count) {
     if (argument_count != 2) {
         return 329;
