@@ -293,11 +293,12 @@ impl Sandbox {
         &self,
         transaction_id: WorkspaceTransactionId,
     ) -> Result<Vec<WorkspaceChange>, WorkspaceControlError> {
-        let record = self
+        let mut transactions = self
             .workspace_transactions
             .lock()
-            .map_err(|_| WorkspaceControlError::Io)?
-            .remove(&transaction_id)
+            .map_err(|_| WorkspaceControlError::Io)?;
+        let record = transactions
+            .get_mut(&transaction_id)
             .ok_or(WorkspaceControlError::NotFound)?;
         let WorkspaceTransactionRecord::Pending {
             transaction,
@@ -307,17 +308,36 @@ impl Sandbox {
             return Err(WorkspaceControlError::Conflict);
         };
         let committed = transaction
-            .commit(&recovery_root)
+            .commit(recovery_root)
             .map_err(map_workspace_error)?;
         let changes = convert_changes(committed.changes().to_vec());
-        self.workspace_transactions
-            .lock()
-            .map_err(|_| WorkspaceControlError::Io)?
-            .insert(
-                transaction_id,
-                WorkspaceTransactionRecord::Committed(committed),
-            );
+        *record = WorkspaceTransactionRecord::Committed(committed);
         Ok(changes)
+    }
+
+    /// Atomically restores the source state retained by a successful commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed workspace error when the transaction is missing, has
+    /// not been committed, was already reverted, or cannot be restored safely.
+    pub fn revert_workspace(
+        &self,
+        transaction_id: WorkspaceTransactionId,
+    ) -> Result<(), WorkspaceControlError> {
+        let mut transactions = self
+            .workspace_transactions
+            .lock()
+            .map_err(|_| WorkspaceControlError::Io)?;
+        let record = transactions
+            .get(&transaction_id)
+            .ok_or(WorkspaceControlError::NotFound)?;
+        let WorkspaceTransactionRecord::Committed(committed) = record else {
+            return Err(WorkspaceControlError::Conflict);
+        };
+        committed.revert().map_err(map_workspace_error)?;
+        transactions.remove(&transaction_id);
+        Ok(())
     }
 
     /// Discards a completed staged transaction without mutating its source.

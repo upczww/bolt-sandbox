@@ -87,7 +87,7 @@ impl CommittedWorkspace {
         &self.recovery_root
     }
 
-    pub(crate) fn revert(self) -> Result<(), WorkspaceError> {
+    pub(crate) fn revert(&self) -> Result<(), WorkspaceError> {
         if !self.source_root.is_dir()
             || !self.recovery_root.is_dir()
             || self.discarded_root.exists()
@@ -158,7 +158,10 @@ impl StagedWorkspaceTransaction {
         fs::remove_dir_all(&self.staging_root).map_err(map_io)
     }
 
-    pub(crate) fn commit(self, recovery_root: &Path) -> Result<CommittedWorkspace, WorkspaceError> {
+    pub(crate) fn commit(
+        &self,
+        recovery_root: &Path,
+    ) -> Result<CommittedWorkspace, WorkspaceError> {
         validate_recovery_root(&self.source_root, recovery_root)?;
         self.snapshot.validate_source_unchanged(&self.source_root)?;
         let changes = self.query_changes()?;

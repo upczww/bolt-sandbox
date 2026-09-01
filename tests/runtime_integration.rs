@@ -76,6 +76,13 @@ fn ws_016_staged_execution_requires_explicit_trusted_commit() {
         String::from_utf8_lossy(&fs::read(source.join("file.txt")).expect("committed source"))
             .contains("after")
     );
+    sandbox
+        .revert_workspace(transaction)
+        .expect("trusted revert must succeed");
+    assert_eq!(
+        fs::read(source.join("file.txt")).expect("reverted source"),
+        b"before"
+    );
     fs::remove_dir_all(source).expect("fixture must clean");
 }
 
