@@ -277,7 +277,8 @@ mod tests {
     use super::*;
     use crate::{
         InvalidRequestReason, RequestField, SandboxError, SandboxPolicy, SandboxRequest,
-        policy::compiler::payload, runtime::architecture::ImageArchitecture,
+        policy::{compatibility_profile::PROFILE_NAME, compiler::payload},
+        runtime::architecture::ImageArchitecture,
     };
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
@@ -324,9 +325,18 @@ mod tests {
             .expect("launcher fixture must be written");
             fs::write(self.root.join("bolt-sandbox-x64.dll"), pe_image(0x8664))
                 .expect("x64 hook fixture must be written");
+            fs::write(
+                self.root.join(PROFILE_NAME),
+                b"BSC1\nfs-ro|required|system-root|.\n",
+            )
+            .expect("compatibility profile fixture must be written");
             write_manifest(
                 &self.root,
-                &["bolt-sandbox-launcher.exe", "bolt-sandbox-x64.dll"],
+                &[
+                    "bolt-sandbox-launcher.exe",
+                    "bolt-sandbox-x64.dll",
+                    PROFILE_NAME,
+                ],
             );
         }
     }
@@ -522,6 +532,35 @@ mod tests {
             });
 
         assert!(matches!(result, Err(LaunchPreparationError::Component(_))));
+        assert!(!entropy_consumed.get());
+    }
+
+    #[test]
+    fn compat_013_malformed_verified_profile_fails_before_identity_creation() {
+        let fixture = Fixture::x64();
+        fs::write(fixture.root.join(PROFILE_NAME), b"BSC1\nfs-rw|required|system-root|.\n")
+            .expect("malformed profile must be written");
+        write_manifest(
+            &fixture.root,
+            &[
+                "bolt-sandbox-launcher.exe",
+                "bolt-sandbox-x64.dll",
+                PROFILE_NAME,
+            ],
+        );
+        let entropy_consumed = std::cell::Cell::new(false);
+
+        let result = prepare_launch_with_identity_factory(
+            &fixture.request(),
+            &[],
+            &fixture.root,
+            || {
+                entropy_consumed.set(true);
+                Err(LaunchPreparationError::ExecutionIdentity)
+            },
+        );
+
+        assert_eq!(result.err(), Some(LaunchPreparationError::CompatibilityProfile));
         assert!(!entropy_consumed.get());
     }
 }
