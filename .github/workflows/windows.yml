@@ -1,0 +1,71 @@
+name: Windows verification
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint Rust
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test Rust
+        run: cargo test --all-targets
+
+      - name: Verify traceability and upstream inputs
+        shell: pwsh
+        run: |
+          pwsh scripts/verify-test-traceability.ps1
+          pwsh scripts/test-third-party.ps1
+
+      - name: Build x64 and x86 native components
+        shell: pwsh
+        run: pwsh scripts/build-windows.ps1 -Configuration Release -Architecture All
+
+      - name: Run native x64 then x86 suites
+        shell: pwsh
+        run: |
+          & target/native/x64/Release/bolt-sandbox-native-tests.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & target/native/x86/Release/bolt-sandbox-native-tests.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run x64 public and CLI integration
+        shell: pwsh
+        run: |
+          $env:BOLT_NATIVE_COMPONENT_ROOT = (Resolve-Path target/native/x64/Release).Path
+          cargo test --test runtime_integration --test cli_integration
+
+      - name: Run x86 public and CLI integration
+        shell: pwsh
+        run: |
+          $env:BOLT_NATIVE_COMPONENT_ROOT = (Resolve-Path target/native/x86/Release).Path
+          cargo test --test runtime_integration --test cli_integration
+
+      - name: Create unsigned verification package
+        shell: pwsh
+        run: pwsh scripts/package-windows.ps1 -Version ${{ github.sha }}
+
+      - name: Upload verification package
+        uses: actions/upload-artifact@v7
+        with:
+          name: bolt-sandbox-windows-${{ github.sha }}
+          path: target/packages/bolt-sandbox-${{ github.sha }}-windows-x64
+          if-no-files-found: error
