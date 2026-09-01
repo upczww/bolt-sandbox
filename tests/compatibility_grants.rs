@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{net::SocketAddr, path::PathBuf};
 
 use bolt_sandbox::{
     AccessOperation, AccessResource, CompatibilityApplyError, CompatibilityApprovalScope,
@@ -6,8 +6,9 @@ use bolt_sandbox::{
     CompatibilityCommandOutcome, CompatibilityDecision, CompatibilityDecisionCache,
     CompatibilityGrant, CompatibilityGrantContext, CompatibilityGrantResolver,
     CompatibilityNoPromptReason, CompatibilityPromptAction, CompatibilityResolution,
-    FilesystemOperation, FilesystemViolation, NetworkOperation, NetworkTarget, NetworkViolation,
-    RegistryOperation, RegistryViolation, SandboxEvent, SandboxPolicy, ViolationAggregate,
+    FilesystemOperation, FilesystemViolation, IpCidr, NetworkAllowList, NetworkOperation,
+    NetworkPolicy, NetworkTarget, NetworkViolation, PortRange, RegistryOperation,
+    RegistryViolation, SandboxEvent, SandboxPolicy, ViolationAggregate,
 };
 
 fn context() -> CompatibilityGrantContext {
@@ -188,6 +189,74 @@ fn compat_034_report_returns_explicit_file_registry_and_domain_denials() {
         report.resolution,
         CompatibilityResolution::NeedsAuthorization(_)
     ));
+}
+
+#[test]
+fn compat_034_domain_only_denial_explicitly_requires_safe_binding_evidence() {
+    let resolver = CompatibilityGrantResolver::new(context()).expect("valid context");
+    let report = resolver.resolve_report(
+        CompatibilityCommandOutcome::Failed,
+        &[ViolationAggregate {
+            event: SandboxEvent::NetworkViolation(NetworkViolation {
+                process_id: 43,
+                operation: NetworkOperation::Resolve,
+                target: NetworkTarget::Domain(String::from("example.org")),
+            }),
+            duplicate_count: 0,
+        }],
+        0,
+    );
+
+    assert!(matches!(
+        report.resolution,
+        CompatibilityResolution::CapabilityUnavailable(ref unavailable)
+            if unavailable.grants.is_empty()
+                && unavailable.capabilities
+                    == [CompatibilityCapability::NetworkBindingRequired]
+    ));
+    assert_eq!(
+        report.denials[0].resource,
+        AccessResource::NetworkDomain(String::from("example.org"))
+    );
+}
+
+#[test]
+fn compat_034_approved_endpoint_adds_only_exact_address_and_port() {
+    let resolver = CompatibilityGrantResolver::new(context()).expect("valid context");
+    let endpoint: SocketAddr = "203.0.113.7:8443".parse().expect("valid endpoint");
+    let report = resolver.resolve_report(
+        CompatibilityCommandOutcome::Failed,
+        &[ViolationAggregate {
+            event: SandboxEvent::NetworkViolation(NetworkViolation {
+                process_id: 44,
+                operation: NetworkOperation::Connect,
+                target: NetworkTarget::Socket(endpoint),
+            }),
+            duplicate_count: 0,
+        }],
+        0,
+    );
+    let CompatibilityResolution::NeedsAuthorization(proposal) = report.resolution else {
+        panic!("exact endpoint must produce an authorization proposal");
+    };
+
+    let applied = resolver
+        .apply_approved(&proposal, &SandboxPolicy::default())
+        .expect("exact endpoint proposal must apply");
+    assert_eq!(
+        applied.network,
+        NetworkPolicy::AllowList(NetworkAllowList {
+            domains: Vec::new(),
+            addresses: vec![IpCidr {
+                address: endpoint.ip(),
+                prefix_length: 32,
+            }],
+            ports: vec![PortRange {
+                start: 8_443,
+                end: 8_443,
+            }],
+        })
+    );
 }
 
 fn read_proposal() -> bolt_sandbox::CompatibilityGrantProposal {
