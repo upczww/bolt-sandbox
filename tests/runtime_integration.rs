@@ -11,7 +11,7 @@ use bolt_sandbox::{
     AttributedSandboxEvent, ExecutionOptions, ExecutionTerminal, InfrastructureFailure,
     ProcessExitReason, ReceiverLoss, RecoveryFailureReason, RecoveryLimits, RecoveryPolicy,
     Sandbox, SandboxConfig, SandboxEvent, SandboxPolicy, SandboxRequest, WorkspaceChangeKind,
-    WorkspaceMode,
+    WorkspaceControlError, WorkspaceLimits, WorkspaceMode,
 };
 
 const STREAM_BYTES: usize = 256 * 1_024;
@@ -146,6 +146,64 @@ fn ws_021_staged_execution_rejects_sensitive_descendant_before_copy_or_launch() 
         fs::read_dir(&fixture).expect("fixture must remain").count(),
         1,
         "no staging or recovery directory may be created"
+    );
+    fs::remove_dir_all(fixture).expect("fixture must clean");
+}
+
+#[test]
+fn rec_021_completed_staged_transaction_expires_and_removes_session_state() {
+    let Some((sandbox, _component_root)) = configured_sandbox() else {
+        return;
+    };
+    let fixture_id = NEXT_RECOVERY_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let fixture = std::env::temp_dir().join(format!(
+        "bolt-sandbox-staged-retention-{}-{fixture_id}",
+        std::process::id()
+    ));
+    let source = fixture.join("source");
+    fs::create_dir_all(&source).expect("source must create");
+    fs::write(source.join("file.txt"), b"before").expect("source must seed");
+    let command = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+        .join(r"System32\cmd.exe");
+    let handle = sandbox
+        .start_with_options(
+            SandboxRequest {
+                program: command,
+                arguments: vec![
+                    OsString::from("/d"),
+                    OsString::from("/c"),
+                    OsString::from("exit 0"),
+                ],
+                cwd: source,
+                environment: BTreeMap::new(),
+                policy: SandboxPolicy::default(),
+                timeout: Some(Duration::from_secs(5)),
+            },
+            ExecutionOptions {
+                workspace: WorkspaceMode::Staged,
+                workspace_limits: WorkspaceLimits {
+                    retention: Duration::from_millis(1),
+                    ..WorkspaceLimits::default()
+                },
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("staged execution must start");
+    let transaction = handle
+        .wait()
+        .expect("execution must finish")
+        .workspace_transaction
+        .expect("transaction must be retained initially");
+    std::thread::sleep(Duration::from_millis(5));
+
+    assert_eq!(
+        sandbox.query_workspace_changes(transaction),
+        Err(WorkspaceControlError::NotFound)
+    );
+    assert_eq!(
+        fs::read_dir(&fixture).expect("fixture must remain").count(),
+        1,
+        "expired staging and recovery state must be removed"
     );
     fs::remove_dir_all(fixture).expect("fixture must clean");
 }

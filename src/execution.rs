@@ -8,6 +8,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         mpsc::{Receiver, Sender},
     },
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -30,8 +31,15 @@ enum WorkspaceTransactionRecord {
     Committed(CommittedWorkspace),
 }
 
+#[derive(Debug)]
+struct StoredWorkspaceTransaction {
+    record: WorkspaceTransactionRecord,
+    completed_at: Instant,
+    retention: Duration,
+}
+
 type WorkspaceTransactions =
-    Arc<Mutex<BTreeMap<WorkspaceTransactionId, WorkspaceTransactionRecord>>>;
+    Arc<Mutex<BTreeMap<WorkspaceTransactionId, StoredWorkspaceTransaction>>>;
 
 pub const DEFAULT_STREAM_CAPACITY: usize = 1_048_576;
 const MAX_STREAM_CAPACITY: usize = 64 * 1_048_576;
@@ -201,6 +209,15 @@ impl Sandbox {
         command_id: CommandId,
         limits: crate::WorkspaceLimits,
     ) -> Result<ExecutionHandle, SandboxError> {
+        if limits.maximum_items == 0
+            || limits.maximum_bytes == 0
+            || limits.maximum_retained_transactions == 0
+            || limits.retention.is_zero()
+        {
+            return Err(SandboxError::InitializationFailed {
+                stage: InitializationStage::Workspace,
+            });
+        }
         let transaction_id = WorkspaceTransactionId::generate().map_err(|()| {
             SandboxError::InitializationFailed {
                 stage: InitializationStage::Identity,
@@ -251,6 +268,8 @@ impl Sandbox {
                 recovery_root,
             },
             Arc::clone(&self.workspace_transactions),
+            limits.maximum_retained_transactions,
+            limits.retention,
         );
         Ok(handle)
     }
@@ -265,14 +284,15 @@ impl Sandbox {
         &self,
         transaction_id: WorkspaceTransactionId,
     ) -> Result<Vec<WorkspaceChange>, WorkspaceControlError> {
-        let transactions = self
+        let mut transactions = self
             .workspace_transactions
             .lock()
             .map_err(|_| WorkspaceControlError::Io)?;
-        let record = transactions
+        prune_expired_transactions(&mut transactions, Instant::now());
+        let stored = transactions
             .get(&transaction_id)
             .ok_or(WorkspaceControlError::NotFound)?;
-        match record {
+        match &stored.record {
             WorkspaceTransactionRecord::Pending { transaction, .. } => transaction
                 .query_changes()
                 .map(convert_changes)
@@ -297,13 +317,14 @@ impl Sandbox {
             .workspace_transactions
             .lock()
             .map_err(|_| WorkspaceControlError::Io)?;
-        let record = transactions
+        prune_expired_transactions(&mut transactions, Instant::now());
+        let stored = transactions
             .get_mut(&transaction_id)
             .ok_or(WorkspaceControlError::NotFound)?;
         let WorkspaceTransactionRecord::Pending {
             transaction,
             recovery_root,
-        } = record
+        } = &mut stored.record
         else {
             return Err(WorkspaceControlError::Conflict);
         };
@@ -311,7 +332,7 @@ impl Sandbox {
             .commit(recovery_root)
             .map_err(map_workspace_error)?;
         let changes = convert_changes(committed.changes().to_vec());
-        *record = WorkspaceTransactionRecord::Committed(committed);
+        stored.record = WorkspaceTransactionRecord::Committed(committed);
         Ok(changes)
     }
 
@@ -329,10 +350,11 @@ impl Sandbox {
             .workspace_transactions
             .lock()
             .map_err(|_| WorkspaceControlError::Io)?;
-        let record = transactions
+        prune_expired_transactions(&mut transactions, Instant::now());
+        let stored = transactions
             .get(&transaction_id)
             .ok_or(WorkspaceControlError::NotFound)?;
-        let WorkspaceTransactionRecord::Committed(committed) = record else {
+        let WorkspaceTransactionRecord::Committed(committed) = &stored.record else {
             return Err(WorkspaceControlError::Conflict);
         };
         committed.revert().map_err(map_workspace_error)?;
@@ -350,18 +372,47 @@ impl Sandbox {
         &self,
         transaction_id: WorkspaceTransactionId,
     ) -> Result<(), WorkspaceControlError> {
-        let record = self
+        let mut transactions = self
             .workspace_transactions
             .lock()
-            .map_err(|_| WorkspaceControlError::Io)?
+            .map_err(|_| WorkspaceControlError::Io)?;
+        prune_expired_transactions(&mut transactions, Instant::now());
+        let stored = transactions
             .remove(&transaction_id)
             .ok_or(WorkspaceControlError::NotFound)?;
-        match record {
+        match stored.record {
             WorkspaceTransactionRecord::Pending { transaction, .. } => {
                 transaction.discard().map_err(map_workspace_error)
             }
             WorkspaceTransactionRecord::Committed(_) => Ok(()),
         }
+    }
+}
+
+fn prune_expired_transactions(
+    transactions: &mut BTreeMap<WorkspaceTransactionId, StoredWorkspaceTransaction>,
+    now: Instant,
+) {
+    transactions.retain(|_, stored| {
+        now.checked_duration_since(stored.completed_at)
+            .is_some_and(|age| age < stored.retention)
+    });
+}
+
+fn enforce_transaction_count_limit(
+    transactions: &mut BTreeMap<WorkspaceTransactionId, StoredWorkspaceTransaction>,
+    maximum: u32,
+) {
+    let maximum = usize::try_from(maximum).unwrap_or(usize::MAX);
+    while transactions.len() >= maximum {
+        let Some(oldest) = transactions
+            .iter()
+            .min_by_key(|(id, stored)| (stored.completed_at, **id))
+            .map(|(id, _)| *id)
+        else {
+            break;
+        };
+        transactions.remove(&oldest);
     }
 }
 
@@ -584,6 +635,8 @@ struct PendingWorkspace {
     transaction_id: WorkspaceTransactionId,
     record: WorkspaceTransactionRecord,
     transactions: WorkspaceTransactions,
+    maximum_retained_transactions: u32,
+    retention: Duration,
 }
 
 impl ExecutionHandle {
@@ -616,11 +669,15 @@ impl ExecutionHandle {
         transaction_id: WorkspaceTransactionId,
         record: WorkspaceTransactionRecord,
         transactions: WorkspaceTransactions,
+        maximum_retained_transactions: u32,
+        retention: Duration,
     ) {
         self.pending_workspace = Some(PendingWorkspace {
             transaction_id,
             record,
             transactions,
+            maximum_retained_transactions,
+            retention,
         });
     }
 
@@ -699,13 +756,27 @@ impl ExecutionHandle {
             .recv()
             .map_err(|_| SandboxError::ControlChannelClosed)??;
         if let Some(pending) = self.pending_workspace.take() {
-            pending
-                .transactions
-                .lock()
-                .map_err(|_| SandboxError::InitializationFailed {
-                    stage: InitializationStage::Workspace,
-                })?
-                .insert(pending.transaction_id, pending.record);
+            let mut transactions =
+                pending
+                    .transactions
+                    .lock()
+                    .map_err(|_| SandboxError::InitializationFailed {
+                        stage: InitializationStage::Workspace,
+                    })?;
+            let now = Instant::now();
+            prune_expired_transactions(&mut transactions, now);
+            enforce_transaction_count_limit(
+                &mut transactions,
+                pending.maximum_retained_transactions,
+            );
+            transactions.insert(
+                pending.transaction_id,
+                StoredWorkspaceTransaction {
+                    record: pending.record,
+                    completed_at: now,
+                    retention: pending.retention,
+                },
+            );
             result.workspace_transaction = Some(pending.transaction_id);
         }
         Ok(result)

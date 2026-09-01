@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 const WORKSPACE_TRANSACTION_ID_LENGTH: usize = 16;
 
@@ -27,6 +27,8 @@ impl WorkspaceTransactionId {
 pub struct WorkspaceLimits {
     pub maximum_items: u32,
     pub maximum_bytes: u64,
+    pub maximum_retained_transactions: u32,
+    pub retention: Duration,
 }
 
 impl Default for WorkspaceLimits {
@@ -34,6 +36,8 @@ impl Default for WorkspaceLimits {
         Self {
             maximum_items: 100_000,
             maximum_bytes: 4 * 1_024 * 1_024 * 1_024,
+            maximum_retained_transactions: 256,
+            retention: Duration::from_secs(24 * 60 * 60),
         }
     }
 }
