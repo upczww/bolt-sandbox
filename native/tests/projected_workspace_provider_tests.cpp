@@ -75,6 +75,10 @@ BOOLEAN WINAPI FakeMatch(PCWSTR, PCWSTR pattern) noexcept {
     return std::wcscmp(pattern, L"*") == 0 ? TRUE : FALSE;
 }
 
+int WINAPI FakeCompare(PCWSTR left, PCWSTR right) noexcept {
+    return CompareStringOrdinal(left, -1, right, -1, TRUE) - CSTR_EQUAL;
+}
+
 void* WINAPI FakeAllocate(
     PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
     const size_t size) noexcept {
@@ -148,7 +152,8 @@ bool RunProjectedWorkspaceProviderTests() {
     bolt::common::ProjectedWorkspaceProvider provider;
     const bolt::common::ProjfsFunctionTable functions{
         FakeMark, FakeStart, FakeStop, FakeWritePlaceholder, FakeWriteData,
-        FakeFill, FakeMatch, FakeAllocate, FakeFree, FakeInstanceInfo};
+        FakeFill, FakeMatch, FakeCompare, FakeAllocate, FakeFree,
+        FakeInstanceInfo};
     const auto provider_started =
         bolt::common::ProjectedWorkspaceProvider::StartWithFunctions(
             projected, projection, functions, provider);

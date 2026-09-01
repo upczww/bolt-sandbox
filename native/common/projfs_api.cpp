@@ -39,6 +39,8 @@ ProjfsStatus ProjfsApi::Load(ProjfsApi& output) noexcept {
         module, "PrjFillDirEntryBuffer");
     loaded.file_name_match_ = Resolve<FileNameMatchFunction>(
         module, "PrjFileNameMatch");
+    loaded.file_name_compare_ = Resolve<FileNameCompareFunction>(
+        module, "PrjFileNameCompare");
     loaded.allocate_aligned_buffer_ = Resolve<AllocateAlignedBufferFunction>(
         module, "PrjAllocateAlignedBuffer");
     loaded.free_aligned_buffer_ = Resolve<FreeAlignedBufferFunction>(
@@ -59,6 +61,7 @@ ProjfsStatus ProjfsApi::Load(ProjfsApi& output) noexcept {
     output.write_file_data_ = loaded.write_file_data_;
     output.fill_dir_entry_buffer_ = loaded.fill_dir_entry_buffer_;
     output.file_name_match_ = loaded.file_name_match_;
+    output.file_name_compare_ = loaded.file_name_compare_;
     output.allocate_aligned_buffer_ = loaded.allocate_aligned_buffer_;
     output.free_aligned_buffer_ = loaded.free_aligned_buffer_;
     output.get_virtualization_instance_info_ =
@@ -73,6 +76,7 @@ bool ProjfsApi::available() const noexcept {
            start_virtualizing_ != nullptr && stop_virtualizing_ != nullptr &&
            write_placeholder_info_ != nullptr && write_file_data_ != nullptr &&
            fill_dir_entry_buffer_ != nullptr && file_name_match_ != nullptr &&
+           file_name_compare_ != nullptr &&
            allocate_aligned_buffer_ != nullptr && free_aligned_buffer_ != nullptr &&
            get_virtualization_instance_info_ != nullptr;
 }
@@ -108,6 +112,11 @@ ProjfsApi::FileNameMatchFunction ProjfsApi::file_name_match() const noexcept {
     return file_name_match_;
 }
 
+ProjfsApi::FileNameCompareFunction
+ProjfsApi::file_name_compare() const noexcept {
+    return file_name_compare_;
+}
+
 ProjfsApi::AllocateAlignedBufferFunction
 ProjfsApi::allocate_aligned_buffer() const noexcept {
     return allocate_aligned_buffer_;
@@ -134,6 +143,7 @@ void ProjfsApi::Close() noexcept {
     write_file_data_ = nullptr;
     fill_dir_entry_buffer_ = nullptr;
     file_name_match_ = nullptr;
+    file_name_compare_ = nullptr;
     allocate_aligned_buffer_ = nullptr;
     free_aligned_buffer_ = nullptr;
     get_virtualization_instance_info_ = nullptr;

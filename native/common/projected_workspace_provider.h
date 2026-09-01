@@ -78,6 +78,7 @@ struct ProjfsFunctionTable {
     ProjfsApi::WriteFileDataFunction write_data = nullptr;
     ProjfsApi::FillDirEntryBufferFunction fill_entry = nullptr;
     ProjfsApi::FileNameMatchFunction file_name_match = nullptr;
+    ProjfsApi::FileNameCompareFunction file_name_compare = nullptr;
     ProjfsApi::AllocateAlignedBufferFunction allocate_buffer = nullptr;
     ProjfsApi::FreeAlignedBufferFunction free_buffer = nullptr;
     ProjfsApi::GetVirtualizationInstanceInfoFunction instance_info = nullptr;

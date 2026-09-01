@@ -22,6 +22,7 @@ class ProjfsApi final {
     using WriteFileDataFunction = decltype(&PrjWriteFileData);
     using FillDirEntryBufferFunction = decltype(&PrjFillDirEntryBuffer);
     using FileNameMatchFunction = decltype(&PrjFileNameMatch);
+    using FileNameCompareFunction = decltype(&PrjFileNameCompare);
     using AllocateAlignedBufferFunction = decltype(&PrjAllocateAlignedBuffer);
     using FreeAlignedBufferFunction = decltype(&PrjFreeAlignedBuffer);
     using GetVirtualizationInstanceInfoFunction =
@@ -44,6 +45,7 @@ class ProjfsApi final {
     [[nodiscard]] WriteFileDataFunction write_file_data() const noexcept;
     [[nodiscard]] FillDirEntryBufferFunction fill_dir_entry_buffer() const noexcept;
     [[nodiscard]] FileNameMatchFunction file_name_match() const noexcept;
+    [[nodiscard]] FileNameCompareFunction file_name_compare() const noexcept;
     [[nodiscard]] AllocateAlignedBufferFunction
     allocate_aligned_buffer() const noexcept;
     [[nodiscard]] FreeAlignedBufferFunction free_aligned_buffer() const noexcept;
@@ -61,6 +63,7 @@ class ProjfsApi final {
     WriteFileDataFunction write_file_data_ = nullptr;
     FillDirEntryBufferFunction fill_dir_entry_buffer_ = nullptr;
     FileNameMatchFunction file_name_match_ = nullptr;
+    FileNameCompareFunction file_name_compare_ = nullptr;
     AllocateAlignedBufferFunction allocate_aligned_buffer_ = nullptr;
     FreeAlignedBufferFunction free_aligned_buffer_ = nullptr;
     GetVirtualizationInstanceInfoFunction get_virtualization_instance_info_ = nullptr;

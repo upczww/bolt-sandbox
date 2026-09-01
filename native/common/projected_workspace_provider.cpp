@@ -413,6 +413,7 @@ bool ProjfsFunctionTable::complete() const noexcept {
     return mark_directory != nullptr && start != nullptr && stop != nullptr &&
            write_placeholder != nullptr && write_data != nullptr &&
            fill_entry != nullptr && file_name_match != nullptr &&
+           file_name_compare != nullptr &&
            allocate_buffer != nullptr && free_buffer != nullptr &&
            instance_info != nullptr;
 }
@@ -442,6 +443,7 @@ ProjectedWorkspaceStatus ProjectedWorkspaceProvider::Start(
         api->write_file_data(),
         api->fill_dir_entry_buffer(),
         api->file_name_match(),
+        api->file_name_compare(),
         api->allocate_aligned_buffer(),
         api->free_aligned_buffer(),
         api->get_virtualization_instance_info()};
@@ -664,6 +666,12 @@ HRESULT ProjectedWorkspaceProvider::GetEnumeration(
                                    session.search_expression.c_str()) == FALSE;
                     }),
                 session.entries.end());
+            std::sort(
+                session.entries.begin(), session.entries.end(),
+                [this](const auto& left, const auto& right) {
+                    return functions_.file_name_compare(
+                               left.name.c_str(), right.name.c_str()) < 0;
+                });
             session.next = 0;
             session.initialized = true;
         }
