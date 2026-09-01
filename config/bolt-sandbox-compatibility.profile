@@ -8,6 +8,7 @@ fs-ro|optional|user-profile|.rustup\toolchains
 
 # Exact read-only kernel metadata devices required by standard runtimes.
 device-ro|required|device|\Device\DeviceApi\CMApi
+device-ro|required|device|\\.\MountPointManager
 
 # Public runtime and platform metadata.
 reg-ro|required|registry|HKCU\SOFTWARE\Classes

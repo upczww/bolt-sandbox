@@ -12,8 +12,9 @@ evidence.
   bases, and unknown requiredness fail closed.
 - Empty, duplicate, oversized, non-UTF-8, NUL-containing, and over-count profiles
   fail with bounded diagnostics.
-- Relative escape, `..`, roots, device paths, globs, and alternate data streams
-  fail closed.
+- Relative escape, `..`, roots, globs, and alternate data streams fail closed;
+  only manifest-verified exact `device-ro` entries may name read-only metadata
+  devices.
 - Optional missing bases skip only their rules; required missing bases fail.
 - Missing leaf probes remain valid read-only rules.
 - Profile length, digest, manifest record, pinned manifest, and no-replacement
@@ -47,6 +48,9 @@ evidence.
 - Cargo performs metadata/check/test with toolchains read-only and output/cache
   redirected to task-private storage.
 - npm/pnpm runs an offline local-package script without global tokens.
+- Yarn and Jest use declarative script entrypoints when wrappers would add an
+  unnecessary shell process. HOME, TEMP, APPDATA, LOCALAPPDATA, package caches,
+  and link directories resolve to workspace-private storage.
 - Available .NET and Java fixtures run when their runtimes are declared required.
 - One workspace containing spaces and non-ASCII characters runs cmd, PowerShell,
   Python, Node, Git, Cargo/Rust, and an available GCC-compatible or MSVC native
@@ -77,6 +81,9 @@ evidence.
   it or access private keys and credentials.
 - Registry read-only, exact-read, hidden, deny, WOW64 views, links, rename,
   delete, and transaction paths preserve precedence.
+- Full browser automation requires a private registry view because Chromium
+  and Firefox create per-user browser state even with private filesystem
+  profiles; host HKCU write grants are not an acceptable compatibility fix.
 - Cancellation, timeout, owner or launcher death, event loss, stream
   backpressure, and initialization failure terminate the complete Job.
 

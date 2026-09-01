@@ -200,9 +200,13 @@ const fn is_registry_kind(kind: RuleKind) -> bool {
 
 fn validate_suffix(kind: RuleKind, base: Base, suffix: &str) -> bool {
     if kind == RuleKind::DeviceReadOnly {
+        if suffix.contains(['\0', '/', '*', '?', ':']) || suffix.ends_with('\\') {
+            return false;
+        }
+        if let Some(name) = suffix.strip_prefix(r"\\.\") {
+            return !name.is_empty() && !name.contains('\\') && name != "." && name != "..";
+        }
         return suffix.starts_with(r"\Device\")
-            && !suffix.ends_with('\\')
-            && !suffix.contains(['\0', '/', '*', '?', ':'])
             && suffix
                 .split('\\')
                 .skip(2)
@@ -724,13 +728,17 @@ mod tests {
 
     #[test]
     fn compat_031_exact_read_only_devices_are_data_driven_and_bounded() {
-        let profile =
-            parse_profile(b"BSC1\ndevice-ro|required|device|\\Device\\DeviceApi\\CMApi\n")
-                .expect("exact device rule must parse");
+        let profile = parse_profile(
+            b"BSC1\ndevice-ro|required|device|\\Device\\DeviceApi\\CMApi\ndevice-ro|required|device|\\\\.\\MountPointManager\n",
+        )
+        .expect("exact device rules must parse");
         let resolved = resolve_profile(&profile, &context()).expect("device rule must resolve");
         assert_eq!(
             resolved.device_read_only,
-            [String::from(r"\Device\DeviceApi\CMApi")]
+            [
+                String::from(r"\\.\MountPointManager"),
+                String::from(r"\Device\DeviceApi\CMApi"),
+            ]
         );
 
         for device in [
@@ -739,6 +747,7 @@ mod tests {
             r"\Device\DeviceApi\..\KsecDD",
             r"\Device\DeviceApi\*",
             r"C:\Device\CMApi",
+            r"\\.\MountPointManager\child",
         ] {
             let encoded = format!("BSC1\ndevice-ro|required|device|{device}\n");
             assert!(

@@ -52,6 +52,20 @@ function Resolve-DeclaredToolRoot([string]$CommandName) {
 $pythonRoot = Resolve-DeclaredToolRoot 'python'
 $rustBin = Resolve-DeclaredToolRoot 'cargo'
 $rustToolchain = if ($rustBin) { Split-Path -Parent $rustBin } else { '' }
+$browserExecutable = [Environment]::GetEnvironmentVariable('BOLT_BROWSER_EXECUTABLE')
+if ($browserExecutable -and
+    (Test-Path -LiteralPath $browserExecutable -PathType Leaf)) {
+    $browserExecutable = (Resolve-Path -LiteralPath $browserExecutable).Path
+} else {
+    $browserExecutable = ''
+}
+$browserRoot = if ($browserExecutable) {
+    Split-Path -Parent $browserExecutable
+} else { '' }
+$browserEngine = [Environment]::GetEnvironmentVariable('BOLT_BROWSER_ENGINE')
+if ($browserEngine -notin @('chromium', 'firefox', 'webkit')) {
+    $browserEngine = ''
+}
 $baseTokens = @{
     ProgramFiles = $env:ProgramFiles
     ProgramFilesX86 = ${env:ProgramFiles(x86)}
@@ -63,6 +77,9 @@ $baseTokens = @{
     VisualStudio = $visualStudio
     PythonRoot = $pythonRoot
     RustToolchain = $rustToolchain
+    BrowserExecutable = $browserExecutable
+    BrowserRoot = $browserRoot
+    BrowserEngine = $browserEngine
     ComponentRoot = $componentPath
 }
 
@@ -100,6 +117,21 @@ function Resolve-ScenarioTool($Scenario, [hashtable]$Tokens) {
             (Test-Path -LiteralPath $command.Source -PathType Leaf)) {
             return (Resolve-Path -LiteralPath $command.Source).Path
         }
+    }
+    return $null
+}
+
+function Resolve-CommandTool([string]$CommandName) {
+    $overrideName = 'BOLT_TOOL_' + ($CommandName.ToUpperInvariant() -replace '[^A-Z0-9]', '_')
+    $override = [Environment]::GetEnvironmentVariable($overrideName)
+    if ($override -and (Test-Path -LiteralPath $override -PathType Leaf)) {
+        return (Resolve-Path -LiteralPath $override).Path
+    }
+    $command = Get-Command $CommandName -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($command -and $command.Source -and
+        (Test-Path -LiteralPath $command.Source -PathType Leaf)) {
+        return (Resolve-Path -LiteralPath $command.Source).Path
     }
     return $null
 }
@@ -196,7 +228,9 @@ try {
 
         $workspace = Join-Path $matrixRoot "工具 场景-$($scenario.id)"
         $null = New-Item -ItemType Directory -Path $workspace
-        foreach ($private in @('.home', '.temp', '.git-template')) {
+        foreach ($private in @(
+            '.home', '.temp', '.local-app-data', '.app-data',
+            '.git-template')) {
             $null = New-Item -ItemType Directory -Path (Join-Path $workspace $private)
         }
         foreach ($property in @($scenario.files.PSObject.Properties | Where-Object { $null -ne $_ })) {
@@ -222,19 +256,38 @@ try {
         $tokens.ToolParentRoot = $toolParentRoot
         $arguments = @($scenario.arguments | Where-Object { $null -ne $_ } |
             ForEach-Object { Expand-MatrixValue ([string]$_) $tokens })
-        if ($arguments.Count -eq 0) { $arguments = @('--version') }
+        if ($arguments.Count -eq 0 -and
+            'arguments' -notin $scenario.PSObject.Properties.Name) {
+            $arguments = @('--version')
+        }
 
         $targetProgram = $tool
         $targetArguments = $arguments
-        $extension = [IO.Path]::GetExtension($tool)
-        if ($extension -in @('.cmd', '.bat')) {
+        if ($scenario.interpreterCommand) {
+            $interpreter = Resolve-CommandTool ([string]$scenario.interpreterCommand)
+            if (-not $interpreter) {
+                Write-Output "UNVERIFIED $($scenario.id) interpreter-missing=$($scenario.interpreterCommand)"
+                $unverified++
+                continue
+            }
+            $entrypoint = Expand-MatrixValue ([string]$scenario.entrypoint) $tokens
+            if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf)) {
+                Write-Output "FAIL $($scenario.id) entrypoint-missing"
+                $failed.Add([string]$scenario.id)
+                continue
+            }
+            $targetProgram = $interpreter
+            $targetArguments = @((Resolve-Path -LiteralPath $entrypoint).Path) + $arguments
+        }
+        $extension = [IO.Path]::GetExtension($targetProgram)
+        if (-not $scenario.interpreterCommand -and $extension -in @('.cmd', '.bat')) {
             $targetProgram = Join-Path $env:SystemRoot 'System32\cmd.exe'
             $wrapper = Join-Path $workspace '.bolt-tool-wrapper.cmd'
             [IO.File]::WriteAllText(
                 $wrapper, "@call `"$tool`" %*`r`n",
                 [Text.Encoding]::ASCII)
             $targetArguments = @('/d', '/s', '/c', '.bolt-tool-wrapper.cmd') + $arguments
-        } elseif ($extension -eq '.ps1') {
+        } elseif (-not $scenario.interpreterCommand -and $extension -eq '.ps1') {
             $targetProgram = (Get-Command pwsh).Source
             $targetArguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $tool) + $arguments
         }
@@ -280,6 +333,8 @@ try {
             USERPROFILE = (Join-Path $workspace '.home')
             TEMP = (Join-Path $workspace '.temp')
             TMP = (Join-Path $workspace '.temp')
+            LOCALAPPDATA = (Join-Path $workspace '.local-app-data')
+            APPDATA = (Join-Path $workspace '.app-data')
             XDG_CONFIG_HOME = (Join-Path $workspace '.home')
             GIT_CONFIG_GLOBAL = 'NUL'
             GIT_CONFIG_SYSTEM = 'NUL'

@@ -1493,26 +1493,51 @@ bool AuthorizeNativeFileOpen(
     return AuthorizeCreateFile(path.c_str(), request, flags);
 }
 
-bool IsAuthorizedExactDeviceOpen(
-    const POBJECT_ATTRIBUTES object_attributes,
+bool IsAuthorizedExactDevicePath(
+    const wchar_t* path,
     const ClassifiedAccess& request) noexcept {
-    if (request.access == Access::kWrite) {
+    if (request.access == Access::kWrite || path == nullptr) {
         return false;
     }
-    std::wstring path;
-    constexpr wchar_t device_prefix[] = L"\\Device\\";
-    constexpr int device_prefix_length =
-        static_cast<int>(std::size(device_prefix) - 1);
-    if (!TryGetObjectAttributesPath(object_attributes, path) ||
-        path.size() <= static_cast<std::size_t>(device_prefix_length) ||
-        CompareStringOrdinal(
-            path.data(), device_prefix_length, device_prefix,
-            device_prefix_length, TRUE) != CSTR_EQUAL) {
+    constexpr wchar_t nt_prefix[] = L"\\Device\\";
+    constexpr wchar_t win32_prefix[] = L"\\\\.\\";
+    const std::size_t path_length = std::wcslen(path);
+    const bool has_device_prefix =
+        (path_length > std::size(nt_prefix) - 1 &&
+         CompareStringOrdinal(
+             path, static_cast<int>(std::size(nt_prefix) - 1),
+             nt_prefix, static_cast<int>(std::size(nt_prefix) - 1), TRUE) ==
+             CSTR_EQUAL) ||
+        (path_length > std::size(win32_prefix) - 1 &&
+         CompareStringOrdinal(
+             path, static_cast<int>(std::size(win32_prefix) - 1),
+             win32_prefix,
+             static_cast<int>(std::size(win32_prefix) - 1), TRUE) ==
+             CSTR_EQUAL);
+    if (!has_device_prefix) {
         return false;
     }
     const auto* policy = g_policy.get();
     return policy != nullptr &&
-           policy->Decide(path.c_str(), request.access) == Decision::kAllow;
+           policy->Decide(path, request.access) == Decision::kAllow;
+}
+
+bool IsAuthorizedExactDeviceOpen(
+    const POBJECT_ATTRIBUTES object_attributes,
+    const ClassifiedAccess& request) noexcept {
+    std::wstring path;
+    return TryGetObjectAttributesPath(object_attributes, path) &&
+           IsAuthorizedExactDevicePath(path.c_str(), request);
+}
+
+bool CacheExactDeviceHandle(
+    const HANDLE handle,
+    const ClassifiedAccess& request) noexcept {
+    return g_handle_access_cache.Store(
+               handle,
+               request.access == Access::kRead ? HandleAccess::kRead
+                                               : HandleAccess::kMetadata) &&
+           g_handle_access_cache.Store(handle, HandleAccess::kMetadata);
 }
 
 NTSTATUS DenyNativeFileOpen(
@@ -1856,8 +1881,10 @@ NTSTATUS NTAPI DetouredNtCreateFile(
         file_attributes, share_access, create_disposition, create_options,
         ea_buffer, ea_length);
     if (result >= 0 && file != nullptr && *file != nullptr) {
-        if (!exact_device_open &&
-            !AuthorizeOpenedFileHandle(*file, request)) {
+        const bool authorized = exact_device_open
+            ? CacheExactDeviceHandle(*file, request)
+            : AuthorizeOpenedFileHandle(*file, request);
+        if (!authorized) {
             CloseHandle(*file);
             return DenyNativeFileOpen(file, io_status);
         }
@@ -3510,6 +3537,8 @@ HANDLE WINAPI DetouredCreateFileW(
     }
     const auto request = ClassifyCreateFileRequestWithFlags(
         desired_access, creation_disposition, flags_and_attributes);
+    const bool exact_device_open =
+        IsAuthorizedExactDevicePath(filename, request);
     if (!AuthorizeCreateFile(filename, request, flags_and_attributes)) {
         return INVALID_HANDLE_VALUE;
     }
@@ -3525,7 +3554,8 @@ HANDLE WINAPI DetouredCreateFileW(
         return opened;
     }
     const DWORD native_error = GetLastError();
-    if (!AuthorizeOpenedFileHandle(opened, request)) {
+    if (!(exact_device_open ? CacheExactDeviceHandle(opened, request)
+                            : AuthorizeOpenedFileHandle(opened, request))) {
         CloseHandle(opened);
         SetLastError(ERROR_ACCESS_DENIED);
         return INVALID_HANDLE_VALUE;
@@ -3554,6 +3584,8 @@ HANDLE WINAPI DetouredCreateFileA(
     if (!ConvertAnsiPath(filename, filename_wide)) {
         return INVALID_HANDLE_VALUE;
     }
+    const bool exact_device_open =
+        IsAuthorizedExactDevicePath(filename_wide.c_str(), request);
     std::wstring isolated_pipe;
     if (process::RewriteIsolatedNamedPipePath(
             filename_wide.c_str(), isolated_pipe)) {
@@ -3596,7 +3628,8 @@ HANDLE WINAPI DetouredCreateFileA(
         return opened;
     }
     const DWORD native_error = GetLastError();
-    if (!AuthorizeOpenedFileHandle(opened, request)) {
+    if (!(exact_device_open ? CacheExactDeviceHandle(opened, request)
+                            : AuthorizeOpenedFileHandle(opened, request))) {
         CloseHandle(opened);
         SetLastError(ERROR_ACCESS_DENIED);
         return INVALID_HANDLE_VALUE;

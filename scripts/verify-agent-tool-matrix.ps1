@@ -43,12 +43,13 @@ $allowedScenarioProperties = @(
     'id', 'family', 'requiredOnHost', 'commands', 'candidates', 'terminal', 'privileged',
     'arguments', 'environment', 'readOnly', 'metadataRead', 'files', 'expectedFiles',
     'stdoutContains', 'acceptedExitCodes', 'timeoutMilliseconds', 'network', 'requiredCapabilities',
-    'namedPipes'
+    'namedPipes', 'interpreterCommand', 'entrypoint'
 )
 $allowedTokens = @(
     'ProgramFiles', 'ProgramFilesX86', 'ProgramData', 'SystemRoot', 'UserProfile',
     'LocalAppData', 'AppData', 'Workspace', 'Tool', 'ToolDirectory', 'ToolRoot', 'ToolParentRoot',
-    'VisualStudio', 'RustToolchain', 'PythonRoot', 'ComponentRoot'
+    'VisualStudio', 'RustToolchain', 'PythonRoot', 'BrowserExecutable',
+    'BrowserRoot', 'BrowserEngine', 'ComponentRoot'
 )
 $ids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 $representedFamilies = [System.Collections.Generic.HashSet[string]]::new(
@@ -105,6 +106,18 @@ foreach ($scenario in $matrix.scenarios) {
         if ($command -isnot [string] -or $command -notmatch '^[A-Za-z0-9][A-Za-z0-9+_.-]{0,63}$') {
             throw "Invalid command candidate for $($scenario.id)."
         }
+    }
+    if ($null -ne $scenario.interpreterCommand -and
+        ($scenario.interpreterCommand -isnot [string] -or
+         $scenario.interpreterCommand -notmatch '^[A-Za-z0-9][A-Za-z0-9+_.-]{0,63}$' -or
+         $scenario.entrypoint -isnot [string])) {
+        throw "Invalid interpreter entrypoint for $($scenario.id)."
+    }
+    if ($null -ne $scenario.entrypoint) {
+        if ($null -eq $scenario.interpreterCommand) {
+            throw "Entrypoint requires an interpreter for $($scenario.id)."
+        }
+        Assert-TokenizedValue $scenario.entrypoint "entrypoint for $($scenario.id)"
     }
     $candidateValues = if ($null -eq $scenario.candidates) { @() } else { @($scenario.candidates) }
     foreach ($candidate in $candidateValues) {

@@ -89,7 +89,7 @@ bool hash_payload(std::vector<std::uint8_t>& payload) {
 
 std::vector<std::uint8_t> policy_payload() {
     std::vector<std::uint8_t> body{0};
-    append_u32(body, 7);
+    append_u32(body, 8);
     append_rule(body, 0, {L"work"});
     append_rule(body, 2, {L"work", L"secret"});
     append_rule(body, 1, {L"sdk"});
@@ -97,6 +97,7 @@ std::vector<std::uint8_t> policy_payload() {
     append_rule(body, 3, {L"metadata"});
     append_rule(body, 4, {L"user"});
     append_device_rule(body, L"\\Device\\DeviceApi\\CMApi");
+    append_device_rule(body, L"\\\\.\\MountPointManager");
     body.push_back(0);
     append_u32(body, 0);
 
@@ -218,6 +219,9 @@ bool RunFilesystemPolicyTests() {
            policy->Decide(L"\\Device\\DeviceApi\\CMApi", Access::kWrite) == Decision::kDeny &&
            policy->Decide(L"\\Device\\DeviceApi\\CMApi\\child", Access::kRead) == Decision::kDeny &&
            policy->Decide(L"\\Device\\DeviceApi\\CMApi-lookalike", Access::kRead) == Decision::kDeny &&
+           policy->Decide(L"\\\\.\\MountPointManager", Access::kMetadata) == Decision::kAllow &&
+           policy->Decide(L"\\\\.\\MountPointManager", Access::kWrite) == Decision::kDeny &&
+           policy->Decide(L"\\\\.\\MountPointManager\\child", Access::kRead) == Decision::kDeny &&
            policy->Decide(L"C:\\worker\\lookalike", Access::kRead) == Decision::kDeny &&
            policy->Decide(L"C:\\outside\\item", Access::kRead) == Decision::kDeny;
 }

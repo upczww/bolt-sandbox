@@ -117,12 +117,25 @@ bool HasSeparator(const std::wstring& value) noexcept {
 bool ValidExactDevicePath(const std::wstring& value) noexcept {
     constexpr wchar_t prefix[] = L"\\Device\\";
     constexpr std::size_t prefix_length = std::size(prefix) - 1;
-    if (value.size() <= prefix_length || value.size() > 1'024 ||
-        value.back() == L'\\' ||
+    constexpr wchar_t win32_prefix[] = L"\\\\.\\";
+    constexpr std::size_t win32_prefix_length =
+        std::size(win32_prefix) - 1;
+    if (value.empty() || value.size() > 1'024 || value.back() == L'\\' ||
+        value.find_first_of(L"/:*?") != std::wstring::npos) {
+        return false;
+    }
+    if (value.size() > win32_prefix_length &&
+        CompareStringOrdinal(
+            value.data(), static_cast<int>(win32_prefix_length),
+            win32_prefix, static_cast<int>(win32_prefix_length), TRUE) ==
+            CSTR_EQUAL) {
+        return value.find(L'\\', win32_prefix_length) ==
+               std::wstring::npos;
+    }
+    if (value.size() <= prefix_length ||
         CompareStringOrdinal(
             value.data(), static_cast<int>(prefix_length), prefix,
-            static_cast<int>(prefix_length), TRUE) != CSTR_EQUAL ||
-        value.find_first_of(L"/:*?") != std::wstring::npos) {
+            static_cast<int>(prefix_length), TRUE) != CSTR_EQUAL) {
         return false;
     }
     std::size_t offset = prefix_length;

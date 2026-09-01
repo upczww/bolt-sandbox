@@ -50,6 +50,7 @@ fs-ro|optional|user-profile|.rustup\toolchains
 fs-ro|optional|user-profile|.cargo\registry\src
 fs-ro|optional|user-profile|.cargo\registry\cache
 device-ro|required|device|\Device\DeviceApi\CMApi
+device-ro|required|device|\\.\MountPointManager
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Cryptography
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\SystemCertificates
 reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\SystemCertificates
@@ -79,8 +80,8 @@ absolute target executable, never from the child environment carried in
 - An `absolute` entry cannot resolve to a volume, UNC share root, device path,
   user-profile root, or known mandatory-sensitive subtree.
 - Duplicate normalized rules are rejected rather than silently accepted.
-- A `device-ro` entry must use base `device`, start with `\Device\`, and name
-  one exact object. Roots, descendants, globs, parent components, alternate
+- A `device-ro` entry must use base `device` and name one exact `\Device\...`
+  object or one exact `\\.\Name` Win32 device alias. Roots, descendants, globs, parent components, alternate
   separators, optional rules, and every write operation remain invalid or
   denied. Device rules are evaluated before ordinary filesystem
   canonicalization because NT device handles do not expose Win32 final paths.
