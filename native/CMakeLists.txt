@@ -226,7 +226,6 @@ add_library(bolt-sandbox-filesystem STATIC
     hook/event_sink.cpp
     hook/recovery/recovery_client.cpp
     hook/filesystem/access_classifier.cpp
-    hook/filesystem/bounded_resolved_path_cache.cpp
     hook/filesystem/final_path_resolver.cpp
     hook/filesystem/file_hooks.cpp
     hook/filesystem/filesystem_policy.cpp
@@ -297,7 +296,6 @@ endif()
 
 add_executable(bolt-sandbox-native-tests
     tests/bounded_dns_resolver_tests.cpp
-    tests/bounded_resolved_path_cache_tests.cpp
     tests/buildxl_tree_tests.cpp
     tests/detours_tests.cpp
     tests/event_frame_tests.cpp
