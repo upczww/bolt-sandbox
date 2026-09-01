@@ -37,6 +37,7 @@ mod streams;
     reason = "transaction journal is consumed by the projected backend in the next phase"
 )]
 pub(crate) mod workspace;
+mod workspace_security_protocol;
 
 use crate::{
     CommandId, ExecutionAttribution, ExecutionHandle, ExecutionId, InitializationStage,
