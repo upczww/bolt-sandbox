@@ -355,6 +355,10 @@ fn copy_snapshot(
 
 fn hash_file(path: &Path) -> Result<[u8; 32], WorkspaceError> {
     let mut file = File::open(path).map_err(map_io)?;
+    let information = winapi_util::file::information(&file).map_err(map_io)?;
+    if information.number_of_links() != 1 {
+        return Err(WorkspaceError::UnsupportedObject);
+    }
     let mut digest = Sha256::new();
     let mut buffer = vec![0_u8; 64 * 1_024].into_boxed_slice();
     loop {

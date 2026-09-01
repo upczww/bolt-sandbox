@@ -14,6 +14,7 @@ path = "src/lib.rs"
 getrandom = "=0.4.3"
 idna = "=1.1.0"
 sha2 = "=0.11.0"
+winapi-util = "=0.1.11"
 
 [lints.rust]
 unsafe_code = "forbid"
