@@ -123,6 +123,8 @@ $sampleCount = [int]$minimumMeasured
 $startup = Require-Samples $evidence 'startupMilliseconds' $sampleCount
 $control = Require-Samples $evidence 'filesystemControlMilliseconds' $sampleCount
 $sandbox = Require-Samples $evidence 'filesystemSandboxMilliseconds' $sampleCount
+$pathControl = Require-Samples $evidence 'filesystemPathControlMilliseconds' $sampleCount
+$pathSandbox = Require-Samples $evidence 'filesystemPathSandboxMilliseconds' $sampleCount
 $privateBytes = Require-Samples $evidence 'privateBytes' $sampleCount
 $handles = Require-Samples $evidence 'handles' $sampleCount
 $threads = Require-Samples $evidence 'threads' $sampleCount
@@ -134,6 +136,14 @@ if ($controlMedian -le 0) {
 $sandboxMedian = Get-Median $sandbox
 $filesystemOverhead = (($sandboxMedian - $controlMedian) / $controlMedian) * 100
 $filesystemOverhead = [math]::Max(0, $filesystemOverhead)
+$pathControlMedian = Get-Median $pathControl
+if ($pathControlMedian -le 0) {
+    throw 'INSUFFICIENT_EVIDENCE: filesystem path control median must be positive.'
+}
+$pathSandboxMedian = Get-Median $pathSandbox
+$pathChurnOverhead = [math]::Max(
+    0,
+    (($pathSandboxMedian - $pathControlMedian) / $pathControlMedian) * 100)
 $startupMaximum = ($startup | Measure-Object -Maximum).Maximum
 $privateMaximum = ($privateBytes | Measure-Object -Maximum).Maximum
 $handleMaximum = ($handles | Measure-Object -Maximum).Maximum
@@ -157,6 +167,7 @@ Assert-WithinBudget 'threadGrowth' $threadGrowth $maximumThreadGrowth
     metrics = [ordered]@{
         warmStartupMilliseconds = $startupMaximum
         filesystemOverheadPercent = [math]::Round($filesystemOverhead, 3)
+        filesystemPathChurnOverheadPercent = [math]::Round($pathChurnOverhead, 3)
         privateBytes = $privateMaximum
         privateBytesGrowth = $privateGrowth
         handles = $handleMaximum

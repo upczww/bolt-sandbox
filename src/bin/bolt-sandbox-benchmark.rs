@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs,
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::{Command, ExitCode},
     time::{Duration, Instant},
@@ -43,6 +43,12 @@ fn main() -> ExitCode {
         .is_some_and(|value| value == "--filesystem-read-fixture")
     {
         return run_filesystem_fixture(&arguments[1..], FilesystemWorkload::Read);
+    }
+    if arguments
+        .first()
+        .is_some_and(|value| value == "--filesystem-path-fixture")
+    {
+        return run_filesystem_fixture(&arguments[1..], FilesystemWorkload::Path);
     }
 
     let Some(options) = parse_options(&arguments) else {
@@ -116,16 +122,7 @@ fn run_benchmark(options: &Options) -> Result<String, ()> {
 }
 
 fn benchmark_in_root(options: &Options, executable: &Path, root: &Path) -> Result<String, ()> {
-    let sandbox = Sandbox::new(SandboxConfig {
-        component_root: options.component_root.clone(),
-        credential_environment_variables: Vec::new(),
-        stream_capacity: 1_048_576,
-        violation_aggregate_capacity: bolt_sandbox::DEFAULT_VIOLATION_AGGREGATE_CAPACITY,
-        mandatory_filesystem_denies: Vec::new(),
-        mandatory_registry_denies: Vec::new(),
-        component_manifest_sha256: None,
-    })
-    .map_err(|_| ())?;
+    let sandbox = benchmark_sandbox(options)?;
 
     for index in 0..options.warmup {
         run_sandbox(
@@ -146,11 +143,27 @@ fn benchmark_in_root(options: &Options, executable: &Path, root: &Path) -> Resul
             options.filesystem_iterations,
         )
         .map_err(|()| benchmark_stage_error("warmup-filesystem"))?;
+        let path_direct_root = root.join(format!("warm-path-direct-{index}"));
+        let path_sandbox_root = root.join(format!("warm-path-sandbox-{index}"));
+        let _ = run_direct_path_filesystem(
+            executable,
+            &path_direct_root,
+            options.filesystem_iterations,
+        )?;
+        let _ = run_sandbox_path_filesystem(
+            &sandbox,
+            executable,
+            root,
+            &path_sandbox_root,
+            options.filesystem_iterations,
+        )?;
     }
 
     let mut startup = Vec::with_capacity(options.samples);
     let mut control = Vec::with_capacity(options.samples);
     let mut sandboxed = Vec::with_capacity(options.samples);
+    let mut path_control = Vec::with_capacity(options.samples);
+    let mut path_sandboxed = Vec::with_capacity(options.samples);
     for index in 0..options.samples {
         let started = Instant::now();
         run_sandbox(
@@ -179,15 +192,47 @@ fn benchmark_in_root(options: &Options, executable: &Path, root: &Path) -> Resul
             )
             .map_err(|()| benchmark_stage_error("measured-filesystem"))?,
         );
+        let path_direct_root = root.join(format!("path-direct-{index}"));
+        let path_sandbox_root = root.join(format!("path-sandbox-{index}"));
+        path_control.push(run_direct_path_filesystem(
+            executable,
+            &path_direct_root,
+            options.filesystem_iterations,
+        )?);
+        path_sandboxed.push(
+            run_sandbox_path_filesystem(
+                &sandbox,
+                executable,
+                root,
+                &path_sandbox_root,
+                options.filesystem_iterations,
+            )
+            .map_err(|()| benchmark_stage_error("measured-path-filesystem"))?,
+        );
     }
 
     Ok(format!(
-        "{{\"schemaVersion\":1,\"warmupSamples\":{},\"startupMilliseconds\":{},\"filesystemControlMilliseconds\":{},\"filesystemSandboxMilliseconds\":{}}}",
+        "{{\"schemaVersion\":1,\"warmupSamples\":{},\"startupMilliseconds\":{},\"filesystemControlMilliseconds\":{},\"filesystemSandboxMilliseconds\":{},\"filesystemPathControlMilliseconds\":{},\"filesystemPathSandboxMilliseconds\":{}}}",
         options.warmup,
         json_numbers(&startup),
         json_numbers(&control),
-        json_numbers(&sandboxed)
+        json_numbers(&sandboxed),
+        json_numbers(&path_control),
+        json_numbers(&path_sandboxed)
     ))
+}
+
+fn benchmark_sandbox(options: &Options) -> Result<Sandbox, ()> {
+    Sandbox::new(SandboxConfig {
+        component_root: options.component_root.clone(),
+        credential_environment_variables: Vec::new(),
+        stream_capacity: 1_048_576,
+        violation_aggregate_capacity: bolt_sandbox::DEFAULT_VIOLATION_AGGREGATE_CAPACITY,
+        mandatory_filesystem_denies: Vec::new(),
+        mandatory_registry_denies: Vec::new(),
+        component_manifest_sha256: None,
+    })
+    .map_err(|_| ())
 }
 
 fn benchmark_stage_error(stage: &str) {
@@ -222,6 +267,45 @@ fn run_sandbox_filesystem(
         cwd,
         &[
             OsString::from("--filesystem-read-fixture"),
+            workload_root.as_os_str().to_os_string(),
+            OsString::from(iterations.to_string()),
+        ],
+    )?;
+    parse_nanoseconds(&stdout)
+}
+
+fn run_direct_path_filesystem(
+    executable: &Path,
+    root: &Path,
+    iterations: usize,
+) -> Result<f64, ()> {
+    let output = Command::new(executable)
+        .args([
+            OsString::from("--filesystem-path-fixture"),
+            root.as_os_str().to_os_string(),
+            OsString::from(iterations.to_string()),
+        ])
+        .output()
+        .map_err(|_| ())?;
+    if !output.status.success() || !output.stderr.is_empty() {
+        return Err(());
+    }
+    parse_nanoseconds(&output.stdout)
+}
+
+fn run_sandbox_path_filesystem(
+    sandbox: &Sandbox,
+    executable: &Path,
+    cwd: &Path,
+    workload_root: &Path,
+    iterations: usize,
+) -> Result<f64, ()> {
+    let stdout = run_sandbox(
+        sandbox,
+        executable,
+        cwd,
+        &[
+            OsString::from("--filesystem-path-fixture"),
             workload_root.as_os_str().to_os_string(),
             OsString::from(iterations.to_string()),
         ],
@@ -369,6 +453,7 @@ fn path_scope(path: &Path, cwd: &Path) -> &'static str {
 #[derive(Clone, Copy)]
 enum FilesystemWorkload {
     Read,
+    Path,
     Mutation,
 }
 
@@ -414,10 +499,11 @@ fn run_filesystem_fixture(arguments: &[OsString], workload: FilesystemWorkload) 
     }
     let result = match workload {
         FilesystemWorkload::Read => filesystem_read_workload(&root, iterations),
+        FilesystemWorkload::Path => filesystem_path_workload(&root, iterations),
         FilesystemWorkload::Mutation => filesystem_mutation_workload(&root, iterations),
     };
     let cleanup = match workload {
-        FilesystemWorkload::Read => Ok(()),
+        FilesystemWorkload::Read | FilesystemWorkload::Path => Ok(()),
         FilesystemWorkload::Mutation => fs::remove_dir_all(&root),
     };
     if let Err(error) = cleanup {
@@ -439,6 +525,49 @@ fn run_filesystem_fixture(arguments: &[OsString], workload: FilesystemWorkload) 
 }
 
 fn filesystem_read_workload(root: &Path, iterations: usize) -> Result<Duration, FixtureFailure> {
+    const FILE_COUNT: usize = 128;
+    let file_count = iterations.min(FILE_COUNT);
+    let payload = vec![0x3c_u8; 64 * 1_024].into_boxed_slice();
+    let mut paths = Vec::with_capacity(file_count);
+    for index in 0..file_count {
+        let path = root.join(format!("source-{index:08x}.rs"));
+        fs::write(&path, &payload).map_err(|_| FixtureFailure::SeedWrite)?;
+        paths.push(path);
+    }
+
+    let mut files = paths
+        .iter()
+        .map(fs::File::open)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| FixtureFailure::Read)?;
+    let mut contents = vec![0_u8; payload.len()];
+    let started = Instant::now();
+    let mut observed_bytes = 0_u64;
+    for index in 0..iterations {
+        let file_index = index % files.len();
+        let file = &mut files[file_index];
+        let metadata = file.metadata().map_err(|_| FixtureFailure::Metadata)?;
+        if metadata.len() != payload.len() as u64 {
+            return Err(FixtureFailure::MetadataSize);
+        }
+        file.seek(SeekFrom::Start(0))
+            .and_then(|_| file.read_exact(&mut contents))
+            .map_err(|_| FixtureFailure::Read)?;
+        observed_bytes = observed_bytes
+            .checked_add(u64::try_from(contents.len()).map_err(|_| FixtureFailure::ByteCount)?)
+            .ok_or(FixtureFailure::ByteCount)?;
+        if contents.first() != Some(&payload[0]) || contents.last() != payload.last() {
+            return Err(FixtureFailure::Content);
+        }
+    }
+    let elapsed = started.elapsed();
+    if observed_bytes != payload.len() as u64 * iterations as u64 {
+        return Err(FixtureFailure::ByteCount);
+    }
+    Ok(elapsed)
+}
+
+fn filesystem_path_workload(root: &Path, iterations: usize) -> Result<Duration, FixtureFailure> {
     const FILE_COUNT: usize = 128;
     let file_count = iterations.min(FILE_COUNT);
     let payload = vec![0x3c_u8; 64 * 1_024].into_boxed_slice();

@@ -30,6 +30,8 @@ const VALID_EVIDENCE: &str = r#"{
   "startupMilliseconds": [40, 41, 42, 39, 43, 40, 41],
   "filesystemControlMilliseconds": [100, 101, 99, 100, 100, 101, 99],
   "filesystemSandboxMilliseconds": [104, 104, 103, 104, 104, 105, 103],
+  "filesystemPathControlMilliseconds": [100, 101, 99, 100, 100, 101, 99],
+  "filesystemPathSandboxMilliseconds": [130, 131, 129, 130, 130, 131, 129],
   "privateBytes": [104857600, 105906176, 106954752, 108003328, 109051904, 110100480, 111149056],
   "handles": [80, 80, 81, 80, 81, 80, 81],
   "threads": [8, 8, 8, 8, 8, 8, 8]

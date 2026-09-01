@@ -1033,6 +1033,15 @@ Initial performance targets:
   workloads, measured rather than assumed.
 - No unbounded queues or per-operation disk logging in hook paths.
 
+The release benchmark defines steady state as repeated metadata queries and
+64 KiB reads through a bounded set of already opened, policy-authorized file
+handles; setup, process launch, path open, and cleanup are outside its timed
+region. A separate path-churn workload times metadata/open/read/close by path
+for every iteration and is always recorded in release evidence. Its result is
+never substituted for or omitted from the steady-state metric, but it does not
+share the below-5% fixed-cost target because it intentionally measures path
+resolution and final-identity validation on every operation.
+
 ## 16. Decisions
 
 Accepted:
