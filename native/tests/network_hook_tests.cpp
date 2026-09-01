@@ -739,6 +739,13 @@ int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
         WSASocketW(
             AF_INET, SOCK_STREAM, IPPROTO_TCP, nullptr, 0,
             WSA_FLAG_NO_HANDLE_INHERIT | WSA_FLAG_REGISTERED_IO);
+    GUID accept_ex_guid = WSAID_ACCEPTEX;
+    LPFN_ACCEPTEX accept_ex = nullptr;
+    DWORD accept_ex_bytes = 0;
+    const int accept_ex_status = WSAIoctl(
+        extension_socket, SIO_GET_EXTENSION_FUNCTION_POINTER,
+        &accept_ex_guid, sizeof(accept_ex_guid), &accept_ex,
+        sizeof(accept_ex), &accept_ex_bytes, nullptr, nullptr);
     const GUID unknown_extension = {
         0x10203040, 0x5060, 0x7080,
         {0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0, 0x01}};
@@ -816,6 +823,8 @@ int RunNetworkHookChild(const int argument_count, wchar_t** arguments) {
         send_msg_extension_bytes == sizeof(send_msg) && send_msg != nullptr &&
         send_msg_status == SOCKET_ERROR && send_msg_error == WSAEACCES &&
         send_msg_bytes == 99 && extension_socket != INVALID_SOCKET &&
+        accept_ex_status == 0 && accept_ex != nullptr &&
+        accept_ex_bytes == sizeof(accept_ex) &&
         unknown_extension_status == SOCKET_ERROR &&
         unknown_extension_error == WSAEACCES && unknown_extension_bytes == 0 &&
         unknown_function == reinterpret_cast<void*>(
