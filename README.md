@@ -110,6 +110,11 @@ into a unique staging directory, optionally requires valid Authenticode
 signatures, writes the manifest over the final signed bytes, and renames the
 staging directory into place. Release pipelines use `-RequireSigned`; unsigned
 development packages are reported as `NotSigned` and fail that strict mode.
+`pwsh scripts/test-signing-pipeline.ps1` exercises the same strict path with a
+one-day, non-exportable CurrentUser test certificate, temporarily trusts only
+that certificate, and removes its private key and trust entries in `finally`.
+It validates local signing mechanics only; it does not produce a timestamped or
+publicly trusted release.
 Before publication, the packager removes inherited ACL entries, rejects
 reparse points, grants mutation rights only to the current packaging identity,
 SYSTEM, and Administrators, and verifies every packaged file and directory.
