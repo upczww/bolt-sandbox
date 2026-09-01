@@ -48,7 +48,7 @@ $allowedScenarioProperties = @(
 $allowedTokens = @(
     'ProgramFiles', 'ProgramFilesX86', 'ProgramData', 'SystemRoot', 'UserProfile',
     'LocalAppData', 'AppData', 'Workspace', 'Tool', 'ToolDirectory', 'ToolRoot', 'ToolParentRoot',
-    'VisualStudio', 'RustToolchain', 'PythonRoot', 'BrowserExecutable',
+    'VisualStudio', 'RustToolchain', 'PythonRoot', 'JavaRoot', 'BrowserExecutable',
     'BrowserRoot', 'BrowserEngine', 'ComponentRoot'
 )
 $ids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)

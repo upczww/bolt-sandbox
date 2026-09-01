@@ -1709,7 +1709,35 @@ bool ConfigureProcessRuntime(
         g_hook_dll_path.clear();
         return false;
     }
-    g_runtime_payload = payload;
+    protocol::RuntimePayload configured_payload = payload;
+    if (payload.standard_output_handle != 0) {
+        HANDLE stable_output = nullptr;
+        HANDLE stable_error = nullptr;
+        if (!DuplicateHandle(
+                GetCurrentProcess(),
+                HandleFromWire(payload.standard_output_handle),
+                GetCurrentProcess(), &stable_output, 0, FALSE,
+                DUPLICATE_SAME_ACCESS) ||
+            !DuplicateHandle(
+                GetCurrentProcess(),
+                HandleFromWire(payload.standard_error_handle),
+                GetCurrentProcess(), &stable_error, 0, FALSE,
+                DUPLICATE_SAME_ACCESS)) {
+            if (stable_output != nullptr) {
+                CloseHandle(stable_output);
+            }
+            if (stable_error != nullptr) {
+                CloseHandle(stable_error);
+            }
+            g_hook_dll_path.clear();
+            return false;
+        }
+        configured_payload.standard_output_handle =
+            reinterpret_cast<std::uintptr_t>(stable_output);
+        configured_payload.standard_error_handle =
+            reinterpret_cast<std::uintptr_t>(stable_error);
+    }
+    g_runtime_payload = configured_payload;
     g_runtime_configured = true;
     return true;
 }

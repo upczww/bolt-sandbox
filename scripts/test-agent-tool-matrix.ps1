@@ -52,6 +52,8 @@ function Resolve-DeclaredToolRoot([string]$CommandName) {
 $pythonRoot = Resolve-DeclaredToolRoot 'python'
 $rustBin = Resolve-DeclaredToolRoot 'cargo'
 $rustToolchain = if ($rustBin) { Split-Path -Parent $rustBin } else { '' }
+$javaBin = Resolve-DeclaredToolRoot 'java'
+$javaRoot = if ($javaBin) { Split-Path -Parent $javaBin } else { '' }
 $browserExecutable = [Environment]::GetEnvironmentVariable('BOLT_BROWSER_EXECUTABLE')
 if ($browserExecutable -and
     (Test-Path -LiteralPath $browserExecutable -PathType Leaf)) {
@@ -77,6 +79,7 @@ $baseTokens = @{
     VisualStudio = $visualStudio
     PythonRoot = $pythonRoot
     RustToolchain = $rustToolchain
+    JavaRoot = $javaRoot
     BrowserExecutable = $browserExecutable
     BrowserRoot = $browserRoot
     BrowserEngine = $browserEngine
