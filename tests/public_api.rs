@@ -8,13 +8,26 @@ use std::{
 
 use bolt_sandbox::{
     ChildInjectionFailure, ChildInjectionFailureReason, ChildProcessPolicy,
-    DEFAULT_STREAM_CAPACITY, DEFAULT_VIOLATION_AGGREGATE_CAPACITY, ExecutionHandle,
+    CommandId, DEFAULT_STREAM_CAPACITY, DEFAULT_VIOLATION_AGGREGATE_CAPACITY, ExecutionHandle,
     ExecutionResult, FilesystemOperation, FilesystemPolicy, FilesystemViolation, IpCidr,
     MAX_TIMEOUT, MAX_VIOLATION_AGGREGATE_CAPACITY, MIN_TIMEOUT, NetworkAllowList, NetworkPolicy,
     NetworkTarget, NetworkViolation, PortRange, ProcessExit, ProcessExitReason, ProcessOperation,
     ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField, Sandbox, SandboxConfig,
     SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest, ViolationAggregate,
 };
+
+#[test]
+fn attr_001_public_command_id_is_fixed_nonzero_and_can_start_an_execution() {
+    assert!(CommandId::new([0; 16]).is_none());
+    let command_id = CommandId::new([0xA5; 16]).expect("nonzero command ID must be valid");
+    assert_eq!(command_id.as_bytes(), &[0xA5; 16]);
+
+    let _: fn(
+        &Sandbox,
+        SandboxRequest,
+        CommandId,
+    ) -> Result<ExecutionHandle, SandboxError> = Sandbox::start_with_command_id;
+}
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {
     SandboxRequest {
