@@ -13,9 +13,7 @@ fn context() -> CompatibilityGrantContext {
         executable_sha256: [0x42; 32],
         workspace: PathBuf::from(r"C:\agent-work\task"),
         mandatory_filesystem_denies: vec![PathBuf::from(r"C:\Users\agent\.ssh")],
-        mandatory_registry_denies: vec![String::from(
-            r"HKCU\SOFTWARE\Microsoft\Credentials",
-        )],
+        mandatory_registry_denies: vec![String::from(r"HKCU\SOFTWARE\Microsoft\Credentials")],
         maximum_grants: 16,
     }
 }
@@ -58,10 +56,7 @@ fn compat_017_failed_command_proposes_one_exact_read_only_grant() {
             filesystem_violation(FilesystemOperation::Read, r"C:\SDK\toolchain\stdlib.lib"),
             ViolationAggregate {
                 duplicate_count: 7,
-                ..filesystem_violation(
-                    FilesystemOperation::Read,
-                    r"c:\sdk\toolchain\stdlib.lib",
-                )
+                ..filesystem_violation(FilesystemOperation::Read, r"c:\sdk\toolchain\stdlib.lib")
             },
         ],
         0,
@@ -73,9 +68,7 @@ fn compat_017_failed_command_proposes_one_exact_read_only_grant() {
     assert_eq!(proposal.grants.len(), 1);
     assert_eq!(
         proposal.grants[0],
-        CompatibilityGrant::FilesystemReadOnly(PathBuf::from(
-            r"C:\SDK\toolchain\stdlib.lib"
-        ))
+        CompatibilityGrant::FilesystemReadOnly(PathBuf::from(r"C:\SDK\toolchain\stdlib.lib"))
     );
     assert_eq!(proposal.duplicate_violations, 7);
     assert!(!proposal.proposal_id.is_empty());
@@ -130,4 +123,3 @@ fn compat_019_incomplete_violation_evidence_never_guesses_a_grant() {
         [CompatibilityCapability::IncompleteEvidence]
     );
 }
-
