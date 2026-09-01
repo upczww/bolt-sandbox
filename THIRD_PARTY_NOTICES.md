@@ -1,14 +1,14 @@
 # Third-Party Notices
 
-## Microsoft Detours 4.0.1
+## Microsoft Detours 4.0.1-compatible main revision
 
 Bolt Sandbox vendors the minimum Microsoft Detours static-library source set
 needed for x86/x64 process injection and API interception. Detours is licensed
 under the MIT License.
 
 - Source: https://github.com/microsoft/Detours
-- Tag: `v4.0.1`
-- Revision: `e4bfd6b03e50de46b47abfbd1e46b384f0c5f833`
+- Branch snapshot: `main`
+- Revision: `adb07604aa56508448b95bf037c2a6d0d3b6831a`
 - License: MIT
 - Import manifest: `native/third_party/detours/provenance.json`
 - Modification boundary: imported files are unmodified; project integration

@@ -6,7 +6,7 @@ $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $detoursRoot = Join-Path $repositoryRoot 'native\third_party\detours'
 $provenancePath = Join-Path $detoursRoot 'provenance.json'
 $noticePath = Join-Path $repositoryRoot 'THIRD_PARTY_NOTICES.md'
-$expectedRevision = 'e4bfd6b03e50de46b47abfbd1e46b384f0c5f833'
+$expectedRevision = 'adb07604aa56508448b95bf037c2a6d0d3b6831a'
 $expectedUpstream = 'https://github.com/microsoft/Detours'
 
 if (-not (Test-Path -LiteralPath $provenancePath -PathType Leaf)) {
@@ -18,9 +18,9 @@ if ($provenance.upstream -ne $expectedUpstream) {
     throw 'Detours provenance does not identify the official Microsoft upstream.'
 }
 if ($provenance.revision -ne $expectedRevision) {
-    throw 'Detours revision is not pinned to the audited v4.0.1 commit.'
+    throw 'Detours revision is not pinned to the audited main snapshot.'
 }
-if ($provenance.tag -ne 'v4.0.1' -or $provenance.license -ne 'MIT') {
+if ($provenance.tag -ne 'main' -or $provenance.license -ne 'MIT') {
     throw 'Detours tag or license metadata is invalid.'
 }
 
