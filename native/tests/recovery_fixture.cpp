@@ -9,6 +9,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <winternl.h>
 
 #include <detours.h>
 
@@ -228,4 +229,37 @@ int RunRecoveryHandleAndChildFixture(
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
     return static_cast<int>(exit_code);
+}
+
+int RunRecoveryNativeDispositionFixture(
+    const int argument_count,
+    wchar_t** arguments) noexcept {
+    if (argument_count != 3) {
+        return 354;
+    }
+    const HANDLE file = CreateFileW(
+        arguments[2], DELETE | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return 355;
+    }
+    using NtSetInformationFileFunction = NTSTATUS(NTAPI*)(
+        HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, FILE_INFORMATION_CLASS);
+    const auto nt_set_information =
+        reinterpret_cast<NtSetInformationFileFunction>(GetProcAddress(
+            GetModuleHandleW(L"ntdll.dll"), "NtSetInformationFile"));
+    FILE_DISPOSITION_INFO disposition{};
+    disposition.DeleteFile = TRUE;
+    IO_STATUS_BLOCK io_status{};
+    constexpr auto disposition_class =
+        static_cast<FILE_INFORMATION_CLASS>(13);
+    const NTSTATUS status =
+        nt_set_information == nullptr
+            ? static_cast<NTSTATUS>(0xC0000001UL)
+            : nt_set_information(
+                  file, &io_status, &disposition, sizeof(disposition),
+                  disposition_class);
+    CloseHandle(file);
+    return status >= 0 ? 0 : 356;
 }

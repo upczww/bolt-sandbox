@@ -37,6 +37,7 @@ int RunRecoveryReplaceRenameFixture(int argument_count, wchar_t** arguments) noe
 int RunUnauthorizedRecoveryRequestFixture(int argument_count, wchar_t** arguments) noexcept;
 int RunRecoveryDeleteTwoFixture(int argument_count, wchar_t** arguments) noexcept;
 int RunRecoveryHandleAndChildFixture(int argument_count, wchar_t** arguments) noexcept;
+int RunRecoveryNativeDispositionFixture(int argument_count, wchar_t** arguments) noexcept;
 int RunJobTreeParent(int argument_count, wchar_t** arguments);
 int RunIgnoreGracefulChild(int argument_count, wchar_t** arguments);
 bool RunNamedPipeTests();
@@ -548,6 +549,10 @@ int wmain(const int argument_count, wchar_t** arguments) {
     if (argument_count >= 2 &&
         std::wstring(arguments[1]) == L"--recovery-handle-child-fixture") {
         return RunRecoveryHandleAndChildFixture(argument_count, arguments);
+    }
+    if (argument_count >= 2 &&
+        std::wstring(arguments[1]) == L"--recovery-native-disposition-fixture") {
+        return RunRecoveryNativeDispositionFixture(argument_count, arguments);
     }
     if (argument_count == 2 && std::wstring(arguments[1]) == L"--stream-tests") {
         return RunStreamTests() ? 0 : 1;

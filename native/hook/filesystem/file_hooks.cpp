@@ -1633,6 +1633,25 @@ bool AuthorizeShellTransfer(
     return true;
 }
 
+bool RequestsReplacement(
+    const PVOID information,
+    const ULONG information_size,
+    const bool extended) noexcept {
+    const std::size_t header_size = extended
+                                        ? offsetof(NtFileTargetInformationEx, file_name)
+                                        : offsetof(NtFileTargetInformation, file_name);
+    if (information == nullptr || information_size < header_size) {
+        return false;
+    }
+    if (extended) {
+        return (static_cast<const NtFileTargetInformationEx*>(information)
+                    ->flags &
+                FILE_RENAME_FLAG_REPLACE_IF_EXISTS) != 0;
+    }
+    return static_cast<const NtFileTargetInformation*>(information)
+               ->replace_if_exists != FALSE;
+}
+
 bool ShellItemPath(IShellItem* const item, std::wstring& path) noexcept {
     path.clear();
     if (item == nullptr) {
@@ -3206,6 +3225,12 @@ BOOL WINAPI DetouredSetFileInformationByHandle(
     if (!AuthorizeMove(source_path.c_str(), destination_path.c_str())) {
         return FALSE;
     }
+    if (RequestsReplacement(
+            information, information_size, extended)) {
+        recovery::BackupPath(
+            destination_path.c_str(),
+            protocol::RecoveryOperation::kRename);
+    }
     return g_set_file_information_by_handle(
         file, information_class, information, information_size);
 }
@@ -3595,6 +3620,12 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
             }
             return status_access_denied;
         }
+        if (RequestsReplacement(
+                information, information_size, extended)) {
+            recovery::BackupPath(
+                destination_path.c_str(),
+                protocol::RecoveryOperation::kRename);
+        }
         return g_zw_set_information_file(
             file, io_status, information, information_size, information_class);
     }
@@ -3623,6 +3654,13 @@ NTSTATUS NTAPI DetouredZwSetInformationFile(
         return status_access_denied;
     }
     InvalidateResolvedPathForMutation(EvaluatedPath(evaluation, source_path.c_str()), false);
+    if (is_disposition) {
+        recovery::BackupPath(
+            source_path.c_str(), protocol::RecoveryOperation::kDelete);
+    } else if (is_truncation) {
+        recovery::BackupPath(
+            source_path.c_str(), protocol::RecoveryOperation::kTruncate);
+    }
     return g_zw_set_information_file(
         file, io_status, information, information_size, information_class);
 }
