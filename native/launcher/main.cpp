@@ -517,7 +517,8 @@ int RunDecodedSession(
     bolt::common::PrivatePipe event_pipe;
     bolt::common::ExecutionJob job;
     const HANDLE release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    const std::wstring pipe_name = EventPipeName(request.nonce);
+    const std::wstring pipe_name =
+        EventPipeName(request.endpoint_identifier);
     if (release == nullptr ||
         bolt::common::ImmutablePolicyMapping::Create(
             request.policy.data(), request.policy.size(), policy) !=

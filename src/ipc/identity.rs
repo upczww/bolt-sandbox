@@ -22,6 +22,7 @@ impl EntropySource for SystemEntropy {
 }
 
 pub(crate) struct ExecutionIdentity {
+    endpoint_identifier: [u8; 16],
     endpoint_name: String,
     handshake_nonce: [u8; HANDSHAKE_NONCE_LENGTH],
 }
@@ -37,18 +38,25 @@ impl ExecutionIdentity {
             .fill(&mut random)
             .map_err(|()| ExecutionIdentityError::EntropyUnavailable)?;
 
-        let identifier = &random[..IDENTIFIER_BYTE_LENGTH];
+        let identifier: [u8; IDENTIFIER_BYTE_LENGTH] = random[..IDENTIFIER_BYTE_LENGTH]
+            .try_into()
+            .map_err(|_| ExecutionIdentityError::EntropyUnavailable)?;
         let handshake_nonce = random[IDENTIFIER_BYTE_LENGTH..]
             .try_into()
             .map_err(|_| ExecutionIdentityError::EntropyUnavailable)?;
         Ok(Self {
-            endpoint_name: endpoint_name(identifier),
+            endpoint_identifier: identifier,
+            endpoint_name: endpoint_name(&identifier),
             handshake_nonce,
         })
     }
 
     pub(crate) fn endpoint_name(&self) -> &str {
         &self.endpoint_name
+    }
+
+    pub(crate) const fn endpoint_identifier(&self) -> &[u8; 16] {
+        &self.endpoint_identifier
     }
 
     pub(crate) const fn handshake_nonce(&self) -> &[u8; HANDSHAKE_NONCE_LENGTH] {

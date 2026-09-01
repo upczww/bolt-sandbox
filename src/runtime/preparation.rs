@@ -83,6 +83,10 @@ impl PreparedLaunch {
         self.execution_identity.endpoint_name()
     }
 
+    pub(super) const fn ipc_endpoint_identifier(&self) -> &[u8; 16] {
+        self.execution_identity.endpoint_identifier()
+    }
+
     pub(super) const fn handshake_nonce(&self) -> &[u8; 16] {
         self.execution_identity.handshake_nonce()
     }

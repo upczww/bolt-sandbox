@@ -634,6 +634,14 @@ handshake nonce and never appear in the endpoint name. Random-source failure
 aborts setup without a timestamp, process-ID, counter, or other predictable
 fallback. The identity type does not expose nonce-bearing debug output.
 
+Private launcher-start protocol version 2 carries both 16-byte values in its
+SHA-256-bound 112-byte header. The launcher validates a nonzero endpoint ID and
+nonce before allocating the Job or target, uses only the endpoint ID to create
+the protected event-pipe name, and passes only the nonce into the authenticated
+`Ready` handshake. Launcher-start v1 is rejected before target creation. Event,
+policy, and compatible-component protocol version 1 remain independently
+versioned and unchanged.
+
 The Rust violation aggregator has a nonzero configured unique-entry capacity.
 Its identity key includes the complete typed event, so process, operation, and
 resource differences never collapse. At capacity, a new distinct violation

@@ -1,8 +1,9 @@
 use sha2::{Digest, Sha256};
 
 const MAGIC: [u8; 4] = *b"BLS1";
-const HEADER_LENGTH: usize = 96;
-const DIGEST_OFFSET: usize = 64;
+const LAUNCHER_START_VERSION: u16 = 2;
+const HEADER_LENGTH: usize = 112;
+const DIGEST_OFFSET: usize = 80;
 const DIGEST_LENGTH: usize = 32;
 const FLAG_HAS_TIMEOUT: u32 = 1;
 const FLAG_RECOVERY_ENABLED: u32 = 2;
@@ -22,6 +23,7 @@ pub(super) struct LauncherStartRequest<'a> {
     pub(super) hook_path: &'a [u16],
     pub(super) timeout_milliseconds: Option<u64>,
     pub(super) nonce: [u8; 16],
+    pub(super) endpoint_identifier: [u8; 16],
     pub(super) recovery_enabled: bool,
 }
 
@@ -47,6 +49,7 @@ pub(super) struct DecodedLauncherStartRequest<'a> {
     pub(super) hook_path: Vec<u16>,
     pub(super) timeout_milliseconds: Option<u64>,
     pub(super) nonce: [u8; 16],
+    pub(super) endpoint_identifier: [u8; 16],
     pub(super) recovery_enabled: bool,
 }
 
@@ -74,7 +77,7 @@ pub(super) fn encode_start_request(
         .map_err(|_| LauncherProtocolError::Allocation)?;
     encoded.resize(HEADER_LENGTH, 0);
     encoded[..4].copy_from_slice(&MAGIC);
-    write_u16(&mut encoded, 4, crate::ipc::framing::PROTOCOL_VERSION);
+    write_u16(&mut encoded, 4, LAUNCHER_START_VERSION);
     write_u16(
         &mut encoded,
         6,
@@ -114,6 +117,7 @@ pub(super) fn encode_start_request(
             0
         }),
     );
+    encoded[64..80].copy_from_slice(&request.endpoint_identifier);
     append_utf16(&mut encoded, request.program);
     append_utf16(&mut encoded, request.cwd);
     append_utf16(&mut encoded, request.command_line);
@@ -134,7 +138,7 @@ pub(super) fn decode_start_request(
     if encoded[..4] != MAGIC {
         return Err(LauncherProtocolError::InvalidMagic);
     }
-    if read_u16(encoded, 4)? != crate::ipc::framing::PROTOCOL_VERSION {
+    if read_u16(encoded, 4)? != LAUNCHER_START_VERSION {
         return Err(LauncherProtocolError::InvalidVersion);
     }
     if usize::from(read_u16(encoded, 6)?) != HEADER_LENGTH {
@@ -168,7 +172,9 @@ pub(super) fn decode_start_request(
     };
     let mut nonce = [0_u8; 16];
     nonce.copy_from_slice(&encoded[44..60]);
-    if nonce.iter().all(|byte| *byte == 0) {
+    let mut endpoint_identifier = [0_u8; 16];
+    endpoint_identifier.copy_from_slice(&encoded[64..80]);
+    if nonce.iter().all(|byte| *byte == 0) || endpoint_identifier.iter().all(|byte| *byte == 0) {
         return Err(LauncherProtocolError::InvalidField);
     }
     let mut offset = HEADER_LENGTH;
@@ -195,6 +201,7 @@ pub(super) fn decode_start_request(
         hook_path,
         timeout_milliseconds,
         nonce,
+        endpoint_identifier,
         recovery_enabled: flags & FLAG_RECOVERY_ENABLED != 0,
     };
     validate_decoded(&decoded)?;
@@ -215,6 +222,7 @@ fn validate_fields(request: &LauncherStartRequest<'_>) -> Result<(), LauncherPro
         || request.policy.is_empty()
         || request.policy.len() > MAX_POLICY_BYTES
         || request.nonce.iter().all(|byte| *byte == 0)
+        || request.endpoint_identifier.iter().all(|byte| *byte == 0)
         || request.timeout_milliseconds == Some(0)
         || contains_nul(request.program)
         || contains_nul(request.cwd)
@@ -240,6 +248,7 @@ fn validate_decoded(
         hook_path: &request.hook_path,
         timeout_milliseconds: request.timeout_milliseconds,
         nonce: request.nonce,
+        endpoint_identifier: request.endpoint_identifier,
         recovery_enabled: request.recovery_enabled,
     })
 }
@@ -440,14 +449,7 @@ mod tests {
         let command: Vec<u16> = "tool\0".encode_utf16().collect();
         let environment: Vec<u16> = "\0\0".encode_utf16().collect();
         let hook: Vec<u16> = r"C:\hook.dll".encode_utf16().collect();
-        let mut request = request(
-            &program,
-            &cwd,
-            &command,
-            &environment,
-            b"policy",
-            &hook,
-        );
+        let mut request = request(&program, &cwd, &command, &environment, b"policy", &hook);
         request.endpoint_identifier = [0; 16];
 
         assert_eq!(

@@ -698,6 +698,7 @@ fn encode_request(prepared: &PreparedLaunch) -> Result<Vec<u8>, SandboxError> {
         hook_path: &hook,
         timeout_milliseconds,
         nonce: *prepared.handshake_nonce(),
+        endpoint_identifier: *prepared.ipc_endpoint_identifier(),
         recovery_enabled: prepared.recovery().is_some(),
     })
     .map_err(|_| initialization_failure())

@@ -15,7 +15,7 @@ namespace bolt::protocol {
 namespace {
 
 constexpr std::array<std::uint8_t, 4> kMagic = {'B', 'L', 'S', '1'};
-constexpr std::size_t kDigestOffset = 64;
+constexpr std::size_t kDigestOffset = 80;
 constexpr std::size_t kDigestLength = 32;
 constexpr std::uint32_t kHasTimeout = 1;
 constexpr std::uint32_t kRecoveryEnabled = 2;
@@ -158,6 +158,10 @@ bool ValidRequest(const LauncherStartRequest& request) noexcept {
            (request.has_timeout || request.timeout_milliseconds == 0) &&
            std::any_of(
                request.nonce.begin(), request.nonce.end(),
+               [](const std::uint8_t byte) { return byte != 0; }) &&
+           std::any_of(
+               request.endpoint_identifier.begin(),
+               request.endpoint_identifier.end(),
                [](const std::uint8_t byte) { return byte != 0; });
 }
 
@@ -210,6 +214,7 @@ bool LauncherStartRequest::operator==(
            has_timeout == other.has_timeout &&
            timeout_milliseconds == other.timeout_milliseconds &&
            nonce == other.nonce &&
+           endpoint_identifier == other.endpoint_identifier &&
            recovery_enabled == other.recovery_enabled;
 }
 
@@ -236,7 +241,7 @@ LauncherStartStatus EncodeLauncherStartRequest(
         encoded.assign(kLauncherStartHeaderLength, 0);
         encoded.reserve(total);
         std::copy(kMagic.begin(), kMagic.end(), encoded.begin());
-        WriteU16(encoded.data(), 4, kProtocolVersion);
+        WriteU16(encoded.data(), 4, kLauncherStartVersion);
         WriteU16(
             encoded.data(), 6,
             static_cast<std::uint16_t>(kLauncherStartHeaderLength));
@@ -259,6 +264,9 @@ LauncherStartStatus EncodeLauncherStartRequest(
             encoded.data(), 60,
             (request.has_timeout ? kHasTimeout : 0) |
                 (request.recovery_enabled ? kRecoveryEnabled : 0));
+        std::copy(
+            request.endpoint_identifier.begin(),
+            request.endpoint_identifier.end(), encoded.begin() + 64);
         AppendUtf16(encoded, request.program.data(), request.program.size());
         AppendUtf16(encoded, request.cwd.data(), request.cwd.size());
         AppendUtf16(
@@ -297,7 +305,7 @@ LauncherStartStatus DecodeLauncherStartRequest(
     if (!std::equal(kMagic.begin(), kMagic.end(), encoded)) {
         return LauncherStartStatus::kInvalidMagic;
     }
-    if (ReadU16(encoded, 4) != kProtocolVersion) {
+    if (ReadU16(encoded, 4) != kLauncherStartVersion) {
         return LauncherStartStatus::kUnsupportedVersion;
     }
     if (ReadU16(encoded, 6) != kLauncherStartHeaderLength) {
@@ -320,6 +328,9 @@ LauncherStartStatus DecodeLauncherStartRequest(
     decoded.recovery_enabled = (flags & kRecoveryEnabled) != 0;
     decoded.timeout_milliseconds = timeout;
     std::copy(encoded + 44, encoded + 60, decoded.nonce.begin());
+    std::copy(
+        encoded + 64, encoded + 80,
+        decoded.endpoint_identifier.begin());
     const std::array<std::size_t, 6> lengths = {
         ReadU32(encoded, 12), ReadU32(encoded, 16), ReadU32(encoded, 20),
         ReadU32(encoded, 24), ReadU32(encoded, 28), ReadU32(encoded, 32)};
