@@ -3379,19 +3379,6 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
         return 335;
     }
 
-    const HANDLE nested_job = CreateJobObjectW(nullptr, nullptr);
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION nested_job_defaults{};
-    if (nested_job == nullptr ||
-        !AssignProcessToJobObject(nested_job, GetCurrentProcess()) ||
-        !SetInformationJobObject(
-            nested_job, JobObjectExtendedLimitInformation,
-            &nested_job_defaults, sizeof(nested_job_defaults))) {
-        if (nested_job != nullptr) {
-            CloseHandle(nested_job);
-        }
-        return 336;
-    }
-
     const std::wstring executable = CurrentExecutable();
     const std::wstring missing_breakaway_image =
         executable + L".missing-breakaway-image";
@@ -3529,6 +3516,19 @@ int RunInheritedProcessParent(const int argument_count, wchar_t** arguments) {
         }
         CloseNativeNtProcess(breakaway_nt_process, breakaway_nt_thread);
         return 253;
+    }
+
+    const HANDLE nested_job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION nested_job_defaults{};
+    if (nested_job == nullptr ||
+        !AssignProcessToJobObject(nested_job, GetCurrentProcess()) ||
+        !SetInformationJobObject(
+            nested_job, JobObjectExtendedLimitInformation,
+            &nested_job_defaults, sizeof(nested_job_defaults))) {
+        if (nested_job != nullptr) {
+            CloseHandle(nested_job);
+        }
+        return 336;
     }
 
     PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY weakened_extension{};

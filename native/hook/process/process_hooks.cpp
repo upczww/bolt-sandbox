@@ -48,6 +48,13 @@ decltype(&SetProcessMitigationPolicy) g_set_process_mitigation_policy =
     SetProcessMitigationPolicy;
 decltype(&SetInformationJobObject) g_set_information_job_object =
     SetInformationJobObject;
+decltype(&CreateJobObjectW) g_create_job_object_w = CreateJobObjectW;
+decltype(&CreateJobObjectA) g_create_job_object_a = CreateJobObjectA;
+using NtCompareObjectsFunction = NTSTATUS(NTAPI*)(HANDLE, HANDLE);
+NtCompareObjectsFunction g_nt_compare_objects = nullptr;
+constexpr std::size_t kMaximumTrackedJobs = 32;
+std::array<HANDLE, kMaximumTrackedJobs> g_tracked_jobs{};
+SRWLOCK g_tracked_jobs_lock = SRWLOCK_INIT;
 native::RtlCreateUserProcessFunction g_rtl_create_user_process = nullptr;
 native::NtCreateUserProcessFunction g_nt_create_user_process = nullptr;
 ChildProcessPolicy g_child_process_policy = ChildProcessPolicy::kDeny;
@@ -788,6 +795,112 @@ bool JobContainsCurrentProcess(const HANDLE job) noexcept {
            processes.process_ids.begin() + process_count;
 }
 
+bool PreservesRequiredJobContainment(
+    const JOBOBJECTINFOCLASS information_class,
+    const LPVOID information,
+    const DWORD information_length) noexcept {
+    if (information_class != JobObjectExtendedLimitInformation ||
+        information == nullptr ||
+        information_length < sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)) {
+        return false;
+    }
+    DWORD flags = 0;
+    __try {
+        flags = static_cast<const JOBOBJECT_EXTENDED_LIMIT_INFORMATION*>(
+                    information)
+                    ->BasicLimitInformation.LimitFlags;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    constexpr DWORD breakaway = JOB_OBJECT_LIMIT_BREAKAWAY_OK |
+                                JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+    return (flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) != 0 &&
+           (flags & breakaway) == 0;
+}
+
+bool JobUpdateAvoidsBreakaway(
+    const JOBOBJECTINFOCLASS information_class,
+    const LPVOID information,
+    const DWORD information_length) noexcept {
+    if (information_class != JobObjectExtendedLimitInformation ||
+        information == nullptr ||
+        information_length < sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)) {
+        return false;
+    }
+    DWORD flags = 0;
+    __try {
+        flags = static_cast<const JOBOBJECT_EXTENDED_LIMIT_INFORMATION*>(
+                    information)
+                    ->BasicLimitInformation.LimitFlags;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    constexpr DWORD breakaway = JOB_OBJECT_LIMIT_BREAKAWAY_OK |
+                                JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+    return (flags & breakaway) == 0;
+}
+
+void TrackTargetOwnedJob(const HANDLE job) noexcept {
+    if (job == nullptr || g_nt_compare_objects == nullptr) {
+        return;
+    }
+    HANDLE lease = nullptr;
+    if (!DuplicateHandle(
+            GetCurrentProcess(), job, GetCurrentProcess(), &lease, 0, FALSE,
+            DUPLICATE_SAME_ACCESS)) {
+        return;
+    }
+    AcquireSRWLockExclusive(&g_tracked_jobs_lock);
+    const auto available = std::find(
+        g_tracked_jobs.begin(), g_tracked_jobs.end(), nullptr);
+    if (available != g_tracked_jobs.end()) {
+        *available = lease;
+        lease = nullptr;
+    }
+    ReleaseSRWLockExclusive(&g_tracked_jobs_lock);
+    if (lease != nullptr) {
+        CloseHandle(lease);
+    }
+}
+
+bool IsTargetOwnedJob(const HANDLE job) noexcept {
+    if (job == nullptr || g_nt_compare_objects == nullptr) {
+        return false;
+    }
+    bool found = false;
+    AcquireSRWLockShared(&g_tracked_jobs_lock);
+    for (const HANDLE tracked : g_tracked_jobs) {
+        if (tracked != nullptr && g_nt_compare_objects(job, tracked) >= 0) {
+            found = true;
+            break;
+        }
+    }
+    ReleaseSRWLockShared(&g_tracked_jobs_lock);
+    return found;
+}
+
+HANDLE WINAPI DetouredCreateJobObjectW(
+    const LPSECURITY_ATTRIBUTES attributes,
+    const LPCWSTR name) noexcept {
+    DetouredScope scope;
+    const HANDLE job = g_create_job_object_w(attributes, name);
+    if (!scope.Detoured_IsDisabled() && job != nullptr) {
+        TrackTargetOwnedJob(job);
+    }
+    return job;
+}
+
+HANDLE WINAPI DetouredCreateJobObjectA(
+    const LPSECURITY_ATTRIBUTES attributes,
+    const LPCSTR name) noexcept {
+    DetouredScope scope;
+    const HANDLE job = g_create_job_object_a(attributes, name);
+    if (!scope.Detoured_IsDisabled() && job != nullptr) {
+        TrackTargetOwnedJob(job);
+    }
+    return job;
+}
+
 BOOL WINAPI DetouredSetInformationJobObject(
     const HANDLE job,
     const JOBOBJECTINFOCLASS information_class,
@@ -798,7 +911,12 @@ BOOL WINAPI DetouredSetInformationJobObject(
         return g_set_information_job_object(
             job, information_class, information, information_length);
     }
-    if (JobContainsCurrentProcess(job)) {
+    const bool target_owned_update = IsTargetOwnedJob(job) &&
+        JobUpdateAvoidsBreakaway(
+            information_class, information, information_length);
+    if (JobContainsCurrentProcess(job) && !target_owned_update &&
+        !PreservesRequiredJobContainment(
+            information_class, information, information_length)) {
         hook::TryReportProcessViolation(
             protocol::ProcessOperation::kMitigationWeakening);
         SetLastError(ERROR_ACCESS_DENIED);
@@ -1349,8 +1467,10 @@ LONG AttachProcessHooks() noexcept {
     g_nt_create_user_process =
         reinterpret_cast<native::NtCreateUserProcessFunction>(
             GetProcAddress(ntdll, "NtCreateUserProcess"));
+    g_nt_compare_objects = reinterpret_cast<NtCompareObjectsFunction>(
+        GetProcAddress(ntdll, "NtCompareObjects"));
     if (g_rtl_create_user_process == nullptr ||
-        g_nt_create_user_process == nullptr) {
+        g_nt_create_user_process == nullptr || g_nt_compare_objects == nullptr) {
         return ERROR_PROC_NOT_FOUND;
     }
     const LONG wide_status = DetourAttach(
@@ -1412,6 +1532,18 @@ LONG AttachProcessHooks() noexcept {
         reinterpret_cast<PVOID>(DetouredSetProcessMitigationPolicy));
     if (mitigation_status != NO_ERROR) {
         return mitigation_status;
+    }
+    const LONG create_job_wide_status = DetourAttach(
+        reinterpret_cast<PVOID*>(&g_create_job_object_w),
+        reinterpret_cast<PVOID>(DetouredCreateJobObjectW));
+    if (create_job_wide_status != NO_ERROR) {
+        return create_job_wide_status;
+    }
+    const LONG create_job_ansi_status = DetourAttach(
+        reinterpret_cast<PVOID*>(&g_create_job_object_a),
+        reinterpret_cast<PVOID>(DetouredCreateJobObjectA));
+    if (create_job_ansi_status != NO_ERROR) {
+        return create_job_ansi_status;
     }
     return DetourAttach(
         reinterpret_cast<PVOID*>(&g_set_information_job_object),

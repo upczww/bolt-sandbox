@@ -30,8 +30,8 @@ Requiredness is `required`, which fails when the trusted base is absent, or
 `optional`, which skips only that entry.
 
 Filesystem bases are `system-root`, `program-dir`, `cwd-parent`, `cwd-anchor`, `program-files`,
-`program-files-x86`, `program-data`, `local-app-data`, `cargo-home`,
-`rustup-home`, and `absolute`. Registry entries use base `registry` and a
+`program-files-x86`, `program-data`, `local-app-data`, `user-profile`, and
+`absolute`. Registry entries use base `registry` and a
 canonical `HKLM` or `HKCU` suffix. Version 1 deliberately has no write, delete,
 `inherit-user`, glob, arbitrary environment expansion, executable selector, or
 include directive.
@@ -44,9 +44,9 @@ fs-ro|required|system-root|.
 fs-ro|required|program-dir|.
 fs-meta|required|cwd-anchor|.
 fs-ro|optional|program-files|Common Files\SSL\openssl.cnf
-fs-ro|optional|rustup-home|toolchains
-fs-ro|optional|cargo-home|registry\src
-fs-ro|optional|cargo-home|registry\cache
+fs-ro|optional|user-profile|.rustup\toolchains
+fs-ro|optional|user-profile|.cargo\registry\src
+fs-ro|optional|user-profile|.cargo\registry\cache
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Cryptography
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\SystemCertificates
 reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\SystemCertificates

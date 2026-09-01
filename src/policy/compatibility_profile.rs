@@ -30,8 +30,7 @@ enum Base {
     ProgramFilesX86,
     ProgramData,
     LocalAppData,
-    CargoHome,
-    RustupHome,
+    UserProfile,
     Absolute,
     Registry,
 }
@@ -64,8 +63,7 @@ pub(crate) struct ResolutionContext {
     pub(crate) program_files_x86: Option<PathBuf>,
     pub(crate) program_data: Option<PathBuf>,
     pub(crate) local_app_data: Option<PathBuf>,
-    pub(crate) cargo_home: Option<PathBuf>,
-    pub(crate) rustup_home: Option<PathBuf>,
+    pub(crate) user_profile: Option<PathBuf>,
     pub(crate) cwd: PathBuf,
     pub(crate) mandatory_filesystem_denies: Vec<PathBuf>,
 }
@@ -83,8 +81,7 @@ impl ResolutionContext {
             program_files_x86: host_path("ProgramFiles(x86)"),
             program_data: host_path("ProgramData"),
             local_app_data: host_path("LOCALAPPDATA"),
-            cargo_home: host_path("CARGO_HOME"),
-            rustup_home: host_path("RUSTUP_HOME"),
+            user_profile: host_path("USERPROFILE"),
             cwd: cwd.to_path_buf(),
             mandatory_filesystem_denies: mandatory_filesystem_denies.to_vec(),
         }
@@ -150,8 +147,7 @@ pub(crate) fn parse_profile(input: &[u8]) -> Result<CompatibilityProfile, Profil
             Some("program-files-x86") => Base::ProgramFilesX86,
             Some("program-data") => Base::ProgramData,
             Some("local-app-data") => Base::LocalAppData,
-            Some("cargo-home") => Base::CargoHome,
-            Some("rustup-home") => Base::RustupHome,
+            Some("user-profile") => Base::UserProfile,
             Some("absolute") => Base::Absolute,
             Some("registry") => Base::Registry,
             _ => return Err(ProfileError::InvalidSyntax),
@@ -245,6 +241,19 @@ pub(crate) fn resolve_profile(
             }
         }
     }
+    filesystem_read_only.sort_by(|left, right| {
+        left.components()
+            .count()
+            .cmp(&right.components().count())
+            .then_with(|| windows_path_key(left).cmp(&windows_path_key(right)))
+    });
+    filesystem_metadata_read.sort_by(|left, right| {
+        left.components()
+            .count()
+            .cmp(&right.components().count())
+            .then_with(|| windows_path_key(left).cmp(&windows_path_key(right)))
+    });
+    registry_read_only.sort_by_key(|key| key.to_lowercase());
     Ok(ResolvedProfile {
         filesystem_read_only,
         filesystem_metadata_read,
@@ -269,8 +278,7 @@ fn resolve_filesystem_rule(
         Base::ProgramFilesX86 => context.program_files_x86.clone(),
         Base::ProgramData => context.program_data.clone(),
         Base::LocalAppData => context.local_app_data.clone(),
-        Base::CargoHome => context.cargo_home.clone(),
-        Base::RustupHome => context.rustup_home.clone(),
+        Base::UserProfile => context.user_profile.clone(),
         Base::Absolute | Base::Registry => None,
     };
     let Some(base) = base else {
@@ -391,7 +399,10 @@ fn normalize_registry_key(input: &str) -> Result<String, ProfileError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fmt::Write as _, path::PathBuf};
+    use std::{
+        fmt::Write as _,
+        path::{Path, PathBuf},
+    };
 
     use super::{
         MAX_PROFILE_LENGTH, MAX_PROFILE_RULES, ProfileError, ResolutionContext, parse_profile,
@@ -406,8 +417,7 @@ mod tests {
             program_files_x86: Some(PathBuf::from(r"C:\Program Files (x86)")),
             program_data: Some(PathBuf::from(r"C:\ProgramData")),
             local_app_data: Some(PathBuf::from(r"C:\Users\agent\AppData\Local")),
-            cargo_home: Some(PathBuf::from(r"C:\Users\agent\.cargo")),
-            rustup_home: Some(PathBuf::from(r"C:\Users\agent\.rustup")),
+            user_profile: Some(PathBuf::from(r"C:\Users\agent")),
             cwd: PathBuf::from(r"C:\work\task"),
             mandatory_filesystem_denies: vec![PathBuf::from(r"C:\Users\agent\.ssh")],
         }
@@ -460,11 +470,11 @@ mod tests {
     #[test]
     fn compat_004_required_missing_base_fails_and_optional_missing_base_skips() {
         let profile = parse_profile(
-            b"BSC1\nfs-ro|required|system-root|.\nfs-ro|optional|cargo-home|registry\\src\n",
+            b"BSC1\nfs-ro|required|system-root|.\nfs-ro|optional|user-profile|.cargo\\registry\\src\n",
         )
         .expect("profile must parse");
         let mut roots = context();
-        roots.cargo_home = None;
+        roots.user_profile = None;
         let resolved = resolve_profile(&profile, &roots).expect("optional base must skip");
         assert_eq!(
             resolved.filesystem_read_only,
@@ -578,6 +588,28 @@ mod tests {
         assert_eq!(
             resolved.registry_read_only,
             vec![String::from(r"HKLM\SOFTWARE\Microsoft\Cryptography")]
+        );
+    }
+
+    #[test]
+    fn compat_014_standard_rustup_home_resolves_only_toolchains() {
+        let Some(user_profile) = std::env::var_os("USERPROFILE").map(PathBuf::from) else {
+            return;
+        };
+        let profile = parse_profile(b"BSC1\nfs-ro|optional|user-profile|.rustup\\toolchains\n")
+            .expect("Rustup profile must parse");
+        let resolved = resolve_profile(
+            &profile,
+            &ResolutionContext::from_host(
+                Path::new(r"C:\Tools\cargo.exe"),
+                Path::new(r"C:\work\task"),
+                &[],
+            ),
+        )
+        .expect("standard Rustup home must resolve");
+        assert_eq!(
+            resolved.filesystem_read_only,
+            vec![user_profile.join(r".rustup\toolchains")]
         );
     }
 }

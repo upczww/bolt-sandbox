@@ -4,6 +4,7 @@ fs-ro|required|system-root|.
 fs-ro|required|program-dir|.
 fs-meta|required|cwd-anchor|.
 fs-ro|optional|program-files|Common Files\SSL\openssl.cnf
+fs-ro|optional|user-profile|.rustup\toolchains
 
 # Public runtime and platform metadata.
 reg-ro|required|registry|HKCU\SOFTWARE\Classes

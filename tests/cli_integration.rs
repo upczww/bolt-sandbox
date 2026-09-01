@@ -348,6 +348,14 @@ fn agent_git_status_runs_in_task_workspace_without_network() {
     fs::write(workspace.join("agent.txt"), b"sandbox\n").expect("Git fixture must be written");
 
     let mut command = sandbox_command(&component_root, &workspace);
+    for name in std::env::vars_os().map(|(name, _)| name) {
+        if name
+            .to_str()
+            .is_some_and(|name| name.starts_with("CARGO_") || name.starts_with("RUST_"))
+        {
+            command.env_remove(name);
+        }
+    }
     command
         .env("PWD", &workspace)
         .env("HOME", &workspace)
@@ -371,7 +379,7 @@ fn agent_git_status_runs_in_task_workspace_without_network() {
 }
 
 #[test]
-fn agent_cargo_metadata_runs_offline_with_read_only_toolchain() {
+fn agent_cargo_metadata_runs_offline_with_private_home() {
     let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
     else {
         return;
@@ -389,8 +397,23 @@ fn agent_cargo_metadata_runs_offline_with_read_only_toolchain() {
     .expect("Cargo manifest must be written");
     fs::write(workspace.join(r"src\main.rs"), b"fn main() {}\n")
         .expect("Cargo source must be written");
+    let cargo_home = workspace.join(".cargo-home");
+    fs::create_dir(&cargo_home).expect("task-private Cargo home must be created");
+    let toolchain_bin = cargo
+        .parent()
+        .expect("Cargo must have a containing directory");
+    let system32 =
+        PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot must be available"))
+            .join("System32");
+    let minimal_path = std::env::join_paths([toolchain_bin, system32.as_path()])
+        .expect("minimal toolchain PATH must encode");
 
-    let output = sandbox_command(&component_root, &workspace)
+    let mut command = sandbox_command(&component_root, &workspace);
+    command
+        .env("CARGO_HOME", &cargo_home)
+        .env("HOME", &workspace)
+        .env("PATH", minimal_path);
+    let output = command
         .arg("--network")
         .arg("denied")
         .arg("--")
@@ -401,19 +424,18 @@ fn agent_cargo_metadata_runs_offline_with_read_only_toolchain() {
             "1",
             "--no-deps",
             "--offline",
+            "--manifest-path",
         ])
+        .arg(workspace.join("Cargo.toml"))
         .output()
         .expect("sandboxed Cargo must launch");
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    let _ = fs::remove_dir_all(&workspace);
     assert_eq!(output.status.code(), Some(0), "stderr={stderr}");
-    assert!(
-        stdout.contains("agent-fixture"),
-        "stdout={stdout} stderr={stderr}"
-    );
+    assert!(stdout.contains("agent-fixture"), "stdout={stdout}");
     assert!(!stderr.contains("sandbox-event network-violation"));
+    let _ = fs::remove_dir_all(&workspace);
 }
 
 fn sandbox_command(component_root: &Path, cwd: &Path) -> Command {
@@ -433,10 +455,15 @@ fn sandbox_command(component_root: &Path, cwd: &Path) -> Command {
 
 fn agent_fixture_directory(kind: &str) -> PathBuf {
     let id = NEXT_AGENT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repository must have a parent")
         .join("agent-fixtures")
-        .join(format!("{kind}-{}-{id}", std::process::id()))
+        .join(format!("{kind}-{}-{id}", std::process::id()));
+    if path.exists() {
+        fs::remove_dir_all(&path).expect("stale Agent fixture must be removed");
+    }
+    path
 }
 
 fn serve_one_http_request(listener: &TcpListener) -> bool {
