@@ -22,6 +22,10 @@ The first release must provide:
 This is a user-mode command containment boundary. It is not presented as a
 kernel security boundary against deliberately malicious native executables.
 
+The external compatibility allowlist and its trust model are specified in
+[Compatibility Profile Architecture](compatibility-profiles.md). The governing
+decision is [ADR-0001](../adr/0001-manifest-bound-compatibility-profiles.md).
+
 ## 2. Constraints
 
 - Do not recursively mutate filesystem ACLs.

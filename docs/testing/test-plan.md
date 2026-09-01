@@ -8,6 +8,8 @@ case inventory is in `test-catalog.md`; reusable programs, paths, servers, and
 fault injectors are defined in `fixtures.md`; stable requirement-to-case
 coverage is maintained in `requirements-matrix.md`.
 The concrete native entry-point inventory is maintained in `api-coverage.md`.
+Real Agent runtime and toolchain workflows are maintained in
+`agent-scenario-matrix.md`.
 
 ## 1. Test objectives
 
