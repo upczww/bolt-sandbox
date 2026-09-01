@@ -546,6 +546,10 @@ mod tests {
                 kind: WorkspaceChangeKind::Modified,
             }]
         );
+        committed.revert().expect("revert must succeed");
+        assert_eq!(fs::read(source.join("file.txt")).expect("source"), b"before");
+        assert!(!recovery.exists());
+        assert!(!staged.exists());
         fs::remove_dir_all(fixture).expect("fixture must clean");
     }
 }
