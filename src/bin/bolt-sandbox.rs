@@ -2,15 +2,16 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     io::{self, Write},
+    net::IpAddr,
     path::PathBuf,
     thread,
     time::Duration,
 };
 
 use bolt_sandbox::{
-    ChildProcessPolicy, DEFAULT_STREAM_CAPACITY, ExecutionTerminal, NetworkPolicy,
-    ProcessExitReason, RecoveryLimits, RecoveryPolicy, Sandbox, SandboxConfig, SandboxEvent,
-    SandboxPolicy, SandboxRequest,
+    ChildProcessPolicy, DEFAULT_STREAM_CAPACITY, ExecutionTerminal, IpCidr, NetworkAllowList,
+    NetworkPolicy, PortRange, ProcessExitReason, RecoveryLimits, RecoveryPolicy, Sandbox,
+    SandboxConfig, SandboxEvent, SandboxPolicy, SandboxRequest,
 };
 
 struct RunArguments {
@@ -35,7 +36,7 @@ fn main() {
         Ok(code) => code,
         Err(CliError::InvalidArguments) => {
             eprintln!(
-                "usage: bolt-sandbox run --component-root PATH --cwd PATH [--manifest-sha256 HEX] [--timeout-ms N] -- PROGRAM [ARG ...]"
+                "usage: bolt-sandbox run --component-root PATH --cwd PATH [--manifest-sha256 HEX] [--timeout-ms N] [--network unrestricted|denied|allow-list] [--allow-domain DOMAIN] [--allow-cidr CIDR] [--allow-port PORT[-PORT]] -- PROGRAM [ARG ...]"
             );
             2
         }
@@ -102,6 +103,9 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
     let mut component_manifest_sha256 = None;
     let mut policy = SandboxPolicy::default();
     let mut network_set = false;
+    let mut network_domains = Vec::new();
+    let mut network_addresses = Vec::new();
+    let mut network_ports = Vec::new();
     let mut child_processes_set = false;
     let mut recovery_directory = None;
     let mut recovery_maximum_bytes = None;
@@ -163,9 +167,17 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
                 policy.network = match next_string(&mut arguments)?.as_str() {
                     "unrestricted" => NetworkPolicy::Unrestricted,
                     "denied" => NetworkPolicy::Denied,
+                    "allow-list" => NetworkPolicy::AllowList(NetworkAllowList::default()),
                     _ => return Err(CliError::InvalidArguments),
                 };
                 network_set = true;
+            }
+            Some("--allow-domain") => network_domains.push(next_string(&mut arguments)?),
+            Some("--allow-cidr") => {
+                network_addresses.push(parse_cidr(&next_string(&mut arguments)?)?);
+            }
+            Some("--allow-port") => {
+                network_ports.push(parse_port_range(&next_string(&mut arguments)?)?);
             }
             Some("--child-processes") if !child_processes_set => {
                 policy.child_processes = match next_string(&mut arguments)?.as_str() {
@@ -196,6 +208,20 @@ fn parse_run_arguments(arguments: Vec<OsString>) -> Result<RunArguments, CliErro
     let mut program_and_arguments = program_and_arguments.ok_or(CliError::InvalidArguments)?;
     if program_and_arguments.is_empty() {
         return Err(CliError::InvalidArguments);
+    }
+    let has_network_rules =
+        !network_domains.is_empty() || !network_addresses.is_empty() || !network_ports.is_empty();
+    match &mut policy.network {
+        NetworkPolicy::AllowList(allow_list) if has_network_rules => {
+            allow_list.domains = network_domains;
+            allow_list.addresses = network_addresses;
+            allow_list.ports = network_ports;
+        }
+        NetworkPolicy::AllowList(_) => return Err(CliError::InvalidArguments),
+        NetworkPolicy::Unrestricted | NetworkPolicy::Denied if has_network_rules => {
+            return Err(CliError::InvalidArguments);
+        }
+        NetworkPolicy::Unrestricted | NetworkPolicy::Denied => {}
     }
     let program = PathBuf::from(program_and_arguments.remove(0));
     match (
@@ -268,6 +294,52 @@ fn next_nonzero_u64(arguments: &mut impl Iterator<Item = OsString>) -> Result<u6
         .ok()
         .filter(|value| *value != 0)
         .ok_or(CliError::InvalidArguments)
+}
+
+fn parse_cidr(value: &str) -> Result<IpCidr, CliError> {
+    let (address, prefix) = value.split_once('/').ok_or(CliError::InvalidArguments)?;
+    let address = address
+        .parse::<IpAddr>()
+        .map_err(|_| CliError::InvalidArguments)?;
+    let prefix_length = prefix
+        .parse::<u8>()
+        .map_err(|_| CliError::InvalidArguments)?;
+    let canonical = match address {
+        IpAddr::V4(address) if prefix_length <= 32 => {
+            let mask = u32::MAX
+                .checked_shl(u32::from(32 - prefix_length))
+                .unwrap_or(0);
+            u32::from(address) & mask == u32::from(address)
+        }
+        IpAddr::V6(address) if prefix_length <= 128 => {
+            let mask = u128::MAX
+                .checked_shl(u32::from(128 - prefix_length))
+                .unwrap_or(0);
+            u128::from(address) & mask == u128::from(address)
+        }
+        IpAddr::V4(_) | IpAddr::V6(_) => false,
+    };
+    canonical
+        .then_some(IpCidr {
+            address,
+            prefix_length,
+        })
+        .ok_or(CliError::InvalidArguments)
+}
+
+fn parse_port_range(value: &str) -> Result<PortRange, CliError> {
+    let (start, end) = value.split_once('-').unwrap_or((value, value));
+    let start = start
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or(CliError::InvalidArguments)?;
+    let end = end
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0 && *port >= start)
+        .ok_or(CliError::InvalidArguments)?;
+    Ok(PortRange { start, end })
 }
 
 fn copy_stream(stream: bolt_sandbox::ByteStream, mut output: impl Write) -> io::Result<()> {
