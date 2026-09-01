@@ -4,7 +4,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bolt_sandbox::{
@@ -1002,4 +1002,42 @@ fn contains_partial_directory(root: &Path) -> bool {
         }
     }
     false
+}
+
+#[test]
+fn perf_001_public_warm_startup_stays_below_one_hundred_milliseconds() {
+    let Some((sandbox, component_root)) = configured_sandbox() else {
+        return;
+    };
+    let request = SandboxRequest {
+        program: component_root.join("bolt-sandbox-native-tests.exe"),
+        arguments: vec![OsString::from("--cli-fixture")],
+        cwd: component_root,
+        environment: BTreeMap::new(),
+        policy: SandboxPolicy::default(),
+        timeout: Some(Duration::from_secs(5)),
+    };
+    let mut samples = Vec::new();
+    for _ in 0..8 {
+        let started = Instant::now();
+        let mut handle = sandbox
+            .start(request.clone())
+            .expect("performance fixture must start");
+        let startup = started.elapsed();
+        let stdout = handle.take_stdout().expect("stdout is available");
+        let stderr = handle.take_stderr().expect("stderr is available");
+        let events = handle.take_events().expect("events are available");
+        let (_stdout, _stderr, _events, result) = collect_execution(handle, stdout, stderr, events);
+        assert!(matches!(
+            result.terminal,
+            ExecutionTerminal::Process(ref exit) if exit.exit_code == Some(23)
+        ));
+        samples.push(startup);
+    }
+    let warm = &samples[1..];
+    let maximum = warm.iter().copied().max().expect("warm samples exist");
+    assert!(
+        maximum < Duration::from_millis(100),
+        "warm startup exceeded 100 ms: samples={warm:?}"
+    );
 }
