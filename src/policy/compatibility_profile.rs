@@ -612,4 +612,21 @@ mod tests {
             vec![user_profile.join(r".rustup\toolchains")]
         );
     }
+
+    #[test]
+    fn compat_015_exact_read_and_hidden_registry_rules_are_data_driven() {
+        let profile = parse_profile(
+            b"BSC1\nreg-exact-ro|required|registry|HKLM\\SOFTWARE\\Vendor\\Metadata\nreg-hide|required|registry|HKCU\\Environment\n",
+        )
+        .expect("trusted registry profile kinds must parse");
+        let resolved = resolve_profile(&profile, &context()).expect("profile must resolve");
+        assert_eq!(
+            resolved.registry_exact_read_only,
+            vec![String::from(r"HKLM\SOFTWARE\Vendor\Metadata")]
+        );
+        assert_eq!(
+            resolved.registry_hidden,
+            vec![String::from(r"HKCU\Environment")]
+        );
+    }
 }

@@ -2236,6 +2236,59 @@ mod tests {
     }
 
     #[test]
+    fn compat_016_profile_rules_have_independent_quota_and_lower_precedence() {
+        let mut policy = SandboxPolicy::default();
+        policy.registry.read_only = (0..MAX_REGISTRY_RULES_PER_CATEGORY)
+            .map(|index| format!(r"HKLM\SOFTWARE\RequestRule{index}"))
+            .collect();
+        policy
+            .registry
+            .read_write
+            .push(r"HKLM\SOFTWARE\Explicit".into());
+        let compatibility = crate::policy::compatibility_profile::ResolvedProfile {
+            filesystem_read_only: vec![std::path::PathBuf::from(r"C:\SDK")],
+            filesystem_metadata_read: vec![],
+            registry_read_only: vec![r"HKLM\SOFTWARE\Explicit".into()],
+            registry_exact_read_only: vec![r"HKLM\SOFTWARE\Metadata".into()],
+            registry_hidden: vec![r"HKCU\Environment".into()],
+        };
+
+        let compiled = compile_with_security_denies_and_compatibility(
+            &policy,
+            Path::new(r"C:\work\project"),
+            &[],
+            &[],
+            &compatibility,
+        )
+        .expect("bounded Profile rules must not consume request quota");
+        assert_eq!(
+            compiled
+                .registry
+                .decide(r"HKLM\SOFTWARE\Explicit\Value", RegistryAccess::Write),
+            RegistryDecision::Allow
+        );
+        assert_eq!(
+            compiled
+                .registry
+                .decide(r"HKLM\SOFTWARE\Metadata", RegistryAccess::Read),
+            RegistryDecision::Allow
+        );
+        assert_eq!(
+            compiled.registry.decide(
+                r"HKLM\SOFTWARE\Metadata\Child",
+                RegistryAccess::Read,
+            ),
+            RegistryDecision::Deny
+        );
+        assert_eq!(
+            compiled
+                .registry
+                .decide(r"HKCU\Environment", RegistryAccess::Read),
+            RegistryDecision::NotFound
+        );
+    }
+
+    #[test]
     fn pol_020_malformed_registry_roots_are_rejected() {
         for key in [
             "",
