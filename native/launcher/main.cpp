@@ -271,6 +271,7 @@ void ForwardEventStream(
     std::atomic<EventForwardFailure>& failure,
     TransportWriter& writer) noexcept {
     std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
+    std::uint64_t next_sequence = 1;
     for (;;) {
         if (!ReadExact(input, header.data(), header.size())) {
             SignalEventFailure(
@@ -299,10 +300,31 @@ void ForwardEventStream(
             break;
         }
         std::copy(header.begin(), header.end(), frame.begin());
-        if ((payload_length != 0 &&
-             !ReadExact(
-                 input, frame.data() + header.size(), payload_length)) ||
-            !writer.Write(
+        if (payload_length != 0 &&
+            !ReadExact(
+                input, frame.data() + header.size(), payload_length)) {
+            SignalEventFailure(
+                target_process, failure_signal, failure,
+                EventForwardFailure::kProtocolIntegrity);
+            break;
+        }
+        std::uint16_t kind = 0;
+        std::memcpy(&kind, frame.data() + 6, sizeof(kind));
+        if (kind == 1 || next_sequence ==
+                             (std::numeric_limits<std::uint64_t>::max)() ||
+            bolt::protocol::ValidateEventFrame(
+                frame.data(), frame.size()) !=
+                bolt::protocol::EventFrameStatus::kSuccess) {
+            SignalEventFailure(
+                target_process, failure_signal, failure,
+                EventForwardFailure::kProtocolIntegrity);
+            break;
+        }
+        std::memcpy(
+            frame.data() + 12, &next_sequence, sizeof(next_sequence));
+        bolt::protocol::RewriteFrameChecksum(frame.data(), frame.size());
+        ++next_sequence;
+        if (!writer.Write(
                 bolt::protocol::LauncherTransportKind::kEvent, frame.data(),
                 static_cast<std::uint32_t>(frame.size()))) {
             SignalEventFailure(

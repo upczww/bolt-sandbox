@@ -99,12 +99,7 @@ bool AcquireWriteSequence(std::uint64_t& sequence) noexcept {
     if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
         return false;
     }
-    const LONG64 value = InterlockedIncrement64(g_state.sequence);
-    if (value <= 0) {
-        ReleaseMutex(g_state.write_mutex_handle);
-        return false;
-    }
-    sequence = static_cast<std::uint64_t>(value);
+    sequence = 1;
     return true;
 }
 

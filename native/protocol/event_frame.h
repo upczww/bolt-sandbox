@@ -97,6 +97,16 @@ enum class ReadyFrameStatus : std::uint8_t {
     kNonceMismatch,
 };
 
+enum class EventFrameStatus : std::uint8_t {
+    kSuccess,
+    kInvalidArgument,
+    kInvalidLength,
+    kInvalidMagic,
+    kUnsupportedVersion,
+    kUnknownKind,
+    kChecksumMismatch,
+};
+
 std::array<std::uint8_t, kReadyFrameLength> EncodeReadyFrame(
     const std::array<std::uint8_t, kReadyNonceLength>& nonce) noexcept;
 
@@ -104,6 +114,10 @@ ReadyFrameStatus ValidateReadyFrame(
     const std::uint8_t* encoded,
     std::size_t length,
     const std::array<std::uint8_t, kReadyNonceLength>& expected_nonce) noexcept;
+
+EventFrameStatus ValidateEventFrame(
+    const std::uint8_t* encoded,
+    std::size_t length) noexcept;
 
 std::size_t FilesystemViolationFrameLength(const wchar_t* path) noexcept;
 

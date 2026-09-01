@@ -273,6 +273,32 @@ std::size_t RegistryViolationFrameLength(const char* const key) noexcept {
                : 0;
 }
 
+EventFrameStatus ValidateEventFrame(
+    const std::uint8_t* const encoded,
+    const std::size_t length) noexcept {
+    if (encoded == nullptr) {
+        return EventFrameStatus::kInvalidArgument;
+    }
+    if (length < kEventHeaderLength ||
+        ReadU32(encoded, kLengthOffset) != length - kEventHeaderLength) {
+        return EventFrameStatus::kInvalidLength;
+    }
+    if (!std::equal(kMagic.begin(), kMagic.end(), encoded)) {
+        return EventFrameStatus::kInvalidMagic;
+    }
+    if (ReadU16(encoded, kVersionOffset) != kProtocolVersion) {
+        return EventFrameStatus::kUnsupportedVersion;
+    }
+    const std::uint16_t kind = ReadU16(encoded, kKindOffset);
+    if (kind < kReadyKind || kind > kEventsDroppedKind) {
+        return EventFrameStatus::kUnknownKind;
+    }
+    if (ReadU32(encoded, kChecksumOffset) != FrameChecksum(encoded, length)) {
+        return EventFrameStatus::kChecksumMismatch;
+    }
+    return EventFrameStatus::kSuccess;
+}
+
 FrameEncodeStatus EncodeChildInjectionFailureFrame(
     const std::uint32_t parent_process_id,
     const std::uint32_t child_process_id,
