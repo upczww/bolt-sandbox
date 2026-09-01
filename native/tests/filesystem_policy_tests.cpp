@@ -143,6 +143,15 @@ bool RunFilesystemPolicyTests() {
         maximum_allowed.operation != FilesystemOperation::kWrite) {
         return false;
     }
+    if (bolt::filesystem::RequiresPreOpenFinalResolution(read, 0) ||
+        bolt::filesystem::RequiresPreOpenFinalResolution(metadata, 0) ||
+        !bolt::filesystem::RequiresPreOpenFinalResolution(write, 0) ||
+        !bolt::filesystem::RequiresPreOpenFinalResolution(
+            read, FILE_FLAG_DELETE_ON_CLOSE) ||
+        !bolt::filesystem::RequiresPreOpenFinalResolution(
+            read, FILE_FLAG_OPEN_REPARSE_POINT)) {
+        return false;
+    }
 
     const bolt::filesystem::PolicyView& policy_view = *policy;
     const auto evaluated = policy_view.Evaluate(
