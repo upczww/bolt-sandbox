@@ -633,6 +633,16 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
         read_key, 0, enumerated_key, &enumerated_key_length, nullptr, nullptr,
         nullptr, &last_write) == ERROR_SUCCESS;
 
+    HKEY reopened_read_only = nullptr;
+    DWORD reopened_disposition = 0;
+    const LSTATUS reopened_read_only_status = RegCreateKeyExW(
+        HKEY_CURRENT_USER, read_only.c_str(), 0, nullptr,
+        REG_OPTION_NON_VOLATILE, KEY_READ, nullptr,
+        &reopened_read_only, &reopened_disposition);
+    if (reopened_read_only != nullptr) {
+        RegCloseKey(reopened_read_only);
+    }
+
     HKEY write_intent = nullptr;
     const LSTATUS read_only_write_open = RegOpenKeyExW(
         HKEY_CURRENT_USER, read_only.c_str(), 0,
@@ -1227,6 +1237,11 @@ int RunRegistryHookChild(const int argument_count, wchar_t** arguments) {
 
     if (!value_enumerated || !key_enumerated) {
         return 716;
+    }
+    if (reopened_read_only_status != ERROR_SUCCESS ||
+        reopened_read_only == nullptr ||
+        reopened_disposition != REG_OPENED_EXISTING_KEY) {
+        return 725;
     }
     if (!wow64_views_read ||
         wow64_write_statuses[0] != ERROR_ACCESS_DENIED ||
