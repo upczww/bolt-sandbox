@@ -684,4 +684,26 @@ mod tests {
             })
         ));
     }
+
+    #[test]
+    fn ws_021_staged_workspace_rejects_mandatory_deny_overlap_case_insensitively() {
+        let source = PathBuf::from(r"C:\Work\Agent");
+
+        assert!(workspace_overlaps_mandatory_deny(
+            &source,
+            &[PathBuf::from(r"c:\work\agent\.secrets")]
+        ));
+        assert!(workspace_overlaps_mandatory_deny(
+            &source,
+            &[PathBuf::from(r"C:\WORK")]
+        ));
+        assert!(workspace_overlaps_mandatory_deny(
+            &source,
+            &[PathBuf::from(r"c:\work\agent")]
+        ));
+        assert!(!workspace_overlaps_mandatory_deny(
+            &source,
+            &[PathBuf::from(r"C:\Work\Agent-Other\.secrets")]
+        ));
+    }
 }

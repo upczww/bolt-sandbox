@@ -436,6 +436,7 @@ and reason code—not merely identical serialized bytes.
 | WS-018 | Source changes externally after projection read | Commit detects identity/hash conflict and applies nothing |
 | WS-019 | Commit fails after staging one of several operations | No partial source transaction becomes visible; projection remains inspectable |
 | WS-020 | Large/concurrent changes exceed configured bounds | Further changes/commit fail with typed quota status and bounded resources |
+| WS-021 | A staged source contains, equals, or is contained by a mandatory-deny path | Preparation fails closed before any protected content is copied or target process starts; case variants cannot bypass the check |
 | REC-020 | Projected destructive commit targets an ordinary file | Complete pre-commit content is captured before trusted mutation |
 | REC-021 | Projected session expires | Retention GC removes only inactive verified session state |
 | REC-022 | Recovery creation fails during projected commit | Commit stops before source mutation and reports typed failure |
