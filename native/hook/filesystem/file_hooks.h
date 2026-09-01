@@ -20,6 +20,8 @@ HookInstallStatus InstallFileHooks(
     HANDLE trusted_stdout,
     HANDLE trusted_stderr) noexcept;
 
+bool AllowsPrivateStatePath(const wchar_t* path) noexcept;
+
 std::uint32_t InstalledFileHookCount() noexcept;
 
 }  // namespace bolt::filesystem

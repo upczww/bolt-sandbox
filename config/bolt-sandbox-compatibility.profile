@@ -8,6 +8,7 @@ fs-ro|optional|user-profile|.rustup\toolchains
 
 # Exact read-only kernel metadata devices required by standard runtimes.
 device-ro|required|device|\Device\DeviceApi\CMApi
+device-ro|required|device|\Device\DeviceApi\CMNotify
 device-ro|required|device|\\.\MountPointManager
 
 # Public runtime and platform metadata.
@@ -26,6 +27,15 @@ reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Installe
 reg-ro|required|registry|HKCU\SOFTWARE\Microsoft\Installer\Assemblies
 reg-ro|required|registry|HKLM\SOFTWARE\Classes\Installer\Assemblies
 reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\Lsa
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\DirectWrite
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Avalon.Graphics
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Direct3D
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows\Dwm
+reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ICM
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Services\FontCache\Parameters
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Control\Class
+reg-ro|required|registry|HKLM\SYSTEM\CurrentControlSet\Enum
+reg-ro|required|registry|HKLM\HARDWARE\DESCRIPTION\System
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\MSBuild
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\NET Framework Setup\NDP
 reg-ro|required|registry|HKLM\SOFTWARE\Microsoft\Microsoft SDKs\NETFXSDK

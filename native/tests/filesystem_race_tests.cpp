@@ -562,15 +562,28 @@ bool RunWriteRace(
         SetEvent(start) != FALSE;
     const bool exited =
         released && allowed.WaitForExit() && denied.WaitForExit();
+    const bool allowed_events_clean =
+        exited && PipeHasNoEvents(allowed.event_pipe());
+    const bool denied_events =
+        exited && ReadExpectedViolations(
+                      denied.event_pipe(), denied.process_id(),
+                      bolt::protocol::FilesystemOperation::kWrite, target,
+                      kWriteIterations);
     const bool passed =
         exited && ReadFixture(target) == "AO" &&
-        PipeHasNoEvents(allowed.event_pipe()) &&
-        ReadExpectedViolations(
-            denied.event_pipe(), denied.process_id(),
-            bolt::protocol::FilesystemOperation::kWrite, target,
-            kWriteIterations);
+        allowed_events_clean && denied_events;
     if (start != nullptr) {
         CloseHandle(start);
+    }
+    if (!passed) {
+        std::fprintf(
+            stderr,
+            "write race failed: started=%d released=%d exited=%d allowed-exit=%lu denied-exit=%lu content=%s allowed-events=%d denied-events=%d\n",
+            started ? 1 : 0, released ? 1 : 0, exited ? 1 : 0,
+            static_cast<unsigned long>(allowed.exit_code()),
+            static_cast<unsigned long>(denied.exit_code()),
+            ReadFixture(target).c_str(), allowed_events_clean ? 1 : 0,
+            denied_events ? 1 : 0);
     }
     return passed;
 }
@@ -2528,30 +2541,30 @@ bool RunFilesystemRaceTests() {
         return false;
     }
     std::uint64_t ordinal = 1;
+    const auto run_case = [&](const char* const name, auto&& action) {
+        if (action()) {
+            return true;
+        }
+        std::fprintf(stderr, "filesystem race case failed: %s\n", name);
+        return false;
+    };
     const bool passed =
-        RunWriteRace(executable, hook_path, test_root, ordinal) &&
-        RunRenameDeleteRace(
-            executable, hook_path, test_root, ordinal) &&
-        RunMixedTreeRenameTest(
-            executable, hook_path, test_root, ordinal) &&
-        RunAllowedReplaceRenameTest(
-            executable, hook_path, test_root, ordinal) &&
-        RunPolicySemanticsTest(
-            executable, hook_path, test_root, ordinal) &&
-        RunInheritUserAclTest(
-            executable, hook_path, test_root, ordinal) &&
-        RunPathFormsTest(executable, hook_path, test_root, ordinal) &&
-        RunUncPathTest(executable, hook_path, ordinal) &&
-        RunCaseSensitivePathTest(executable, hook_path, ordinal) &&
-        RunCaseInsensitiveCollisionRejectionTest(
-            executable, hook_path, test_root, ordinal) &&
-        RunVolumeGuidAliasTest(
-            executable, hook_path, test_root, ordinal) &&
-        RunExistingSymlinkTest(executable, hook_path, ordinal) &&
-        RunJunctionSwapTest(executable, hook_path, test_root, ordinal) &&
-        RunReparseFailureTest(executable, hook_path, test_root, ordinal) &&
-        RunPrivateAnonymousPipeTest(executable, hook_path, ordinal) &&
-        RunAsyncIoAndMappingTest(executable, hook_path, test_root, ordinal);
+        run_case("write", [&] { return RunWriteRace(executable, hook_path, test_root, ordinal); }) &&
+        run_case("rename-delete", [&] { return RunRenameDeleteRace(executable, hook_path, test_root, ordinal); }) &&
+        run_case("mixed-tree", [&] { return RunMixedTreeRenameTest(executable, hook_path, test_root, ordinal); }) &&
+        run_case("allowed-replace", [&] { return RunAllowedReplaceRenameTest(executable, hook_path, test_root, ordinal); }) &&
+        run_case("policy-semantics", [&] { return RunPolicySemanticsTest(executable, hook_path, test_root, ordinal); }) &&
+        run_case("inherit-user-acl", [&] { return RunInheritUserAclTest(executable, hook_path, test_root, ordinal); }) &&
+        run_case("path-forms", [&] { return RunPathFormsTest(executable, hook_path, test_root, ordinal); }) &&
+        run_case("unc", [&] { return RunUncPathTest(executable, hook_path, ordinal); }) &&
+        run_case("case-sensitive", [&] { return RunCaseSensitivePathTest(executable, hook_path, ordinal); }) &&
+        run_case("case-collision", [&] { return RunCaseInsensitiveCollisionRejectionTest(executable, hook_path, test_root, ordinal); }) &&
+        run_case("volume-guid", [&] { return RunVolumeGuidAliasTest(executable, hook_path, test_root, ordinal); }) &&
+        run_case("existing-symlink", [&] { return RunExistingSymlinkTest(executable, hook_path, ordinal); }) &&
+        run_case("junction-swap", [&] { return RunJunctionSwapTest(executable, hook_path, test_root, ordinal); }) &&
+        run_case("reparse-failure", [&] { return RunReparseFailureTest(executable, hook_path, test_root, ordinal); }) &&
+        run_case("private-pipe", [&] { return RunPrivateAnonymousPipeTest(executable, hook_path, ordinal); }) &&
+        run_case("async-mapping", [&] { return RunAsyncIoAndMappingTest(executable, hook_path, test_root, ordinal); });
     std::filesystem::remove_all(test_root, error);
     if (!passed) {
         std::fprintf(stderr, "filesystem race fixture failed\n");

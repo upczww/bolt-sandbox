@@ -139,6 +139,11 @@ Additional read-only toolchain paths are added only after a real scenario test
 demonstrates need and security review confirms the subtree contains no
 credentials or unrelated user data.
 
+Writable per-user state is not expressible in this profile. Scenarios that
+need it use the separate, explicit
+[private user registry](private-user-registry.md) capability, whose Hive file
+must remain inside the workspace.
+
 ## 7. Migration and Delivery
 
 1. Add parser and resolver tests while old constants remain active.

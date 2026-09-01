@@ -229,7 +229,7 @@ try {
         $workspace = Join-Path $matrixRoot "工具 场景-$($scenario.id)"
         $null = New-Item -ItemType Directory -Path $workspace
         foreach ($private in @(
-            '.home', '.temp', '.local-app-data', '.app-data',
+            '.home', '.temp', '.local-app-data', '.app-data', '.registry',
             '.git-template')) {
             $null = New-Item -ItemType Directory -Path (Join-Path $workspace $private)
         }
@@ -343,6 +343,10 @@ try {
         }
         foreach ($property in @($scenario.environment.PSObject.Properties | Where-Object { $null -ne $_ })) {
             $environment[$property.Name] = Expand-MatrixValue ([string]$property.Value) $tokens
+        }
+        if ($scenario.privateRegistry -eq $true) {
+            $environment.BOLT_SANDBOX_PRIVATE_HKCU =
+                Join-Path $workspace '.registry\user.hiv'
         }
         $maximum = [int]($scenario.timeoutMilliseconds ?? 30000) + 10000
         $result = Start-CapturedProcess $sandboxPath $cliArguments $environment $maximum

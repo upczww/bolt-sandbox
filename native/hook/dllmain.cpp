@@ -109,8 +109,25 @@ RuntimeInitializationStatus InitializeRuntime(const HINSTANCE instance) noexcept
             policy, payload.policy_length,
             HandleFromWire(payload.standard_output_handle),
             HandleFromWire(payload.standard_error_handle));
+    bool private_registry_ready = true;
+    if (file_hook_status == bolt::filesystem::HookInstallStatus::kSuccess) {
+        std::array<wchar_t, 32'768> private_hive{};
+        const DWORD private_hive_length = GetEnvironmentVariableW(
+            L"BOLT_SANDBOX_PRIVATE_HKCU", private_hive.data(),
+            static_cast<DWORD>(private_hive.size()));
+        if (private_hive_length != 0) {
+            private_registry_ready =
+                private_hive_length < private_hive.size() &&
+                bolt::filesystem::AllowsPrivateStatePath(
+                    private_hive.data()) &&
+                bolt::registry::ConfigurePrivateUserRegistry(
+                    private_hive.data()) ==
+                    bolt::registry::PrivateUserRegistryStatus::kSuccess;
+        }
+    }
     const auto network_hook_status =
-        file_hook_status == bolt::filesystem::HookInstallStatus::kSuccess
+        file_hook_status == bolt::filesystem::HookInstallStatus::kSuccess &&
+                private_registry_ready
             ? bolt::network::InstallNetworkHooks(
                   policy, payload.policy_length, payload)
             : bolt::network::HookInstallStatus::kTransactionFailed;
@@ -121,6 +138,7 @@ RuntimeInitializationStatus InitializeRuntime(const HINSTANCE instance) noexcept
             : bolt::registry::RegistryHookInstallStatus::kTransactionFailed;
     UnmapViewOfFile(policy);
     if (file_hook_status != bolt::filesystem::HookInstallStatus::kSuccess ||
+        !private_registry_ready ||
         network_hook_status != bolt::network::HookInstallStatus::kSuccess ||
         registry_hook_status !=
             bolt::registry::RegistryHookInstallStatus::kSuccess) {

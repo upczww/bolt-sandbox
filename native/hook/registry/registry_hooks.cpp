@@ -112,6 +112,8 @@ std::unique_ptr<RegistryPolicy> g_policy;
 std::wstring g_current_user_prefix;
 std::wstring g_current_user_classes_prefix;
 std::wstring g_active_control_set;
+std::wstring g_private_user_prefix;
+HKEY g_private_user_hive = nullptr;
 
 bool NtSuccess(const NTSTATUS status) noexcept {
     return status >= 0;
@@ -126,6 +128,13 @@ bool EqualPrefixIgnoreCase(
                value.data(), static_cast<int>(prefix.size()), prefix.data(),
                static_cast<int>(prefix.size()), TRUE) == CSTR_EQUAL;
 }
+
+bool RewritePrivateUserAttributes(
+    const OBJECT_ATTRIBUTES* source,
+    std::wstring& path,
+    UNICODE_STRING& name,
+    OBJECT_ATTRIBUTES& rewritten,
+    const OBJECT_ATTRIBUTES*& selected);
 
 bool ProbeUnicodeString(
     const UNICODE_STRING* source,
@@ -366,6 +375,16 @@ bool MapNativeName(
     std::wstring& relative) {
     static const std::wstring machine = L"\\REGISTRY\\MACHINE";
     static const std::wstring users = L"\\REGISTRY\\USER";
+    if (!g_private_user_prefix.empty() &&
+        EqualPrefixIgnoreCase(native_name, g_private_user_prefix) &&
+        (native_name.size() == g_private_user_prefix.size() ||
+         native_name[g_private_user_prefix.size()] == L'\\')) {
+        hive = RegistryHive::kCurrentUser;
+        relative = native_name.size() == g_private_user_prefix.size()
+                       ? L""
+                       : native_name.substr(g_private_user_prefix.size() + 1);
+        return true;
+    }
     if (!g_current_user_classes_prefix.empty() &&
         EqualPrefixIgnoreCase(native_name, g_current_user_classes_prefix) &&
         (native_name.size() == g_current_user_classes_prefix.size() ||
@@ -430,6 +449,13 @@ bool DecideNativeName(
     const RegistryAccess access,
     RegistryDecision& decision) {
     decision = RegistryDecision::kDeny;
+    if (!g_private_user_prefix.empty() &&
+        EqualPrefixIgnoreCase(name, g_private_user_prefix) &&
+        (name.size() == g_private_user_prefix.size() ||
+         name[g_private_user_prefix.size()] == L'\\')) {
+        decision = RegistryDecision::kAllow;
+        return true;
+    }
     RegistryHive hive{};
     std::wstring relative;
     if (!MapNativeName(name, hive, relative) || g_policy == nullptr) {
@@ -454,6 +480,12 @@ bool AllowedNativeName(
 bool AllowedNativeOpen(
     const std::wstring& name,
     const RegistryAccess access) {
+    if (!g_private_user_prefix.empty() &&
+        EqualPrefixIgnoreCase(name, g_private_user_prefix) &&
+        (name.size() == g_private_user_prefix.size() ||
+         name[g_private_user_prefix.size()] == L'\\')) {
+        return true;
+    }
     RegistryHive hive{};
     std::wstring relative;
     if (!MapNativeName(name, hive, relative) || g_policy == nullptr) {
@@ -625,10 +657,21 @@ NTSTATUS NTAPI DetouredNtOpenKey(
     PHANDLE key,
     const ACCESS_MASK desired_access,
     POBJECT_ATTRIBUTES attributes) {
+    std::wstring private_path;
+    UNICODE_STRING private_name{};
+    OBJECT_ATTRIBUTES private_attributes{};
+    const OBJECT_ATTRIBUTES* selected = attributes;
+    if (!RewritePrivateUserAttributes(
+            attributes, private_path, private_name,
+            private_attributes, selected)) {
+        return kStatusAccessDenied;
+    }
     return GuardOpen(
-        key, desired_access, attributes, protocol::RegistryOperation::kOpen,
+        key, desired_access, selected, protocol::RegistryOperation::kOpen,
         true, [&](const ACCESS_MASK effective_access) {
-        return g_nt_open_key(key, effective_access, attributes);
+        return g_nt_open_key(
+            key, effective_access,
+            const_cast<POBJECT_ATTRIBUTES>(selected));
         });
 }
 
@@ -637,11 +680,21 @@ NTSTATUS NTAPI DetouredNtOpenKeyEx(
     const ACCESS_MASK desired_access,
     POBJECT_ATTRIBUTES attributes,
     const ULONG open_options) {
+    std::wstring private_path;
+    UNICODE_STRING private_name{};
+    OBJECT_ATTRIBUTES private_attributes{};
+    const OBJECT_ATTRIBUTES* selected = attributes;
+    if (!RewritePrivateUserAttributes(
+            attributes, private_path, private_name,
+            private_attributes, selected)) {
+        return kStatusAccessDenied;
+    }
     return GuardOpen(
-        key, desired_access, attributes, protocol::RegistryOperation::kOpen,
+        key, desired_access, selected, protocol::RegistryOperation::kOpen,
         true, [&](const ACCESS_MASK effective_access) {
         return g_nt_open_key_ex(
-            key, effective_access, attributes, open_options);
+            key, effective_access,
+            const_cast<POBJECT_ATTRIBUTES>(selected), open_options);
         });
 }
 
@@ -653,19 +706,30 @@ NTSTATUS NTAPI DetouredNtCreateKey(
     PUNICODE_STRING class_name,
     const ULONG create_options,
     PULONG disposition) {
+    std::wstring private_path;
+    UNICODE_STRING private_name{};
+    OBJECT_ATTRIBUTES private_attributes{};
+    const OBJECT_ATTRIBUTES* selected = attributes;
+    if (!RewritePrivateUserAttributes(
+            attributes, private_path, private_name,
+            private_attributes, selected)) {
+        return kStatusAccessDenied;
+    }
     std::wstring requested;
     RegistryDecision read_decision = RegistryDecision::kDeny;
-    if (ReadObjectAttributesName(attributes, requested) &&
+    if (ReadObjectAttributesName(selected, requested) &&
         DecideNativeName(
             requested, RegistryAccess::kRead, read_decision) &&
         read_decision == RegistryDecision::kAllowExactReadOnly) {
         const ACCESS_MASK read_access = KEY_READ |
             (desired_access & (KEY_WOW64_32KEY | KEY_WOW64_64KEY));
         const NTSTATUS status = GuardOpen(
-            key, read_access, attributes,
+            key, read_access, selected,
             protocol::RegistryOperation::kCreate, true,
             [&](const ACCESS_MASK effective_access) {
-                return g_nt_open_key(key, effective_access, attributes);
+                return g_nt_open_key(
+                    key, effective_access,
+                    const_cast<POBJECT_ATTRIBUTES>(selected));
             });
         if (NtSuccess(status) &&
             !WriteOpenedExistingDisposition(disposition)) {
@@ -683,10 +747,11 @@ NTSTATUS NTAPI DetouredNtCreateKey(
         RegistryAccess::kWrite == AccessForMask(desired_access)
             ? desired_access
             : desired_access | KEY_CREATE_SUB_KEY,
-        attributes, protocol::RegistryOperation::kCreate, false,
+        selected, protocol::RegistryOperation::kCreate, false,
         [&](const ACCESS_MASK) {
                          return g_nt_create_key(
-                             key, desired_access, attributes, title_index,
+                             key, desired_access,
+                             const_cast<POBJECT_ATTRIBUTES>(selected), title_index,
                              class_name, create_options, disposition);
                      });
 }
@@ -968,6 +1033,103 @@ bool ResolveFunction(
     Function& function) noexcept {
     function = reinterpret_cast<Function>(GetProcAddress(ntdll, name));
     return function != nullptr;
+}
+
+}  // namespace
+
+PrivateUserRegistryStatus ConfigurePrivateUserRegistry(
+    const wchar_t* const hive_path) noexcept {
+    if (hive_path == nullptr || *hive_path == L'\0' ||
+        g_private_user_hive != nullptr) {
+        return PrivateUserRegistryStatus::kInvalidPath;
+    }
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll == nullptr ||
+        !ResolveFunction(ntdll, "NtQueryKey", g_nt_query_key)) {
+        return PrivateUserRegistryStatus::kLoadFailed;
+    }
+    HKEY hive = nullptr;
+    if (RegLoadAppKeyW(
+            hive_path, &hive, KEY_ALL_ACCESS, 0, 0) != ERROR_SUCCESS ||
+        hive == nullptr) {
+        return PrivateUserRegistryStatus::kLoadFailed;
+    }
+    HKEY user_root = nullptr;
+    DWORD disposition = 0;
+    if (RegCreateKeyExW(
+            hive, L"HKCU", 0, nullptr, REG_OPTION_NON_VOLATILE,
+            KEY_ALL_ACCESS, nullptr, &user_root, &disposition) !=
+            ERROR_SUCCESS ||
+        user_root == nullptr) {
+        RegCloseKey(hive);
+        return PrivateUserRegistryStatus::kLoadFailed;
+    }
+    std::wstring prefix;
+    if (!QueryHandleName(user_root, prefix)) {
+        RegCloseKey(user_root);
+        RegCloseKey(hive);
+        return PrivateUserRegistryStatus::kOverrideFailed;
+    }
+    RegCloseKey(user_root);
+    g_private_user_prefix = std::move(prefix);
+    g_private_user_hive = hive;
+    return PrivateUserRegistryStatus::kSuccess;
+}
+
+namespace {
+
+bool RewritePrivateUserAttributes(
+    const OBJECT_ATTRIBUTES* source,
+    std::wstring& path,
+    UNICODE_STRING& name,
+    OBJECT_ATTRIBUTES& rewritten,
+    const OBJECT_ATTRIBUTES*& selected) {
+    selected = source;
+    if (g_private_user_prefix.empty() ||
+        g_current_user_prefix.empty()) {
+        return true;
+    }
+    std::wstring requested;
+    if (!ReadObjectAttributesName(source, requested)) {
+        return false;
+    }
+    std::wstring relative;
+    if (!g_current_user_classes_prefix.empty() &&
+        EqualPrefixIgnoreCase(requested, g_current_user_classes_prefix) &&
+        (requested.size() == g_current_user_classes_prefix.size() ||
+         requested[g_current_user_classes_prefix.size()] == L'\\')) {
+        relative = L"Software\\Classes";
+        if (requested.size() > g_current_user_classes_prefix.size()) {
+            relative.push_back(L'\\');
+            relative.append(
+                requested.substr(g_current_user_classes_prefix.size() + 1));
+        }
+    } else if (
+        EqualPrefixIgnoreCase(requested, g_current_user_prefix) &&
+        (requested.size() == g_current_user_prefix.size() ||
+         requested[g_current_user_prefix.size()] == L'\\')) {
+        if (requested.size() > g_current_user_prefix.size()) {
+            relative = requested.substr(g_current_user_prefix.size() + 1);
+        }
+    } else {
+        return true;
+    }
+    path = g_private_user_prefix;
+    if (!relative.empty()) {
+        path.push_back(L'\\');
+        path.append(relative);
+    }
+    if (path.size() > USHRT_MAX / sizeof(wchar_t)) {
+        return false;
+    }
+    name.Buffer = path.data();
+    name.Length = static_cast<USHORT>(path.size() * sizeof(wchar_t));
+    name.MaximumLength = name.Length;
+    rewritten = *source;
+    rewritten.RootDirectory = nullptr;
+    rewritten.ObjectName = &name;
+    selected = &rewritten;
+    return true;
 }
 
 }  // namespace

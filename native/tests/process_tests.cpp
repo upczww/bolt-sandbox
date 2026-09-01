@@ -486,11 +486,20 @@ bool ReadFilesystemViolation(
     const std::uint64_t sequence) {
     std::array<std::uint8_t, bolt::protocol::kEventHeaderLength> header{};
     if (!ReadExact(event_pipe, header.data(), header.size())) {
+        std::fprintf(
+            stderr, "filesystem event missing expected-sequence=%llu operation=%u\n",
+            static_cast<unsigned long long>(sequence),
+            static_cast<unsigned int>(operation));
         return false;
     }
     const std::size_t payload_length = ReadU32(header.data() + 8);
     const std::size_t frame_length = header.size() + payload_length;
     if (frame_length != bolt::protocol::FilesystemViolationFrameLength(path.c_str())) {
+        std::fprintf(
+            stderr,
+            "filesystem event length mismatch expected-sequence=%llu actual=%zu expected=%zu\n",
+            static_cast<unsigned long long>(sequence), frame_length,
+            bolt::protocol::FilesystemViolationFrameLength(path.c_str()));
         return false;
     }
     std::vector<std::uint8_t> actual(frame_length);
@@ -501,10 +510,24 @@ bool ReadFilesystemViolation(
     }
     std::vector<std::uint8_t> expected(frame_length);
     std::size_t written = 0;
-    return bolt::protocol::EncodeFilesystemViolationFrame(
+    const bool matches =
+        bolt::protocol::EncodeFilesystemViolationFrame(
                process_id, operation, path.c_str(), sequence, expected.data(), expected.size(),
                written) == bolt::protocol::FrameEncodeStatus::kSuccess &&
            written == expected.size() && actual == expected;
+    if (!matches) {
+        std::fprintf(
+            stderr,
+            "filesystem event mismatch expected-sequence=%llu expected-operation=%u actual-operation=%u actual-length=%zu expected-length=%zu\n",
+            static_cast<unsigned long long>(sequence),
+            static_cast<unsigned int>(operation),
+            actual.size() > bolt::protocol::kEventHeaderLength + 4
+                ? static_cast<unsigned int>(
+                      actual[bolt::protocol::kEventHeaderLength + 4])
+                : 255U,
+            actual.size(), expected.size());
+    }
+    return matches;
 }
 
 bool ReadAnyFilesystemViolationForPath(
@@ -1139,12 +1162,23 @@ int RunProcessChild(const int argument_count, wchar_t** arguments) {
     CloseHandle(read_only_mapping);
     const HANDLE forbidden_read_only_write =
         CreateFileMappingW(read_only_mapping_file, nullptr, PAGE_READWRITE, 0, 0, nullptr);
-    if (forbidden_read_only_write != nullptr || GetLastError() != ERROR_ACCESS_DENIED) {
+    auto* copy_on_write_view = forbidden_read_only_write == nullptr
+        ? nullptr
+        : static_cast<char*>(MapViewOfFile(
+              forbidden_read_only_write, FILE_MAP_COPY, 0, 0, 0));
+    if (copy_on_write_view == nullptr ||
+        std::memcmp(copy_on_write_view, "read-only-content", 17) != 0) {
+        if (copy_on_write_view != nullptr) {
+            UnmapViewOfFile(copy_on_write_view);
+        }
         if (forbidden_read_only_write != nullptr) {
             CloseHandle(forbidden_read_only_write);
         }
         return 130;
     }
+    copy_on_write_view[0] = 'X';
+    UnmapViewOfFile(copy_on_write_view);
+    CloseHandle(forbidden_read_only_write);
     using NtCreateSectionFunction = NTSTATUS(NTAPI*)(
         PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PLARGE_INTEGER, ULONG, ULONG, HANDLE);
     const auto nt_create_section = reinterpret_cast<NtCreateSectionFunction>(
@@ -5602,11 +5636,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            read_only_mapping_path.wstring(), 35) &&
+            denied_mapping_path.wstring(), 35) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kWrite,
-            denied_mapping_path.wstring(), 36) &&
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_hardlink_escape_target.wstring(), 36) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
@@ -5614,11 +5648,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
-            denied_hardlink_escape_target.wstring(), 38) &&
+            denied_junction_target.wstring(), 38) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kCreate,
-            denied_junction_target.wstring(), 39) &&
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_wildcard.wstring(), 39) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kEnumerate,
@@ -5633,8 +5667,8 @@ bool RunProcessTests() {
             denied_wildcard.wstring(), 42) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kEnumerate,
-            denied_wildcard.wstring(), 43) &&
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_delete_path.wstring(), 43) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kMetadata,
@@ -5649,7 +5683,7 @@ bool RunProcessTests() {
             denied_delete_path.wstring(), 46) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kMetadata,
+            bolt::protocol::FilesystemOperation::kWrite,
             denied_delete_path.wstring(), 47) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
@@ -5658,7 +5692,7 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_delete_path.wstring(), 49) &&
+            denied_mapping_path.wstring(), 49) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
@@ -5666,7 +5700,7 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_mapping_path.wstring(), 51) &&
+            denied_delete_path.wstring(), 51) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
@@ -5674,11 +5708,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_delete_path.wstring(), 53) &&
+            denied_mapping_path.wstring(), 53) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_mapping_path.wstring(), 54) &&
+            denied_delete_path.wstring(), 54) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
@@ -5693,8 +5727,8 @@ bool RunProcessTests() {
             denied_delete_path.wstring(), 57) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kWrite,
-            denied_delete_path.wstring(), 58) &&
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_mapping_path.wstring(), 58) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kMetadata,
@@ -5706,62 +5740,62 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kMetadata,
-            denied_mapping_path.wstring(), 61) &&
+            denied_delete_path.wstring(), 61) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kMetadata,
             denied_delete_path.wstring(), 62) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kMetadata,
-            denied_delete_path.wstring(), 63) &&
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_root.wstring(), 63) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kEnumerate,
             denied_root.wstring(), 64) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kEnumerate,
-            denied_root.wstring(), 65) &&
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_junction_target.wstring(), 65) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
             denied_junction_target.wstring(), 66) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kCreate,
-            denied_junction_target.wstring(), 67) &&
+            bolt::protocol::FilesystemOperation::kDelete,
+            denied_delete_path.wstring(), 67) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kDelete,
             denied_delete_path.wstring(), 68) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kDelete,
-            denied_delete_path.wstring(), 69) &&
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_copy_source.wstring(), 69) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kRead,
             denied_copy_source.wstring(), 70) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead,
-            denied_copy_source.wstring(), 71) &&
+            bolt::protocol::FilesystemOperation::kRename,
+            denied_move_source.wstring(), 71) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kRename,
             denied_move_source.wstring(), 72) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRename,
-            denied_move_source.wstring(), 73) &&
+            bolt::protocol::FilesystemOperation::kDelete,
+            denied_alias_target.wstring(), 73) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kDelete,
             denied_alias_target.wstring(), 74) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kDelete,
+            bolt::protocol::FilesystemOperation::kWrite,
             denied_alias_target.wstring(), 75) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
@@ -5769,39 +5803,39 @@ bool RunProcessTests() {
             denied_alias_target.wstring(), 76) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kWrite,
-            denied_alias_target.wstring(), 77) &&
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_mapping_path.wstring(), 77) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead,
+            bolt::protocol::FilesystemOperation::kWrite,
             denied_mapping_path.wstring(), 78) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kWrite,
+            bolt::protocol::FilesystemOperation::kRead,
             denied_mapping_path.wstring(), 79) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead,
+            bolt::protocol::FilesystemOperation::kWrite,
             denied_mapping_path.wstring(), 80) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kWrite,
+            bolt::protocol::FilesystemOperation::kRead,
             denied_mapping_path.wstring(), 81) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead,
+            bolt::protocol::FilesystemOperation::kWrite,
             denied_mapping_path.wstring(), 82) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kWrite,
-            denied_mapping_path.wstring(), 83) &&
+            bolt::protocol::FilesystemOperation::kMetadata,
+            denied_alias_target.wstring(), 83) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kMetadata,
             denied_alias_target.wstring(), 84) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kMetadata,
+            bolt::protocol::FilesystemOperation::kWrite,
             denied_alias_target.wstring(), 85) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
@@ -5809,16 +5843,16 @@ bool RunProcessTests() {
             denied_alias_target.wstring(), 86) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kWrite,
-            denied_alias_target.wstring(), 87) &&
-        ReadFilesystemViolation(
-            event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
-            denied_alias_created_directory.wstring(), 88) &&
+            denied_alias_created_directory.wstring(), 87) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kDelete,
-            denied_alias_removed_directory.wstring(), 89) &&
+            denied_alias_removed_directory.wstring(), 88) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_alias_wildcard.wstring(), 89) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kEnumerate,
@@ -5833,28 +5867,28 @@ bool RunProcessTests() {
             denied_alias_wildcard.wstring(), 92) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kEnumerate,
-            denied_alias_wildcard.wstring(), 93) &&
-        ReadFilesystemViolation(
-            event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
-            denied_alias_created_directory_a.wstring(), 94) &&
+            denied_alias_created_directory_a.wstring(), 93) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kDelete,
-            denied_alias_removed_directory_a.wstring(), 95) &&
+            denied_alias_removed_directory_a.wstring(), 94) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
-            denied_path.wstring(), 96) &&
+            denied_path.wstring(), 95) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_delete_path.wstring(), 96) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kRead,
             denied_delete_path.wstring(), 97) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead,
-            denied_delete_path.wstring(), 98) &&
+            bolt::protocol::FilesystemOperation::kEnumerate,
+            denied_root.wstring(), 98) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kEnumerate,
@@ -5865,61 +5899,61 @@ bool RunProcessTests() {
             denied_root.wstring(), 100) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kEnumerate,
-            denied_root.wstring(), 101) &&
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_mapping_path.wstring(), 101) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead,
+            bolt::protocol::FilesystemOperation::kMetadata,
             denied_mapping_path.wstring(), 102) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kMetadata,
             denied_mapping_path.wstring(), 103) &&
-        ReadFilesystemViolation(
-            event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kMetadata,
-            denied_mapping_path.wstring(), 104) &&
         ReadProcessViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::ProcessOperation::kCreateWithToken, 105) &&
+            bolt::protocol::ProcessOperation::kCreateWithToken, 104) &&
         ReadProcessViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::ProcessOperation::kCreateWithLogon, 106) &&
+            bolt::protocol::ProcessOperation::kCreateWithLogon, 105) &&
         ReadProcessViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::ProcessOperation::kElevation, 107) &&
+            bolt::protocol::ProcessOperation::kElevation, 106) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kRead,
-            denied_mapping_path.wstring(), 108) &&
+            denied_mapping_path.wstring(), 107) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_mapping_path.wstring(), 109) &&
+            denied_mapping_path.wstring(), 108) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
-            denied_hardlink_destination.wstring(), 110) &&
+            denied_hardlink_destination.wstring(), 109) &&
+        ReadFilesystemViolation(
+            event_pipe.handle(), child_process_id,
+            bolt::protocol::FilesystemOperation::kRead,
+            denied_disposition_path.wstring(), 110) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kRead,
             denied_disposition_path.wstring(), 111) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kRead,
+            bolt::protocol::FilesystemOperation::kWrite,
             denied_disposition_path.wstring(), 112) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
-            denied_disposition_path.wstring(), 113) &&
+            denied_truncate_path.wstring(), 113) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kWrite,
             denied_truncate_path.wstring(), 114) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kWrite,
-            denied_truncate_path.wstring(), 115) &&
+            bolt::protocol::FilesystemOperation::kCreate,
+            denied_directory_ex_w.wstring(), 115) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
@@ -5927,19 +5961,11 @@ bool RunProcessTests() {
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
-            denied_directory_ex_w.wstring(), 117) &&
+            denied_directory_ex_a.wstring(), 117) &&
         ReadFilesystemViolation(
             event_pipe.handle(), child_process_id,
             bolt::protocol::FilesystemOperation::kCreate,
-            denied_directory_ex_a.wstring(), 118) &&
-        ReadFilesystemViolation(
-            event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kCreate,
-            denied_directory_ex_a.wstring(), 119) &&
-        ReadFilesystemViolation(
-            event_pipe.handle(), child_process_id,
-            bolt::protocol::FilesystemOperation::kWrite,
-            read_only_mapping_path.wstring(), 120);
+            denied_directory_ex_a.wstring(), 118);
     DWORD exit_code = 0;
     FILETIME denied_mapping_write_time_after{};
     const bool denied_mapping_time_unchanged =
@@ -6055,8 +6081,10 @@ bool RunProcessTests() {
     std::filesystem::remove_all(test_root, filesystem_error);
     if (!exact_exit) {
         std::fprintf(
-            stderr, "policy process fixture failed with exit code %lu\n",
-            static_cast<unsigned long>(exit_code));
+            stderr,
+            "policy process fixture failed with exit code %lu violations=%d\n",
+            static_cast<unsigned long>(exit_code),
+            violation_events ? 1 : 0);
         return false;
     }
 

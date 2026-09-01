@@ -1230,6 +1230,29 @@ bool IsTrustedStandardStream(const HANDLE file) noexcept {
             });
 }
 
+DWORD AttenuateReadOnlyFileMapping(
+    const HANDLE file,
+    const DWORD protection) noexcept {
+    if (file == nullptr || file == INVALID_HANDLE_VALUE || g_policy == nullptr) {
+        return protection;
+    }
+    const DWORD base = protection & 0xffU;
+    if (base != PAGE_READWRITE && base != PAGE_EXECUTE_READWRITE) {
+        return protection;
+    }
+    std::wstring path;
+    if (!TryGetHandlePath(file, path) ||
+        g_policy->Evaluate(path.c_str(), Access::kRead).decision !=
+            Decision::kAllow ||
+        g_policy->Evaluate(path.c_str(), Access::kWrite).decision !=
+            Decision::kDeny) {
+        return protection;
+    }
+    const DWORD attenuated =
+        base == PAGE_READWRITE ? PAGE_WRITECOPY : PAGE_EXECUTE_WRITECOPY;
+    return (protection & ~0xffU) | attenuated;
+}
+
 bool AuthorizeHandleMetadata(const HANDLE file) noexcept {
     if (g_handle_access_cache.Allows(file, HandleAccess::kMetadata)) {
         return true;
@@ -1864,8 +1887,10 @@ NTSTATUS NTAPI DetouredNtCreateFile(
             file_attributes, share_access, create_disposition, create_options,
             ea_buffer, ea_length);
     }
+    const DWORD win32_disposition =
+        MapNtCreateDisposition(create_disposition);
     auto request = ClassifyCreateFileRequest(
-        desired_access, MapNtCreateDisposition(create_disposition));
+        desired_access, win32_disposition);
     if ((create_options & FILE_DELETE_ON_CLOSE) != 0) {
         request = {Access::kWrite, protocol::FilesystemOperation::kDelete};
     }
@@ -3535,8 +3560,9 @@ HANDLE WINAPI DetouredCreateFileW(
         SetLastError(ERROR_FILE_NOT_FOUND);
         return INVALID_HANDLE_VALUE;
     }
-    const auto request = ClassifyCreateFileRequestWithFlags(
-        desired_access, creation_disposition, flags_and_attributes);
+    auto request = ClassifyCreateFileRequestWithFlags(
+        desired_access, creation_disposition,
+        flags_and_attributes);
     const bool exact_device_open =
         IsAuthorizedExactDevicePath(filename, request);
     if (!AuthorizeCreateFile(filename, request, flags_and_attributes)) {
@@ -3548,7 +3574,8 @@ HANDLE WINAPI DetouredCreateFileW(
         return INVALID_HANDLE_VALUE;
     }
     const HANDLE opened = g_create_file_w(
-        native_filename, desired_access, share_mode, security_attributes, creation_disposition,
+        native_filename, desired_access, share_mode,
+        security_attributes, creation_disposition,
         flags_and_attributes, template_file);
     if (opened == INVALID_HANDLE_VALUE) {
         return opened;
@@ -3579,8 +3606,9 @@ HANDLE WINAPI DetouredCreateFileA(
             creation_disposition, flags_and_attributes, template_file);
     }
     std::wstring filename_wide;
-    const auto request = ClassifyCreateFileRequestWithFlags(
-        desired_access, creation_disposition, flags_and_attributes);
+    auto request = ClassifyCreateFileRequestWithFlags(
+        desired_access, creation_disposition,
+        flags_and_attributes);
     if (!ConvertAnsiPath(filename, filename_wide)) {
         return INVALID_HANDLE_VALUE;
     }
@@ -3622,7 +3650,8 @@ HANDLE WINAPI DetouredCreateFileA(
         return INVALID_HANDLE_VALUE;
     }
     const HANDLE opened = g_create_file_w(
-        native_filename, desired_access, share_mode, security_attributes,
+        native_filename, desired_access, share_mode,
+        security_attributes,
         creation_disposition, flags_and_attributes, template_file);
     if (opened == INVALID_HANDLE_VALUE) {
         return opened;
@@ -4050,11 +4079,13 @@ HANDLE WINAPI DetouredCreateFileMappingW(
         return g_create_file_mapping_w(
             file, security_attributes, protection, maximum_size_high, maximum_size_low, name);
     }
-    if (!AuthorizeFileMapping(file, protection)) {
+    const DWORD effective_protection =
+        AttenuateReadOnlyFileMapping(file, protection);
+    if (!AuthorizeFileMapping(file, effective_protection)) {
         return nullptr;
     }
     const HANDLE mapping = g_create_file_mapping_w(
-        file, security_attributes, protection, maximum_size_high,
+        file, security_attributes, effective_protection, maximum_size_high,
         maximum_size_low, name);
     if (mapping != nullptr) {
         if (file == nullptr || file == INVALID_HANDLE_VALUE) {
@@ -4088,11 +4119,13 @@ HANDLE WINAPI DetouredCreateFileMappingA(
         return g_create_file_mapping_a(
             file, security_attributes, protection, maximum_size_high, maximum_size_low, name);
     }
-    if (!AuthorizeFileMapping(file, protection)) {
+    const DWORD effective_protection =
+        AttenuateReadOnlyFileMapping(file, protection);
+    if (!AuthorizeFileMapping(file, effective_protection)) {
         return nullptr;
     }
     const HANDLE mapping = g_create_file_mapping_a(
-        file, security_attributes, protection, maximum_size_high,
+        file, security_attributes, effective_protection, maximum_size_high,
         maximum_size_low, name);
     if (mapping != nullptr) {
         if (file == nullptr || file == INVALID_HANDLE_VALUE) {
@@ -4130,7 +4163,9 @@ NTSTATUS NTAPI DetouredNtCreateSection(
             allocation_attributes, file);
     }
     const bool anonymous = file == nullptr || file == INVALID_HANDLE_VALUE;
-    if (!anonymous && !AuthorizeFileMapping(file, protection)) {
+    const ULONG effective_protection =
+        AttenuateReadOnlyFileMapping(file, protection);
+    if (!anonymous && !AuthorizeFileMapping(file, effective_protection)) {
         if (section != nullptr) {
             *section = nullptr;
         }
@@ -4138,7 +4173,8 @@ NTSTATUS NTAPI DetouredNtCreateSection(
         return status_access_denied;
     }
     const NTSTATUS status = g_nt_create_section(
-        section, desired_access, object_attributes, maximum_size, protection,
+        section, desired_access, object_attributes, maximum_size,
+        effective_protection,
         allocation_attributes, file);
     if (status >= 0) {
         HANDLE created = nullptr;
@@ -4754,6 +4790,23 @@ BOOL WINAPI DetouredCopyFileTransactedA(
 }
 
 }  // namespace
+
+bool AllowsPrivateStatePath(const wchar_t* const path) noexcept {
+    if (path == nullptr || g_policy == nullptr) {
+        return false;
+    }
+    const auto text = g_policy->Evaluate(path, Access::kWrite);
+    if (text.decision != Decision::kAllow) {
+        return false;
+    }
+    std::wstring resolved;
+    if (!ResolveParentFinalIdentity(
+            EvaluatedPath(text, path), resolved)) {
+        return false;
+    }
+    return g_policy->Evaluate(resolved.c_str(), Access::kWrite).decision ==
+           Decision::kAllow;
+}
 
 HookInstallStatus InstallFileHooks(
     const std::uint8_t* policy_payload,

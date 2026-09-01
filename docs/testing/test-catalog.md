@@ -526,6 +526,7 @@ and reason code—not merely identical serialized bytes.
 | COMPAT-029 | Approved restart has a retained staged/projected transaction | Old transaction is discarded before new target creation; discard failure prevents restart |
 | COMPAT-030 | Approved restart starts with minimally extended policy | New execution/policy generation succeeds from the beginning; no live Job receives widened authority |
 | COMPAT-031 | A standard runtime requires an NT metadata device | Only a manifest-verified, configured exact `device-ro` name opens for read/metadata; writes, descendants, lookalikes, malformed rules, and unknown devices remain denied |
+| COMPAT-032 | A declared Agent scenario requires writable HKCU state | Writes are redirected into a workspace application Hive for the process and descendants; the real HKCU and every non-user Hive remain unchanged, and an external or read-only Hive path fails before readiness |
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |

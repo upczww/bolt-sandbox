@@ -43,7 +43,7 @@ $allowedScenarioProperties = @(
     'id', 'family', 'requiredOnHost', 'commands', 'candidates', 'terminal', 'privileged',
     'arguments', 'environment', 'readOnly', 'metadataRead', 'files', 'expectedFiles',
     'stdoutContains', 'acceptedExitCodes', 'timeoutMilliseconds', 'network', 'requiredCapabilities',
-    'namedPipes', 'interpreterCommand', 'entrypoint'
+    'namedPipes', 'interpreterCommand', 'entrypoint', 'privateRegistry'
 )
 $allowedTokens = @(
     'ProgramFiles', 'ProgramFilesX86', 'ProgramData', 'SystemRoot', 'UserProfile',
@@ -98,6 +98,10 @@ foreach ($scenario in $matrix.scenarios) {
     }
     if ($scenario.privileged -eq $true -and $scenario.requiredOnHost) {
         throw "Privileged scenario cannot be required by default: $($scenario.id)."
+    }
+    if ($null -ne $scenario.privateRegistry -and
+        $scenario.privateRegistry -isnot [bool]) {
+        throw "privateRegistry must be Boolean for $($scenario.id)."
     }
     if ($scenario.commands -isnot [array] -or $scenario.commands.Count -eq 0) {
         throw "Scenario must declare command candidates: $($scenario.id)."

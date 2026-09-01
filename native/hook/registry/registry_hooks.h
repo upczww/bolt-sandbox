@@ -12,6 +12,16 @@ enum class RegistryHookInstallStatus : std::uint8_t {
     kTransactionFailed,
 };
 
+enum class PrivateUserRegistryStatus : std::uint8_t {
+    kSuccess,
+    kInvalidPath,
+    kLoadFailed,
+    kOverrideFailed,
+};
+
+PrivateUserRegistryStatus ConfigurePrivateUserRegistry(
+    const wchar_t* hive_path) noexcept;
+
 RegistryHookInstallStatus InstallRegistryHooks(
     const std::uint8_t* policy_payload,
     std::size_t policy_length) noexcept;
