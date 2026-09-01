@@ -32,6 +32,10 @@ mod recovery_protocol;
 mod startup;
 #[cfg(test)]
 mod streams;
+#[allow(
+    dead_code,
+    reason = "transaction journal is consumed by the projected backend in the next phase"
+)]
 mod workspace;
 
 use crate::{
