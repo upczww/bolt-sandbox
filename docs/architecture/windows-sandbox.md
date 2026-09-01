@@ -283,6 +283,15 @@ only validated policy, event, release, and configured proxy-channel handles.
 Ambient files and preconnected sockets are excluded before the suspended image
 can execute user code.
 
+Descendant creation preserves the same capability boundary. When the caller
+uses `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, the hook records that exact list. For
+legacy `STARTUPINFO` callers that request handle inheritance, it enumerates
+only handles carrying `HANDLE_FLAG_INHERIT` and retains only kernel Pipe
+objects. The resulting bounded, versioned Detours payload lets the child use
+those already-authorized anonymous pipes (for example compiler workers or
+browser debugging channels); it does not grant pipe namespace access, add
+filesystem paths, or make ambient non-inheritable handles visible.
+
 The Rust startup coordinator permits only this action order: create suspended,
 assign the target to the execution Job, inject the architecture-matched hook,
 await authenticated `Ready`, then resume. A callback cannot skip or reorder a
@@ -301,6 +310,7 @@ Responsibilities:
 - Intercept filesystem, registry, process creation, Winsock, DNS, WinHTTP, and
   WinInet entry points.
 - Inject the matching DLL into children before they execute.
+- Rehydrate only explicitly inherited anonymous-pipe capabilities in children.
 - Emit bounded, structured events without blocking application threads.
 - Deny an operation when policy evaluation cannot be completed safely.
 

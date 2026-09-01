@@ -3,6 +3,7 @@
 #include "hook/event_sink.h"
 #include "common/required_mitigations.h"
 
+#include "protocol/inherited_handle_payload.h"
 #include "protocol/policy_payload.h"
 #include "protocol/runtime_payload.h"
 #include "protocol/version.h"
@@ -64,6 +65,24 @@ bool g_runtime_configured = false;
 protocol::RuntimePayload g_runtime_payload{};
 std::string g_hook_dll_path;
 std::vector<std::uint8_t> g_policy_payload;
+decltype(&UpdateProcThreadAttribute) g_update_proc_thread_attribute =
+    UpdateProcThreadAttribute;
+decltype(&DeleteProcThreadAttributeList) g_delete_proc_thread_attribute_list =
+    DeleteProcThreadAttributeList;
+
+constexpr std::size_t kMaximumAttributeLists = 64;
+constexpr std::size_t kMaximumInheritedHandles = 128;
+struct HandleListRecord {
+    LPPROC_THREAD_ATTRIBUTE_LIST list = nullptr;
+    std::array<HANDLE, kMaximumInheritedHandles> handles{};
+    std::size_t count = 0;
+};
+std::array<HandleListRecord, kMaximumAttributeLists> g_handle_lists{};
+SRWLOCK g_handle_lists_lock = SRWLOCK_INIT;
+
+bool LookupHandleList(
+    const LPPROC_THREAD_ATTRIBUTE_LIST list,
+    std::vector<HANDLE>& handles) noexcept;
 
 template <typename StartupInfo, typename ExtendedStartupInfo>
 class MitigatedStartupInfo final {
@@ -72,8 +91,18 @@ class MitigatedStartupInfo final {
         if (source == nullptr) {
             return false;
         }
+        std::vector<HANDLE> inherited_handles;
+        if (source->cb >= sizeof(ExtendedStartupInfo)) {
+            const auto* source_extended =
+                reinterpret_cast<const ExtendedStartupInfo*>(source);
+            static_cast<void>(LookupHandleList(
+                source_extended->lpAttributeList, inherited_handles));
+        }
+        const DWORD attribute_count =
+            inherited_handles.empty() ? 1U : 2U;
         SIZE_T bytes = 0;
-        InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+        InitializeProcThreadAttributeList(
+            nullptr, attribute_count, 0, &bytes);
         try {
             storage_.resize(bytes);
         } catch (...) {
@@ -85,11 +114,18 @@ class MitigatedStartupInfo final {
             reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage_.data());
         mitigation_policy_ = common::kRequiredCreationMitigationPolicy;
         if (!InitializeProcThreadAttributeList(
-                extended_.lpAttributeList, 1, 0, &bytes) ||
-            !UpdateProcThreadAttribute(
+                extended_.lpAttributeList, attribute_count, 0, &bytes) ||
+            !g_update_proc_thread_attribute(
                 extended_.lpAttributeList, 0,
                 PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &mitigation_policy_,
-                sizeof(mitigation_policy_), nullptr, nullptr)) {
+                sizeof(mitigation_policy_), nullptr, nullptr) ||
+            (!inherited_handles.empty() &&
+             !g_update_proc_thread_attribute(
+                 extended_.lpAttributeList, 0,
+                 PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                 inherited_handles.data(),
+                 inherited_handles.size() * sizeof(HANDLE), nullptr,
+                 nullptr))) {
             extended_.lpAttributeList = nullptr;
             return false;
         }
@@ -98,7 +134,7 @@ class MitigatedStartupInfo final {
 
     ~MitigatedStartupInfo() noexcept {
         if (extended_.lpAttributeList != nullptr) {
-            DeleteProcThreadAttributeList(extended_.lpAttributeList);
+            g_delete_proc_thread_attribute_list(extended_.lpAttributeList);
         }
     }
 
@@ -109,6 +145,216 @@ class MitigatedStartupInfo final {
     std::vector<std::uint8_t> storage_;
     std::uint64_t mitigation_policy_ = 0;
 };
+
+bool LookupHandleList(
+    const LPPROC_THREAD_ATTRIBUTE_LIST list,
+    std::vector<HANDLE>& handles) noexcept {
+    handles.clear();
+    if (list == nullptr) {
+        return false;
+    }
+    AcquireSRWLockShared(&g_handle_lists_lock);
+    const HandleListRecord* found = nullptr;
+    for (const auto& record : g_handle_lists) {
+        if (record.list == list) {
+            found = &record;
+            break;
+        }
+    }
+    try {
+        if (found != nullptr) {
+            handles.assign(
+                found->handles.begin(),
+                found->handles.begin() +
+                    static_cast<std::ptrdiff_t>(found->count));
+        }
+    } catch (...) {
+        handles.clear();
+    }
+    ReleaseSRWLockShared(&g_handle_lists_lock);
+    return !handles.empty();
+}
+
+template <typename StartupInfo, typename ExtendedStartupInfo>
+std::vector<std::uint64_t> CollectInheritedPipeHandles(
+    const StartupInfo* const startup,
+    const BOOL inherit_handles) noexcept {
+    std::vector<HANDLE> candidates;
+    if (!inherit_handles || startup == nullptr) {
+        return {};
+    }
+    bool explicit_list = false;
+    if (startup->cb >= sizeof(ExtendedStartupInfo)) {
+        const auto* extended =
+            reinterpret_cast<const ExtendedStartupInfo*>(startup);
+        explicit_list =
+            LookupHandleList(extended->lpAttributeList, candidates);
+    }
+    if (!explicit_list) {
+        using NtQueryInformationProcessFunction =
+            NTSTATUS(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+        struct ProcessHandleEntry {
+            HANDLE handle_value;
+            ULONG_PTR handle_count;
+            ULONG_PTR pointer_count;
+            ACCESS_MASK granted_access;
+            ULONG object_type_index;
+            ULONG handle_attributes;
+            ULONG reserved;
+        };
+        struct ProcessHandleInformation {
+            ULONG_PTR count;
+            ULONG_PTR reserved;
+            ProcessHandleEntry entries[1];
+        };
+        constexpr ULONG process_handle_information = 51;
+        constexpr NTSTATUS status_info_length_mismatch =
+            static_cast<NTSTATUS>(0xC0000004UL);
+        const auto query = reinterpret_cast<NtQueryInformationProcessFunction>(
+            GetProcAddress(
+                GetModuleHandleW(L"ntdll.dll"),
+                "NtQueryInformationProcess"));
+        std::vector<std::uint8_t> storage;
+        try {
+            storage.resize(64 * 1024);
+            for (std::size_t attempt = 0; query != nullptr && attempt < 8;
+                 ++attempt) {
+                ULONG required = 0;
+                const NTSTATUS status = query(
+                    GetCurrentProcess(), process_handle_information,
+                    storage.data(),
+                    static_cast<ULONG>(storage.size()), &required);
+                if (status == status_info_length_mismatch) {
+                    const std::size_t next =
+                        (std::max)(storage.size() * 2,
+                                   static_cast<std::size_t>(required));
+                    if (next > 16 * 1024 * 1024) {
+                        break;
+                    }
+                    storage.resize(next);
+                    continue;
+                }
+                if (status < 0) {
+                    break;
+                }
+                const auto* information =
+                    reinterpret_cast<const ProcessHandleInformation*>(
+                        storage.data());
+                const std::size_t entry_offset =
+                    offsetof(ProcessHandleInformation, entries);
+                const std::size_t maximum_entries =
+                    (storage.size() - entry_offset) /
+                    sizeof(ProcessHandleEntry);
+                if (information->count > maximum_entries) {
+                    return {};
+                }
+                for (ULONG_PTR index = 0; index < information->count;
+                     ++index) {
+                    const auto& entry = information->entries[index];
+                    const HANDLE handle = entry.handle_value;
+                    DWORD flags = 0;
+                    if (GetHandleInformation(handle, &flags) &&
+                        (flags & HANDLE_FLAG_INHERIT) != 0 &&
+                        GetFileType(handle) == FILE_TYPE_PIPE) {
+                        candidates.push_back(handle);
+                    }
+                }
+                break;
+            }
+        } catch (...) {
+            return {};
+        }
+    }
+    std::vector<std::uint64_t> pipes;
+    try {
+        pipes.reserve(candidates.size());
+        for (const HANDLE handle : candidates) {
+            if (GetFileType(handle) != FILE_TYPE_PIPE) {
+                continue;
+            }
+            const std::uint64_t value =
+                reinterpret_cast<std::uintptr_t>(handle);
+            if (std::find(pipes.begin(), pipes.end(), value) == pipes.end()) {
+                pipes.push_back(value);
+            }
+        }
+    } catch (...) {
+        return {};
+    }
+    return pipes;
+}
+
+bool StoreHandleList(
+    const LPPROC_THREAD_ATTRIBUTE_LIST list,
+    const PVOID value,
+    const SIZE_T bytes) noexcept {
+    if (list == nullptr || value == nullptr || bytes == 0 ||
+        bytes % sizeof(HANDLE) != 0 ||
+        bytes / sizeof(HANDLE) > kMaximumInheritedHandles) {
+        return false;
+    }
+    std::array<HANDLE, kMaximumInheritedHandles> copied{};
+    __try {
+        std::memcpy(copied.data(), value, bytes);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    AcquireSRWLockExclusive(&g_handle_lists_lock);
+    HandleListRecord* target = nullptr;
+    for (auto& record : g_handle_lists) {
+        if (record.list == list ||
+            (target == nullptr && record.list == nullptr)) {
+            target = &record;
+            if (record.list == list) {
+                break;
+            }
+        }
+    }
+    if (target != nullptr) {
+        target->list = list;
+        target->handles = copied;
+        target->count = bytes / sizeof(HANDLE);
+    }
+    ReleaseSRWLockExclusive(&g_handle_lists_lock);
+    return target != nullptr;
+}
+
+void RemoveHandleList(const LPPROC_THREAD_ATTRIBUTE_LIST list) noexcept {
+    AcquireSRWLockExclusive(&g_handle_lists_lock);
+    for (auto& record : g_handle_lists) {
+        if (record.list == list) {
+            record = {};
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_handle_lists_lock);
+}
+
+BOOL WINAPI DetouredUpdateProcThreadAttribute(
+    const LPPROC_THREAD_ATTRIBUTE_LIST attribute_list,
+    const DWORD flags,
+    const DWORD_PTR attribute,
+    const PVOID value,
+    const SIZE_T size,
+    const PVOID previous_value,
+    const PSIZE_T return_size) noexcept {
+    const BOOL result = g_update_proc_thread_attribute(
+        attribute_list, flags, attribute, value, size,
+        previous_value, return_size);
+    if (result && attribute == PROC_THREAD_ATTRIBUTE_HANDLE_LIST) {
+        if (!StoreHandleList(attribute_list, value, size)) {
+            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+            return FALSE;
+        }
+    }
+    return result;
+}
+
+VOID WINAPI DetouredDeleteProcThreadAttributeList(
+    const LPPROC_THREAD_ATTRIBUTE_LIST attribute_list) noexcept {
+    RemoveHandleList(attribute_list);
+    g_delete_proc_thread_attribute_list(attribute_list);
+}
 
 bool CreateReadOnlyPolicyMapping(HANDLE& output) noexcept {
     output = nullptr;
@@ -421,7 +667,8 @@ void AbortCreatedProcess(
 
 bool InstallDescendantRuntime(
     const DWORD caller_creation_flags,
-    const LPPROCESS_INFORMATION process_information) noexcept {
+    const LPPROCESS_INFORMATION process_information,
+    const std::vector<std::uint64_t>& inherited_pipe_handles) noexcept {
     const HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     const HANDLE release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (ready == nullptr || release == nullptr) {
@@ -574,6 +821,23 @@ bool InstallDescendantRuntime(
         SetLastError(error);
         return false;
     }
+    if (!inherited_pipe_handles.empty()) {
+        const auto inherited_payload =
+            protocol::EncodeInheritedHandlePayload(inherited_pipe_handles);
+        if (inherited_payload.empty() ||
+            !DetourCopyPayloadToProcess(
+                process_information->hProcess,
+                protocol::kInheritedHandlePayloadGuid,
+                inherited_payload.data(),
+                static_cast<DWORD>(inherited_payload.size()))) {
+            const DWORD error = GetLastError();
+            CloseHandle(ready);
+            CloseHandle(release);
+            SetLastError(
+                error == ERROR_SUCCESS ? ERROR_INVALID_DATA : error);
+            return false;
+        }
+    }
     std::string selected_hook_path;
     if (!SelectHookDll(process_information->hProcess, selected_hook_path)) {
         const DWORD error = GetLastError();
@@ -655,8 +919,11 @@ bool InstallDescendantRuntime(
 
 bool CompleteInheritedCreation(
     const DWORD caller_creation_flags,
-    const LPPROCESS_INFORMATION process_information) noexcept {
-    if (InstallDescendantRuntime(caller_creation_flags, process_information)) {
+    const LPPROCESS_INFORMATION process_information,
+    const std::vector<std::uint64_t>& inherited_pipe_handles = {}) noexcept {
+    if (InstallDescendantRuntime(
+            caller_creation_flags, process_information,
+            inherited_pipe_handles)) {
         return true;
     }
     const DWORD error = GetLastError();
@@ -958,6 +1225,9 @@ BOOL WINAPI DetouredCreateProcessW(
         return DenyChildCreation(process_information);
     }
     MitigatedStartupInfo<STARTUPINFOW, STARTUPINFOEXW> mitigated_startup;
+    const auto inherited_pipe_handles =
+        CollectInheritedPipeHandles<STARTUPINFOW, STARTUPINFOEXW>(
+            startup_information, inherit_handles);
     LPSTARTUPINFOW selected_startup = startup_information;
     DWORD selected_flags = creation_flags | CREATE_SUSPENDED;
     if ((creation_flags & EXTENDED_STARTUPINFO_PRESENT) == 0) {
@@ -973,7 +1243,10 @@ BOOL WINAPI DetouredCreateProcessW(
             selected_startup, process_information)) {
         return FALSE;
     }
-    return CompleteInheritedCreation(creation_flags, process_information) ? TRUE : FALSE;
+    return CompleteInheritedCreation(
+               creation_flags, process_information, inherited_pipe_handles)
+               ? TRUE
+               : FALSE;
 }
 
 BOOL WINAPI DetouredCreateProcessA(
@@ -1007,6 +1280,9 @@ BOOL WINAPI DetouredCreateProcessA(
         return DenyChildCreation(process_information);
     }
     MitigatedStartupInfo<STARTUPINFOA, STARTUPINFOEXA> mitigated_startup;
+    const auto inherited_pipe_handles =
+        CollectInheritedPipeHandles<STARTUPINFOA, STARTUPINFOEXA>(
+            startup_information, inherit_handles);
     LPSTARTUPINFOA selected_startup = startup_information;
     DWORD selected_flags = creation_flags | CREATE_SUSPENDED;
     if ((creation_flags & EXTENDED_STARTUPINFO_PRESENT) == 0) {
@@ -1022,7 +1298,10 @@ BOOL WINAPI DetouredCreateProcessA(
             selected_startup, process_information)) {
         return FALSE;
     }
-    return CompleteInheritedCreation(creation_flags, process_information) ? TRUE : FALSE;
+    return CompleteInheritedCreation(
+               creation_flags, process_information, inherited_pipe_handles)
+               ? TRUE
+               : FALSE;
 }
 
 void ClearNativeProcessInformation(
@@ -1083,6 +1362,9 @@ BOOL WINAPI DetouredCreateProcessAsUserW(
         process_information == nullptr || !g_runtime_configured) {
         return DenyChildCreation(process_information);
     }
+    const auto inherited_pipe_handles =
+        CollectInheritedPipeHandles<STARTUPINFOW, STARTUPINFOEXW>(
+            startup_information, inherit_handles);
     if (!g_create_process_as_user_w(
             token, application_name, command_line, process_attributes,
             thread_attributes, inherit_handles,
@@ -1090,7 +1372,10 @@ BOOL WINAPI DetouredCreateProcessAsUserW(
             startup_information, process_information)) {
         return FALSE;
     }
-    return CompleteInheritedCreation(creation_flags, process_information) ? TRUE : FALSE;
+    return CompleteInheritedCreation(
+               creation_flags, process_information, inherited_pipe_handles)
+               ? TRUE
+               : FALSE;
 }
 
 BOOL WINAPI DetouredCreateProcessAsUserA(
@@ -1122,6 +1407,9 @@ BOOL WINAPI DetouredCreateProcessAsUserA(
         process_information == nullptr || !g_runtime_configured) {
         return DenyChildCreation(process_information);
     }
+    const auto inherited_pipe_handles =
+        CollectInheritedPipeHandles<STARTUPINFOA, STARTUPINFOEXA>(
+            startup_information, inherit_handles);
     if (!g_create_process_as_user_a(
             token, application_name, command_line, process_attributes,
             thread_attributes, inherit_handles,
@@ -1129,7 +1417,10 @@ BOOL WINAPI DetouredCreateProcessAsUserA(
             startup_information, process_information)) {
         return FALSE;
     }
-    return CompleteInheritedCreation(creation_flags, process_information) ? TRUE : FALSE;
+    return CompleteInheritedCreation(
+               creation_flags, process_information, inherited_pipe_handles)
+               ? TRUE
+               : FALSE;
 }
 
 NTSTATUS NTAPI DetouredRtlCreateUserProcess(
@@ -1594,9 +1885,21 @@ LONG AttachProcessHooks() noexcept {
     if (create_job_ansi_status != NO_ERROR) {
         return create_job_ansi_status;
     }
-    return DetourAttach(
+    const LONG set_job_status = DetourAttach(
         reinterpret_cast<PVOID*>(&g_set_information_job_object),
         reinterpret_cast<PVOID>(DetouredSetInformationJobObject));
+    if (set_job_status != NO_ERROR) {
+        return set_job_status;
+    }
+    const LONG update_attribute_status = DetourAttach(
+        reinterpret_cast<PVOID*>(&g_update_proc_thread_attribute),
+        reinterpret_cast<PVOID>(DetouredUpdateProcThreadAttribute));
+    if (update_attribute_status != NO_ERROR) {
+        return update_attribute_status;
+    }
+    return DetourAttach(
+        reinterpret_cast<PVOID*>(&g_delete_proc_thread_attribute_list),
+        reinterpret_cast<PVOID>(DetouredDeleteProcThreadAttributeList));
 }
 
 }  // namespace bolt::process

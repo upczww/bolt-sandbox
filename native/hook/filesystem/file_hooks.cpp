@@ -922,7 +922,10 @@ bool TryConvertDevicePathToDosPath(
     return false;
 }
 
-bool TryGetSectionPath(const HANDLE section, std::wstring& path) noexcept {
+bool TryGetSectionPath(
+    const HANDLE section,
+    const ULONG protection,
+    std::wstring& path) noexcept {
     struct SectionBasicInformation {
         PVOID base_address;
         ULONG allocation_attributes;
@@ -938,20 +941,17 @@ bool TryGetSectionPath(const HANDLE section, std::wstring& path) noexcept {
     if (query_status != status_success) {
         constexpr DWORD section_query = 0x0001;
         HANDLE query_handle = nullptr;
-        if (!DuplicateHandle(
+        if (DuplicateHandle(
                 GetCurrentProcess(), section, GetCurrentProcess(),
                 &query_handle, section_query, FALSE, 0)) {
-            return false;
-        }
-        query_status = g_nt_query_section(
-            query_handle, section_basic_information, &information,
-            sizeof(information), nullptr);
-        CloseHandle(query_handle);
-        if (query_status != status_success) {
-            return false;
+            query_status = g_nt_query_section(
+                query_handle, section_basic_information, &information,
+                sizeof(information), nullptr);
+            CloseHandle(query_handle);
         }
     }
-    if ((information.allocation_attributes & file_backed_attributes) == 0) {
+    if (query_status == status_success &&
+        (information.allocation_attributes & file_backed_attributes) == 0) {
         path.clear();
         return true;
     }
@@ -962,7 +962,7 @@ bool TryGetSectionPath(const HANDLE section, std::wstring& path) noexcept {
     constexpr ULONG view_unmap = 2;
     if (g_nt_map_view_of_section(
             section, GetCurrentProcess(), &probe_base, 0, 0, &probe_offset, &probe_size,
-            view_unmap, 0, PAGE_READONLY) != status_success) {
+            view_unmap, 0, protection) != status_success) {
         return false;
     }
 
@@ -970,12 +970,18 @@ bool TryGetSectionPath(const HANDLE section, std::wstring& path) noexcept {
     bool resolved = false;
     try {
         device_path.assign(32768, L'\0');
+        SetLastError(ERROR_SUCCESS);
         const DWORD length = g_get_mapped_file_name_w(
             GetCurrentProcess(), probe_base, device_path.data(),
             static_cast<DWORD>(device_path.size()));
+        const DWORD mapped_name_error = GetLastError();
         if (length != 0 && length < device_path.size()) {
             device_path.resize(length);
             resolved = TryConvertDevicePathToDosPath(device_path, path);
+        } else if (length == 0 && query_status != status_success &&
+                   mapped_name_error == ERROR_FILE_INVALID) {
+            path.clear();
+            resolved = true;
         }
     } catch (...) {
         resolved = false;
@@ -991,17 +997,17 @@ bool AuthorizeSectionMapping(const HANDLE section, const ULONG protection) noexc
         HasSectionCapability(section, SectionCapability::kAuthorizedFile)) {
         return true;
     }
+    const ULONG base_protection = protection & 0xffU;
+    const bool writable = base_protection == PAGE_READWRITE ||
+                          base_protection == PAGE_EXECUTE_READWRITE;
     std::wstring source_path;
-    if (!TryGetSectionPath(section, source_path)) {
+    if (!TryGetSectionPath(section, protection, source_path)) {
         return false;
     }
     if (source_path.empty()) {
         return true;
     }
-    const ULONG base_protection = protection & 0xffU;
-    const bool writes_file = base_protection == PAGE_READWRITE ||
-                             base_protection == PAGE_EXECUTE_READWRITE;
-    const Access access = writes_file ? Access::kWrite : Access::kRead;
+    const Access access = writable ? Access::kWrite : Access::kRead;
     const auto* policy = g_policy.get();
     const auto evaluation = policy == nullptr
                                 ? PolicyEvaluation{}
@@ -1010,8 +1016,8 @@ bool AuthorizeSectionMapping(const HANDLE section, const ULONG protection) noexc
         return true;
     }
     ReportDenied(
-        writes_file ? protocol::FilesystemOperation::kWrite
-                    : protocol::FilesystemOperation::kRead,
+        writable ? protocol::FilesystemOperation::kWrite
+                 : protocol::FilesystemOperation::kRead,
         EvaluatedPath(evaluation, source_path.c_str()));
     return false;
 }
@@ -5190,6 +5196,35 @@ HookInstallStatus InstallFileHooks(
 std::uint32_t InstalledFileHookCount() noexcept {
     return static_cast<std::uint32_t>(InterlockedCompareExchange(
         &g_installed_file_hook_count, 0, 0));
+}
+
+bool RegisterInheritedPipeHandles(
+    const std::vector<std::uint64_t>& handles) noexcept {
+    std::vector<HANDLE> registered;
+    try {
+        registered.reserve(handles.size());
+    } catch (...) {
+        return false;
+    }
+    for (const std::uint64_t value : handles) {
+        const HANDLE handle = reinterpret_cast<HANDLE>(
+            static_cast<std::uintptr_t>(value));
+        if (handle == nullptr || handle == INVALID_HANDLE_VALUE ||
+            GetFileType(handle) != FILE_TYPE_PIPE ||
+            !TrackPrivatePipeCapability(
+                handle, PrivatePipeCapability::kClient,
+                GENERIC_READ | GENERIC_WRITE) ||
+            !CachePrivatePipeAccess(
+                handle, GENERIC_READ | GENERIC_WRITE)) {
+            for (const HANDLE prior : registered) {
+                UntrackPrivatePipeCapability(prior);
+                g_handle_access_cache.Remove(prior);
+            }
+            return false;
+        }
+        registered.push_back(handle);
+    }
+    return true;
 }
 
 }  // namespace bolt::filesystem

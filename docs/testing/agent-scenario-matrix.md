@@ -84,6 +84,9 @@ evidence.
 - Full browser automation requires a private registry view because Chromium
   and Firefox create per-user browser state even with private filesystem
   profiles; host HKCU write grants are not an acceptable compatibility fix.
+- Browser and worker descendants may receive already-open anonymous pipes only
+  through the bounded inherited-handle capability payload; this does not open
+  arbitrary named pipes or relax filesystem policy.
 - Cancellation, timeout, owner or launcher death, event loss, stream
   backpressure, and initialization failure terminate the complete Job.
 

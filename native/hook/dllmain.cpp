@@ -1,4 +1,5 @@
 #include "protocol/event_frame.h"
+#include "protocol/inherited_handle_payload.h"
 #include "protocol/policy_payload.h"
 #include "protocol/runtime_payload.h"
 #include "protocol/version.h"
@@ -11,6 +12,7 @@
 #include "hook/recovery/recovery_client.h"
 
 #include <cstdint>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -80,6 +82,19 @@ RuntimeInitializationStatus InitializeRuntime(const HINSTANCE instance) noexcept
         payload.target_process_id != GetCurrentProcessId()) {
         return failed();
     }
+    DWORD inherited_payload_length = 0;
+    const auto* inherited_payload = static_cast<const std::uint8_t*>(
+        DetourFindPayloadEx(
+            bolt::protocol::kInheritedHandlePayloadGuid,
+            &inherited_payload_length));
+    std::vector<std::uint64_t> inherited_pipe_handles;
+    if (inherited_payload != nullptr &&
+        bolt::protocol::DecodeInheritedHandlePayload(
+            inherited_payload, inherited_payload_length,
+            inherited_pipe_handles) !=
+            bolt::protocol::InheritedHandlePayloadStatus::kSuccess) {
+        return failed();
+    }
 
     const HANDLE policy_handle = HandleFromWire(payload.policy_handle);
     const HANDLE event_handle = HandleFromWire(payload.event_handle);
@@ -109,8 +124,12 @@ RuntimeInitializationStatus InitializeRuntime(const HINSTANCE instance) noexcept
             policy, payload.policy_length,
             HandleFromWire(payload.standard_output_handle),
             HandleFromWire(payload.standard_error_handle));
+    const bool inherited_pipes_ready =
+        file_hook_status == bolt::filesystem::HookInstallStatus::kSuccess &&
+        bolt::filesystem::RegisterInheritedPipeHandles(
+            inherited_pipe_handles);
     bool private_registry_ready = true;
-    if (file_hook_status == bolt::filesystem::HookInstallStatus::kSuccess) {
+    if (inherited_pipes_ready) {
         std::array<wchar_t, 32'768> private_hive{};
         const DWORD private_hive_length = GetEnvironmentVariableW(
             L"BOLT_SANDBOX_PRIVATE_HKCU", private_hive.data(),
@@ -126,7 +145,7 @@ RuntimeInitializationStatus InitializeRuntime(const HINSTANCE instance) noexcept
         }
     }
     const auto network_hook_status =
-        file_hook_status == bolt::filesystem::HookInstallStatus::kSuccess &&
+        inherited_pipes_ready &&
                 private_registry_ready
             ? bolt::network::InstallNetworkHooks(
                   policy, payload.policy_length, payload)
@@ -138,6 +157,7 @@ RuntimeInitializationStatus InitializeRuntime(const HINSTANCE instance) noexcept
             : bolt::registry::RegistryHookInstallStatus::kTransactionFailed;
     UnmapViewOfFile(policy);
     if (file_hook_status != bolt::filesystem::HookInstallStatus::kSuccess ||
+        !inherited_pipes_ready ||
         !private_registry_ready ||
         network_hook_status != bolt::network::HookInstallStatus::kSuccess ||
         registry_hook_status !=

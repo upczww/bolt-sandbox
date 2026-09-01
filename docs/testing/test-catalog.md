@@ -144,7 +144,7 @@ and reason code—not merely identical serialized bytes.
 | FS-059 | Allowed and denied operations complete through an I/O completion port or thread-pool I/O | Completion routing does not bypass enforcement and original completion data is preserved |
 | FS-060 | Open-by-file-ID/object-ID addresses allowed and denied files | File identity is resolved before use; identifier-based access cannot bypass path policy |
 | FS-061 | Directory change notification watches allowed, parent-only, and denied directories | Notifications disclose only authorized names/metadata and denied watches create no usable handle |
-| FS-062 | Writable mapping uses flush, unmap, copy-on-write, image-section, and delayed-write paths | Only `read_write` mappings persist changes; copy-on-write never modifies source and denied/image loads cannot bypass read policy |
+| FS-062 | Writable mapping uses flush, unmap, copy-on-write, image-section, delayed-write, and query-restricted inherited-Section paths | Only `read_write` mappings persist changes; copy-on-write never modifies source, query-restricted anonymous Sections remain usable, and query-restricted denied file Sections cannot bypass read policy |
 | FS-063 | Hooked call succeeds/fails while thread `LastError` contains a sentinel | Hook preserves the API's documented return/status and `LastError` semantics rather than leaking internal calls |
 | FS-064 | Recursive hook path is triggered by normalization, event transport, symbol loading, or diagnostics | Reentrancy guard avoids recursion/deadlock while still enforcing the original target operation |
 
@@ -527,6 +527,7 @@ and reason code—not merely identical serialized bytes.
 | COMPAT-030 | Approved restart starts with minimally extended policy | New execution/policy generation succeeds from the beginning; no live Job receives widened authority |
 | COMPAT-031 | A standard runtime requires an NT metadata device | Only a manifest-verified, configured exact `device-ro` name opens for read/metadata; writes, descendants, lookalikes, malformed rules, and unknown devices remain denied |
 | COMPAT-032 | A declared Agent scenario requires writable HKCU state | Writes are redirected into a workspace application Hive for the process and descendants; the real HKCU and every non-user Hive remain unchanged, and an external or read-only Hive path fails before readiness |
+| COMPAT-033 | A tool passes anonymous pipes to a descendant through an explicit handle list or inheritable legacy handles | Only listed or `HANDLE_FLAG_INHERIT` Pipe objects receive a bounded child capability; non-pipe and non-inheritable handles remain unavailable, and Playwright completes its DevTools exchange without a namespace grant |
 
 | ID | Scenario | Expected observation |
 | --- | --- | --- |

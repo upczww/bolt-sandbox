@@ -4051,6 +4051,11 @@ int RunCrossArchitectureProcessParent(
     if (!CreateProcessW(
             child_executable.c_str(), command_line.data(), nullptr, nullptr,
             FALSE, 0, nullptr, nullptr, &startup, &process)) {
+        std::fwprintf(
+            stderr,
+            L"cross-architecture CreateProcessW failed: error=%lu executable=%ls\n",
+            static_cast<unsigned long>(GetLastError()),
+            child_executable.c_str());
         return 232;
     }
     const DWORD wait = WaitForSingleObject(process.hProcess, 2'000);
@@ -5261,7 +5266,7 @@ bool RunProcessTests() {
         allowed_mapping_path.c_str(), GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &inheritable,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    const HANDLE inherited_allowed_section =
+    const HANDLE allowed_section =
         allowed_section_file == INVALID_HANDLE_VALUE
             ? nullptr
             : CreateFileMappingW(
@@ -5270,9 +5275,26 @@ bool RunProcessTests() {
     if (allowed_section_file != INVALID_HANDLE_VALUE) {
         CloseHandle(allowed_section_file);
     }
-    const HANDLE inherited_denied_section = CreateFileMappingW(
+    const HANDLE denied_section = CreateFileMappingW(
         denied_mapping_handle, &inheritable, PAGE_READWRITE, 0, 0, nullptr);
-    if (inherited_allowed_section == nullptr ||
+    HANDLE inherited_allowed_section = nullptr;
+    HANDLE inherited_denied_section = nullptr;
+    const bool restricted_sections =
+        allowed_section != nullptr && denied_section != nullptr &&
+        DuplicateHandle(
+            GetCurrentProcess(), allowed_section, GetCurrentProcess(),
+            &inherited_allowed_section, SECTION_MAP_READ, TRUE, 0) != FALSE &&
+        DuplicateHandle(
+            GetCurrentProcess(), denied_section, GetCurrentProcess(),
+            &inherited_denied_section, SECTION_MAP_READ | SECTION_MAP_WRITE,
+            TRUE, 0) != FALSE;
+    if (allowed_section != nullptr) {
+        CloseHandle(allowed_section);
+    }
+    if (denied_section != nullptr) {
+        CloseHandle(denied_section);
+    }
+    if (!restricted_sections || inherited_allowed_section == nullptr ||
         inherited_denied_section == nullptr) {
         if (inherited_allowed_section != nullptr) {
             CloseHandle(inherited_allowed_section);

@@ -27,6 +27,8 @@ bool RunInheritedHandlePayloadTests() {
     invalid_magic[0] ^= 0xff;
     auto invalid_count = encoded;
     invalid_count[8] = 0xff;
+    auto noncanonical_reserved = encoded;
+    noncanonical_reserved[12] = 1;
     auto invalid_handle = encoded;
     for (std::size_t index = 16; index < 24; ++index) {
         invalid_handle[index] = 0;
@@ -51,6 +53,10 @@ bool RunInheritedHandlePayloadTests() {
            bolt::protocol::DecodeInheritedHandlePayload(
                invalid_count.data(), invalid_count.size(), decoded) ==
                bolt::protocol::InheritedHandlePayloadStatus::kInvalidCount &&
+           bolt::protocol::DecodeInheritedHandlePayload(
+               noncanonical_reserved.data(),
+               noncanonical_reserved.size(), decoded) ==
+               bolt::protocol::InheritedHandlePayloadStatus::kNonCanonicalReservedBytes &&
            bolt::protocol::DecodeInheritedHandlePayload(
                invalid_handle.data(), invalid_handle.size(), decoded) ==
                bolt::protocol::InheritedHandlePayloadStatus::kInvalidHandle &&

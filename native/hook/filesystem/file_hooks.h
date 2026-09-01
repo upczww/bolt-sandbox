@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -21,6 +22,9 @@ HookInstallStatus InstallFileHooks(
     HANDLE trusted_stderr) noexcept;
 
 bool AllowsPrivateStatePath(const wchar_t* path) noexcept;
+
+bool RegisterInheritedPipeHandles(
+    const std::vector<std::uint64_t>& handles) noexcept;
 
 std::uint32_t InstalledFileHookCount() noexcept;
 
