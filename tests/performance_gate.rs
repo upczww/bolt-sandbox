@@ -124,3 +124,16 @@ fn perf_014_collector_rejects_missing_inputs_without_creating_evidence() {
     assert!(!evidence.exists());
     fs::remove_dir_all(root).expect("fixture directory must be removed");
 }
+
+#[test]
+fn perf_010_signed_release_runs_collector_and_fail_closed_verifier() {
+    let workflow = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/.github/workflows/release-windows.yml"
+    ))
+    .expect("signed release workflow must be readable");
+
+    assert!(workflow.contains("measure-windows-performance.ps1"));
+    assert!(workflow.contains("verify-performance-evidence.ps1"));
+    assert!(workflow.contains("performance-evidence-x64.json"));
+}
