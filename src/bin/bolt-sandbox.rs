@@ -490,6 +490,39 @@ mod tests {
     }
 
     #[test]
+    fn compat_034_denial_diagnostics_have_one_uniform_machine_readable_shape() {
+        let filesystem = bolt_sandbox::AccessDenial {
+            process_id: 41,
+            operation: bolt_sandbox::AccessOperation::Filesystem(
+                bolt_sandbox::FilesystemOperation::Read,
+            ),
+            resource: bolt_sandbox::AccessResource::FilesystemPath(PathBuf::from(
+                "C:\\external\\line\nsecret.txt",
+            )),
+            occurrences: 3,
+        };
+        let domain = bolt_sandbox::AccessDenial {
+            process_id: 42,
+            operation: bolt_sandbox::AccessOperation::Network(
+                bolt_sandbox::NetworkOperation::Resolve,
+            ),
+            resource: bolt_sandbox::AccessResource::NetworkDomain(String::from(
+                "example.org",
+            )),
+            occurrences: 1,
+        };
+
+        assert_eq!(
+            format_denial(&filesystem),
+            r#"sandbox-denial pid=41 kind=filesystem operation=Read resource="C:\\external\\line\nsecret.txt" occurrences=3"#
+        );
+        assert_eq!(
+            format_denial(&domain),
+            r#"sandbox-denial pid=42 kind=network-domain operation=Resolve resource="example.org" occurrences=1"#
+        );
+    }
+
+    #[test]
     fn cli_001_run_parser_preserves_native_program_arguments() {
         let parsed = parse_run_arguments(vec![
             OsString::from("run"),
