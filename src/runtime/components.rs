@@ -172,6 +172,8 @@ mod tests {
                 .expect("x86 hook fixture must be written");
             fs::write(root.join(X64_HOOK_NAME), pe_image(0x8664))
                 .expect("x64 hook fixture must be written");
+            fs::write(root.join("bolt-sandbox-dns-proxy.exe"), pe_image(0x8664))
+                .expect("DNS proxy fixture must be written");
             write_manifest(&root);
             Self { root }
         }
@@ -203,6 +205,7 @@ mod tests {
             X86_LAUNCHER_NAME,
             X86_HOOK_NAME,
             X64_HOOK_NAME,
+            "bolt-sandbox-dns-proxy.exe",
         ];
         let mut manifest = Vec::from(*b"BCM1");
         manifest.extend_from_slice(&1_u16.to_le_bytes());
@@ -339,5 +342,36 @@ mod tests {
             open_components(Path::new("relative-components"), ImageArchitecture::X64),
             Err(ComponentOpenError::RootNotAbsolute)
         ));
+    }
+
+    #[test]
+    fn net_003_allow_list_requires_verified_dns_proxy_component() {
+        let fixture = Fixture::new();
+        let components = open_components_with_manifest_digest_and_network_proxy(
+            &fixture.root,
+            ImageArchitecture::X64,
+            None,
+            true,
+        )
+        .expect("allow-list components must open");
+        assert_eq!(
+            components.dns_proxy_path(),
+            Some(fixture.root.join("bolt-sandbox-dns-proxy.exe").as_path())
+        );
+        assert!(components.dns_proxy_handle().is_some());
+        drop(components);
+
+        fs::remove_file(fixture.root.join("bolt-sandbox-dns-proxy.exe"))
+            .expect("DNS proxy fixture must be removed");
+        assert_eq!(
+            open_components_with_manifest_digest_and_network_proxy(
+                &fixture.root,
+                ImageArchitecture::X64,
+                None,
+                true,
+            )
+            .err(),
+            Some(ComponentOpenError::DnsProxyOpen)
+        );
     }
 }
