@@ -93,6 +93,7 @@ mod tests {
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
     };
+    use sha2::{Digest, Sha256};
 
     use super::*;
     use crate::runtime::architecture::detect_image_architecture_from_reader;
@@ -119,6 +120,7 @@ mod tests {
                 .expect("x86 hook fixture must be written");
             fs::write(root.join(X64_HOOK_NAME), pe_image(0x8664))
                 .expect("x64 hook fixture must be written");
+            write_manifest(&root);
             Self { root }
         }
     }
@@ -141,6 +143,30 @@ mod tests {
         image[PE_OFFSET..PE_OFFSET + 4].copy_from_slice(b"PE\0\0");
         image[PE_OFFSET + 4..PE_OFFSET + 6].copy_from_slice(&machine.to_le_bytes());
         image
+    }
+
+    fn write_manifest(root: &Path) {
+        let names = [
+            LAUNCHER_NAME,
+            X86_LAUNCHER_NAME,
+            X86_HOOK_NAME,
+            X64_HOOK_NAME,
+        ];
+        let mut manifest = Vec::from(*b"BCM1");
+        manifest.extend_from_slice(&1_u16.to_le_bytes());
+        manifest.extend_from_slice(&16_u16.to_le_bytes());
+        manifest.extend_from_slice(&(names.len() as u16).to_le_bytes());
+        manifest.extend_from_slice(&[0; 6]);
+        for name in names {
+            let bytes = fs::read(root.join(name)).expect("component must be readable");
+            manifest.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            manifest.extend_from_slice(&0_u16.to_le_bytes());
+            manifest.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            manifest.extend_from_slice(&Sha256::digest(&bytes));
+            manifest.extend_from_slice(name.as_bytes());
+        }
+        fs::write(root.join("bolt-sandbox-components.manifest"), manifest)
+            .expect("manifest must be written");
     }
 
     #[test]
@@ -211,6 +237,20 @@ mod tests {
             open_components(&fixture.root, ImageArchitecture::X64),
             Err(ComponentOpenError::LauncherArchitectureMismatch)
         ));
+    }
+
+    #[test]
+    fn sec_002_manifest_hash_rejects_same_architecture_hook_tampering() {
+        let fixture = Fixture::new();
+        let hook = fixture.root.join(X64_HOOK_NAME);
+        let mut tampered = fs::read(&hook).expect("hook must be readable");
+        tampered.push(0xA5);
+        fs::write(&hook, tampered).expect("tampered hook must be written");
+
+        assert_eq!(
+            open_components(&fixture.root, ImageArchitecture::X64).err(),
+            Some(ComponentOpenError::HookHashMismatch)
+        );
     }
 
     #[test]
