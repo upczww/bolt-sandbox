@@ -83,3 +83,21 @@ The scenario harness prints one concise result per case, applies a per-case
 deadline, and never retries outside the sandbox. Optional runtimes use explicit
 host-provided executable paths; a runtime declared required but unavailable is
 a failure, not a silent skip.
+
+Run the executable suite with:
+
+```powershell
+pwsh scripts/test-agent-scenarios.ps1 `
+  -ComponentRoot target\native\x64\Release `
+  -PythonPath C:\trusted-runtimes\python\python.exe
+```
+
+The harness discovers Node, Git, and Cargo when possible, resolves Git for
+Windows and rustup shims to their real runtime executables, validates every
+declared path, and enables all runtime-gated CLI integration cases.
+
+Current executable coverage includes Cargo offline metadata with a task-private
+home. Full `cargo check`/`cargo test` remains a release-matrix item: modern Cargo
+uses a Windows Job-list/breakaway combination for rustc children, and support
+must preserve outer-Job cancellation rather than permit escape. It is not
+treated as passing until that ownership relationship is verified and tested.

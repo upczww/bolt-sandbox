@@ -119,6 +119,8 @@ directory:
 - `bolt-sandbox-x86.dll` — x86 hook;
 - `bolt-sandbox-dns-proxy.exe` — trusted x64 DNS/TCP policy proxy used only by
   `AllowList`; and
+- `bolt-sandbox-compatibility.profile` — manifest-bound read-only and
+  metadata-read compatibility grants; and
 - `bolt-sandbox-components.manifest` — version, length, and SHA-256 identity for
   the compatible set.
 
@@ -298,9 +300,13 @@ custom credential names, cancellation, or aggregate results.
 - More-specific grants may refine broader grants, but explicit and mandatory
   denies take precedence.
 - Child input cannot request compatibility grants or weaken mandatory denies.
-- The Windows installation and selected program directory receive trusted
-  read-only compatibility grants; a root-level executable never grants the
-  whole filesystem root.
+- Compatibility grants come from the Manifest-bound
+  `bolt-sandbox-compatibility.profile`, not tool-specific paths in code. Version
+  1 supports filesystem read-only, filesystem metadata-read, and registry
+  read-only grants only.
+- Profile bases are generic host roots such as `system-root`, `program-dir`,
+  `cwd-anchor`, and `user-profile`; concrete Node, Python, Git, Cargo, and
+  Rustup paths remain profile data.
 - `NetworkPolicy::Unrestricted` preserves normal OS-authorized behavior;
   `Denied` and `AllowList` enforce restrictive network interception.
 - `ChildProcessPolicy::Inherit` permits supported descendants only after the
@@ -335,6 +341,11 @@ pwsh scripts/build-windows.ps1 -Configuration Release -Architecture All
 # Native suites
 pwsh scripts/test-windows.ps1 -Suite Unit -Architecture x64 -Configuration Release
 pwsh scripts/test-windows.ps1 -Suite Unit -Architecture x86 -Configuration Release
+
+# Real Agent runtime scenarios (declared runtimes are mandatory)
+pwsh scripts/test-agent-scenarios.ps1 `
+  -ComponentRoot target\native\x64\Release `
+  -PythonPath C:\trusted-runtimes\python\python.exe
 ```
 
 Optional Rust coverage requires `cargo-llvm-cov 0.9.0`, a nightly toolchain,

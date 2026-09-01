@@ -6,12 +6,22 @@ use std::{
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex, MutexGuard,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
 
 static NEXT_AGENT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+static SCENARIO_LOCK: Mutex<()> = Mutex::new(());
+
+fn scenario_guard() -> MutexGuard<'static, ()> {
+    SCENARIO_LOCK
+        .lock()
+        .expect("scenario lock must not be poisoned")
+}
 
 fn component_manifest_digest(component_root: &Path) -> String {
     let manifest = std::fs::read(component_root.join("bolt-sandbox-components.manifest"))
@@ -26,6 +36,7 @@ fn component_manifest_digest(component_root: &Path) -> String {
 
 #[test]
 fn cli_003_binary_delegates_execution_and_preserves_streams_and_exit_code() {
+    let _guard = scenario_guard();
     let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
     else {
         return;
@@ -58,6 +69,7 @@ fn cli_003_binary_delegates_execution_and_preserves_streams_and_exit_code() {
 
 #[test]
 fn net_001_cli_unrestricted_curl_reaches_local_http_server() {
+    let _guard = scenario_guard();
     let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
     else {
         return;
@@ -116,6 +128,7 @@ fn net_001_cli_unrestricted_curl_reaches_local_http_server() {
 
 #[test]
 fn net_002_cli_denied_blocks_curl_after_afd_device_creation() {
+    let _guard = scenario_guard();
     let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
     else {
         return;
@@ -164,6 +177,7 @@ fn net_002_cli_denied_blocks_curl_after_afd_device_creation() {
 
 #[test]
 fn net_003_cli_allow_list_proxies_nonblocking_curl_for_allowed_endpoint_and_port() {
+    let _guard = scenario_guard();
     let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
     else {
         return;
@@ -227,6 +241,7 @@ fn net_003_cli_allow_list_proxies_nonblocking_curl_for_allowed_endpoint_and_port
 
 #[test]
 fn net_004_cli_unrestricted_node_http_reaches_local_server() {
+    let _guard = scenario_guard();
     let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
     else {
         return;
@@ -278,6 +293,7 @@ fn net_004_cli_unrestricted_node_http_reaches_local_server() {
 
 #[test]
 fn net_005_cli_unrestricted_python_reads_its_runtime_and_reaches_local_server() {
+    let _guard = scenario_guard();
     let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
     else {
         return;
@@ -328,7 +344,143 @@ fn net_005_cli_unrestricted_python_reads_its_runtime_and_reaches_local_server() 
 }
 
 #[test]
+fn agent_node_allow_list_and_denied_modes_enforce_local_http() {
+    let _guard = scenario_guard();
+    let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
+    else {
+        return;
+    };
+    let Some(node) = std::env::var_os("BOLT_TEST_NODE").map(PathBuf::from) else {
+        return;
+    };
+    assert!(node.is_file(), "declared Node runtime must exist");
+    let script = "const http=require('http');const request=http.get(process.argv[1],{timeout:3000},response=>{console.log('node='+response.statusCode);response.resume();response.on('end',()=>process.exit(response.statusCode===200?0:3));});request.on('timeout',()=>request.destroy(new Error('timeout')));request.on('error',error=>{console.error('node-error='+(error.code||error.message));process.exit(2);});";
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("local listener must bind");
+    listener
+        .set_nonblocking(true)
+        .expect("listener must be nonblocking");
+    let port = listener.local_addr().expect("listener has address").port();
+    let allow_server_thread = thread::spawn(move || serve_one_http_request(&listener));
+    let allowed = sandbox_command(&component_root, &component_root)
+        .args([
+            "--network",
+            "allow-list",
+            "--allow-cidr",
+            "127.0.0.1/32",
+            "--allow-port",
+        ])
+        .arg(port.to_string())
+        .arg("--")
+        .arg(&node)
+        .args(["-e", script])
+        .arg(format!("http://127.0.0.1:{port}/"))
+        .output()
+        .expect("allow-listed Node must launch");
+    let request_served = allow_server_thread.join().expect("allow server must join");
+    assert!(
+        request_served,
+        "Node allow-list did not reach server: exit={:?} stderr={}",
+        allowed.status.code(),
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    assert_eq!(allowed.status.code(), Some(0));
+    assert_eq!(allowed.stdout, b"node=200\n");
+
+    let denied_listener = TcpListener::bind(("127.0.0.1", 0)).expect("denied listener must bind");
+    denied_listener
+        .set_nonblocking(true)
+        .expect("denied listener must be nonblocking");
+    let denied_port = denied_listener
+        .local_addr()
+        .expect("listener has address")
+        .port();
+    let denied_server =
+        thread::spawn(move || wait_for_connection(&denied_listener, Duration::from_secs(3)));
+    let denied = sandbox_command(&component_root, &component_root)
+        .args(["--network", "denied", "--"])
+        .arg(node)
+        .args(["-e", script])
+        .arg(format!("http://127.0.0.1:{denied_port}/"))
+        .output()
+        .expect("denied Node must launch");
+    assert!(!denied_server.join().expect("denied server must join"));
+    assert_eq!(denied.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("network-violation"));
+}
+
+#[test]
+fn agent_python_allow_list_and_denied_modes_enforce_local_http() {
+    let _guard = scenario_guard();
+    let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
+    else {
+        return;
+    };
+    let Some(python) = std::env::var_os("BOLT_TEST_PYTHON").map(PathBuf::from) else {
+        return;
+    };
+    assert!(python.is_file(), "declared Python runtime must exist");
+    let script = "import sys,urllib.request\nopener=urllib.request.build_opener(urllib.request.ProxyHandler({}))\ntry:\n response=opener.open(sys.argv[1],timeout=3)\n print('python='+str(response.status))\n response.close()\n sys.exit(0 if response.status==200 else 3)\nexcept Exception as error:\n print('python-error='+type(error).__name__+':'+str(error))\n sys.exit(2)";
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("local listener must bind");
+    listener
+        .set_nonblocking(true)
+        .expect("listener must be nonblocking");
+    let port = listener.local_addr().expect("listener has address").port();
+    let allow_server_thread = thread::spawn(move || serve_one_http_request(&listener));
+    let allowed = sandbox_command(&component_root, &component_root)
+        .args([
+            "--network",
+            "allow-list",
+            "--allow-cidr",
+            "127.0.0.1/32",
+            "--allow-port",
+        ])
+        .arg(port.to_string())
+        .arg("--")
+        .arg(&python)
+        .args(["-c", script])
+        .arg(format!("http://127.0.0.1:{port}/"))
+        .output()
+        .expect("allow-listed Python must launch");
+    let request_served = allow_server_thread.join().expect("allow server must join");
+    assert!(
+        request_served,
+        "Python allow-list did not reach server: exit={:?} stderr={}",
+        allowed.status.code(),
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    assert_eq!(allowed.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&allowed.stdout).trim(),
+        "python=200"
+    );
+
+    let denied_listener = TcpListener::bind(("127.0.0.1", 0)).expect("denied listener must bind");
+    denied_listener
+        .set_nonblocking(true)
+        .expect("denied listener must be nonblocking");
+    let denied_port = denied_listener
+        .local_addr()
+        .expect("listener has address")
+        .port();
+    let denied_server =
+        thread::spawn(move || wait_for_connection(&denied_listener, Duration::from_secs(3)));
+    let denied = sandbox_command(&component_root, &component_root)
+        .args(["--network", "denied", "--"])
+        .arg(python)
+        .args(["-c", script])
+        .arg(format!("http://127.0.0.1:{denied_port}/"))
+        .output()
+        .expect("denied Python must launch");
+    assert!(!denied_server.join().expect("denied server must join"));
+    assert_eq!(denied.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("network-violation"));
+}
+
+#[test]
 fn agent_git_status_runs_in_task_workspace_without_network() {
+    let _guard = scenario_guard();
     let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
     else {
         return;
@@ -380,6 +532,7 @@ fn agent_git_status_runs_in_task_workspace_without_network() {
 
 #[test]
 fn agent_cargo_metadata_runs_offline_with_private_home() {
+    let _guard = scenario_guard();
     let Some(component_root) = std::env::var_os("BOLT_NATIVE_COMPONENT_ROOT").map(PathBuf::from)
     else {
         return;

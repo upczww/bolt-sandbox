@@ -106,6 +106,8 @@ Agent 必须把以下文件作为一个整体放到受 ACL 保护、带版本的
 - `bolt-sandbox-x86.dll`：x86 Hook；
 - `bolt-sandbox-dns-proxy.exe`：仅由 `AllowList` 使用的可信 x64 DNS/TCP
   策略代理；
+- `bolt-sandbox-compatibility.profile`：受 Manifest 绑定的只读和元数据只读
+  兼容授权；
 - `bolt-sandbox-components.manifest`：兼容组件集的版本、长度与 SHA-256 身份。
 
 不要在不同 Release 之间单独复制 DLL。生产宿主应固定 Manifest SHA-256，要求
@@ -274,8 +276,10 @@ CLI 会继承宿主环境，并用内置凭据名列表剥离已知 Broker/模�
   SHA-256 保护的 Native Payload。
 - 更具体的授权可以细化宽泛授权，但显式 Deny 和 Mandatory Deny 优先。
 - 子进程输入不能申请 Compatibility Grant，也不能弱化 Mandatory Deny。
-- Windows 安装目录和所选程序目录会获得可信只读兼容授权；位于文件系统根目录
-  的可执行文件不会导致整个根目录被授权。
+- 兼容授权来自受 Manifest 绑定的 `bolt-sandbox-compatibility.profile`，产品
+  代码不保存工具专用路径。V1 只支持文件只读、文件元数据只读和注册表只读。
+- Profile 仅提供 `system-root`、`program-dir`、`cwd-anchor`、`user-profile`
+  等通用宿主基座；Node、Python、Git、Cargo、Rustup 具体路径属于 Profile 数据。
 - `NetworkPolicy::Unrestricted` 保留操作系统正常授权行为；`Denied` 与
   `AllowList` 执行限制性网络拦截。
 - `ChildProcessPolicy::Inherit` 只在子进程安装匹配 Hook 与策略后允许执行；
@@ -310,6 +314,11 @@ pwsh scripts/build-windows.ps1 -Configuration Release -Architecture All
 # Native 测试
 pwsh scripts/test-windows.ps1 -Suite Unit -Architecture x64 -Configuration Release
 pwsh scripts/test-windows.ps1 -Suite Unit -Architecture x86 -Configuration Release
+
+# 真实 Agent Runtime 场景（声明的 Runtime 必须存在）
+pwsh scripts/test-agent-scenarios.ps1 `
+  -ComponentRoot target\native\x64\Release `
+  -PythonPath C:\trusted-runtimes\python\python.exe
 ```
 
 可选 Rust 覆盖率需要 `cargo-llvm-cov 0.9.0`、Nightly Toolchain 和匹配的
