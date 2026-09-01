@@ -7,13 +7,14 @@ use std::{
 };
 
 use bolt_sandbox::{
-    ChildInjectionFailure, ChildInjectionFailureReason, ChildProcessPolicy,
-    CommandId, DEFAULT_STREAM_CAPACITY, DEFAULT_VIOLATION_AGGREGATE_CAPACITY, ExecutionHandle,
-    ExecutionResult, FilesystemOperation, FilesystemPolicy, FilesystemViolation, IpCidr,
-    MAX_TIMEOUT, MAX_VIOLATION_AGGREGATE_CAPACITY, MIN_TIMEOUT, NetworkAllowList, NetworkPolicy,
-    NetworkTarget, NetworkViolation, PortRange, ProcessExit, ProcessExitReason, ProcessOperation,
-    ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField, Sandbox, SandboxConfig,
-    SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest, ViolationAggregate,
+    AttributedSandboxEvent, ChildInjectionFailure, ChildInjectionFailureReason,
+    ChildProcessPolicy, CommandId, DEFAULT_STREAM_CAPACITY, DEFAULT_VIOLATION_AGGREGATE_CAPACITY,
+    EventStream, ExecutionAttribution, ExecutionHandle, ExecutionId, ExecutionResult,
+    FilesystemOperation, FilesystemPolicy, FilesystemViolation, IpCidr, MAX_TIMEOUT,
+    MAX_VIOLATION_AGGREGATE_CAPACITY, MIN_TIMEOUT, NetworkAllowList, NetworkPolicy, NetworkTarget,
+    NetworkViolation, PolicyGeneration, PortRange, ProcessExit, ProcessExitReason,
+    ProcessOperation, ProcessViolation, RecoveryPolicy, RegistryPolicy, RequestField, Sandbox,
+    SandboxConfig, SandboxError, SandboxEvent, SandboxPolicy, SandboxRequest, ViolationAggregate,
 };
 
 #[test]
@@ -22,11 +23,29 @@ fn attr_001_public_command_id_is_fixed_nonzero_and_can_start_an_execution() {
     let command_id = CommandId::new([0xA5; 16]).expect("nonzero command ID must be valid");
     assert_eq!(command_id.as_bytes(), &[0xA5; 16]);
 
-    let _: fn(
-        &Sandbox,
-        SandboxRequest,
-        CommandId,
-    ) -> Result<ExecutionHandle, SandboxError> = Sandbox::start_with_command_id;
+    let _: fn(&Sandbox, SandboxRequest, CommandId) -> Result<ExecutionHandle, SandboxError> =
+        Sandbox::start_with_command_id;
+}
+
+#[test]
+fn attr_003_public_events_carry_execution_command_and_policy_generation() {
+    assert!(ExecutionId::new([0; 16]).is_none());
+    assert!(PolicyGeneration::new(0).is_none());
+    let attribution = ExecutionAttribution {
+        execution_id: ExecutionId::new([0x11; 16]).expect("execution ID must be valid"),
+        command_id: CommandId::new([0x22; 16]).expect("command ID must be valid"),
+        policy_generation: PolicyGeneration::new(1).expect("generation must be nonzero"),
+    };
+    let event = AttributedSandboxEvent {
+        attribution,
+        event: SandboxEvent::Ready,
+    };
+
+    assert_eq!(event.attribution, attribution);
+    assert_eq!(event.event, SandboxEvent::Ready);
+
+    fn assert_attributed_stream<T: Iterator<Item = AttributedSandboxEvent>>() {}
+    assert_attributed_stream::<EventStream>();
 }
 
 fn minimal_request(program: &Path, cwd: &Path) -> SandboxRequest {
