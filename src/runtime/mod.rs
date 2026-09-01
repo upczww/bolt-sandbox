@@ -26,6 +26,7 @@ mod lifecycle;
 mod preparation;
 #[cfg(test)]
 mod process_observer;
+mod projected_workspace_protocol;
 mod recovery;
 mod recovery_protocol;
 #[cfg(test)]
