@@ -402,6 +402,71 @@ and reason code—not merely identical serialized bytes.
 | BYP-011 | Child delegates through service, scheduled task, WMI, COM, or elevation broker | Direct arbitrary execution is blocked; a test broker executes only the exact operation pre-authorized by trusted Rust policy |
 | BYP-012 | Test corpus from reference products is re-expressed as black-box behavior | Semantic regressions are detected without copying GPL or closed-source implementation code |
 
+## Command attribution and transactional Agent workspaces
+
+| ID | Scenario | Expected observation |
+| --- | --- | --- |
+| ATTR-001 | Trusted Rust starts two commands with different opaque command IDs | Every event is correlated to exactly one command without carrying command text |
+| ATTR-002 | Command ID is zero, malformed, replayed, or mismatched with execution identity | Preparation or event decoding rejects it before the event is published |
+| ATTR-003 | Policy generations are issued across repeated starts | Values are nonzero and strictly increase within one sandbox coordinator |
+| ATTR-004 | Event carries a stale or future policy generation | Event channel fails closed; it is not aggregated under the active command |
+| ATTR-005 | x86/x64 descendants emit concurrent violations | Parent and child events retain identical execution/command/generation attribution |
+| ATTR-006 | Diagnostics and events are scanned with command/environment canaries | Only opaque identifiers appear; commands, arguments, environment, and secrets do not |
+| EVT-013 | Attributed events are aggregated | Attribution participates in the key so events from separate commands never merge |
+
+| ID | Scenario | Expected observation |
+| --- | --- | --- |
+| WS-001 | Existing execution uses `DirectWorkspaceBackend` | Program, cwd, policy, recovery, events, and exit behavior remain unchanged |
+| WS-002 | Unknown or unavailable backend is requested | Typed unsupported/configuration failure is returned before process creation |
+| WS-003 | Direct backend is benchmarked before and after abstraction | Warm startup and steady-state overhead remain within existing budgets |
+| WS-004 | ProjFS backend prepares a session | Unique protected projection root and bounded journal are created by trusted Rust |
+| WS-005 | ProjFS is unavailable or disabled | Requested projected execution fails explicitly and never falls back to Direct |
+| WS-006 | Target probes registry, network, process, and denied file resources through projection | Existing enforcement decisions and events remain unchanged |
+| WS-007 | Target writes the projected workspace | Source workspace remains unchanged until trusted commit |
+| WS-008 | Target opens source through drive, volume, junction, symlink, file ID, or handle alias | Write is denied and no source side effect occurs |
+| WS-009 | Projection contains ADS, hard-link, reparse, case-sensitive, or non-ASCII paths | Ambiguous/escaping operations fail closed; supported paths preserve identity |
+| WS-010 | Target attempts to mutate projection control or provider files | Mandatory deny blocks access and reports a redacted event |
+| WS-011 | Provider callback crashes, times out, or returns malformed data | Job terminates and no source commit occurs |
+| WS-012 | Provider IPC disconnects before or after readiness | Startup fails or running Job terminates exactly once |
+| WS-013 | Host exits while projected target is active | Target tree terminates and session remains recoverable by bounded cleanup |
+| WS-014 | Query changes after create/modify/delete/rename | Canonical ordered journal contains each effective change once |
+| WS-015 | Discard is requested | Projection and journal are removed without changing the source workspace |
+| WS-016 | Commit is requested | Trusted host applies only reviewed journal entries and records recovery metadata |
+| WS-017 | Revert is requested for a committed session | Versioned recovery restores the prior state without target authority |
+| WS-018 | Source changes externally after projection read | Commit detects identity/hash conflict and applies nothing |
+| WS-019 | Commit fails after staging one of several operations | No partial source transaction becomes visible; projection remains inspectable |
+| WS-020 | Large/concurrent changes exceed configured bounds | Further changes/commit fail with typed quota status and bounded resources |
+| REC-020 | Projected destructive commit targets an ordinary file | Complete pre-commit content is captured before trusted mutation |
+| REC-021 | Projected session expires | Retention GC removes only inactive verified session state |
+| REC-022 | Recovery creation fails during projected commit | Commit stops before source mutation and reports typed failure |
+| SEC-019 | Projection root is treated as the sole sandbox boundary | Test fails by design; source mandatory deny and ordinary hooks must still enforce |
+
+| ID | Scenario | Expected observation |
+| --- | --- | --- |
+| PTY-001 | Interactive cmd/PowerShell/Node/Python starts with PTY enabled | Input, output, resize, and exit are functional with typed lifecycle events |
+| PTY-002 | Noninteractive command starts without PTY | Existing pipe path is selected with no PTY process or handle overhead |
+| PTY-003 | Unsupported PTY architecture/configuration is requested | Typed failure occurs before process resume |
+| PTY-004 | PTY command creates descendants | Every descendant remains in the Job and receives matching policy/hook |
+| PTY-005 | Ctrl-C, timeout, cancellation, or host loss occurs | Complete PTY process tree terminates deterministically |
+| PTY-006 | Binary and split UTF-8 data crosses PTY | Bytes/order are preserved and bounded without implicit decoding in the API |
+| PTY-007 | Target duplicates PTY handles to an unrelated process | Duplication is denied and no external process gains the capability |
+| PTY-008 | Target opens arbitrary named pipes after PTY setup | Existing named-pipe deny remains effective |
+| PTY-009 | PTY closes or is reused | Capability is revoked by object identity; handle reuse grants nothing |
+
+| ID | Scenario | Expected observation |
+| --- | --- | --- |
+| BRK-001 | Broker preloads components/Profile | Files are revalidated/leased and remain read-only; no execution authority exists yet |
+| BRK-002 | Two commands use one broker | Each receives fresh identity, Job, IPC, policy payload, and recovery namespace |
+| BRK-003 | Sessions use different policy generations | Broker cannot reuse or widen the earlier policy |
+| BRK-004 | Concurrent sessions run | Events, streams, cleanup, and capabilities remain isolated |
+| BRK-005 | Broker crashes or is killed | Every associated running Job terminates; no descendant survives |
+| BRK-006 | Broker presents stale component/Profile identity | New execution is rejected before process creation |
+| BRK-007 | Broker loses policy/provider IPC | Startup fails or running execution terminates without fallback |
+| BRK-008 | Target attempts to connect to broker control IPC | ACL/authentication rejects it without disclosing broker inputs |
+| BRK-009 | Prewarming benchmark improvement is below 10 ms | Broker is not included in the default product |
+| BRK-010 | Broker is enabled and benchmarked | Warm dispatch, resource growth, and shutdown meet configured budgets |
+| PERF-015 | Direct/projected/broker modes are compared | Each mode has separate reproducible startup and steady-state budgets |
+
 ## Packaging, compatibility, licensing, and performance
 
 | ID | Scenario | Expected observation |

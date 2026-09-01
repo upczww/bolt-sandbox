@@ -135,6 +135,24 @@ its catalog case ID and requirement IDs in machine-readable results.
 | ARC-IPC-005 | Rust aggregates duplicates outside policy decision path | EVT-004..005, FS-056, NET-029 | Specified |
 | ARC-IPC-006 | Events are typed, ordered, process-attributed, and redacted | EVT-001..003, EVT-008..012 | Specified |
 | ARC-IPC-007 | x86/x64 native and Rust protocol representations are compatible | IPC-015, SEM-008..009 | Specified |
+| ARC-IPC-008 | Every event is attributed to one execution, opaque command ID, and nonzero immutable policy generation | ATTR-001..006, EVT-013 | Specified |
+
+## Transactional Agent workspaces and interaction
+
+| Requirement ID | Architecture requirement | Catalog evidence | Status |
+| --- | --- | --- | --- |
+| ARC-WS-001 | Workspace behavior is selected through a trusted `WorkspaceBackend`; Direct preserves current semantics | WS-001..003 | Specified |
+| ARC-WS-002 | ProjFS is optional and never replaces filesystem/process/network/registry enforcement | WS-004..006, SEC-019 | Specified |
+| ARC-WS-003 | Projected execution cannot write the source workspace directly or through path aliases | WS-007..010, BYP-005..008 | Specified |
+| ARC-WS-004 | Projection/provider/IPC failure terminates or rejects execution without direct fallback | WS-011..013, GATE-001 | Specified |
+| ARC-WS-005 | Query, commit, discard, and revert operate on a bounded per-session change journal | WS-014..017, REC-020..021 | Specified |
+| ARC-WS-006 | Commit revalidates source identity and refuses external conflicts or partial application | WS-018..020, REC-022 | Specified |
+| ARC-PTY-001 | PTY is an explicit capability and noninteractive pipe execution remains the default | PTY-001..003 | Specified |
+| ARC-PTY-002 | PTY descendants remain in the Job with inherited policy and hooks | PTY-004..006, PROC-003..013 | Specified |
+| ARC-PTY-003 | PTY handles cannot authorize arbitrary named-pipe or cross-process access | PTY-007..009, FS-053 | Specified |
+| ARC-BRK-001 | Any prewarmed broker holds verified read-only state but creates fresh per-command authority | BRK-001..004 | Specified |
+| ARC-BRK-002 | Broker loss, stale state, or policy mismatch fails closed and terminates associated Jobs | BRK-005..008 | Specified |
+| ARC-BRK-003 | Broker deployment is evidence-gated and omitted when startup benefit is immaterial | BRK-009..010, PERF-015 | Specified |
 
 ## Recovery
 
