@@ -21,6 +21,7 @@ $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $releaseComponentRoot = Join-Path $repositoryRoot 'target\native\x64\Release'
 $evidencePath = Join-Path $repositoryRoot 'target\performance-evidence-x64.json'
 $benchmarkPath = Join-Path $repositoryRoot 'target\release\bolt-sandbox-benchmark.exe'
+$releaseCli = Join-Path $repositoryRoot 'target\release\bolt-sandbox.exe'
 
 if ($RequireSigned -and -not $CertificateThumbprint) {
     throw 'A code-signing certificate thumbprint is required for a signed release.'
@@ -76,6 +77,11 @@ if ($NativeCompilerReadRoot.Count -ne 0) {
     $agentParameters.NativeCompilerReadRoot = $NativeCompilerReadRoot
 }
 & (Join-Path $PSScriptRoot 'test-agent-scenarios.ps1') @agentParameters
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& (Join-Path $PSScriptRoot 'test-agent-tool-matrix.ps1') `
+    -Configuration (Join-Path $repositoryRoot 'config\agent-tool-scenarios.json') `
+    -ComponentRoot $releaseComponentRoot `
+    -SandboxExecutable $releaseCli
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 & (Join-Path $PSScriptRoot 'measure-windows-performance.ps1') `
