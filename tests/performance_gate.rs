@@ -140,6 +140,8 @@ fn perf_010_local_release_runs_collector_and_fail_closed_verifier() {
     assert!(release.contains("performance-evidence-x64.json"));
     assert!(release.contains("package-windows.ps1"));
     assert!(release.contains("-RequireSigned:$RequireSigned"));
+    assert!(release.contains("test-agent-tool-matrix.ps1"));
+    assert!(release.contains("-SandboxExecutable $releaseCli"));
 }
 
 #[test]
