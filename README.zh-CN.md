@@ -79,8 +79,8 @@ Native 代码负责最小化 Windows Launcher、基于 Detours 的拦截和有�
 
 当前实现包括 Rust 库与 CLI、x64/x86 Launcher 和 Hook DLL、文件/进程/网络/
 注册表策略、有界恢复、事务式 Staged 与可选 ProjFS Workspace、显式 ConPTY、
-组件 Manifest、ACL 加固打包、Rust 与 Native 协议 Mutation 测试，以及签名
-发布工作流。`Projected` 会启动有界的进程外 Provider，以只读方式提供源内容，
+组件 Manifest、ACL 加固打包、Rust 与 Native 协议 Mutation 测试，以及
+Fail Closed 的本地发布门。`Projected` 会启动有界的进程外 Provider，以只读方式提供源内容，
 目标退出后固化最终合并视图，再复用可信的 query/commit/discard/revert 协调器。
 主机未安装 ProjFS Windows 功能时，会在创建目标前明确失败，绝不回退 Direct。
 
@@ -91,8 +91,10 @@ Native 代码负责最小化 Windows Launcher、基于 Detours 的拦截和有�
 - 稳态文件系统开销低于 5%；
 - Private Bytes、句柄和线程必须配置绝对值与增长上限。
 
-当前代表性工作站的本地发布证据约为 40 ms Warm Startup、4% 稳态文件系统
-开销。项目还始终单独记录 Path Churn（每次迭代都做 metadata/open/read/
+最新一次代表性工作站本地 Release 实测为 43.783 ms Warm Startup、2.0%
+稳态文件系统开销；Rust、x64/x86 Native 全套以及 55 个普通 Agent 工具场景
+全部通过。Docker、Podman 与 SignTool 仍是显式特权能力，不会退化成普通授权。
+项目还始终单独记录 Path Churn（每次迭代都做 metadata/open/read/
 close），因为最终身份校验存在显著固定成本；该指标不会被隐藏进稳态数字。
 不同机器结果会变化，正式发布必须重新采集。
 
@@ -368,6 +370,11 @@ pwsh scripts/test-windows.ps1 -Suite Unit -Architecture x86 -Configuration Relea
 pwsh scripts/test-agent-scenarios.ps1 `
   -ComponentRoot target\native\x64\Release `
   -PythonPath C:\trusted-runtimes\python\python.exe
+
+# 一条命令执行完整本地 Release 门禁（不依赖 CI 服务）
+pwsh scripts/release-windows-local.ps1 `
+  -Version 0.1.0-local `
+  -PythonPath C:\trusted-runtimes\python\python.exe
 ```
 
 场景 Harness 要求 Shell、PowerShell、Node、Python、Git、Cargo/Rust 和一个原生
@@ -385,6 +392,10 @@ pwsh scripts/test-agent-scenarios.ps1 `
 Rust API 提供 `CompatibilityGrantResolver`、`CompatibilityDecisionCache` 和
 只能消费一次的 `CompatibilityRestartPlan`。成功命令返回 `NoPrompt`；事务模式批准
 重试会先丢弃失败尝试，再启动一个新的策略代次。
+失败结果可直接传给 `CompatibilityGrantResolver::resolve_result`，得到统一的
+`AccessDenialReport`。每条拒绝都会显式区分文件路径、注册表键、网络域名/
+Endpoint 或进程权限；CLI 同样为每个聚合拒绝输出一行 `sandbox-denial ...`，
+Agent 不需要从 Native 错误文本中猜测授权资源。
 
 可选 Rust 覆盖率需要 `cargo-llvm-cov 0.9.0`、Nightly Toolchain 和匹配的
 LLVM Tools：
@@ -398,8 +409,16 @@ pwsh scripts/test-rust-coverage.ps1
 ## 打包与签名
 
 ```powershell
-# 开发包
-pwsh scripts/package-windows.ps1 -Version 0.1.0
+# 完整未签名本地候选：构建、Release 测试、Agent 矩阵、性能、ACL/Manifest 与打包
+pwsh scripts/release-windows-local.ps1 `
+  -Version 0.1.0-local
+
+# 正式本地签名发布；私钥保留在 Windows 证书存储中，只传公开 Thumbprint
+pwsh scripts/release-windows-local.ps1 `
+  -Version 0.1.0 `
+  -RequireSigned `
+  -CertificateThumbprint 0123456789ABCDEF0123456789ABCDEF01234567 `
+  -TimestampUrl 'https://timestamp.example.invalid'
 
 # 使用不可导出临时证书验证本地严格签名链路
 pwsh scripts/test-signing-pipeline.ps1
@@ -409,9 +428,9 @@ pwsh scripts/test-signing-pipeline.ps1
 Reparse Point，只允许打包身份、SYSTEM 和 Administrators 修改目录，验证最终
 ACL，并把 Staging 目录原子重命名为最终包。
 
-`Signed Windows release` 工作流需要 `WINDOWS_SIGNING_PFX_BASE64`、
-`WINDOWS_SIGNING_PFX_PASSWORD` 和 HTTPS RFC3161 时间戳 URL。公开可信发布必须
-使用 CA 签发的代码签名证书；临时本地测试签名不是生产签名。
+本地发布门接收代码签名证书 Thumbprint 与 HTTPS RFC3161 时间戳 URL；它不会
+在命令行接收 PFX 或密码。公开可信发布必须使用已安装且持有私钥的 CA 代码签名
+证书；临时本地测试签名不是生产签名。
 
 ## 已知限制
 

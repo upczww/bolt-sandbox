@@ -89,8 +89,8 @@ The implementation includes the Rust library and CLI, x64/x86 launchers and
 hook DLLs, filesystem/process/network/registry enforcement, bounded recovery,
 transactional staged and optional ProjFS workspaces, explicit ConPTY sessions,
 component manifests, ACL-hardened packaging, deterministic Rust and native
-protocol mutation tests, and a fail-closed local release gate. `Projected` starts a
-bounded out-of-process provider, serves source content read-only, materializes
+protocol mutation tests, and a fail-closed local release gate. `Projected`
+starts a bounded out-of-process provider, serves source content read-only, materializes
 the final merged view after target exit, and then uses the same trusted
 query/commit/discard/revert coordinator as `Staged`. A host without the Windows
 ProjFS feature fails before target creation and never falls back to Direct.
@@ -103,8 +103,11 @@ The checked release budgets currently require:
 - configured absolute and growth limits for private bytes, handles, and
   threads.
 
-On the current representative workstation, recorded local release evidence
-observed roughly 40 ms warm startup and 4% steady-state filesystem overhead.
+The latest local Release run on the representative workstation observed
+43.783 ms warm startup and 2.0% steady-state filesystem overhead. It also
+passed all Rust and x64/x86 native suites plus 55 ordinary Agent-tool scenarios;
+Docker, Podman, and SignTool remain explicitly privileged capabilities rather
+than ordinary sandbox grants.
 A separate path-churn workload (metadata/open/read/close every iteration) is
 always recorded because final-identity validation has a meaningful fixed cost;
 it is not hidden inside the steady-state number. Measurements vary by machine
@@ -407,6 +410,11 @@ pwsh scripts/test-windows.ps1 -Suite Unit -Architecture x86 -Configuration Relea
 pwsh scripts/test-agent-scenarios.ps1 `
   -ComponentRoot target\native\x64\Release `
   -PythonPath C:\trusted-runtimes\python\python.exe
+
+# One-command local Release gate (no CI service required)
+pwsh scripts/release-windows-local.ps1 `
+  -Version 0.1.0-local `
+  -PythonPath C:\trusted-runtimes\python\python.exe
 ```
 
 The scenario harness requires Shell, PowerShell, Node, Python, Git, Cargo/Rust,
@@ -459,7 +467,7 @@ pwsh scripts/release-windows-local.ps1 `
   -Version 0.1.0 `
   -RequireSigned `
   -CertificateThumbprint 0123456789ABCDEF0123456789ABCDEF01234567 `
-  -TimestampUrl https://timestamp.example.invalid
+  -TimestampUrl 'https://timestamp.example.invalid'
 
 # Local strict signing-path test with an ephemeral, non-exportable certificate
 pwsh scripts/test-signing-pipeline.ps1
