@@ -61,21 +61,21 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     -Architecture x86 -Configuration Release -Case native.protocol
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$agentArguments = @(
-    '-ComponentRoot', $releaseComponentRoot
-)
-if ($PythonPath) { $agentArguments += @('-PythonPath', $PythonPath) }
-if ($CargoPath) { $agentArguments += @('-CargoPath', $CargoPath) }
+$agentParameters = @{
+    ComponentRoot = $releaseComponentRoot
+}
+if ($PythonPath) { $agentParameters.PythonPath = $PythonPath }
+if ($CargoPath) { $agentParameters.CargoPath = $CargoPath }
 if ($NativeCompilerPath) {
-    $agentArguments += @('-NativeCompilerPath', $NativeCompilerPath)
+    $agentParameters.NativeCompilerPath = $NativeCompilerPath
 }
 if ($NativeCompilerKind) {
-    $agentArguments += @('-NativeCompilerKind', $NativeCompilerKind)
+    $agentParameters.NativeCompilerKind = $NativeCompilerKind
 }
-foreach ($root in $NativeCompilerReadRoot) {
-    $agentArguments += @('-NativeCompilerReadRoot', $root)
+if ($NativeCompilerReadRoot.Count -ne 0) {
+    $agentParameters.NativeCompilerReadRoot = $NativeCompilerReadRoot
 }
-& (Join-Path $PSScriptRoot 'test-agent-scenarios.ps1') @agentArguments
+& (Join-Path $PSScriptRoot 'test-agent-scenarios.ps1') @agentParameters
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 & (Join-Path $PSScriptRoot 'measure-windows-performance.ps1') `
