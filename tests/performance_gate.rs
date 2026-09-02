@@ -128,16 +128,18 @@ fn perf_014_collector_rejects_missing_inputs_without_creating_evidence() {
 }
 
 #[test]
-fn perf_010_signed_release_runs_collector_and_fail_closed_verifier() {
-    let workflow = fs::read_to_string(concat!(
+fn perf_010_local_release_runs_collector_and_fail_closed_verifier() {
+    let release = fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/.github/workflows/release-windows.yml"
+        "/scripts/release-windows-local.ps1"
     ))
-    .expect("signed release workflow must be readable");
+    .expect("local release script must be readable");
 
-    assert!(workflow.contains("measure-windows-performance.ps1"));
-    assert!(workflow.contains("verify-performance-evidence.ps1"));
-    assert!(workflow.contains("performance-evidence-x64.json"));
+    assert!(release.contains("measure-windows-performance.ps1"));
+    assert!(release.contains("verify-performance-evidence.ps1"));
+    assert!(release.contains("performance-evidence-x64.json"));
+    assert!(release.contains("package-windows.ps1"));
+    assert!(release.contains("-RequireSigned:$RequireSigned"));
 }
 
 #[test]
