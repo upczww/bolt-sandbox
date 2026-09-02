@@ -89,7 +89,7 @@ The implementation includes the Rust library and CLI, x64/x86 launchers and
 hook DLLs, filesystem/process/network/registry enforcement, bounded recovery,
 transactional staged and optional ProjFS workspaces, explicit ConPTY sessions,
 component manifests, ACL-hardened packaging, deterministic Rust and native
-protocol mutation tests, and a signed-release workflow. `Projected` starts a
+protocol mutation tests, and a fail-closed local release gate. `Projected` starts a
 bounded out-of-process provider, serves source content read-only, materializes
 the final merged view after target exit, and then uses the same trusted
 query/commit/discard/revert coordinator as `Staged`. A host without the Windows
@@ -448,8 +448,18 @@ pwsh scripts/test-rust-coverage.ps1
 ## Packaging and signing
 
 ```powershell
-# Development package
-pwsh scripts/package-windows.ps1 -Version 0.1.0
+# Complete unsigned local release candidate: build, Release tests, Agent matrix,
+# performance evidence, ACL/manifest verification, and packaging.
+pwsh scripts/release-windows-local.ps1 `
+  -Version 0.1.0-local
+
+# Production-signed local release. The certificate private key stays in the
+# Windows certificate store; only its public thumbprint is passed here.
+pwsh scripts/release-windows-local.ps1 `
+  -Version 0.1.0 `
+  -RequireSigned `
+  -CertificateThumbprint 0123456789ABCDEF0123456789ABCDEF01234567 `
+  -TimestampUrl https://timestamp.example.invalid
 
 # Local strict signing-path test with an ephemeral, non-exportable certificate
 pwsh scripts/test-signing-pipeline.ps1
@@ -460,11 +470,11 @@ removes inherited ACL entries, rejects reparse points, grants mutation only to
 the packaging identity, SYSTEM, and Administrators, verifies the final ACL, and
 atomically renames staging into place.
 
-The `Signed Windows release` workflow expects
-`WINDOWS_SIGNING_PFX_BASE64`, `WINDOWS_SIGNING_PFX_PASSWORD`, and an HTTPS
-RFC3161 timestamp URL. A publicly trusted release requires a real CA-issued
-code-signing certificate; the ephemeral local test is not a production
-signature.
+The local release gate accepts a code-signing certificate thumbprint and an
+HTTPS RFC3161 timestamp URL. It never accepts a PFX or password on the command
+line. A publicly trusted release requires a real CA-issued code-signing
+certificate already installed with a private key; the ephemeral local test is
+not a production signature.
 
 ## Known limitations
 
